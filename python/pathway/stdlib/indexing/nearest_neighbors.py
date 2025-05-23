@@ -431,7 +431,7 @@ class UsearchKnnFactory(KnnIndexFactory):
 
     Args:
         dimensions (int): number of dimensions of vectors that are used by the index and
-            queries
+            queries. This is only needed if the `embedder` is not provided.
         reserved_space (int): initial capacity (in the number of entries) of the index
         metric (USearchMetricKind): metric kind that is used to determine distance.
             Defaults to cosine similarity.
@@ -485,7 +485,7 @@ class BruteForceKnnFactory(KnnIndexFactory):
 
     Args:
         dimensions (int): number of dimensions of vectors that are used by the index and
-            queries
+            queries. This is only needed if the `embedder` is not provided.
         reserved_space (int): initial capacity (in the number of entries) of the index
         auxiliary_space (int): auxiliary space (in the number of entries), the maximum
             number of distances that are stored in memory, while evaluating queries, in
@@ -530,7 +530,8 @@ class LshKnnFactory(KnnIndexFactory):
     Factory for creating LshKnn indices.
 
     Args:
-        dimensions (int): number of dimensions in the data
+        dimensions (int): number of dimensions in the data.
+            This is only needed if the `embedder` is not provided.
         n_or (int): number of ORs
         n_and (int): number of ANDs
         bucket_length (float): bucket length (after projecting on a line)
