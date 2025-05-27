@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::File;
+use std::hash::RandomState;
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -28,6 +29,7 @@ use deltalake::protocol::SaveMode as DeltaTableSaveMode;
 use deltalake::table::PeekCommit as DeltaLakePeekCommit;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
 use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, TableProperty};
+use deltalake::{DeltaOps, DeltaTableError};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use s3::bucket::Bucket as S3Bucket;
@@ -36,10 +38,12 @@ use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
     columns_into_pathway_values, parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings,
-    MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_FIELD_TIME, SPECIAL_OUTPUT_FIELDS,
+    MaintenanceMode, MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_FIELD_TIME,
+    SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::parse_bool_advanced;
+use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_lake::ArrowDataType;
 use crate::connectors::data_storage::{ConnectorMode, ValuesMap};
 use crate::connectors::metadata::ParquetMetadata;
@@ -137,9 +141,15 @@ impl DeltaBatchWriter {
         value_fields: &Vec<ValueField>,
         storage_options: HashMap<String, String>,
         partition_columns: Vec<String>,
+        table_type: MaintenanceMode,
     ) -> Result<Self, WriteError> {
-        let (table, metadata_per_column) =
-            Self::open_table(path, value_fields, storage_options, partition_columns)?;
+        let (table, metadata_per_column) = Self::open_table(
+            path,
+            value_fields,
+            storage_options,
+            partition_columns,
+            table_type,
+        )?;
         let writer = DTRecordBatchWriter::for_table(&table)?;
         Ok(Self {
             table,
@@ -153,6 +163,7 @@ impl DeltaBatchWriter {
         schema_fields: &Vec<ValueField>,
         storage_options: HashMap<String, String>,
         partition_columns: Vec<String>,
+        table_type: MaintenanceMode,
     ) -> Result<(DeltaTable, MetadataPerColumn), WriteError> {
         let mut struct_fields = Vec::new();
         for field in schema_fields {
@@ -169,7 +180,7 @@ impl DeltaBatchWriter {
                 .with_metadata(metadata),
             );
         }
-        for (field, type_) in SPECIAL_OUTPUT_FIELDS {
+        for (field, type_) in table_type.additional_output_fields() {
             struct_fields.push(DeltaTableStructField::new(
                 field,
                 Self::delta_table_type(&type_)?,
@@ -180,13 +191,16 @@ impl DeltaBatchWriter {
         let runtime = create_async_tokio_runtime()?;
         let table: DeltaTable = runtime
             .block_on(async {
-                let builder = DeltaTableCreateBuilder::new()
+                let mut builder = DeltaTableCreateBuilder::new()
                     .with_location(path)
                     .with_save_mode(DeltaTableSaveMode::Append)
                     .with_columns(struct_fields.clone())
-                    .with_configuration_property(TableProperty::AppendOnly, Some("true"))
                     .with_storage_options(storage_options.clone())
                     .with_partition_columns(partition_columns);
+
+                if table_type.is_append_only() {
+                    builder = builder.with_configuration_property(TableProperty::AppendOnly, Some("true"));
+                }
 
                 builder.await
             })
@@ -336,10 +350,26 @@ impl DeltaBatchWriter {
 }
 
 impl LakeBatchWriter for DeltaBatchWriter {
-    fn write_batch(&mut self, batch: ArrowRecordBatch) -> Result<(), WriteError> {
+    fn write_batch(
+        &mut self,
+        batch: ArrowRecordBatch,
+        payload_type: PayloadType,
+    ) -> Result<(), WriteError> {
         create_async_tokio_runtime()?.block_on(async {
-            self.writer.write(batch).await?;
-            self.writer.flush_and_commit(&mut self.table).await?;
+            self.table.update().await?;
+            match payload_type {
+                PayloadType::FullSnapshot => {
+                    DeltaOps(self.table.clone())
+                        .write(vec![batch])
+                        .with_save_mode(DeltaTableSaveMode::Overwrite)
+                        .await?;
+                }
+                PayloadType::Diff => {
+                    self.writer = DTRecordBatchWriter::for_table(&self.table)?;
+                    self.writer.write(batch).await?;
+                    self.writer.flush_and_commit(&mut self.table).await?;
+                }
+            }
             Ok::<(), WriteError>(())
         })
     }
@@ -414,6 +444,72 @@ enum ParquetReaderOutcome {
 enum BackfillingEntry {
     SourceEvent(ReadResult),
     Entry(ValuesMap),
+}
+
+pub fn open_and_read_delta_table<S: ::std::hash::BuildHasher>(
+    uri: &str,
+    storage_options: HashMap<String, String, RandomState>,
+    column_types: &HashMap<String, Type, S>,
+    column_order: &[String],
+) -> Result<Vec<Vec<Value>>, DeltaTableError> {
+    let runtime = create_async_tokio_runtime()?;
+    let table = runtime.block_on(async { open_delta_table(uri, storage_options).await })?;
+    read_delta_table(&runtime, table, column_types, column_order)
+}
+
+const MAX_ENTRY_PARSING_ERRORS: usize = 10;
+
+pub fn read_delta_table<S: std::hash::BuildHasher>(
+    runtime: &TokioRuntime,
+    table: DeltaTable,
+    column_types: &HashMap<String, Type, S>,
+    column_order: &[String],
+) -> Result<Vec<Vec<Value>>, DeltaTableError> {
+    let ctx = DeltaSessionContext::new();
+    let df = ctx.read_table(Arc::new(table))?;
+
+    let map_entries = runtime.block_on(async {
+        let results = df.collect().await?;
+        let mut entries = Vec::new();
+        let mut n_errors = 0;
+
+        for record_batch in results {
+            for value_map in columns_into_pathway_values(&record_batch, column_types) {
+                match value_map.to_pure_hashmap() {
+                    Ok(map) => entries.push(map),
+                    Err(e) if n_errors < MAX_ENTRY_PARSING_ERRORS => {
+                        warn!("Entry doesn't match expected schema: {e}");
+                        n_errors += 1;
+                    }
+                    Err(_) => {
+                        n_errors += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if n_errors > MAX_ENTRY_PARSING_ERRORS {
+            warn!(
+                "Some entries don't match the expected schema: {} error messages omitted",
+                n_errors - MAX_ENTRY_PARSING_ERRORS
+            );
+        }
+
+        Ok::<_, DeltaTableError>(entries)
+    })?;
+
+    let result = map_entries
+        .into_iter()
+        .map(|entry| {
+            column_order
+                .iter()
+                .map(|col| entry.get(col).cloned().unwrap_or(Value::None))
+                .collect()
+        })
+        .collect();
+
+    Ok(result)
 }
 
 #[allow(clippy::module_name_repetitions)]

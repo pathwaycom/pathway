@@ -30,6 +30,7 @@ use super::{
     columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
+use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_storage::ConnectorMode;
 use crate::connectors::metadata::IcebergMetadata;
 use crate::connectors::{
@@ -261,7 +262,12 @@ impl IcebergBatchWriter {
 }
 
 impl LakeBatchWriter for IcebergBatchWriter {
-    fn write_batch(&mut self, batch: ArrowRecordBatch) -> Result<(), WriteError> {
+    fn write_batch(
+        &mut self,
+        batch: ArrowRecordBatch,
+        payload_type: PayloadType,
+    ) -> Result<(), WriteError> {
+        assert_eq!(payload_type, PayloadType::Diff);
         let writer_builder = Self::create_writer_builder(&self.table)?;
         self.runtime.block_on(async {
             // Prepare a new data block

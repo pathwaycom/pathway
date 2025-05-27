@@ -12,6 +12,7 @@ import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CsvLinesNumberChecker,
+    assert_table_equality,
     wait_result_with_checker,
     write_csv,
 )
@@ -219,3 +220,76 @@ def test_read_after_write(use_stored_schema, tmp_path, s3_path):
     final = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
     original = pd.read_csv(input_path, usecols=["k", "v"], index_col=["k"]).sort_index()
     assert final.equals(original)
+
+
+def test_snapshot_mode(tmp_path, s3_path):
+    first_payload = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+
+    second_payload = """
+        k | v
+        1 | one
+        2 | two
+        3 | three
+    """
+
+    third_payload = """
+        k | v
+        1 | one
+        4 | four
+    """
+
+    fourth_payload = """
+        k | v
+        5 | five
+        7 | seven
+    """
+
+    input_path = tmp_path / "input.csv"
+    output_s3_path = f"s3://{S3_BUCKET_NAME}/{s3_path}/lake"
+    pstorage_path = tmp_path / "pstorage"
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(pstorage_path)
+    )
+
+    def run_reread(data):
+        G.clear()
+        write_csv(input_path, data)
+
+        class InputSchema(pw.Schema):
+            k: int = pw.column_definition(primary_key=True)
+            v: str
+
+        table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+        pw.io.deltalake.write(
+            table,
+            output_s3_path,
+            s3_connection_settings=AWS_S3_SETTINGS,
+            output_table_type="snapshot",
+        )
+        pw.run(
+            persistence_config=persistence_config,
+            monitoring_level=pw.MonitoringLevel.NONE,
+        )
+
+        delta_table = DeltaTable(
+            output_s3_path,
+            storage_options=get_deltalake_connection_options("s3"),
+        )
+        pd_table_from_delta = delta_table.to_pandas().drop("_id", axis=1)
+        assert_table_equality(
+            table,
+            pw.debug.table_from_pandas(
+                pd_table_from_delta,
+                schema=InputSchema,
+            ),
+        )
+
+    run_reread(first_payload)
+    run_reread(second_payload)
+    run_reread(third_payload)
+    run_reread(fourth_payload)

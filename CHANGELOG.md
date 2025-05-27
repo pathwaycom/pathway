@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - When code is run using `pathway spawn` with multiple processes, if one process terminates with an error, all other processes will also be terminated.
 - `pw.xpacks.llm.vector_store.VectorStoreServer` is being deprecated, and it is now subclass of `pw.xpacks.llm.document_store.DocumentStore`. Public API is being kept the same, however users are encouraged to switch to using `DocumentStore` from now on. 
 - `pw.xpacks.llm.vector_store.VectorStoreClient` is being deprecated in favor of `pw.xpacks.llm.document_store.DocumentStoreClient`.
+- `pw.io.deltalake.write` can now maintain the target table's snapshot on the output.
 
 ## [0.21.5] - 2025-05-09
 

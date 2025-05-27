@@ -31,6 +31,7 @@ from pathway.io.minio import MinIOSettings
 from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
 _PATHWAY_COLUMN_META_FIELD = "pathway.column.metadata"
+_SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 
 
 def _engine_s3_connection_settings(
@@ -227,6 +228,7 @@ def write(
     min_commit_frequency: int | None = 60_000,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
 ) -> None:
     """
     Writes the stream of changes from ``table`` into `Delta Lake <https://delta.io/>_` data
@@ -240,9 +242,6 @@ def write(
     the new table is inferred from the ``table``'s schema. Additionally, when the connector
     creates a table, its Pathway schema is stored in the column metadata. This allows the
     table to be read using ``pw.io.deltalake.read`` without explicitly specifying a ``schema``.
-    The output table must include two additional integer columns: ``time``, representing
-    the computation minibatch, and ``diff``, indicating the type of change
-    (``1`` for row addition and ``-1`` for row deletion).
 
     Args:
         table: Table to be written.
@@ -270,6 +269,18 @@ def write(
         sort_by: If specified, the output will be sorted in ascending order based on the
             values of the given columns within each minibatch. When multiple columns are provided,
             the corresponding value tuples will be compared lexicographically.
+        output_table_type: Defines how the output table manages its data. If set to ``"stream_of_changes"``
+            (the default), the system outputs a stream of modifications to the target table.
+            This stream includes two additional integer columns: ``time``, representing the computation
+            minibatch, and ``diff``, indicating the type of change (``1`` for row addition and
+            ``-1`` for row deletion). If set to ``"snapshot"``, the table maintains the current
+            state of the data, updated atomically with each minibatch and ensuring that no partial
+            minibatch updates are visible. To correctly track the relationship between the Pathway's
+            primary key and the output table in this mode, an additional ``_id`` field of the
+            ``Pointer`` type is added. **Please note that this mode may be slower when there are many deletions,
+            because a deletion in a minibatch causes the entire table to be rewritten once that minibatch reaches
+            the output. Please also note that this method is not suitable for the tables that don't
+            fit in memory.**
 
     Returns:
         None
@@ -329,6 +340,7 @@ def write(
         ),
         min_commit_frequency=min_commit_frequency,
         partition_columns=prepared_partition_columns,
+        snapshot_maintenance_on_output=output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE,
     )
     data_format = api.DataFormat(
         format_type="identity",

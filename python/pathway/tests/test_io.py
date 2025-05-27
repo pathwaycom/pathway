@@ -4675,3 +4675,76 @@ def test_kafka_append_only():
         rdkafka_settings={}, topic_name="topic", schema=InputSchema
     )
     assert not table.is_append_only
+
+
+def test_deltalake_snapshot_mode(tmp_path):
+    first_payload = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+
+    second_payload = """
+        k | v
+        1 | one
+        2 | two
+        3 | three
+    """
+
+    third_payload = """
+        k | v
+        1 | one
+        4 | four
+    """
+
+    fourth_payload = """
+        k | v
+        5 | five
+        7 | seven
+    """
+
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output"
+    output_path_2 = tmp_path / "output_2"
+    pstorage_path = tmp_path / "pstorage"
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(pstorage_path)
+    )
+
+    def run_reread(data):
+        G.clear()
+        write_csv(input_path, data)
+
+        class InputSchema(pw.Schema):
+            k: int = pw.column_definition(primary_key=True)
+            v: str
+
+        table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+        pw.io.deltalake.write(table, output_path, output_table_type="snapshot")
+        run_all(persistence_config=persistence_config)
+
+        delta_table = DeltaTable(output_path)
+        pd_table_from_delta = delta_table.to_pandas().drop("_id", axis=1)
+        assert_table_equality(
+            table,
+            pw.debug.table_from_pandas(
+                pd_table_from_delta,
+                schema=InputSchema,
+            ),
+        )
+
+        G.clear()
+        table = pw.io.deltalake.read(output_path, mode="static")
+        pw.io.csv.write(table, output_path_2)
+        run_all()
+
+        assert_table_equality(
+            table,
+            T(data, id_from=["k"]),
+        )
+
+    run_reread(first_payload)
+    run_reread(second_payload)
+    run_reread(third_payload)
+    run_reread(fourth_payload)

@@ -20,6 +20,7 @@ use half::f16;
 use ndarray::ArrayD;
 use once_cell::sync::Lazy;
 
+use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_storage::ConversionError;
 use crate::connectors::data_storage::ValuesMap;
 use crate::connectors::WriteError;
@@ -28,7 +29,10 @@ use crate::engine::{
     value::parse_pathway_pointer, value::Kind, DateTimeNaive, DateTimeUtc,
     Duration as EngineDuration, Type, Value,
 };
+use crate::python_api::ValueField;
 
+pub mod arrow;
+pub mod buffering;
 pub mod delta;
 pub mod iceberg;
 pub mod writer;
@@ -39,11 +43,35 @@ pub use writer::LakeWriter;
 
 const SPECIAL_FIELD_TIME: &str = "time";
 const SPECIAL_FIELD_DIFF: &str = "diff";
+const SPECIAL_FIELD_ID: &str = "_id";
 const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [
     (SPECIAL_FIELD_TIME, Type::Int),
     (SPECIAL_FIELD_DIFF, Type::Int),
 ];
+const SNAPSHOT_OUTPUT_FIELDS: [(&str, Type); 1] = [(SPECIAL_FIELD_ID, Type::Pointer)];
 const PATHWAY_COLUMN_META_FIELD: &str = "pathway.column.metadata";
+
+#[derive(Clone, Copy, Debug)]
+pub enum MaintenanceMode {
+    StreamOfChanges,
+    Snapshot,
+}
+
+impl MaintenanceMode {
+    fn additional_output_fields(&self) -> Vec<(&str, Type)> {
+        match self {
+            Self::StreamOfChanges => SPECIAL_OUTPUT_FIELDS.to_vec(),
+            Self::Snapshot => SNAPSHOT_OUTPUT_FIELDS.to_vec(),
+        }
+    }
+
+    fn is_append_only(self) -> bool {
+        match self {
+            Self::StreamOfChanges => true,
+            Self::Snapshot => false,
+        }
+    }
+}
 
 pub struct LakeWriterSettings {
     pub use_64bit_size_type: bool,
@@ -55,7 +83,11 @@ pub type MetadataPerColumn = HashMap<String, ArrowMetadata>;
 static EMPTY_METADATA_PER_COLUMN: Lazy<MetadataPerColumn> = Lazy::new(HashMap::new);
 
 pub trait LakeBatchWriter: Send {
-    fn write_batch(&mut self, batch: ArrowRecordBatch) -> Result<(), WriteError>;
+    fn write_batch(
+        &mut self,
+        batch: ArrowRecordBatch,
+        payload_type: PayloadType,
+    ) -> Result<(), WriteError>;
 
     fn metadata_per_column(&self) -> &MetadataPerColumn {
         &EMPTY_METADATA_PER_COLUMN
@@ -578,4 +610,31 @@ fn conversion_error(v: &str, name: &str, expected_type: &Type) -> ConversionErro
         field_name: name.to_string(),
         type_: expected_type.clone(),
     }
+}
+
+pub fn construct_column_types_map(
+    value_fields: &[ValueField],
+    mode: MaintenanceMode,
+) -> HashMap<String, Type> {
+    value_fields
+        .iter()
+        .map(|field| (field.name.clone(), field.type_.clone()))
+        .chain(
+            mode.additional_output_fields()
+                .into_iter()
+                .map(|(f, t)| (f.to_string(), t)),
+        )
+        .collect()
+}
+
+pub fn construct_column_order(value_fields: &[ValueField], mode: MaintenanceMode) -> Vec<String> {
+    value_fields
+        .iter()
+        .map(|field| field.name.clone())
+        .chain(
+            mode.additional_output_fields()
+                .into_iter()
+                .map(|(f, _)| f.to_string()),
+        )
+        .collect()
 }

@@ -38,6 +38,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
+use crate::connectors::data_lake::buffering::IncorrectSnapshotError;
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
 use crate::connectors::metadata::{KafkaMetadata, SQLiteMetadata, SourceMetadata};
 use crate::connectors::offset::EMPTY_OFFSET;
@@ -49,7 +50,7 @@ use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
 use crate::engine::Type;
-use crate::engine::Value;
+use crate::engine::{Key, Value};
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
@@ -637,6 +638,15 @@ pub enum WriteError {
 
     #[error("delta table schema mismatch: {0}")]
     DeltaTableSchemaMismatch(DeltaSchemaMismatchDetails),
+
+    #[error("table written in snapshot mode has a duplicate primary key: {0:?}")]
+    TableAlreadyContainsKey(Key),
+
+    #[error("table written in snapshot mode doesn't have the primary key requested to be deleted: {0:?}")]
+    TableDoesntContainKey(Key),
+
+    #[error("the snapshot of the existing data in the output delta table does not correspond to the schema: {0}")]
+    IncorrectInitialSnapshot(IncorrectSnapshotError),
 }
 
 pub trait Writer: Send {

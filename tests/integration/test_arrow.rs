@@ -1,13 +1,16 @@
 use assert_matches::assert_matches;
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
 use serde_json::json;
 
 use pathway_engine::connectors::data_format::FormatterContext;
-use pathway_engine::connectors::data_lake::columns_into_pathway_values;
-use pathway_engine::connectors::data_lake::{LakeBatchWriter, LakeWriterSettings};
+use pathway_engine::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
+use pathway_engine::connectors::data_lake::buffering::{AppendOnlyColumnBuffer, PayloadType};
+use pathway_engine::connectors::data_lake::{
+    columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, MaintenanceMode,
+};
 use pathway_engine::connectors::data_storage::{LakeWriter, WriteError, Writer};
 use pathway_engine::engine::{
     DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Key, Timestamp, Type, Value,
@@ -25,7 +28,11 @@ impl ArrowBatchWriter {
 }
 
 impl LakeBatchWriter for ArrowBatchWriter {
-    fn write_batch(&mut self, batch: ArrowRecordBatch) -> Result<(), WriteError> {
+    fn write_batch(
+        &mut self,
+        batch: ArrowRecordBatch,
+        _payload_type: PayloadType,
+    ) -> Result<(), WriteError> {
         self.sender.send(batch).unwrap();
         Ok(())
     }
@@ -53,7 +60,14 @@ fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {
     let (sender, receiver) = mpsc::channel();
     let batch_writer = ArrowBatchWriter::new(sender);
     let value_fields = vec![value_field];
-    let mut writer = LakeWriter::new(Box::new(batch_writer), &value_fields, None)?;
+
+    let schema = construct_arrow_schema(
+        &value_fields,
+        &batch_writer,
+        MaintenanceMode::StreamOfChanges,
+    )?;
+    let buffer = AppendOnlyColumnBuffer::new(Arc::new(schema));
+    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
 
     for value in &values {
         writer.write(FormatterContext::new_single_payload(

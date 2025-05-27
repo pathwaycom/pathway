@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use assert_matches::assert_matches;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader;
@@ -12,7 +13,15 @@ use tempfile::tempdir;
 use pathway_engine::connectors::data_format::{
     Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
 };
-use pathway_engine::connectors::data_lake::{parquet_row_into_values_map, DeltaBatchWriter};
+use pathway_engine::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
+use pathway_engine::connectors::data_lake::buffering::{
+    AppendOnlyColumnBuffer, SnapshotColumnBuffer,
+};
+use pathway_engine::connectors::data_lake::delta::open_and_read_delta_table;
+use pathway_engine::connectors::data_lake::{
+    construct_column_order, construct_column_types_map, parquet_row_into_values_map,
+    DeltaBatchWriter, MaintenanceMode,
+};
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, ConversionError, DeltaTableReader, LakeWriter, ObjectDownloader, WriteError,
     Writer,
@@ -32,7 +41,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
 
     let value_fields = vec![ValueField {
         name: "field".to_string(),
-        type_: Type::Optional(type_.clone().into()),
+        type_: type_.clone(),
         default: None,
         metadata: None,
     }];
@@ -42,8 +51,15 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         &value_fields,
         HashMap::new(),
         Vec::new(),
+        MaintenanceMode::StreamOfChanges,
     )?;
-    let mut writer = LakeWriter::new(Box::new(batch_writer), &value_fields, None)?;
+    let schema = construct_arrow_schema(
+        &value_fields,
+        &batch_writer,
+        MaintenanceMode::StreamOfChanges,
+    )?;
+    let buffer = AppendOnlyColumnBuffer::new(Arc::new(schema));
+    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
     let mut formatter = IdentityFormatter::new();
 
     for value in values {
@@ -494,5 +510,167 @@ fn test_save_any_is_unsupported() -> eyre::Result<()> {
         save_result.err().unwrap().downcast::<WriteError>(),
         Ok(WriteError::UnsupportedType(_))
     );
+    Ok(())
+}
+
+#[test]
+fn test_snapshot_mode() -> eyre::Result<()> {
+    let test_storage = tempdir().expect("tempdir creation failed");
+    let test_storage_path = test_storage.path();
+
+    let value_fields = vec![ValueField {
+        name: "field".to_string(),
+        type_: Type::String,
+        default: None,
+        metadata: None,
+    }];
+
+    let key_first_entry = Key::random();
+    let key_second_entry = Key::random();
+    let key_third_entry = Key::random();
+
+    {
+        let batch_writer = DeltaBatchWriter::new(
+            test_storage_path.to_str().unwrap(),
+            &value_fields,
+            HashMap::new(),
+            Vec::new(),
+            MaintenanceMode::Snapshot,
+        )?;
+        let schema =
+            construct_arrow_schema(&value_fields, &batch_writer, MaintenanceMode::Snapshot)?;
+        let buffer = SnapshotColumnBuffer::new(Vec::new(), Arc::new(schema))?;
+        let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
+        let mut formatter = IdentityFormatter::new();
+
+        let context = formatter
+            .format(
+                &key_first_entry,
+                &[Value::String("one".into())],
+                Timestamp(0),
+                1,
+            )
+            .expect("formatter failed");
+        writer.write(context)?;
+        let context = formatter
+            .format(
+                &key_second_entry,
+                &[Value::String("two".into())],
+                Timestamp(0),
+                1,
+            )
+            .expect("formatter failed");
+        writer.write(context)?;
+        writer.flush(false)?;
+
+        let mut reread_data =
+            read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
+        reread_data.sort();
+        assert_eq!(
+            reread_data,
+            vec![Value::String("one".into()), Value::String("two".into())]
+        );
+
+        let context = formatter
+            .format(
+                &key_second_entry,
+                &[Value::String("two".into())],
+                Timestamp(1),
+                -1,
+            )
+            .expect("formatter failed");
+        writer.write(context)?;
+        writer.flush(false)?;
+
+        let reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
+        assert_eq!(reread_data, vec![Value::String("one".into())]);
+    }
+
+    // Reopen the sink and add an entry.
+    // Ensure that the previously saved state of the sink is taken into account.
+
+    let batch_writer = DeltaBatchWriter::new(
+        test_storage_path.to_str().unwrap(),
+        &value_fields,
+        HashMap::new(),
+        Vec::new(),
+        MaintenanceMode::Snapshot,
+    )?;
+    let schema = construct_arrow_schema(&value_fields, &batch_writer, MaintenanceMode::Snapshot)?;
+    let buffer = {
+        let column_types = construct_column_types_map(&value_fields, MaintenanceMode::Snapshot);
+        let column_order = construct_column_order(&value_fields, MaintenanceMode::Snapshot);
+        let existing_table = open_and_read_delta_table(
+            test_storage_path.to_str().unwrap(),
+            HashMap::new(),
+            &column_types,
+            &column_order,
+        )?;
+        assert_eq!(existing_table.len(), 1);
+        SnapshotColumnBuffer::new(existing_table, Arc::new(schema))?
+    };
+    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
+    let mut formatter = IdentityFormatter::new();
+
+    let context = formatter
+        .format(
+            &key_second_entry,
+            &[Value::String("two".into())],
+            Timestamp(2),
+            1,
+        )
+        .expect("formatter failed");
+    writer.write(context)?;
+    writer.flush(false)?;
+
+    let mut reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
+    reread_data.sort();
+    assert_eq!(
+        reread_data,
+        vec![Value::String("one".into()), Value::String("two".into())]
+    );
+
+    // Append one more row, ensure that two appends in row work correctly
+    let context = formatter
+        .format(
+            &key_third_entry,
+            &[Value::String("zero".into())],
+            Timestamp(3),
+            1,
+        )
+        .expect("formatter failed");
+    writer.write(context)?;
+    writer.flush(false)?;
+
+    let mut reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
+    reread_data.sort();
+    assert_eq!(
+        reread_data,
+        vec![
+            Value::String("one".into()),
+            Value::String("two".into()),
+            Value::String("zero".into())
+        ]
+    );
+
+    // Ensure that full replacement after a chain of appends would work
+    let context = formatter
+        .format(
+            &key_first_entry,
+            &[Value::String("one".into())],
+            Timestamp(4),
+            -1,
+        )
+        .expect("formatter failed");
+    writer.write(context)?;
+    writer.flush(false)?;
+
+    let mut reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
+    reread_data.sort();
+    assert_eq!(
+        reread_data,
+        vec![Value::String("two".into()), Value::String("zero".into())]
+    );
+
     Ok(())
 }

@@ -35,8 +35,8 @@ use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
 use postgres::{Client, NoTls};
 use pyo3::exceptions::{
-    PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyRuntimeError, PyTypeError,
-    PyValueError, PyZeroDivisionError,
+    PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
+    PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
 };
 use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
@@ -76,10 +76,14 @@ use crate::connectors::data_format::{
     KeyGenerationPolicy, NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter,
     SingleColumnFormatter, TransparentParser,
 };
+use crate::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
+use crate::connectors::data_lake::buffering::{
+    AppendOnlyColumnBuffer, ColumnBuffer, SnapshotColumnBuffer,
+};
 use crate::connectors::data_lake::iceberg::{
     IcebergBatchWriter, IcebergDBParams, IcebergTableParams,
 };
-use crate::connectors::data_lake::DeltaBatchWriter;
+use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
@@ -5240,11 +5244,18 @@ impl DataStorage {
         for field in &data_format.value_fields {
             value_fields.push(field.borrow(py).clone());
         }
+
+        let table_type = if self.snapshot_maintenance_on_output {
+            MaintenanceMode::Snapshot
+        } else {
+            MaintenanceMode::StreamOfChanges
+        };
         let batch_writer = DeltaBatchWriter::new(
             path,
             &value_fields,
             self.delta_storage_options(py)?,
             partition_columns,
+            table_type,
         )
         .map_err(|e| {
             let error_text = format!("Unable to create DeltaTable writer: {e}");
@@ -5253,9 +5264,27 @@ impl DataStorage {
                 _ => PyIOError::new_err(error_text),
             }
         })?;
+
+        let schema = construct_arrow_schema(&value_fields, &batch_writer, table_type)
+            .map_err(|e| PyIOError::new_err(format!("Failed to construct table schema: {e}")))?;
+        let buffer: Box<dyn ColumnBuffer> = if self.snapshot_maintenance_on_output {
+            Box::new(
+                SnapshotColumnBuffer::new_for_delta_table(
+                    path,
+                    self.delta_storage_options(py)?,
+                    &value_fields,
+                    Arc::new(schema),
+                )
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create snapshot writer: {e}"))
+                })?,
+            )
+        } else {
+            Box::new(AppendOnlyColumnBuffer::new(Arc::new(schema)))
+        };
         let writer = LakeWriter::new(
             Box::new(batch_writer),
-            &value_fields,
+            buffer,
             self.min_commit_frequency.map(time::Duration::from_millis),
         )
         .map_err(|e| {
@@ -5269,6 +5298,12 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
     ) -> PyResult<Box<dyn Writer>> {
+        if self.snapshot_maintenance_on_output {
+            return Err(PyNotImplementedError::new_err(
+                "Snapshot mode is not implemented for Apache Iceberg output",
+            ));
+        }
+
         let uri = self.path()?;
         let warehouse = &self.database;
         let table_name = self.table_name()?;
@@ -5298,15 +5333,21 @@ impl DataStorage {
                 "Unable to create batch writer for Iceberg writer: {e}"
             ))
         })?;
+        let schema = construct_arrow_schema(
+            &value_fields,
+            &batch_writer,
+            MaintenanceMode::StreamOfChanges, // Snapshot mode is not implemented for Iceberg
+        )
+        .map_err(|e| PyIOError::new_err(format!("Failed to construct table schema: {e}")))?;
+        let buffer = AppendOnlyColumnBuffer::new(Arc::new(schema));
         let writer = LakeWriter::new(
             Box::new(batch_writer),
-            &value_fields,
+            Box::new(buffer),
             self.min_commit_frequency.map(time::Duration::from_millis),
         )
         .map_err(|e| {
             PyIOError::new_err(format!("Unable to start data lake output connector: {e}"))
         })?;
-
         Ok(Box::new(writer))
     }
 
