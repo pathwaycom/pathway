@@ -5,7 +5,12 @@ from __future__ import annotations
 import math
 
 import pathway as pw
-from pathway.tests.utils import T, assert_table_equality, assert_table_equality_wo_types
+from pathway.tests.utils import (
+    T,
+    assert_table_equality,
+    assert_table_equality_wo_index,
+    assert_table_equality_wo_types,
+)
 
 
 class CustomCntAccumulator(pw.BaseCustomAccumulator):
@@ -199,6 +204,62 @@ def test_custom_mean_stdev():
             id_from=["pet"],
         ),
     )
+
+
+class CustomProductWithAdditionAccumulator(pw.BaseCustomAccumulator):
+    """Simple reducer for which the result depends on order of updates."""
+
+    def __init__(self, factor: int, summand: int):
+        self.factor = factor
+        self.summand = summand
+        self.result = factor + summand
+
+    @classmethod
+    def from_row(cls, row):
+        [factor, summand, event_time] = row
+        return CustomProductWithAdditionAccumulator(factor, summand)
+
+    def update(self, other):
+        self.result = self.result * other.factor + other.summand
+
+    def compute_result(self) -> int:
+        return self.result
+
+    @classmethod
+    def sort_by(cls, row):
+        [factor, summand, event_time] = row
+        return event_time
+
+
+def test_custom_sorting():
+    t = T(
+        """
+        i |  a |  b | t | __time__
+        1 |  3 |  1 | 1 |     2
+        1 |  2 | -1 | 2 |     2
+        1 |  2 | -2 | 4 |     4
+        1 |  4 |  2 | 3 |     4
+        2 | -1 |  2 | 1 |     2
+        2 |  5 |  1 | 2 |     2
+        2 |  3 |  2 | 3 |     2
+        2 |  2 |  1 | 4 |     2
+    """
+    )
+
+    custom_product_with_addition = pw.reducers.udf_reducer(
+        CustomProductWithAdditionAccumulator
+    )
+    res = t.groupby(pw.this.i).reduce(
+        pw.this.i, result=custom_product_with_addition(pw.this.a, pw.this.b, pw.this.t)
+    )
+    expected = T(
+        """
+        i | result
+        1 | 58
+        2 | 41
+    """
+    )
+    assert_table_equality_wo_index(res, expected)
 
 
 def test_stateful_single_nullary():

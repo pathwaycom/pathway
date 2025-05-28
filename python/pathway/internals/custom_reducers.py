@@ -260,6 +260,14 @@ class BaseCustomAccumulator(ABC):
         """
         raise NotImplementedError()
 
+    @classmethod
+    @mark_stub
+    def sort_by(cls, row: list[api.Value]):
+        """Value to sort rows within a single batch by.
+        This function is optional. If not defined, the order of rows within a single batch is unspecified.
+        """
+        raise NotImplementedError()
+
     def serialize(self) -> api.Value:
         """Serialize state to pathway value type."""
         return pickle.dumps(self)
@@ -311,6 +319,7 @@ def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
     """
     neutral_available = _is_overridden(reducer_cls, "neutral")
     retract_available = _is_overridden(reducer_cls, "retract")
+    sort_by_available = _is_overridden(reducer_cls, "sort_by")
 
     def wrapper(*args: expr.ColumnExpression | api.Value) -> ColumnExpression:
         @stateful_many
@@ -357,6 +366,10 @@ def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
                             "Unable to process negative update with this stateful reducer."
                         )
                 else:
+                    if sort_by_available:
+                        positive_updates.sort(
+                            key=lambda x: reducer_cls.sort_by(list(x))
+                        )
                     state = reducer_cls.from_row(list(positive_updates[0]))
                     if not retract_available:
                         _positive_updates = positive_updates[0:1]
@@ -366,23 +379,31 @@ def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
                         _cnt = 1
                     positive_updates = positive_updates[1:]
 
-            for row_up in positive_updates:
-                if not retract_available:
-                    _positive_updates.append(row_up)
-                else:
-                    _cnt += 1
-                val = reducer_cls.from_row(list(row_up))
-                state.update(val)
+            updates = [(row_up, False) for row_up in positive_updates] + [
+                (row_up, True) for row_up in negative_updates
+            ]
 
-            for row_up in negative_updates:
-                if not retract_available:
-                    raise ValueError(
-                        "Unable to process negative update with this stateful reducer."
-                    )
+            if sort_by_available:
+                updates.sort(key=lambda x: (reducer_cls.sort_by(list(x[0])), x[1]))
+                # insertions first for a given `sort_by` value to be "compatible" with no `sort_by` situation
+
+            for row_up, is_retraction in updates:
+                if is_retraction:
+                    if not retract_available:
+                        raise ValueError(
+                            "Unable to process negative update with this stateful reducer."
+                        )
+                    else:
+                        _cnt -= 1
+                    val = reducer_cls.from_row(list(row_up))
+                    state.retract(val)
                 else:
-                    _cnt -= 1
-                val = reducer_cls.from_row(list(row_up))
-                state.retract(val)
+                    if not retract_available:
+                        _positive_updates.append(row_up)
+                    else:
+                        _cnt += 1
+                    val = reducer_cls.from_row(list(row_up))
+                    state.update(val)
 
             _positive_updates_tuple = tuple(tuple(x) for x in _positive_updates)
             if retract_available and _cnt == 0:

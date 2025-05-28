@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `sort_by` method to `pw.BaseCustomAccumulator` that allows to sort rows within a single batch. When `sort_by` is defined the rows are reduced in the order specified by the `sort_by` method. It can for example be used to process entries in the order of event time.
+
 ### Changed
 - `pw.Table.debug` now prints a whole row in a single line instead of printing each cell separately.
 - Calling functions without arguments in YAML configurations files is now deprecated in `pw.load_yaml`. To call the function a mapping should be passed, e.g. empty mapping as `{}`. In the future `!` syntax without any mapping will be used to pass function objects without calling them.
