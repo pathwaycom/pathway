@@ -42,6 +42,22 @@ def test_utf8parser():
     )
 
 
+def test_utf8parser_on_strings():
+    parser = Utf8Parser()
+    txt = "Pójdź, kińże tę chmurność w głąb flaszy 🍾."
+    input_df = pd.DataFrame([dict(raw=txt)])
+
+    class schema(pw.Schema):
+        raw: str
+
+    input_table = pw.debug.table_from_pandas(input_df, schema=schema)
+    result = input_table.select(ret=parser(pw.this.raw)[0][0])
+
+    assert_table_equality(
+        result, pw.debug.table_from_pandas(pd.DataFrame([dict(ret=txt)]))
+    )
+
+
 def _create_temp_pdf_with_text(text: str, path: Path) -> Path:
     class PDF(FPDF):
         def header(self):

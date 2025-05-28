@@ -46,12 +46,15 @@ DEFAULT_VISION_LLM = llms.OpenAIChat(
 
 class Utf8Parser(pw.UDF):
     """
-    Decode text encoded as UTF-8.
+    Decode text encoded as UTF-8. If the text is type `str`, return it without any modification.
     """
 
-    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
-        docs: list[tuple[str, dict]] = [(contents.decode("utf-8"), {})]
-        return docs
+    async def __wrapped__(self, contents: bytes | str) -> list[tuple[str, dict]]:
+        if isinstance(contents, str):
+            return [(contents, {})]
+        else:
+            docs: list[tuple[str, dict]] = [(contents.decode("utf-8"), {})]
+            return docs
 
     def __call__(self, contents: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
         """
