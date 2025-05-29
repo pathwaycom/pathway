@@ -605,11 +605,12 @@ fn convert_arrow_timestamp_array_utc(
 }
 
 fn conversion_error(v: &str, name: &str, expected_type: &Type) -> ConversionError {
-    ConversionError {
-        value_repr: limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
-        field_name: name.to_string(),
-        type_: expected_type.clone(),
-    }
+    ConversionError::new(
+        limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+        name.to_string(),
+        expected_type.clone(),
+        None,
+    )
 }
 
 pub fn construct_column_types_map(

@@ -299,11 +299,33 @@ pub enum ReadError {
 }
 
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
-#[error("cannot create a field {field_name:?} with type {type_} from value {value_repr}")]
+#[error("cannot create a field {field_name:?} with type {type_} from value {value_repr}{original_error_message}")]
 pub struct ConversionError {
     pub value_repr: String,
     pub field_name: String,
     pub type_: Type,
+    pub original_error_message: String,
+}
+
+impl ConversionError {
+    pub fn new(
+        value_repr: String,
+        field_name: String,
+        type_: Type,
+        original_error_message: Option<String>,
+    ) -> Self {
+        let original_error_message = if let Some(msg) = original_error_message {
+            format!(". Original error: {msg}")
+        } else {
+            String::new()
+        };
+        Self {
+            value_repr,
+            field_name,
+            type_,
+            original_error_message,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -1079,13 +1101,14 @@ impl ReaderBuilder for PythonReaderBuilder {
 }
 
 impl PythonReader {
-    fn conversion_error(ob: &Bound<PyAny>, name: String, type_: Type) -> ConversionError {
+    fn conversion_error(
+        ob: &Bound<PyAny>,
+        name: String,
+        type_: Type,
+        err: &PyErr,
+    ) -> ConversionError {
         let value_repr = limit_length(format!("{ob}"), STANDARD_OBJECT_LENGTH_LIMIT);
-        ConversionError {
-            value_repr,
-            field_name: name,
-            type_,
-        }
+        ConversionError::new(value_repr, name, type_, Some(err.to_string()))
     }
 
     fn current_offset(&self) -> Offset {
@@ -1187,11 +1210,12 @@ impl Reader for PythonReader {
             let mut values = HashMap::with_capacity(objects.len());
             for (name, ob) in objects {
                 let dtype = self.schema.get(&name).unwrap_or(&Type::Any); // Any for special values
-                let value = extract_value(ob.bind(py), dtype).map_err(|_err| {
+                let value = extract_value(ob.bind(py), dtype).map_err(|err| {
                     Box::new(Self::conversion_error(
                         ob.bind(py),
                         name.clone(),
                         dtype.clone(),
+                        &err,
                     ))
                 });
                 values.insert(name, value);
@@ -1761,11 +1785,11 @@ impl SqliteReader {
     /// There are only five supported types: null, integer, real, text, blob
     /// See also: <https://www.sqlite.org/datatype3.html>
     fn convert_to_value(
-        value: SqliteValue<'_>,
+        orig_value: SqliteValue<'_>,
         field_name: &str,
         dtype: &Type,
     ) -> Result<Value, Box<ConversionError>> {
-        let value = match (dtype, value) {
+        let value = match (dtype, orig_value) {
             (Type::Optional(_) | Type::Any, SqliteValue::Null) => Some(Value::None),
             (Type::Optional(arg), value) => Self::convert_to_value(value, field_name, arg).ok(),
             (Type::Int | Type::Any, SqliteValue::Integer(val)) => Some(Value::Int(val)),
@@ -1785,12 +1809,13 @@ impl SqliteReader {
         if let Some(value) = value {
             Ok(value)
         } else {
-            let value_repr = limit_length(format!("{value:?}"), STANDARD_OBJECT_LENGTH_LIMIT);
-            Err(Box::new(ConversionError {
+            let value_repr = limit_length(format!("{orig_value:?}"), STANDARD_OBJECT_LENGTH_LIMIT);
+            Err(Box::new(ConversionError::new(
                 value_repr,
-                field_name: field_name.to_owned(),
-                type_: dtype.clone(),
-            }))
+                field_name.to_owned(),
+                dtype.clone(),
+                None,
+            )))
         }
     }
 

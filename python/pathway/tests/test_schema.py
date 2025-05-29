@@ -391,8 +391,8 @@ def test_schema_defaults_serialization():
             example=pw.DateTimeNaive(year=2025, month=1, day=18),
         )
         datetime_utc_aware: pw.DateTimeUtc = pw.column_definition(
-            default_value=pw.DateTimeNaive(year=2025, month=1, day=17, tz=tz.UTC),
-            example=pw.DateTimeNaive(year=2025, month=1, day=19, tz=tz.UTC),
+            default_value=pw.DateTimeUtc(year=2025, month=1, day=17, tz=tz.UTC),
+            example=pw.DateTimeUtc(year=2025, month=1, day=19, tz=tz.UTC),
         )
         duration: pw.Duration = pw.column_definition(
             default_value=pw.Duration(days=5), example=pw.Duration(hours=10)

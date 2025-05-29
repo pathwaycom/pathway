@@ -1,11 +1,13 @@
 # Copyright © 2024 Pathway
 
+import datetime
 import logging
 import re
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from dateutil import tz
 
 import pathway as pw
 from pathway.internals import table_io
@@ -1462,12 +1464,80 @@ def test_python_connector():
          2 | e
     """
     )
+    msg_line_1 = (
+        """cannot create a field "a" with type int from value 2.3. Original error: TypeError: cannot create"""
+        + """ an object of type Int from value 2.3"""
+    )
+    msg_line_2 = (
+        """cannot create a field "b" with type str from value 11. Original error: TypeError: cannot create an"""
+        + """ object of type String from value 11"""
+    )
     expected_errors = T(
-        """
+        f"""
         message
-        cannot create a field "a" with type int from value 2.3
-        cannot create a field "b" with type str from value 11
+        {msg_line_1}
+        {msg_line_2}
         no value for "b" field and no default specified
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (t, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_python_connector_2():
+
+    class TestSchema(pw.Schema):
+        a: pw.DateTimeNaive
+        b: pw.DateTimeUtc
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+
+        def run(self):
+            datetime_naive = datetime.datetime(2025, 5, 1, 12, 0, 0, tzinfo=None)
+            datetime_utc = datetime.datetime(
+                2025, 5, 1, 12, 0, 0, tzinfo=tz.gettz("Europe/Warsaw")
+            )
+            self.next(a=datetime_naive, b=datetime_utc)
+            self.next(a=datetime_utc, b=datetime_utc)
+            self.next(a=datetime_naive, b=datetime_naive)
+
+    datetime_naive = pw.DateTimeNaive("2025-05-27T13:14:15")
+    datetime_utc = pw.DateTimeUtc("2025-05-27T13:14:15+02:00")
+
+    t = pw.io.python.read(TestSubject(), schema=TestSchema).select(
+        a=pw.fill_error(pw.this.a, datetime_naive),
+        b=pw.fill_error(pw.this.b, datetime_utc),
+    )
+    expected = T(
+        """
+        a                   | b
+        2025-05-01T12:00:00 | 2025-05-01T12:00:00+02:00
+        2025-05-01T12:00:00 | 2025-05-27T13:14:15+02:00
+        2025-05-27T13:14:15 | 2025-05-01T12:00:00+02:00
+    """
+    ).select(
+        a=pw.this.a.dt.strptime("%Y-%m-%dT%H:%M:%S"),
+        b=pw.this.b.dt.strptime("%Y-%m-%dT%H:%M:%S%z"),
+    )
+    msg_line_1 = (
+        """cannot create a field "a" with type DateTimeNaive from value 2025-05-01 12:00:00+02:00. Original"""
+        + """ error: ValueError: cannot create DateTimeNaive from a datetime with timezone information. Pass a"""
+        + """ datetime without timezone information or change the type to DateTimeUtc"""
+    )
+    msg_line_2 = (
+        """cannot create a field "b" with type DateTimeUtc from value 2025-05-01 12:00:00. Original error:"""
+        + """ ValueError: cannot create DateTimeUtc from a datetime without timezone information. Pass a datetime"""
+        + """ with timezone information or change the type to DateTimeNaive"""
+    )
+    expected_errors = T(
+        f"""
+        message
+        {msg_line_1}
+        {msg_line_2}
     """,
         split_on_whitespace=False,
     )
@@ -1501,12 +1571,21 @@ def test_python_connector_pk():
         -1 | cdef
     """
     )
+    msg_line_1 = (
+        """cannot create a field "a" with type int from value 2.3. Original error: TypeError: cannot create"""
+        + """ an object of type Int from value 2.3"""
+    )
+    msg_line_2 = (
+        """error in primary key, skipping the row: cannot create a field "b" with type str from value 11."""
+        + """ Original error: TypeError: cannot create an object of type String from value 11"""
+    )
+    msg_line_3 = """error in primary key, skipping the row: no value for "b" field and no default specified"""
     expected_errors = T(
-        """
+        f"""
         message
-        cannot create a field "a" with type int from value 2.3
-        error in primary key, skipping the row: cannot create a field "b" with type str from value 11
-        error in primary key, skipping the row: no value for "b" field and no default specified
+        {msg_line_1}
+        {msg_line_2}
+        {msg_line_3}
     """,
         split_on_whitespace=False,
     )

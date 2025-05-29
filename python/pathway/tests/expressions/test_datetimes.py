@@ -1121,3 +1121,22 @@ def test_pathway_datetimes():
             )
         ),
     )
+
+
+def test_python_types():
+    pw.DateTimeNaive("2025-05-01T12:00:00")
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "DateTimeNaive cannot contain timezone information. Use pw.DateTimeUtc for datetimes with a timezone."
+        ),
+    ):
+        pw.DateTimeNaive("2025-05-01T12:00:00+00:00")
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "DateTimeUtc must contain timezone information. Use pw.DateTimeNaive for naive datetimes."
+        ),
+    ):
+        pw.DateTimeUtc("2025-05-01T12:00:00")
+    pw.DateTimeUtc("2025-05-01T12:00:00+00:00")

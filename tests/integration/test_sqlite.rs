@@ -195,7 +195,7 @@ fn test_sqlite_read_table_nonparsable() -> eyre::Result<()> {
         ReadResult::Data(context, _) => assert_error_shown_for_reader_context(
             &context,
             Box::new(parser),
-            r#"cannot create a field "photo" with type bytes from value None"#,
+            r#"cannot create a field "photo" with type bytes from value Null"#,
             ErrorPlacement::Value(3),
         ),
         _ => panic!("row_read_result is not Data"),

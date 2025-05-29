@@ -287,22 +287,31 @@ fn array_with_proper_dimensions<T>(
     }
 }
 
-fn extract_datetime(ob: &Bound<PyAny>, type_: &Type) -> Option<Value> {
-    let type_name = ob.get_type().qualname().ok()?;
+fn extract_datetime(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
+    assert!(matches!(type_, Type::DateTimeNaive | Type::DateTimeUtc));
+    let type_name = ob.get_type().qualname()?;
     let value = if type_name == "datetime" {
-        value_from_python_datetime(ob).ok()
+        value_from_python_datetime(ob)
     } else if matches!(
         type_name.as_ref(),
         "Timestamp" | "DateTimeNaive" | "DateTimeUtc"
     ) {
-        value_from_pandas_timestamp(ob).ok()
+        value_from_pandas_timestamp(ob)
     } else {
-        None
+        Err(PyValueError::new_err(format!(
+            "cannot convert {type_name} to DateTime"
+        )))
     }?;
     match (&value, type_) {
         (Value::DateTimeNaive(_), Type::DateTimeNaive)
-        | (Value::DateTimeUtc(_), Type::DateTimeUtc) => Some(value),
-        _ => None,
+        | (Value::DateTimeUtc(_), Type::DateTimeUtc) => Ok(value),
+        (Value::DateTimeNaive(_), Type::DateTimeUtc) => Err(PyValueError::new_err(
+            "cannot create DateTimeUtc from a datetime without timezone information. Pass a datetime with timezone information or change the type to DateTimeNaive",
+        )),
+        (Value::DateTimeUtc(_), Type::DateTimeNaive) => Err(PyValueError::new_err(
+            "cannot create DateTimeNaive from a datetime with timezone information. Pass a datetime without timezone information or change the type to DateTimeUtc",
+        )),
+        _ => unreachable!("value_from_python_datetime and value_from_pandas_timestamp return only DateTimeNaive or DateTimeUtc"),
     }
 }
 
@@ -366,7 +375,7 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
             .downcast::<PyBytes>()
             .ok()
             .map(|b| Value::from(b.as_bytes())),
-        Type::DateTimeNaive | Type::DateTimeUtc => extract_datetime(ob, type_),
+        Type::DateTimeNaive | Type::DateTimeUtc => Some(extract_datetime(ob, type_)?),
         Type::Duration => {
             // XXX: check types, not names
             let type_name = ob.get_type().qualname()?;
