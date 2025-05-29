@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.21.6] - 2025-05-29
+
 ### Added
 - `sort_by` method to `pw.BaseCustomAccumulator` that allows to sort rows within a single batch. When `sort_by` is defined the rows are reduced in the order specified by the `sort_by` method. It can for example be used to process entries in the order of event time.
 
