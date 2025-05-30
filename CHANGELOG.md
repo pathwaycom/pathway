@@ -5,9 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Changes
+### Changed
 - **BREAKING**: when creating `pw.DateTimeUtc` it is now obligatory to pass the time zone information.
 - **BREAKING**: when creating `pw.DateTimeNaive` passing time zone information is not allowed.
+
+### Fixed
+- Synchronization groups now correctly handle cases where the source file-like object is updated during the reading process.
 
 ## [0.21.6] - 2025-05-29
 

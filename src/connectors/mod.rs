@@ -651,7 +651,16 @@ impl Connector {
                                 // from happening for an indefinite amount of time.
                                 in_connector_group && !metadata.commits_allowed_in_between()
                             }
-                            Entry::RealtimeEvent(ReadResult::FinishedSource { .. }) => false,
+                            // If the data unit is complete but commits are still not allowed,
+                            // it indicates that the source data is outdated. In this case, the
+                            // state of the data unit will be undone, and the current (actual) state
+                            // will be reported.
+                            // During this process, reading may be paused again for an indefinite period,
+                            // if synchronization group blocks the arrival of the new events in the updated
+                            // data unit. Therefore, deferring events depends on whether commits are allowed.
+                            Entry::RealtimeEvent(ReadResult::FinishedSource { commit_allowed }) => {
+                                in_connector_group && !commit_allowed
+                            }
                             _ => !deferred_events.is_empty(),
                         };
                         deferred_events.push(entry);
