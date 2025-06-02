@@ -12,6 +12,7 @@ from unittest import mock
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 import pytest
 
 import pathway as pw
@@ -666,4 +667,40 @@ def test_simple_memory_cache(monkeypatch):
         3   | 4
         """
         ),
+    )
+
+
+def test_datetimes():
+    class OutputSchema(pw.Schema):
+        ret: pw.DateTimeNaive
+
+    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
+        async def invoke(self, value: int) -> dict[str, Any]:
+            await asyncio.sleep(random.uniform(0, 0.1))
+            return dict(
+                ret=pw.DateTimeNaive("2025-05-28 17:00:00") + pd.Timedelta(days=value)
+            )
+
+    input_table = T(
+        """
+            | value
+        1   | 1
+        2   | 2
+        3   | 3
+        """
+    )
+
+    result = TestAsyncTransformer(input_table=input_table).successful
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            | ret
+        1   | 2025-05-29 17:00:00
+        2   | 2025-05-30 17:00:00
+        3   | 2025-05-31 17:00:00
+        """,
+            split_on_whitespace=False,
+        ).select(ret=pw.this.ret.dt.strptime("%Y-%m-%d %H:%M:%S")),
     )
