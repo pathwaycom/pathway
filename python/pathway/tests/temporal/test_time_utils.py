@@ -30,6 +30,35 @@ def fake_utc_now(total_duration_ms: int) -> Callable[[pw.Duration], pw.Table]:
 
 @patch("pathway.stdlib.temporal.time_utils._get_now_timestamp_utc")
 @patch("pathway.stdlib.temporal.time_utils.utc_now")
+def test_no_alert(utc_now_mock, get_now_timestamp_utc_mock):
+    t = T(
+        """
+  | now_utc | __time__
+0 |       0 |        0
+        """
+    )
+
+    now_utc = pw.debug.table_to_pandas(t).now_utc.to_dict()
+
+    utc_now_mock.side_effect = fake_utc_now(1000)
+    get_now_timestamp_utc_mock.side_effect = lambda ptr: pd.Timestamp(
+        now_utc[ptr] if ptr is not None else 0, unit="ms", tz=datetime.timezone.utc
+    )
+    inactivities = t.inactivity_detection(
+        allowed_inactivity_period=pw.Duration(milliseconds=1000),
+        refresh_rate=pw.Duration(milliseconds=100),
+    )
+
+    expected_inactivities = pw.Table.empty(
+        inactivity_timestamp_utc=pw.DateTimeUtc,
+        resumed_activity_timestamp_utc=pw.DateTimeUtc | None,
+    )
+
+    assert_stream_equality_wo_index(inactivities, expected_inactivities)
+
+
+@patch("pathway.stdlib.temporal.time_utils._get_now_timestamp_utc")
+@patch("pathway.stdlib.temporal.time_utils.utc_now")
 def test_inactivity_detection(utc_now_mock, get_now_timestamp_utc_mock):
     t = T(
         """
