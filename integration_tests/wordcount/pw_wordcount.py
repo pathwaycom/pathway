@@ -44,6 +44,17 @@ if __name__ == "__main__":
             snapshot_interval_ms=5000,
             persistence_mode=persistence_mode,
         )
+    elif args.pstorage_type == "azure":
+        pstorage_config = pw.persistence.Config(
+            pw.persistence.Backend.azure(
+                root_path=args.pstorage,
+                account=os.environ["AZURE_BLOB_STORAGE_ACCOUNT"],
+                password=os.environ["AZURE_BLOB_STORAGE_PASSWORD"],
+                container=os.environ["AZURE_BLOB_STORAGE_CONTAINER"],
+            ),
+            snapshot_interval_ms=5000,
+            persistence_mode=persistence_mode,
+        )
     else:
         raise ValueError(f"Unknown persistent storage type: {args.pstorage_type}")
 

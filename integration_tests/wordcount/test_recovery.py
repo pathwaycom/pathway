@@ -6,6 +6,7 @@ import pathlib
 import pytest
 
 from .base import (
+    AZURE_STORAGE_NAME,
     FS_STORAGE_NAME,
     INPUT_PERSISTENCE_MODE_NAME,
     OPERATOR_PERSISTENCE_MODE_NAME,
@@ -84,6 +85,41 @@ def test_integration_failure_recovery_s3(
         min_work_time=min_work_time,
         max_work_time=max_work_time,
         pstorage_type=S3_STORAGE_NAME,
+        persistence_mode=persistence_mode,
+        first_port=port,
+    )
+
+
+@pytest.mark.parametrize("n_threads,n_processes", [(1, 4), (2, 2)])
+@pytest.mark.parametrize(
+    "persistence_mode", [INPUT_PERSISTENCE_MODE_NAME, OPERATOR_PERSISTENCE_MODE_NAME]
+)
+@pytest.mark.parametrize(
+    "n_backfilling_runs,min_work_time,max_work_time",
+    [
+        (10, 8.0, 16.0),
+        (10, 5.0, 15.0),
+        (10, 9.0, 19.0),
+    ],
+)
+def test_integration_failure_recovery_azure(
+    n_backfilling_runs,
+    n_threads,
+    n_processes,
+    min_work_time,
+    max_work_time,
+    persistence_mode,
+    tmp_path: pathlib.Path,
+    port: int,
+):
+    do_test_failure_recovery(
+        n_backfilling_runs=n_backfilling_runs,
+        n_threads=n_threads,
+        n_processes=n_processes,
+        tmp_path=tmp_path,
+        min_work_time=min_work_time,
+        max_work_time=max_work_time,
+        pstorage_type=AZURE_STORAGE_NAME,
         persistence_mode=persistence_mode,
         first_port=port,
     )

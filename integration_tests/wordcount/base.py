@@ -14,11 +14,13 @@ import uuid
 import warnings
 
 import boto3
+from azure.storage.blob import BlobServiceClient
 
 DEFAULT_INPUT_SIZE = 5000000
 COMMIT_LINE = "*COMMIT*\n"
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
+AZURE_STORAGE_NAME = "azure"
 FS_STORAGE_NAME = "fs"
 S3_STORAGE_NAME = "s3"
 INPUT_PERSISTENCE_MODE_NAME = "PERSISTING"
@@ -38,6 +40,8 @@ class PStoragePath:
             self._clean_s3_prefix(self._pstorage_path)
         elif self._pstorage_type == "fs":
             shutil.rmtree(self._pstorage_path)
+        elif self._pstorage_type == "azure":
+            self._clean_azure_prefix(self._pstorage_path)
         else:
             raise NotImplementedError(
                 f"method not implemented for storage {self._pstorage_type}"
@@ -47,12 +51,26 @@ class PStoragePath:
     def _get_pstorage_path(pstorage_type, local_tmp_path: pathlib.Path):
         if pstorage_type == "fs":
             return str(local_tmp_path / "pstorage")
-        elif pstorage_type == "s3":
+        elif pstorage_type in ("azure", "s3"):
             return f"wordcount-integration-tests/pstorages/{time.time()}-{str(uuid.uuid4())}"
         else:
             raise NotImplementedError(
                 f"method not implemented for storage {pstorage_type}"
             )
+
+    @staticmethod
+    def _clean_azure_prefix(prefix):
+        account_name = os.environ["AZURE_BLOB_STORAGE_ACCOUNT"]
+        account_key = os.environ["AZURE_BLOB_STORAGE_PASSWORD"]
+        container_name = os.environ["AZURE_BLOB_STORAGE_CONTAINER"]
+        blob_service_client = BlobServiceClient(
+            account_url=f"https://{account_name}.blob.core.windows.net",
+            credential=account_key,
+        )
+        container_client = blob_service_client.get_container_client(container_name)
+        blobs_to_delete = container_client.list_blobs(name_starts_with=prefix)
+        for blob in blobs_to_delete:
+            container_client.delete_blob(blob.name)
 
     @staticmethod
     def _clean_s3_prefix(prefix):

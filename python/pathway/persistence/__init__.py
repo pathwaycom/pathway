@@ -68,6 +68,34 @@ as they are used by S3 connectors.
         )
 
     @classmethod
+    def azure(cls, root_path: str, account: str, password: str, container: str):
+        """
+        Configure the Azure Blob Storage backend.
+
+        Args:
+            root_path: path to the root in the Azure Blob Storage container, which will
+                be used to store persisted data;
+            account: account name for Azure Blob Storage;
+            password: password for the specified account;
+            container: container name to store the data in.
+
+        Returns:
+            Class instance denoting the Azure Blob Storage backend with root directory as
+            ``root_path`` and connection settings given by the extra parameters.
+        """
+        return cls(
+            api.DataStorage(
+                storage_type="azure",
+                path=root_path,
+                azure_blob_storage_settings=api.AzureBlobStorageSettings(
+                    account=account,
+                    password=password,
+                    container=container,
+                ),
+            ),
+        )
+
+    @classmethod
     def mock(cls, events: dict[tuple[str, int], list[api.SnapshotEvent]]):
         return cls(api.DataStorage(storage_type="mock", mock_events=events))
 

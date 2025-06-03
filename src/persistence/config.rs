@@ -4,14 +4,14 @@
 
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::ExchangeData;
-use log::{error, info, warn};
+use log::{error, info};
 use std::collections::HashMap;
-use std::fs;
 use std::io::Error as IoError;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+use azure_storage::StorageCredentials as AzureStorageCredentials;
 use s3::bucket::Bucket as S3Bucket;
 
 use crate::connectors::{PersistenceMode, SnapshotAccess};
@@ -21,7 +21,7 @@ use crate::engine::license::License;
 use crate::engine::{Result, Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::{
-    FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
+    AzureKVStorage, FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
 };
 use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::persistence::input_snapshot::{
@@ -49,6 +49,12 @@ pub enum PersistentStorageConfig {
         bucket: Box<S3Bucket>,
         root_path: String,
     },
+    Azure {
+        account: String,
+        credentials: AzureStorageCredentials,
+        container: String,
+        root_path: String,
+    },
     Mock(HashMap<ConnectorWorkerPair, Vec<Event>>),
 }
 
@@ -59,6 +65,17 @@ impl PersistentStorageConfig {
             Self::S3 { bucket, root_path } => {
                 Ok(Box::new(S3KVStorage::new(bucket.deep_copy(), root_path)))
             }
+            Self::Azure {
+                account,
+                credentials,
+                container,
+                root_path,
+            } => Ok(Box::new(AzureKVStorage::new(
+                root_path,
+                account.clone(),
+                container.clone(),
+                credentials.clone(),
+            )?)),
             Self::Mock(_) => Ok(Box::new(MockKVStorage {})),
         }
     }
@@ -198,6 +215,23 @@ impl PersistenceManagerConfig {
                 );
                 Box::new(S3KVStorage::new(bucket.deep_copy(), &storage_root_path))
             }
+            PersistentStorageConfig::Azure {
+                account,
+                credentials,
+                container,
+                root_path,
+            } => {
+                let storage_root_path = format!(
+                    "{}/cached-objects-storage/{persistent_id}",
+                    root_path.strip_suffix('/').unwrap_or(root_path),
+                );
+                Box::new(AzureKVStorage::new(
+                    &storage_root_path,
+                    account.to_string(),
+                    container.to_string(),
+                    credentials.clone(),
+                )?)
+            }
             PersistentStorageConfig::Mock(_) => Box::new(MockKVStorage {}),
         };
         CachedObjectStorage::new(backend)
@@ -217,7 +251,7 @@ impl PersistenceManagerConfig {
         match &self.backend {
             PersistentStorageConfig::Filesystem(root_path) => {
                 let assigned_snapshot_paths =
-                    self.assigned_snapshot_paths(root_path, persistent_id, query_purpose)?;
+                    self.assigned_local_snapshot_paths(root_path, persistent_id, query_purpose)?;
                 for (_, path) in assigned_snapshot_paths {
                     let backend = FilesystemKVStorage::new(&path)?;
                     result.push(Box::new(backend));
@@ -225,14 +259,46 @@ impl PersistenceManagerConfig {
                 Ok(result)
             }
             PersistentStorageConfig::S3 { bucket, root_path } => {
-                let assigned_snapshot_paths = self.assigned_s3_snapshot_paths(
-                    &bucket.deep_copy(),
-                    root_path,
+                let snapshots_root_path = Self::cloud_snapshots_root_path(root_path);
+                let backend = Box::new(S3KVStorage::new(bucket.deep_copy(), &snapshots_root_path));
+                let assigned_snapshot_paths = self.assigned_cloud_snapshot_paths(
+                    backend.as_ref(),
+                    &snapshots_root_path,
                     persistent_id,
                     query_purpose,
                 )?;
                 for (_, path) in assigned_snapshot_paths {
                     let backend = S3KVStorage::new(bucket.deep_copy(), &path);
+                    result.push(Box::new(backend));
+                }
+                Ok(result)
+            }
+            PersistentStorageConfig::Azure {
+                root_path,
+                account,
+                container,
+                credentials,
+            } => {
+                let snapshots_root_path = Self::cloud_snapshots_root_path(root_path);
+                let backend = Box::new(AzureKVStorage::new(
+                    &snapshots_root_path,
+                    account.to_string(),
+                    container.to_string(),
+                    credentials.clone(),
+                )?);
+                let assigned_snapshot_paths = self.assigned_cloud_snapshot_paths(
+                    backend.as_ref(),
+                    &snapshots_root_path,
+                    persistent_id,
+                    query_purpose,
+                )?;
+                for (_, path) in assigned_snapshot_paths {
+                    let backend = AzureKVStorage::new(
+                        &path,
+                        account.to_string(),
+                        container.to_string(),
+                        credentials.clone(),
+                    )?;
                     result.push(Box::new(backend));
                 }
                 Ok(result)
@@ -281,8 +347,19 @@ impl PersistenceManagerConfig {
             )),
             PersistentStorageConfig::S3 { bucket, root_path } => Ok(Box::new(S3KVStorage::new(
                 bucket.deep_copy(),
-                &self.s3_snapshot_path(root_path, persistent_id),
+                &self.cloud_snapshot_path(root_path, persistent_id),
             ))),
+            PersistentStorageConfig::Azure {
+                root_path,
+                account,
+                container,
+                credentials,
+            } => Ok(Box::new(AzureKVStorage::new(
+                &self.cloud_snapshot_path(root_path, persistent_id),
+                account.to_string(),
+                container.to_string(),
+                credentials.clone(),
+            )?)),
             PersistentStorageConfig::Mock(_) => {
                 unreachable!()
             }
@@ -316,16 +393,23 @@ impl PersistenceManagerConfig {
         Ok(worker_path.join(persistent_id.to_string()))
     }
 
-    fn s3_snapshot_path(&self, root_path: &str, persistent_id: PersistentId) -> String {
+    fn cloud_snapshots_root_path(root_path: &str) -> String {
         format!(
-            "{}/streams/{}/{}",
-            root_path.strip_suffix('/').unwrap_or(root_path),
+            "{}/streams",
+            root_path.strip_suffix('/').unwrap_or(root_path)
+        )
+    }
+
+    fn cloud_snapshot_path(&self, root_path: &str, persistent_id: PersistentId) -> String {
+        format!(
+            "{}/{}/{}",
+            Self::cloud_snapshots_root_path(root_path),
             self.worker_id,
             persistent_id
         )
     }
 
-    fn assigned_snapshot_paths(
+    fn assigned_local_snapshot_paths(
         &self,
         root_path: &Path,
         persistent_id: PersistentId,
@@ -333,95 +417,67 @@ impl PersistenceManagerConfig {
     ) -> Result<HashMap<usize, PathBuf>, PersistenceBackendError> {
         let streams_dir = root_path.join("streams");
         ensure_directory(&streams_dir)?;
-
-        let mut assigned_paths = HashMap::new();
-        let paths = fs::read_dir(&streams_dir)?;
-        for entry in paths.flatten() {
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                let dir_name = if let Some(name) = entry.file_name().to_str() {
-                    name.to_string()
-                } else {
-                    error!("Failed to parse block folder name: {entry:?}");
-                    continue;
-                };
-
-                let parsed_worker_id: usize = match dir_name.parse() {
-                    Ok(worker_id) => worker_id,
-                    Err(e) => {
-                        error!("Could not parse worker id from snapshot directory {entry:?}. Error details: {e}");
-                        continue;
-                    }
-                };
-
-                if !query_purpose.includes_worker(
-                    parsed_worker_id,
-                    self.worker_id,
-                    self.total_workers,
-                ) {
-                    continue;
-                }
-
-                let snapshot_path = streams_dir.join(format!("{parsed_worker_id}/{persistent_id}"));
-                assigned_paths.insert(parsed_worker_id, snapshot_path);
-            } else {
-                warn!("Unexpected object in snapshot directory: {entry:?}");
-            }
-        }
-
-        Ok(assigned_paths)
+        let backend = Box::new(FilesystemKVStorage::new(&streams_dir)?);
+        let paths = self.assigned_snapshot_paths_with_backend(
+            backend.as_ref(),
+            persistent_id,
+            query_purpose,
+        )?;
+        let result: HashMap<_, _> = paths
+            .into_iter()
+            .map(|(key, value)| (key, streams_dir.join(value)))
+            .collect();
+        Ok(result)
     }
 
-    fn assigned_s3_snapshot_paths(
+    fn assigned_cloud_snapshot_paths(
         &self,
-        bucket: &S3Bucket,
-        root_path: &str,
+        backend: &dyn PersistenceBackend,
+        snapshots_root_path: &str,
         persistent_id: PersistentId,
         query_purpose: ReadersQueryPurpose,
     ) -> Result<HashMap<usize, String>, PersistenceBackendError> {
-        let snapshots_root_path = format!(
-            "{}/streams/",
-            root_path.strip_suffix('/').unwrap_or(root_path)
-        );
-        let prefix_len = snapshots_root_path.len();
-        let object_lists = bucket
-            .list(snapshots_root_path.clone(), None)
-            .map_err(PersistenceBackendError::S3)?;
+        let paths =
+            self.assigned_snapshot_paths_with_backend(backend, persistent_id, query_purpose)?;
+        let result: HashMap<_, _> = paths
+            .into_iter()
+            .map(|(key, value)| (key, format!("{snapshots_root_path}/{value}")))
+            .collect();
+        Ok(result)
+    }
 
+    fn assigned_snapshot_paths_with_backend(
+        &self,
+        backend: &dyn PersistenceBackend,
+        persistent_id: PersistentId,
+        query_purpose: ReadersQueryPurpose,
+    ) -> Result<HashMap<usize, String>, PersistenceBackendError> {
+        let object_keys = backend.list_keys()?;
         let mut assigned_paths = HashMap::new();
 
-        for list in &object_lists {
-            for object in &list.contents {
-                let key: &str = &object.key;
-                assert!(key.len() > prefix_len);
-                let snapshot_path_block = key[prefix_len..].to_string();
-                // snapshot_path_block has the form {worker_id}/{persistent_id}/{snapshot_block_id}
-                let path_parts: Vec<&str> = snapshot_path_block.split('/').collect();
-                if path_parts.len() != 3 {
-                    error!("Incorrect path block format: {snapshot_path_block}");
-                    continue;
-                }
-
-                let parsed_worker_id: usize = match path_parts[0].parse() {
-                    Ok(worker_id) => worker_id,
-                    Err(e) => {
-                        error!("Could not parse worker id from snapshot directory {key:?}. Error details: {e}");
-                        continue;
-                    }
-                };
-
-                if !query_purpose.includes_worker(
-                    parsed_worker_id,
-                    self.worker_id,
-                    self.total_workers,
-                ) {
-                    continue;
-                }
-
-                let snapshot_path =
-                    format!("{snapshots_root_path}{parsed_worker_id}/{persistent_id}");
-                assigned_paths.insert(parsed_worker_id, snapshot_path);
+        for snapshot_path_block in &object_keys {
+            // snapshot_path_block has the form {worker_id}/{persistent_id}/{snapshot_block_id}
+            let path_parts: Vec<&str> = snapshot_path_block.split('/').collect();
+            if path_parts.len() != 3 {
+                error!("Incorrect path block format: {snapshot_path_block}");
+                continue;
             }
+
+            let parsed_worker_id: usize = match path_parts[0].parse() {
+                Ok(worker_id) => worker_id,
+                Err(e) => {
+                    error!("Could not parse worker id from snapshot directory {snapshot_path_block:?}. Error details: {e}");
+                    continue;
+                }
+            };
+
+            if !query_purpose.includes_worker(parsed_worker_id, self.worker_id, self.total_workers)
+            {
+                continue;
+            }
+
+            let snapshot_path = format!("{parsed_worker_id}/{persistent_id}");
+            assigned_paths.insert(parsed_worker_id, snapshot_path);
         }
 
         Ok(assigned_paths)

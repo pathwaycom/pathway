@@ -167,6 +167,10 @@ fn compute_threshold_time_and_versions(
     let keys = backend.list_keys()?;
     let mut version_information = HashMap::new();
     for key in &keys {
+        if key.contains('/') {
+            // Only top-level keys are needed for the metadata reconstruction.
+            continue;
+        }
         let metadata_key = MetadataKey::from_str(key);
         let Some(metadata_key) = metadata_key else {
             continue;

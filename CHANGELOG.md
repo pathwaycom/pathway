@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Data persistence can now be configured to use Azure Blob Storage as a backend. An Azure backend instance can be created using `pw.persistence.Backend.azure` and included in the persistence config.
+
 ### Changed
 - **BREAKING**: when creating `pw.DateTimeUtc` it is now obligatory to pass the time zone information.
 - **BREAKING**: when creating `pw.DateTimeNaive` passing time zone information is not allowed.

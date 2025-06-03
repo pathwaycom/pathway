@@ -817,6 +817,9 @@ class CsvParserSettings:
 class AwsS3Settings:
     def __init__(self, *args, **kwargs): ...
 
+class AzureBlobStorageSettings:
+    def __init__(self, *args, **kwargs): ...
+
 class ValueField:
     name: str
     def __init__(self, name: str, type_: PathwayType): ...

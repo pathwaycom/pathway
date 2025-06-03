@@ -1,11 +1,12 @@
 // Copyright © 2024 Pathway
 
-use log::{error, warn};
+use log::warn;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use futures::channel::oneshot;
+use glob::Pattern as GlobPattern;
 
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::PersistenceBackend;
@@ -18,13 +19,19 @@ const TEMPORARY_OBJECT_SUFFIX: &str = ".tmp";
 #[derive(Debug)]
 pub struct FilesystemKVStorage {
     root_path: PathBuf,
+    root_glob_pattern: GlobPattern,
+    path_prefix_len: usize,
 }
 
 impl FilesystemKVStorage {
     pub fn new(root_path: &Path) -> Result<Self, Error> {
+        let root_path_str = root_path.to_str().ok_or(Error::PathIsNotUtf8)?;
+        let root_glob_pattern = GlobPattern::new(&format!("{root_path_str}/**/*"))?;
         ensure_directory(root_path)?;
         Ok(Self {
             root_path: root_path.to_path_buf(),
+            root_glob_pattern,
+            path_prefix_len: root_path_str.len() + 1,
         })
     }
 
@@ -42,35 +49,21 @@ impl FilesystemKVStorage {
 impl PersistenceBackend for FilesystemKVStorage {
     fn list_keys(&self) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
-
-        for entry in std::fs::read_dir(&self.root_path)? {
-            if let Err(e) = entry {
-                error!("Error while doing the folder scan: {e}. Output may duplicate a part of previous run");
+        let file_and_folder_paths = glob::glob(self.root_glob_pattern.as_str())?.flatten();
+        for entry in file_and_folder_paths {
+            if !entry.is_file() {
                 continue;
             }
-            let entry = entry.unwrap();
-            let file_type = entry.file_type();
-            match file_type {
-                Ok(file_type) => {
-                    if !file_type.is_file() {
-                        continue;
-                    }
-                    match entry.file_name().into_string() {
-                        Ok(key) => {
-                            let is_temporary = key.ends_with(TEMPORARY_OBJECT_SUFFIX);
-                            if !is_temporary {
-                                keys.push(key);
-                            }
-                        }
-                        Err(name) => warn!("Non-Unicode file name: {name:?}"),
-                    };
+            if let Some(path_str) = entry.to_str() {
+                let is_temporary = path_str.ends_with(TEMPORARY_OBJECT_SUFFIX);
+                if !is_temporary {
+                    let key = path_str[self.path_prefix_len..].to_string();
+                    keys.push(key);
                 }
-                Err(e) => {
-                    error!("Couldn't detect file type for {entry:?}: {e}");
-                }
+            } else {
+                warn!("The path is not UTF-8 encoded: {entry:?}");
             }
         }
-
         Ok(keys)
     }
 

@@ -18,6 +18,7 @@ use crate::persistence::frontier::OffsetAntichain;
 use async_nats::connect as nats_connect;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
+use azure_storage::StorageCredentials as AzureStorageCredentials;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -3645,6 +3646,33 @@ pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
     Ok(value)
 }
 
+#[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct AzureBlobStorageSettings {
+    account: String,
+    password: String,
+    container: String,
+}
+
+#[pymethods]
+impl AzureBlobStorageSettings {
+    #[new]
+    #[pyo3(signature = (account, password, container))]
+    fn new(account: String, password: String, container: String) -> Self {
+        Self {
+            account,
+            password,
+            container,
+        }
+    }
+}
+
+impl AzureBlobStorageSettings {
+    fn credentials(&self) -> AzureStorageCredentials {
+        AzureStorageCredentials::access_key(self.account.clone(), self.password.clone())
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct AwsS3Settings {
     bucket_name: Option<String>,
@@ -3955,6 +3983,7 @@ pub struct DataStorage {
     topic_name_index: Option<usize>,
     partition_columns: Option<Vec<String>>,
     backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
+    azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4307,6 +4336,7 @@ impl DataStorage {
         topic_name_index = None,
         partition_columns = None,
         backfilling_thresholds = None,
+        azure_blob_storage_settings = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4339,6 +4369,7 @@ impl DataStorage {
         topic_name_index: Option<usize>,
         partition_columns: Option<Vec<String>>,
         backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
+        azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4370,6 +4401,7 @@ impl DataStorage {
             topic_name_index,
             partition_columns,
             backfilling_thresholds,
+            azure_blob_storage_settings,
         }
     }
 
@@ -4601,6 +4633,19 @@ impl DataStorage {
             &self.connection_string,
             "For Postgres and MongoDB, the 'connection_string' field must be specified",
         )
+    }
+
+    fn azure_blob_storage_settings(&self) -> PyResult<AzureBlobStorageSettings> {
+        let value = self
+            .azure_blob_storage_settings
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Azure Blob Storage, 'azure_blob_storage_settings' field must be specified",
+                )
+            })?
+            .clone();
+        Ok(value)
     }
 
     fn s3_bucket(&self, py: pyo3::Python) -> PyResult<S3Bucket> {
@@ -5138,6 +5183,16 @@ impl DataStorage {
                 let path = self.path()?;
                 Ok(PersistentStorageConfig::S3 {
                     bucket: Box::new(bucket),
+                    root_path: path.into(),
+                })
+            }
+            "azure" => {
+                let path = self.path()?;
+                let azure_settings = self.azure_blob_storage_settings()?;
+                Ok(PersistentStorageConfig::Azure {
+                    credentials: azure_settings.credentials(),
+                    account: azure_settings.account,
+                    container: azure_settings.container,
                     root_path: path.into(),
                 })
             }
@@ -5992,6 +6047,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<Context>()?;
 
     m.add_class::<AwsS3Settings>()?;
+    m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
     m.add_class::<CsvParserSettings>()?;
