@@ -13,6 +13,7 @@ import warnings
 from typing import Optional
 from unittest import mock
 
+import numpy as np
 import pytest
 
 import pathway as pw
@@ -1465,3 +1466,190 @@ def test_fully_async_udf_first_result_after_deletion_and_next_insertion():
     """
     )
     assert_table_equality_wo_types(res, expected)
+
+
+@xfail_on_multiple_threads  # batches can be split between workers
+def test_batch_udf():
+
+    @pw.udf(max_batch_size=16)
+    def foo(a: list[int], b: list[int]) -> list[int]:
+        assert len(a) == 3
+        assert len(b) == 3
+        c = []
+        for a_i, b_i in zip(a, b):
+            c.append(a_i + b_i)
+        return c
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 0
+        3 | 1
+        """
+    )
+
+    result = input.select(c=foo(pw.this.a, pw.this.b))
+    expected = pw.debug.table_from_markdown(
+        """
+        c
+        2
+        2
+        4
+    """
+    )
+    assert_stream_equality(result, expected)
+
+
+@xfail_on_multiple_threads  # batches can be split between workers
+@pytest.mark.parametrize("max_batch_size", [1, 2, 3])
+def test_batch_udf_batching_correct(max_batch_size):
+
+    lengths = []
+
+    @pw.udf(max_batch_size=max_batch_size)
+    def foo(a: list[int], b: list[int]) -> list[int]:
+        lengths.append(len(a))
+        c = []
+        for a_i, b_i in zip(a, b, strict=True):
+            c.append(a_i + b_i)
+        return c
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 0
+        3 | 1
+        4 | 0
+        5 | 1
+        """
+    )
+
+    result = input.select(c=foo(pw.this.a, pw.this.b))
+    expected = pw.debug.table_from_markdown(
+        """
+        c
+        2
+        2
+        4
+        4
+        6
+    """
+    )
+    assert_stream_equality(result, expected)
+    lengths.sort()
+    if max_batch_size == 3:
+        assert lengths == [2, 3]
+    elif max_batch_size == 2:
+        assert lengths == [1, 2, 2]
+    else:
+        assert lengths == [1, 1, 1, 1, 1]
+
+
+def test_batch_udf_numpy():
+
+    @pw.udf(max_batch_size=16, return_type=int)
+    def foo(a: list[int], b: list[int]):
+        return np.array(a) + np.array(b)
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 0
+        3 | 1
+        """
+    )
+
+    result = input.select(c=foo(pw.this.a, pw.this.b))
+    expected = pw.debug.table_from_markdown(
+        """
+        c
+        2
+        2
+        4
+    """
+    )
+    assert_stream_equality(result, expected)
+
+
+@xfail_on_multiple_threads
+def test_batch_udf_incorrect_rows_returned():
+
+    @pw.udf(max_batch_size=16, return_type=int)
+    def foo(a: list[int], b: list[int]):
+        c = [a_i + b_i for a_i, b_i in zip(a, b, strict=True)]
+        c.pop()
+        return c
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 0
+        3 | 1
+        """
+    )
+
+    input.select(c=foo(pw.this.a, pw.this.b))
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "The number of rows produced by a UDF (2) is different than the number of rows on its input (3)."
+        ),
+    ):
+        run_all()
+
+
+def test_error_in_batch_udf():
+
+    @pw.udf(max_batch_size=16, return_type=int)
+    def foo(a: list[int], b: list[int]):
+        c = [a_i // b_i for a_i, b_i in zip(a, b, strict=True)]
+        return c
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 0
+        3 | 1
+        """
+    )
+
+    input.select(c=foo(pw.this.a, pw.this.b))
+    with pytest.raises(ZeroDivisionError, match="integer division or modulo by zero"):
+        run_all()
+
+
+def test_batch_udf_annotation_has_to_be_list():
+    @pw.udf(max_batch_size=16)
+    def foo(a: list[int], b: list[int]) -> int:
+        return sum(a)
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "A batch UDF has to return a list but is annotated as returning <class 'int'>"
+        ),
+    ):
+        input.select(c=foo(pw.this.a, pw.this.b))
+
+
+def test_batch_async_udf_not_supported():
+    with pytest.raises(
+        ValueError,
+        match=re.escape("Batching is currently supported only for synchronous UDFs."),
+    ):
+
+        @pw.udf(max_batch_size=16)
+        async def foo(a: list[int], b: list[int]) -> list[int]:
+            return [a_i + b_i for a_i, b_i in zip(a, b)]

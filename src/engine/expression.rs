@@ -10,6 +10,7 @@ use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 use std::ops::{Deref, Range};
 use std::sync::Arc;
+use std::vec::IntoIter;
 
 use derivative::Derivative;
 use itertools::Itertools;
@@ -46,19 +47,33 @@ impl<'a> Deref for MaybeOwnedValues<'a> {
 }
 
 impl Expressions {
-    pub fn eval<'v>(&self, values: &'v [Value]) -> DynResult<MaybeOwnedValues<'v>> {
+    pub fn eval<'v>(&self, values: &[&'v [Value]]) -> Vec<DynResult<MaybeOwnedValues<'v>>> {
         match self {
-            Self::Explicit(exprs) => Ok(MaybeOwnedValues::Owned(
-                exprs.iter().map(|e| e.eval(values)).try_collect()?,
-            )),
-            Self::Arguments(range) => {
-                let values = &values[range.clone()];
-                if values.contains(&Value::Error) {
-                    Err(DataError::ErrorInValue.into())
-                } else {
-                    Ok(MaybeOwnedValues::Borrowed(values))
-                }
+            Self::Explicit(exprs) => {
+                let mut iters: Vec<_> = exprs.iter().map(|e| e.eval(values).into_iter()).collect();
+                // transpose from expression results in batch form to a batch of expression results
+                (0..values.len())
+                    .map(|_| {
+                        Ok(MaybeOwnedValues::Owned(
+                            iters
+                                .iter_mut()
+                                .map(|expr_j_res| expr_j_res.next().unwrap())
+                                .try_collect()?,
+                        ))
+                    })
+                    .collect()
             }
+            Self::Arguments(range) => values
+                .iter()
+                .map(|values_row| {
+                    let values_row = &values_row[range.clone()];
+                    if values_row.contains(&Value::Error) {
+                        Err(DataError::ErrorInValue.into())
+                    } else {
+                        Ok(MaybeOwnedValues::Borrowed(values_row))
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -98,11 +113,8 @@ pub enum AnyExpression {
     Argument(usize),
     Const(Value),
     Apply(
-        #[derivative(Debug = "ignore")] Box<dyn Fn(&[Value]) -> DynResult<Value> + Send + Sync>,
-        Expressions,
-    ),
-    OptionalApply(
-        #[derivative(Debug = "ignore")] Box<dyn Fn(&[Value]) -> DynResult<Value> + Send + Sync>,
+        #[derivative(Debug = "ignore")]
+        Box<dyn Fn(&[&[Value]]) -> Vec<DynResult<Value>> + Send + Sync>,
         Expressions,
     ),
     IfElse(Arc<Expression>, Arc<Expression>, Arc<Expression>),
@@ -365,13 +377,7 @@ fn get_tuple_element(tuple: &Arc<[Value]>, index: i64) -> DynResult<Option<Value
     Ok(tuple.get(index_usize).cloned())
 }
 
-fn get_array_element(
-    expr: &Arc<Expression>,
-    index: &Arc<Expression>,
-    values: &[Value],
-) -> DynResult<Option<Value>> {
-    let index = index.eval_as_int(values)?;
-    let value = expr.eval(values)?;
+fn get_array_element(value: Value, index: i64) -> DynResult<Option<Value>> {
     match value {
         Value::IntArray(array) => get_ndarray_element(&array, index),
         Value::FloatArray(array) => get_ndarray_element(&array, index),
@@ -382,13 +388,7 @@ fn get_array_element(
     }
 }
 
-fn get_json_item(
-    expr: &Arc<Expression>,
-    index: &Arc<Expression>,
-    values: &[Value],
-) -> DynResult<Option<Value>> {
-    let index = index.eval(values)?;
-    let value = expr.eval(values)?;
+fn get_json_item(value: &Value, index: Value) -> DynResult<Option<Value>> {
     let json = value.as_json()?;
     let json = match index {
         Value::Int(index) => match usize::try_from(index) {
@@ -494,175 +494,329 @@ fn unwrap(val: Value) -> DynResult<Value> {
     }
 }
 
+fn nullary_expr<F, T>(values: &[&[Value]], f: &F) -> Vec<DynResult<T>>
+where
+    F: Fn() -> T,
+{
+    values.iter().map(|_v| Ok(f())).collect()
+}
+
+fn unary_expr<F, T, U>(expr: &Expression, values: &[&[Value]], f: F) -> Vec<DynResult<U>>
+where
+    Expression: EvalAs<T>,
+    F: Fn(T) -> U + 'static,
+{
+    expr.eval_as(values)
+        .into_iter()
+        .map(|v| Ok(f(v?)))
+        .collect()
+}
+
+fn unary_expr_err<F, T, U>(expr: &Expression, values: &[&[Value]], f: &F) -> Vec<DynResult<U>>
+where
+    Expression: EvalAs<T>,
+    F: Fn(T) -> DynResult<U>,
+{
+    expr.eval_as(values).into_iter().map(|v| f(v?)).collect()
+}
+
+fn binary_expr<F, T, U, V>(
+    lhs: &Expression,
+    rhs: &Expression,
+    values: &[&[Value]],
+    f: F,
+) -> Vec<DynResult<V>>
+where
+    Expression: EvalAs<T>,
+    Expression: EvalAs<U>,
+    F: Fn(T, U) -> V + 'static,
+{
+    let lhs = lhs.eval_as(values);
+    let rhs = rhs.eval_as(values);
+    lhs.into_iter()
+        .zip(rhs)
+        .map(|(l, r)| Ok(f(l?, r?)))
+        .collect()
+}
+
+fn binary_expr_err<F, T, U, V>(
+    lhs: &Expression,
+    rhs: &Expression,
+    values: &[&[Value]],
+    f: F,
+) -> Vec<DynResult<V>>
+where
+    Expression: EvalAs<T>,
+    Expression: EvalAs<U>,
+    F: Fn(T, U) -> DynResult<V>,
+{
+    let lhs = lhs.eval_as(values);
+    let rhs = rhs.eval_as(values);
+    lhs.into_iter().zip(rhs).map(|(l, r)| f(l?, r?)).collect()
+}
+
+fn ternary_expr_err<F, T, U, V, W>(
+    expr_1: &Expression,
+    expr_2: &Expression,
+    expr_3: &Expression,
+    values: &[&[Value]],
+    f: F,
+) -> Vec<DynResult<W>>
+where
+    Expression: EvalAs<T>,
+    Expression: EvalAs<U>,
+    Expression: EvalAs<V>,
+    F: Fn(T, U, V) -> DynResult<W> + 'static,
+{
+    let expr_1_values = expr_1.eval_as(values);
+    let expr_2_values = expr_2.eval_as(values);
+    let expr_3_values = expr_3.eval_as(values);
+    expr_1_values
+        .into_iter()
+        .zip(expr_2_values)
+        .zip(expr_3_values)
+        .map(|((v1, v2), v3)| f(v1?, v2?, v3?))
+        .collect()
+}
+
+fn multi_expr<F, T>(exprs: &Expressions, values: &[&[Value]], f: F) -> Vec<DynResult<T>>
+where
+    F: Fn(MaybeOwnedValues) -> T + 'static,
+{
+    exprs.eval(values).into_iter().map(|v| Ok(f(v?))).collect()
+}
+
+fn multi_expression_with_additional_expression<F, T, U>(
+    exprs: &Expressions,
+    expr: &Arc<Expression>,
+    values: &[&[Value]],
+    f: F,
+) -> Vec<DynResult<U>>
+where
+    Expression: EvalAs<T>,
+    F: Fn(MaybeOwnedValues, T) -> U + 'static,
+{
+    exprs
+        .eval(values)
+        .into_iter()
+        .zip(expr.eval_as(values))
+        .map(|(v, a)| Ok(f(v?, a?)))
+        .collect()
+}
+
 impl AnyExpression {
     #[allow(clippy::too_many_lines)]
-    pub fn eval(&self, values: &[Value]) -> DynResult<Value> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<Value>> {
         let res = match self {
             Self::Argument(i) => values
-                .get(*i)
-                .ok_or(DataError::IndexOutOfBounds)?
-                .clone()
-                .into_result()?,
-            Self::Const(v) => v.clone(),
-            Self::Apply(f, args) => f(&args.eval(values)?)?,
-            Self::OptionalApply(f, args) => {
-                let args = args.eval(values)?;
-                if args.iter().any(|a| matches!(a, Value::None)) {
-                    Value::None
-                } else {
-                    f(&args)?
+                .iter()
+                .map(|values_row| {
+                    values_row
+                        .get(*i)
+                        .ok_or(DataError::IndexOutOfBounds)?
+                        .clone()
+                        .into_result()
+                })
+                .collect(),
+            Self::Const(v) => nullary_expr(values, &|| v.clone()),
+            Self::Apply(f, args) => {
+                let args = args.eval(values);
+                let mask: Vec<_> = args.iter().map(Result::is_ok).collect();
+                let mut args_ok = Vec::new();
+                let mut args_err = Vec::new();
+                for arg_i in args {
+                    match arg_i {
+                        Ok(arg_i) => args_ok.push(arg_i),
+                        Err(arg_i) => args_err.push(arg_i),
+                    }
                 }
+                let args_ok: Vec<_> = args_ok.iter().map(Deref::deref).collect();
+                let mut result_ok = f(&args_ok).into_iter();
+                let mut result_err = args_err.into_iter();
+                mask.into_iter()
+                    .map(|mask_i| {
+                        if mask_i {
+                            result_ok.next().unwrap()
+                        } else {
+                            Err(result_err.next().unwrap())
+                        }
+                    })
+                    .collect()
             }
             Self::IfElse(if_, then, else_) => {
-                if if_.eval_as_bool(values)? {
-                    then.eval(values)?
-                } else {
-                    else_.eval(values)?
+                let mask: Vec<DynResult<bool>> = if_.eval_as(values);
+                let mut then_values = Vec::new();
+                let mut else_values = Vec::new();
+                for (i, mask_i) in mask.iter().enumerate() {
+                    match mask_i {
+                        Ok(true) => then_values.push(values[i]),
+                        Ok(false) => else_values.push(values[i]),
+                        _ => {}
+                    }
                 }
+                let mut then_res = then.eval(&then_values).into_iter();
+                let mut else_res = else_.eval(&else_values).into_iter();
+                let mut res = Vec::with_capacity(values.len());
+                for mask_i in mask {
+                    match mask_i {
+                        Ok(true) => {
+                            res.push(then_res.next().unwrap());
+                        }
+                        Ok(false) => {
+                            res.push(else_res.next().unwrap());
+                        }
+                        Err(e) => {
+                            res.push(Err(e));
+                        }
+                    }
+                }
+                res
             }
-            Self::OptionalPointerFrom(args) => {
-                let args = args.eval(values)?;
+            Self::OptionalPointerFrom(args) => multi_expr(args, values, |args| {
                 if args.iter().any(|a| matches!(a, Value::None)) {
                     Value::None
                 } else {
                     Value::from(Key::for_values(&args))
                 }
-            }
+            }),
             Self::OptionalPointerWithInstanceFrom(args, instance) => {
-                let mut args = args.eval(values)?.to_vec();
-                args.push(instance.eval(values)?);
-                if args.iter().any(|a| matches!(a, Value::None)) {
-                    Value::None
-                } else {
-                    Value::from(ShardPolicy::LastKeyColumn.generate_key(&args))
-                }
+                multi_expression_with_additional_expression(
+                    args,
+                    instance,
+                    values,
+                    |args, instance| {
+                        let mut args = args.to_vec();
+                        args.push(instance);
+                        if args.iter().any(|a| matches!(a, Value::None)) {
+                            Value::None
+                        } else {
+                            Value::from(ShardPolicy::LastKeyColumn.generate_key(&args))
+                        }
+                    },
+                )
             }
-            Self::MakeTuple(args) => {
-                let args = args.eval(values)?;
-                let args_arc: Arc<[Value]> = (*args).into();
-                Value::Tuple(args_arc)
-            }
-            Self::TupleGetItemChecked(tuple, index, default) => {
-                if let Some(entry) = get_array_element(tuple, index, values)? {
-                    entry
-                } else {
-                    default.eval(values)?
-                }
-            }
+            Self::MakeTuple(args) => multi_expr(args, values, |args| Value::Tuple((*args).into())),
+            Self::TupleGetItemChecked(tuple, index, default) => ternary_expr_err(
+                tuple,
+                index,
+                default,
+                values,
+                |tuple: Value, index: i64, default: Value| {
+                    Ok(get_array_element(tuple, index)?.unwrap_or(default))
+                },
+            ),
             Self::TupleGetItemUnchecked(tuple, index) => {
-                if let Some(entry) = get_array_element(tuple, index, values)? {
-                    Ok(entry)
-                } else {
-                    Err(DynError::from(DataError::IndexOutOfBounds))
-                }?
+                binary_expr_err(tuple, index, values, |tuple, index| {
+                    get_array_element(tuple, index)?
+                        .ok_or_else(|| DynError::from(DataError::IndexOutOfBounds))
+                })
             }
             Self::JsonGetItem(tuple, index, default) => {
-                if let Some(entry) = get_json_item(tuple, index, values)? {
-                    entry
-                } else {
-                    default.eval(values)?
-                }
+                ternary_expr_err(tuple, index, default, values, |tuple, index, default| {
+                    Ok(get_json_item(&tuple, index)?.unwrap_or(default))
+                })
             }
-            Self::ParseStringToInt(e, optional) => {
-                let val = e.eval_as_string(values)?;
-                let val_str = val.trim();
-                let parse_result = val_str.parse().map(Value::Int);
+            Self::ParseStringToInt(e, optional) => unary_expr_err(e, values, &|v: ArcStr| {
+                let parse_result = v.trim().parse().map(Value::Int);
                 if *optional {
-                    parse_result.unwrap_or(Value::None)
+                    Ok(parse_result.unwrap_or(Value::None))
                 } else {
                     parse_result.map_err(|e| {
                         DynError::from(DataError::ParseError(format!(
-                            "cannot parse {val:?} to int: {e}"
+                            "cannot parse {v:?} to int: {e}"
                         )))
-                    })?
+                    })
                 }
-            }
-            Self::ParseStringToFloat(e, optional) => {
-                let val = e.eval_as_string(values)?;
-                let val_str = val.trim();
-                let parse_result = val_str.parse().map(Value::Float);
+            }),
+            Self::ParseStringToFloat(e, optional) => unary_expr_err(e, values, &|v: ArcStr| {
+                let parse_result = v.trim().parse().map(Value::Float);
                 if *optional {
-                    parse_result.unwrap_or(Value::None)
+                    Ok(parse_result.unwrap_or(Value::None))
                 } else {
                     parse_result.map_err(|e| {
                         DynError::from(DataError::ParseError(format!(
-                            "cannot parse {val:?} to float: {e}"
+                            "cannot parse {v:?} to float: {e}"
                         )))
-                    })?
+                    })
                 }
-            }
+            }),
             Self::ParseStringToBool(e, true_list, false_list, optional) => {
-                let val = e.eval_as_string(values)?;
-                let val_str = val.trim().to_lowercase();
-                if true_list.contains(&val_str) {
-                    Ok(Value::Bool(true))
-                } else if false_list.contains(&val_str) {
-                    Ok(Value::Bool(false))
-                } else if *optional {
-                    Ok(Value::None)
-                } else {
-                    Err(DynError::from(DataError::ParseError(format!(
-                        "cannot parse {val:?} to bool"
-                    ))))
-                }?
+                unary_expr_err(e, values, &|v: ArcStr| {
+                    let val_str = v.trim().to_lowercase();
+                    if true_list.contains(&val_str) {
+                        Ok(Value::Bool(true))
+                    } else if false_list.contains(&val_str) {
+                        Ok(Value::Bool(false))
+                    } else if *optional {
+                        Ok(Value::None)
+                    } else {
+                        Err(DynError::from(DataError::ParseError(format!(
+                            "cannot parse {v:?} to bool"
+                        ))))
+                    }
+                })
             }
-            Self::CastToOptionalIntFromOptionalFloat(expr) => match expr.eval(values)? {
-                #[allow(clippy::cast_possible_truncation)]
-                Value::Float(f) => Ok((*f as i64).into()),
-                Value::None => Ok(Value::None),
-                val => Err(DynError::from(DataError::ValueError(format!(
-                    "Cannot cast to int from {val:?}"
-                )))),
-            }?,
-            Self::CastToOptionalFloatFromOptionalInt(expr) => match expr.eval(values)? {
-                #[allow(clippy::cast_precision_loss)]
-                Value::Int(i) => Ok((i as f64).into()),
-                Value::None => Ok(Value::None),
-                val => Err(DynError::from(DataError::ValueError(format!(
-                    "Cannot cast to float from {val:?}"
-                )))),
-            }?,
+            Self::CastToOptionalIntFromOptionalFloat(expr) => {
+                unary_expr_err(expr, values, &|v| match v {
+                    #[allow(clippy::cast_possible_truncation)]
+                    Value::Float(f) => Ok((*f as i64).into()),
+                    Value::None => Ok(Value::None),
+                    val => Err(DynError::from(DataError::ValueError(format!(
+                        "Cannot cast to int from {val:?}"
+                    )))),
+                })
+            }
+            Self::CastToOptionalFloatFromOptionalInt(expr) => {
+                unary_expr_err(expr, values, &|v| match v {
+                    #[allow(clippy::cast_precision_loss)]
+                    Value::Int(i) => Ok((i as f64).into()),
+                    Value::None => Ok(Value::None),
+                    val => Err(DynError::from(DataError::ValueError(format!(
+                        "Cannot cast to float from {val:?}"
+                    )))),
+                })
+            }
             Self::JsonToValue(expr, default, type_, unwrap_) => {
-                let result = match expr.eval(values)? {
-                    Value::Json(json) => {
-                        if json.is_null() {
-                            default.eval(values)
-                        } else {
-                            match type_ {
-                                Type::Int => json.as_i64().map(Value::from),
-                                Type::Float => json.as_f64().map(Value::from),
-                                Type::Bool => json.as_bool().map(Value::from),
-                                Type::String => json.as_str().map(Value::from),
-                                _ => {
-                                    return Err(DynError::from(DataError::ValueError(format!(
-                                        "Cannot convert json {json} to {type_:?}"
-                                    ))));
+                binary_expr_err(expr, default, values, |v: Value, default: Value| {
+                    let result = match v {
+                        Value::Json(json) => {
+                            if json.is_null() {
+                                Ok(default)
+                            } else {
+                                match type_ {
+                                    Type::Int => json.as_i64().map(Value::from),
+                                    Type::Float => json.as_f64().map(Value::from),
+                                    Type::Bool => json.as_bool().map(Value::from),
+                                    Type::String => json.as_str().map(Value::from),
+                                    _ => {
+                                        return Err(DynError::from(DataError::ValueError(
+                                            format!("Cannot convert json {json} to {type_:?}"),
+                                        )));
+                                    }
                                 }
+                                .ok_or_else(|| {
+                                    DynError::from(DataError::ValueError(format!(
+                                        "Cannot convert json {json} to {type_:?}"
+                                    )))
+                                })
                             }
-                            .ok_or_else(|| {
-                                DynError::from(DataError::ValueError(format!(
-                                    "Cannot convert json {json} to {type_:?}"
-                                )))
-                            })
                         }
+                        Value::None => Ok(default),
+                        val => {
+                            return Err(DynError::from(DataError::ValueError(format!(
+                                "Expected Json or None, found {val:?}"
+                            ))));
+                        }
+                    };
+                    if *unwrap_ {
+                        unwrap(result?)
+                    } else {
+                        result
                     }
-                    Value::None => default.eval(values),
-                    val => {
-                        return Err(DynError::from(DataError::ValueError(format!(
-                            "Expected Json or None, found {val:?}"
-                        ))));
-                    }
-                };
-                if *unwrap_ {
-                    unwrap(result?)?
-                } else {
-                    result?
-                }
+                })
             }
             Self::MatMul(lhs, rhs) => {
-                let lhs_val = lhs.eval(values)?;
-                let rhs_val = rhs.eval(values)?;
-                match (lhs_val, rhs_val) {
+                binary_expr_err(lhs, rhs, values, |lhs, rhs| match (lhs, rhs) {
                     (Value::FloatArray(lhs), Value::FloatArray(rhs)) => mat_mul_wrapper(&lhs, &rhs),
                     (Value::IntArray(lhs), Value::IntArray(rhs)) => mat_mul_wrapper(&lhs, &rhs),
                     (lhs_val, rhs_val) => {
@@ -672,530 +826,626 @@ impl AnyExpression {
                             "can't perform matrix multiplication on {lhs_type:?} and {rhs_type:?}",
                         ))))
                     }
-                }?
+                })
             }
-            Self::Unwrap(e) => {
-                let val = e.eval(values)?;
-                unwrap(val)?
-            }
+            Self::Unwrap(e) => unary_expr_err(e, values, &|v| unwrap(v)),
             Self::FillError(e, replacement) => {
-                e.eval(values).or_else(|_| replacement.eval(values))?
+                let result = e.eval(values);
+                let to_reevaluate: Vec<_> = values
+                    .iter()
+                    .zip_eq(result.iter())
+                    .filter_map(|(v, r)| if r.is_err() { Some(*v) } else { None })
+                    .collect();
+                let mut replacement_result = replacement.eval(&to_reevaluate).into_iter();
+                result
+                    .into_iter()
+                    .map(|r| r.or_else(|_| replacement_result.next().unwrap()))
+                    .collect()
             }
         };
-        debug_assert!(!matches!(res, Value::Error));
-        Ok(res)
+        for entry in res.iter().flatten() {
+            debug_assert!(!matches!(entry, Value::Error));
+        }
+        res
     }
+}
+
+fn logical_operator(
+    lhs: &Expression,
+    rhs: &Expression,
+    values: &[&[Value]],
+    rhs_if: bool,
+    mut on_true: impl FnMut(&mut IntoIter<DynResult<bool>>) -> DynResult<bool>,
+    mut on_false: impl FnMut(&mut IntoIter<DynResult<bool>>) -> DynResult<bool>,
+) -> Vec<DynResult<bool>> {
+    let lhs_res: Vec<DynResult<bool>> = lhs.eval_as(values);
+    let to_evaluate: Vec<_> = values
+        .iter()
+        .zip_eq(lhs_res.iter())
+        .filter_map(|(v, l)| {
+            if l.is_ok() && *l.as_ref().unwrap() == rhs_if {
+                Some(*v)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let rhs_res: Vec<DynResult<bool>> = rhs.eval_as(&to_evaluate);
+    let mut rhs_res_iter = rhs_res.into_iter();
+    lhs_res
+        .into_iter()
+        .map(|l| match l {
+            Ok(true) => on_true(&mut rhs_res_iter),
+            Ok(false) => on_false(&mut rhs_res_iter),
+            e => e,
+        })
+        .collect()
 }
 
 impl BoolExpression {
     #[allow(clippy::too_many_lines)]
-    pub fn eval(&self, values: &[Value]) -> DynResult<bool> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<bool>> {
         match self {
-            Self::Const(c) => Ok(*c),
-            Self::IsNone(e) => Ok(matches!(e.eval(values)?, Value::None)),
-            Self::Not(e) => Ok(!e.eval_as_bool(values)?),
-            Self::And(lhs, rhs) => Ok(lhs.eval_as_bool(values)? && rhs.eval_as_bool(values)?),
-            Self::Or(lhs, rhs) => Ok(lhs.eval_as_bool(values)? || rhs.eval_as_bool(values)?),
-            Self::Xor(lhs, rhs) => Ok(lhs.eval_as_bool(values)? ^ rhs.eval_as_bool(values)?),
-            Self::IntEq(lhs, rhs) => Ok(lhs.eval_as_int(values)? == rhs.eval_as_int(values)?),
-            Self::IntNe(lhs, rhs) => Ok(lhs.eval_as_int(values)? != rhs.eval_as_int(values)?),
-            Self::IntLt(lhs, rhs) => Ok(lhs.eval_as_int(values)? < rhs.eval_as_int(values)?),
-            Self::IntLe(lhs, rhs) => Ok(lhs.eval_as_int(values)? <= rhs.eval_as_int(values)?),
-            Self::IntGt(lhs, rhs) => Ok(lhs.eval_as_int(values)? > rhs.eval_as_int(values)?),
-            Self::IntGe(lhs, rhs) => Ok(lhs.eval_as_int(values)? >= rhs.eval_as_int(values)?),
+            Self::Const(c) => nullary_expr(values, &|| *c),
+            Self::IsNone(e) => unary_expr(e, values, |v| matches!(v, Value::None)),
+            Self::Not(e) => unary_expr(e, values, |v: bool| !v),
+            Self::And(lhs, rhs) => logical_operator(
+                lhs,
+                rhs,
+                values,
+                true,
+                |r| r.next().unwrap(),
+                |_r| Ok(false),
+            ),
+            Self::Or(lhs, rhs) => logical_operator(
+                lhs,
+                rhs,
+                values,
+                false,
+                |_r| Ok(true),
+                |r| r.next().unwrap(),
+            ),
+            Self::Xor(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l ^ r),
+            Self::IntEq(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l == r),
+            Self::IntNe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l != r),
+            Self::IntLt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l < r),
+            Self::IntLe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l <= r),
+            Self::IntGt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l > r),
+            Self::IntGe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l >= r),
             #[allow(clippy::float_cmp)]
-            Self::FloatEq(lhs, rhs) => Ok(lhs.eval_as_float(values)? == rhs.eval_as_float(values)?),
+            Self::FloatEq(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l == r),
             #[allow(clippy::float_cmp)]
-            Self::FloatNe(lhs, rhs) => Ok(lhs.eval_as_float(values)? != rhs.eval_as_float(values)?),
-            Self::FloatLt(lhs, rhs) => Ok(lhs.eval_as_float(values)? < rhs.eval_as_float(values)?),
-            Self::FloatLe(lhs, rhs) => Ok(lhs.eval_as_float(values)? <= rhs.eval_as_float(values)?),
-            Self::FloatGt(lhs, rhs) => Ok(lhs.eval_as_float(values)? > rhs.eval_as_float(values)?),
-            Self::FloatGe(lhs, rhs) => Ok(lhs.eval_as_float(values)? >= rhs.eval_as_float(values)?),
+            Self::FloatNe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l != r),
+            Self::FloatLt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l < r),
+            Self::FloatLe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l <= r),
+            Self::FloatGt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l > r),
+            Self::FloatGe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l >= r),
             Self::StringEq(lhs, rhs) => {
-                Ok(*lhs.eval_as_string(values)? == *rhs.eval_as_string(values)?)
+                binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| l == r)
             }
             Self::StringNe(lhs, rhs) => {
-                Ok(*lhs.eval_as_string(values)? != *rhs.eval_as_string(values)?)
+                binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| l != r)
             }
-            Self::StringLt(lhs, rhs) => {
-                Ok(*lhs.eval_as_string(values)? < *rhs.eval_as_string(values)?)
-            }
+            Self::StringLt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| l < r),
             Self::StringLe(lhs, rhs) => {
-                Ok(*lhs.eval_as_string(values)? <= *rhs.eval_as_string(values)?)
+                binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| l <= r)
             }
-            Self::StringGt(lhs, rhs) => {
-                Ok(*lhs.eval_as_string(values)? > *rhs.eval_as_string(values)?)
-            }
+            Self::StringGt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| l > r),
             Self::StringGe(lhs, rhs) => {
-                Ok(*lhs.eval_as_string(values)? >= *rhs.eval_as_string(values)?)
+                binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| l >= r)
             }
-            Self::PtrEq(lhs, rhs) => {
-                Ok(lhs.eval_as_pointer(values)? == rhs.eval_as_pointer(values)?)
-            }
-            Self::PtrNe(lhs, rhs) => {
-                Ok(lhs.eval_as_pointer(values)? != rhs.eval_as_pointer(values)?)
-            }
-            Self::PtrLe(lhs, rhs) => {
-                Ok(lhs.eval_as_pointer(values)? <= rhs.eval_as_pointer(values)?)
-            }
-            Self::PtrLt(lhs, rhs) => {
-                Ok(lhs.eval_as_pointer(values)? < rhs.eval_as_pointer(values)?)
-            }
-            Self::PtrGe(lhs, rhs) => {
-                Ok(lhs.eval_as_pointer(values)? >= rhs.eval_as_pointer(values)?)
-            }
-            Self::PtrGt(lhs, rhs) => {
-                Ok(lhs.eval_as_pointer(values)? > rhs.eval_as_pointer(values)?)
-            }
-            Self::BoolEq(lhs, rhs) => Ok(lhs.eval_as_bool(values)? == rhs.eval_as_bool(values)?),
-            Self::BoolNe(lhs, rhs) => Ok(lhs.eval_as_bool(values)? != rhs.eval_as_bool(values)?),
-            Self::BoolLe(lhs, rhs) => Ok(lhs.eval_as_bool(values)? <= rhs.eval_as_bool(values)?),
-            Self::BoolLt(lhs, rhs) => Ok(!(lhs.eval_as_bool(values)?) & rhs.eval_as_bool(values)?),
-            Self::BoolGe(lhs, rhs) => Ok(lhs.eval_as_bool(values)? >= rhs.eval_as_bool(values)?),
-            Self::BoolGt(lhs, rhs) => Ok(lhs.eval_as_bool(values)? & !(rhs.eval_as_bool(values)?)),
+            Self::PtrEq(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Key, r: Key| l == r),
+            Self::PtrNe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Key, r: Key| l != r),
+            Self::PtrLe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Key, r: Key| l <= r),
+            Self::PtrLt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Key, r: Key| l < r),
+            Self::PtrGe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Key, r: Key| l >= r),
+            Self::PtrGt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Key, r: Key| l > r),
+            Self::BoolEq(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l == r),
+            Self::BoolNe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l != r),
+            Self::BoolLe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l <= r),
+            #[allow(clippy::bool_comparison)]
+            Self::BoolLt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l < r),
+            Self::BoolGe(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l >= r),
+            #[allow(clippy::bool_comparison)]
+            Self::BoolGt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: bool, r: bool| l > r),
             Self::DateTimeNaiveEq(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? == rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| {
+                    l == r
+                })
             }
             Self::DateTimeNaiveNe(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? != rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| {
+                    l != r
+                })
             }
             Self::DateTimeNaiveLt(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? < rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| l < r)
             }
             Self::DateTimeNaiveLe(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? <= rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| {
+                    l <= r
+                })
             }
             Self::DateTimeNaiveGt(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? > rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| l > r)
             }
             Self::DateTimeNaiveGe(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? >= rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| {
+                    l >= r
+                })
             }
             Self::DateTimeUtcEq(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? == rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l == r)
             }
             Self::DateTimeUtcNe(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? != rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l != r)
             }
             Self::DateTimeUtcLt(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? < rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l < r)
             }
             Self::DateTimeUtcLe(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? <= rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l <= r)
             }
             Self::DateTimeUtcGt(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? > rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l > r)
             }
             Self::DateTimeUtcGe(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? >= rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l >= r)
             }
             Self::DurationEq(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? == rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l == r)
             }
             Self::DurationNe(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? != rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l != r)
             }
             Self::DurationLt(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? < rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l < r)
             }
             Self::DurationLe(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? <= rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l <= r)
             }
             Self::DurationGt(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? > rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l > r)
             }
             Self::DurationGe(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? >= rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l >= r)
             }
-            Self::Eq(lhs, rhs) => Ok(lhs.eval(values)? == rhs.eval(values)?),
-            Self::Ne(lhs, rhs) => Ok(lhs.eval(values)? != rhs.eval(values)?),
-            Self::TupleEq(lhs, rhs) => Ok(are_tuples_equal(
-                &lhs.eval_as_tuple(values)?,
-                &rhs.eval_as_tuple(values)?,
-            )?),
-            Self::TupleNe(lhs, rhs) => Ok(!are_tuples_equal(
-                &lhs.eval_as_tuple(values)?,
-                &rhs.eval_as_tuple(values)?,
-            )?),
-            Self::TupleLe(lhs, rhs) => Ok(compare_tuples(
-                &lhs.eval_as_tuple(values)?,
-                &rhs.eval_as_tuple(values)?,
-            )?
-            .is_le()),
-            Self::TupleLt(lhs, rhs) => Ok(compare_tuples(
-                &lhs.eval_as_tuple(values)?,
-                &rhs.eval_as_tuple(values)?,
-            )?
-            .is_lt()),
-            Self::TupleGe(lhs, rhs) => Ok(compare_tuples(
-                &lhs.eval_as_tuple(values)?,
-                &rhs.eval_as_tuple(values)?,
-            )?
-            .is_ge()),
-            Self::TupleGt(lhs, rhs) => Ok(compare_tuples(
-                &lhs.eval_as_tuple(values)?,
-                &rhs.eval_as_tuple(values)?,
-            )?
-            .is_gt()),
-            Self::CastFromInt(e) => Ok(e.eval_as_int(values)? != 0),
-            Self::CastFromFloat(e) => Ok(e.eval_as_float(values)? != 0.0),
-            Self::CastFromString(e) => Ok(!e.eval_as_string(values)?.is_empty()),
+            Self::Eq(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Value, r: Value| l == r),
+            Self::Ne(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Value, r: Value| l != r),
+            Self::TupleEq(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Arc<[Value]>, r: Arc<[Value]>| {
+                    are_tuples_equal(&l, &r)
+                })
+            }
+            Self::TupleNe(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Arc<[Value]>, r: Arc<[Value]>| {
+                    Ok(!are_tuples_equal(&l, &r)?)
+                })
+            }
+            Self::TupleLe(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Arc<[Value]>, r: Arc<[Value]>| {
+                    Ok(compare_tuples(&l, &r)?.is_le())
+                })
+            }
+            Self::TupleLt(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Arc<[Value]>, r: Arc<[Value]>| {
+                    Ok(compare_tuples(&l, &r)?.is_lt())
+                })
+            }
+            Self::TupleGe(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Arc<[Value]>, r: Arc<[Value]>| {
+                    Ok(compare_tuples(&l, &r)?.is_ge())
+                })
+            }
+            Self::TupleGt(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Arc<[Value]>, r: Arc<[Value]>| {
+                    Ok(compare_tuples(&l, &r)?.is_gt())
+                })
+            }
+            Self::CastFromInt(e) => unary_expr(e, values, |v: i64| v != 0),
+            Self::CastFromFloat(e) => unary_expr(e, values, |v: f64| v != 0.0),
+            Self::CastFromString(e) => unary_expr(e, values, |v: ArcStr| !v.is_empty()),
         }
     }
 }
 
 impl IntExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<i64> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<i64>> {
         match self {
-            Self::Const(c) => Ok(*c),
-            Self::Neg(e) => Ok(-e.eval_as_int(values)?),
-            Self::Abs(e) => Ok(e.eval_as_int(values)?.abs()),
-            Self::Add(lhs, rhs) => Ok(lhs.eval_as_int(values)? + rhs.eval_as_int(values)?),
-            Self::Sub(lhs, rhs) => Ok(lhs.eval_as_int(values)? - rhs.eval_as_int(values)?),
-            Self::Mul(lhs, rhs) => Ok(lhs.eval_as_int(values)? * rhs.eval_as_int(values)?),
-            Self::FloorDiv(lhs, rhs) => {
-                let rhs_val = rhs.eval_as_int(values)?;
-                if rhs_val == 0 {
+            Self::Const(c) => nullary_expr(values, &|| *c),
+            Self::Neg(e) => unary_expr(e, values, |v: i64| -v),
+            Self::Abs(e) => unary_expr(e, values, |v: i64| v.abs()),
+            Self::Add(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l + r),
+            Self::Sub(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l - r),
+            Self::Mul(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l * r),
+            Self::FloorDiv(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: i64, r: i64| {
+                if r == 0 {
                     Err(DynError::from(DataError::DivisionByZero))
                 } else {
-                    Ok(Integer::div_floor(&lhs.eval_as_int(values)?, &rhs_val))
+                    Ok(Integer::div_floor(&l, &r))
                 }
-            }
-            Self::Mod(lhs, rhs) => {
-                let rhs_val = rhs.eval_as_int(values)?;
-                if rhs_val == 0 {
+            }),
+            Self::Mod(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: i64, r: i64| {
+                if r == 0 {
                     Err(DynError::from(DataError::DivisionByZero))
                 } else {
-                    Ok(Integer::mod_floor(&lhs.eval_as_int(values)?, &rhs_val))
+                    Ok(Integer::mod_floor(&l, &r))
                 }
-            }
+            }),
             #[allow(clippy::cast_possible_truncation)]
             #[allow(clippy::cast_sign_loss)]
-            Self::Pow(lhs, rhs) => Ok(lhs
-                .eval(values)?
-                .as_int()?
-                .pow(rhs.eval_as_int(values)? as u32)),
-            Self::Lshift(lhs, rhs) => Ok(lhs.eval_as_int(values)? << rhs.eval_as_int(values)?),
-            Self::Rshift(lhs, rhs) => Ok(lhs.eval_as_int(values)? >> rhs.eval_as_int(values)?),
-            Self::And(lhs, rhs) => Ok(lhs.eval_as_int(values)? & rhs.eval_as_int(values)?),
-            Self::Or(lhs, rhs) => Ok(lhs.eval_as_int(values)? | rhs.eval_as_int(values)?),
-            Self::Xor(lhs, rhs) => Ok(lhs.eval_as_int(values)? ^ rhs.eval_as_int(values)?),
-            Self::DateTimeNaiveNanosecond(e) => Ok(e.eval_as_date_time_naive(values)?.nanosecond()),
+            Self::Pow(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l.pow(r as u32)),
+            Self::Lshift(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l << r),
+            Self::Rshift(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l >> r),
+            Self::And(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l & r),
+            Self::Or(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l | r),
+            Self::Xor(lhs, rhs) => binary_expr(lhs, rhs, values, |l: i64, r: i64| l ^ r),
+            Self::DateTimeNaiveNanosecond(e) => {
+                unary_expr(e, values, |v: DateTimeNaive| v.nanosecond())
+            }
             Self::DateTimeNaiveMicrosecond(e) => {
-                Ok(e.eval_as_date_time_naive(values)?.microsecond())
+                unary_expr(e, values, |v: DateTimeNaive| v.microsecond())
             }
             Self::DateTimeNaiveMillisecond(e) => {
-                Ok(e.eval_as_date_time_naive(values)?.millisecond())
+                unary_expr(e, values, |v: DateTimeNaive| v.millisecond())
             }
-            Self::DateTimeNaiveSecond(e) => Ok(e.eval_as_date_time_naive(values)?.second()),
-            Self::DateTimeNaiveMinute(e) => Ok(e.eval_as_date_time_naive(values)?.minute()),
-            Self::DateTimeNaiveHour(e) => Ok(e.eval_as_date_time_naive(values)?.hour()),
-            Self::DateTimeNaiveDay(e) => Ok(e.eval_as_date_time_naive(values)?.day()),
-            Self::DateTimeNaiveMonth(e) => Ok(e.eval_as_date_time_naive(values)?.month()),
-            Self::DateTimeNaiveYear(e) => Ok(e.eval_as_date_time_naive(values)?.year()),
-            Self::DateTimeNaiveTimestampNs(e) => Ok(e.eval_as_date_time_naive(values)?.timestamp()),
-            Self::DateTimeNaiveWeekday(e) => Ok(e.eval_as_date_time_naive(values)?.weekday()),
-            Self::DateTimeUtcNanosecond(e) => Ok(e.eval_as_date_time_utc(values)?.nanosecond()),
-            Self::DateTimeUtcMicrosecond(e) => Ok(e.eval_as_date_time_utc(values)?.microsecond()),
-            Self::DateTimeUtcMillisecond(e) => Ok(e.eval_as_date_time_utc(values)?.millisecond()),
-            Self::DateTimeUtcSecond(e) => Ok(e.eval_as_date_time_utc(values)?.second()),
-            Self::DateTimeUtcMinute(e) => Ok(e.eval_as_date_time_utc(values)?.minute()),
-            Self::DateTimeUtcHour(e) => Ok(e.eval_as_date_time_utc(values)?.hour()),
-            Self::DateTimeUtcDay(e) => Ok(e.eval_as_date_time_utc(values)?.day()),
-            Self::DateTimeUtcMonth(e) => Ok(e.eval_as_date_time_utc(values)?.month()),
-            Self::DateTimeUtcYear(e) => Ok(e.eval_as_date_time_utc(values)?.year()),
-            Self::DateTimeUtcTimestampNs(e) => Ok(e.eval_as_date_time_utc(values)?.timestamp()),
-            Self::DateTimeUtcWeekday(e) => Ok(e.eval_as_date_time_utc(values)?.weekday()),
+            Self::DateTimeNaiveSecond(e) => unary_expr(e, values, |v: DateTimeNaive| v.second()),
+            Self::DateTimeNaiveMinute(e) => unary_expr(e, values, |v: DateTimeNaive| v.minute()),
+            Self::DateTimeNaiveHour(e) => unary_expr(e, values, |v: DateTimeNaive| v.hour()),
+            Self::DateTimeNaiveDay(e) => unary_expr(e, values, |v: DateTimeNaive| v.day()),
+            Self::DateTimeNaiveMonth(e) => unary_expr(e, values, |v: DateTimeNaive| v.month()),
+            Self::DateTimeNaiveYear(e) => unary_expr(e, values, |v: DateTimeNaive| v.year()),
+            Self::DateTimeNaiveTimestampNs(e) => {
+                unary_expr(e, values, |v: DateTimeNaive| v.timestamp())
+            }
+            Self::DateTimeNaiveWeekday(e) => unary_expr(e, values, |v: DateTimeNaive| v.weekday()),
+            Self::DateTimeUtcNanosecond(e) => {
+                unary_expr(e, values, |v: DateTimeUtc| v.nanosecond())
+            }
+            Self::DateTimeUtcMicrosecond(e) => {
+                unary_expr(e, values, |v: DateTimeUtc| v.microsecond())
+            }
+            Self::DateTimeUtcMillisecond(e) => {
+                unary_expr(e, values, |v: DateTimeUtc| v.millisecond())
+            }
+            Self::DateTimeUtcSecond(e) => unary_expr(e, values, |v: DateTimeUtc| v.second()),
+            Self::DateTimeUtcMinute(e) => unary_expr(e, values, |v: DateTimeUtc| v.minute()),
+            Self::DateTimeUtcHour(e) => unary_expr(e, values, |v: DateTimeUtc| v.hour()),
+            Self::DateTimeUtcDay(e) => unary_expr(e, values, |v: DateTimeUtc| v.day()),
+            Self::DateTimeUtcMonth(e) => unary_expr(e, values, |v: DateTimeUtc| v.month()),
+            Self::DateTimeUtcYear(e) => unary_expr(e, values, |v: DateTimeUtc| v.year()),
+            Self::DateTimeUtcTimestampNs(e) => {
+                unary_expr(e, values, |v: DateTimeUtc| v.timestamp())
+            }
+            Self::DateTimeUtcWeekday(e) => unary_expr(e, values, |v: DateTimeUtc| v.weekday()),
             Self::DurationFloorDiv(lhs, rhs) => {
-                Ok((lhs.eval_as_duration(values)? / rhs.eval_as_duration(values)?)?)
-            }
-            Self::DurationNanoseconds(e) => Ok(e.eval_as_duration(values)?.nanoseconds()),
-            Self::DurationMicroseconds(e) => Ok(e.eval_as_duration(values)?.microseconds()),
-            Self::DurationMilliseconds(e) => Ok(e.eval_as_duration(values)?.milliseconds()),
-            Self::DurationSeconds(e) => Ok(e.eval_as_duration(values)?.seconds()),
-            Self::DurationMinutes(e) => Ok(e.eval_as_duration(values)?.minutes()),
-            Self::DurationHours(e) => Ok(e.eval_as_duration(values)?.hours()),
-            Self::DurationDays(e) => Ok(e.eval_as_duration(values)?.days()),
-            Self::DurationWeeks(e) => Ok(e.eval_as_duration(values)?.weeks()),
-            #[allow(clippy::cast_possible_truncation)]
-            Self::CastFromFloat(e) => Ok(e.eval_as_float(values)? as i64),
-            Self::CastFromBool(e) => Ok(i64::from(e.eval_as_bool(values)?)),
-            Self::CastFromString(e) => {
-                let val = e.eval(values)?;
-                let val_str = val.as_string()?.trim();
-                val_str.parse().map_err(|_| {
-                    DynError::from(DataError::ParseError(format!(
-                        "Cannot cast to int from {val_str}.",
-                    )))
+                binary_expr_err(lhs, rhs, values, |l: Duration, r: Duration| {
+                    if r.is_zero() {
+                        Err(DynError::from(DataError::DivisionByZero))
+                    } else {
+                        Ok(l / r)
+                    }
                 })
             }
+            Self::DurationNanoseconds(e) => unary_expr(e, values, |v: Duration| v.nanoseconds()),
+            Self::DurationMicroseconds(e) => unary_expr(e, values, |v: Duration| v.microseconds()),
+            Self::DurationMilliseconds(e) => unary_expr(e, values, |v: Duration| v.milliseconds()),
+            Self::DurationSeconds(e) => unary_expr(e, values, |v: Duration| v.seconds()),
+            Self::DurationMinutes(e) => unary_expr(e, values, |v: Duration| v.minutes()),
+            Self::DurationHours(e) => unary_expr(e, values, |v: Duration| v.hours()),
+            Self::DurationDays(e) => unary_expr(e, values, |v: Duration| v.days()),
+            Self::DurationWeeks(e) => unary_expr(e, values, |v: Duration| v.weeks()),
+            #[allow(clippy::cast_possible_truncation)]
+            Self::CastFromFloat(e) => unary_expr(e, values, |v: f64| v as i64),
+            Self::CastFromBool(e) => unary_expr(e, values, |v: bool| i64::from(v)),
+            Self::CastFromString(e) => unary_expr_err(e, values, &|v: ArcStr| {
+                v.trim().parse().map_err(|_| {
+                    DynError::from(DataError::ParseError(format!(
+                        "Cannot cast to int from {v}.",
+                    )))
+                })
+            }),
         }
     }
 }
 
 impl FloatExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<f64> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<f64>> {
         match self {
-            Self::Const(c) => Ok(*c),
-            Self::Neg(e) => Ok(-e.eval_as_float(values)?),
-            Self::Abs(e) => Ok(e.eval_as_float(values)?.abs()),
-            Self::Add(lhs, rhs) => Ok(lhs.eval_as_float(values)? + rhs.eval_as_float(values)?),
-            Self::Sub(lhs, rhs) => Ok(lhs.eval_as_float(values)? - rhs.eval_as_float(values)?),
-            Self::Mul(lhs, rhs) => Ok(lhs.eval_as_float(values)? * rhs.eval_as_float(values)?),
-            Self::FloorDiv(lhs, rhs) => {
-                let rhs_val = rhs.eval_as_float(values)?;
-                if rhs_val == 0.0f64 {
+            Self::Const(c) => nullary_expr(values, &|| *c),
+            Self::Neg(e) => unary_expr(e, values, |v: f64| -v),
+            Self::Abs(e) => unary_expr(e, values, |v: f64| v.abs()),
+            Self::Add(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l + r),
+            Self::Sub(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l - r),
+            Self::Mul(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| l * r),
+            Self::FloorDiv(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: f64, r: f64| {
+                if r == 0.0f64 {
                     Err(DynError::from(DataError::DivisionByZero))
                 } else {
-                    Ok((lhs.eval_as_float(values)? / rhs_val).floor())
+                    Ok((l / r).floor())
                 }
-            }
-            Self::TrueDiv(lhs, rhs) => {
-                let rhs_val = rhs.eval_as_float(values)?;
-                if rhs_val == 0.0f64 {
+            }),
+            Self::TrueDiv(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: f64, r: f64| {
+                if r == 0.0f64 {
                     Err(DynError::from(DataError::DivisionByZero))
                 } else {
-                    Ok(lhs.eval_as_float(values)? / rhs_val)
+                    Ok(l / r)
                 }
-            }
+            }),
             Self::Mod(lhs, rhs) => {
-                /*
-                Implementation the same as the one in Cpython
-                https://github.com/python/cpython/blob/main/Objects/floatobject.c#L640
-                */
-                let lhs_val = lhs.eval_as_float(values)?;
-                let rhs_val = rhs.eval_as_float(values)?;
-                if rhs_val == 0.0f64 {
-                    return Err(DynError::from(DataError::DivisionByZero));
-                }
-                let mut modulo = lhs_val % rhs_val;
-                if modulo == 0.0f64 {
-                    modulo = modulo.copysign(rhs_val);
-                } else if (rhs_val < 0.0f64) != (modulo < 0.0f64) {
-                    modulo += rhs_val;
-                }
-                Ok(modulo)
+                binary_expr_err(lhs, rhs, values, |l: f64, r: f64| {
+                    /*
+                    Implementation the same as the one in Cpython
+                    https://github.com/python/cpython/blob/main/Objects/floatobject.c#L640
+                    */
+                    if r == 0.0f64 {
+                        Err(DynError::from(DataError::DivisionByZero))
+                    } else {
+                        let mut modulo = l % r;
+                        if modulo == 0.0f64 {
+                            modulo = modulo.copysign(r);
+                        } else if (r < 0.0f64) != (modulo < 0.0f64) {
+                            modulo += r;
+                        }
+                        Ok(modulo)
+                    }
+                })
             }
-            Self::Pow(lhs, rhs) => {
-                let result = lhs.eval_as_float(values)?.powf(rhs.eval_as_float(values)?);
+            Self::Pow(lhs, rhs) => binary_expr(lhs, rhs, values, |l: f64, r: f64| {
+                let result = l.powf(r);
                 if result.is_infinite() {
                     warn!("overflow encountered in power.");
                 }
-                Ok(result)
-            }
+                result
+            }),
             #[allow(clippy::cast_precision_loss)]
-            Self::IntTrueDiv(lhs, rhs) => {
-                let rhs_val = rhs.eval_as_int(values)?;
-                if rhs_val == 0 {
+            Self::IntTrueDiv(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: i64, r: i64| {
+                if r == 0 {
                     Err(DynError::from(DataError::DivisionByZero))
                 } else {
-                    Ok(lhs.eval_as_int(values)? as f64 / rhs_val as f64)
+                    Ok((l as f64) / (r as f64))
                 }
-            }
-            Self::DateTimeNaiveTimestamp(e, unit) => Ok(e
-                .eval_as_date_time_naive(values)?
-                .timestamp_in_unit(&unit.eval_as_string(values)?)?),
-            Self::DateTimeUtcTimestamp(e, unit) => Ok(e
-                .eval_as_date_time_utc(values)?
-                .timestamp_in_unit(&unit.eval_as_string(values)?)?),
-            Self::DurationTrueDiv(lhs, rhs) => Ok(lhs
-                .eval_as_duration(values)?
-                .true_div(rhs.eval_as_duration(values)?)?),
-            Self::CastFromBool(e) => Ok(if e.eval_as_bool(values)? { 1.0 } else { 0.0 }),
-            #[allow(clippy::cast_precision_loss)]
-            Self::CastFromInt(e) => Ok(e.eval_as_int(values)? as f64),
-            Self::CastFromString(e) => {
-                let val = e.eval(values)?;
-                let val_str = val.as_string()?.trim();
-                val_str.parse().map_err(|_| {
-                    DynError::from(DataError::ParseError(format!(
-                        "Cannot cast to float from {val}."
-                    )))
+            }),
+            Self::DateTimeNaiveTimestamp(e, unit) => {
+                binary_expr_err(e, unit, values, |e: DateTimeNaive, unit: ArcStr| {
+                    Ok(e.timestamp_in_unit(&unit)?)
                 })
             }
+            Self::DateTimeUtcTimestamp(e, unit) => {
+                binary_expr_err(e, unit, values, |e: DateTimeUtc, unit: ArcStr| {
+                    Ok(e.timestamp_in_unit(&unit)?)
+                })
+            }
+            Self::DurationTrueDiv(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Duration, r: Duration| {
+                    if r.is_zero() {
+                        Err(DynError::from(DataError::DivisionByZero))
+                    } else {
+                        Ok(l.true_div(r))
+                    }
+                })
+            }
+            Self::CastFromBool(e) => unary_expr(e, values, |v| if v { 1.0 } else { 0.0 }),
+            #[allow(clippy::cast_precision_loss)]
+            Self::CastFromInt(e) => unary_expr(e, values, |v: i64| v as f64),
+            Self::CastFromString(e) => unary_expr_err(e, values, &|v: ArcStr| {
+                v.trim().parse().map_err(|_| {
+                    DynError::from(DataError::ParseError(format!(
+                        "Cannot cast to float from {v}.",
+                    )))
+                })
+            }),
         }
     }
 }
 
 impl PointerExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<Key> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<Key>> {
         match self {
-            Self::PointerFrom(args) => Ok(Key::for_values(&args.eval(values)?)),
+            Self::PointerFrom(args) => multi_expr(args, values, |args| Key::for_values(&args)),
             Self::PointerWithInstanceFrom(args, instance) => {
-                let mut args = args.eval(values)?.to_vec();
-                args.push(instance.eval(values)?);
-                Ok(ShardPolicy::LastKeyColumn.generate_key(&args))
+                multi_expression_with_additional_expression(
+                    args,
+                    instance,
+                    values,
+                    |args, instance| {
+                        let mut args = args.to_vec();
+                        args.push(instance);
+                        ShardPolicy::LastKeyColumn.generate_key(&args)
+                    },
+                )
             }
         }
     }
 }
 
 impl StringExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<ArcStr> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<ArcStr>> {
         match self {
-            Self::Add(lhs, rhs) => {
-                let lhs = lhs.eval_as_string(values)?;
-                let rhs = rhs.eval_as_string(values)?;
-                if lhs.is_empty() {
-                    Ok(rhs)
-                } else if rhs.is_empty() {
-                    Ok(lhs)
+            Self::Add(lhs, rhs) => binary_expr(lhs, rhs, values, |l: ArcStr, r: ArcStr| {
+                if l.is_empty() {
+                    r
+                } else if r.is_empty() {
+                    l
                 } else {
-                    Ok(ArcStr::from(([lhs, rhs]).concat()))
+                    ArcStr::from(([l, r]).concat())
                 }
-            }
-            Self::Mul(lhs, rhs) => {
-                let repeat = rhs.eval_as_int(values)?;
+            }),
+            Self::Mul(lhs, rhs) => binary_expr(lhs, rhs, values, |l: ArcStr, repeat: i64| {
                 if repeat < 0 {
-                    Ok(ArcStr::new())
+                    ArcStr::new()
                 } else {
                     let repeat = usize::try_from(repeat).unwrap();
-                    let result = ArcStr::repeat(&lhs.eval_as_string(values)?, repeat);
-                    Ok(result)
+                    ArcStr::repeat(&l, repeat)
                 }
-            }
-            Self::CastFromInt(e) => Ok(e.eval_as_int(values)?.to_string().into()),
-            Self::CastFromFloat(e) => Ok(e.eval_as_float(values)?.to_string().into()),
-            Self::CastFromBool(e) => Ok(if e.eval_as_bool(values)? {
-                arcstr::literal!("True")
-            } else {
-                arcstr::literal!("False")
             }),
-            Self::DateTimeNaiveStrftime(e, fmt) => Ok(ArcStr::from(
-                e.eval_as_date_time_naive(values)?
-                    .strftime(&fmt.eval_as_string(values)?),
-            )),
-            Self::DateTimeUtcStrftime(e, fmt) => Ok(ArcStr::from(
-                e.eval_as_date_time_utc(values)?
-                    .strftime(&fmt.eval_as_string(values)?),
-            )),
-            Self::ToString(e) => {
-                let val = e.eval(values)?;
-                Ok(match val {
-                    Value::String(s) => s,
-                    _ => val.to_string().into(),
+            Self::CastFromInt(e) => unary_expr(e, values, |v: i64| v.to_string().into()),
+            Self::CastFromFloat(e) => unary_expr(e, values, |v: f64| v.to_string().into()),
+            Self::CastFromBool(e) => unary_expr(e, values, |v| {
+                if v {
+                    arcstr::literal!("True")
+                } else {
+                    arcstr::literal!("False")
+                }
+            }),
+            Self::DateTimeNaiveStrftime(e, fmt) => {
+                binary_expr(e, fmt, values, |e: DateTimeNaive, fmt: ArcStr| {
+                    ArcStr::from(e.strftime(&fmt))
+                })
+            }
+            Self::DateTimeUtcStrftime(e, fmt) => {
+                binary_expr(e, fmt, values, |e: DateTimeUtc, fmt: ArcStr| {
+                    ArcStr::from(e.strftime(&fmt))
+                })
+            }
+            Self::ToString(e) => unary_expr(e, values, |v| match v {
+                Value::String(s) => s,
+                v => v.to_string().into(),
+            }),
+        }
+    }
+}
+
+impl DateTimeNaiveExpression {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<DateTimeNaive>> {
+        match self {
+            Self::AddDuration(lhs, rhs) => {
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: Duration| l + r)
+            }
+            Self::SubDuration(lhs, rhs) => {
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: Duration| l - r)
+            }
+            Self::Strptime(e, fmt) => binary_expr_err(e, fmt, values, |e: ArcStr, fmt: ArcStr| {
+                Ok(DateTimeNaive::strptime(&e, &fmt)?)
+            }),
+            Self::FromUtc(expr, timezone) => binary_expr_err(
+                expr,
+                timezone,
+                values,
+                |expr: DateTimeUtc, timezone: ArcStr| Ok(expr.to_naive_in_timezone(&timezone)?),
+            ),
+            Self::Round(expr, duration) => binary_expr(
+                expr,
+                duration,
+                values,
+                |expr: DateTimeNaive, duration: Duration| expr.round(duration),
+            ),
+            Self::Floor(expr, duration) => binary_expr(
+                expr,
+                duration,
+                values,
+                |expr: DateTimeNaive, duration: Duration| expr.truncate(duration),
+            ),
+            Self::FromTimestamp(expr, unit) => {
+                binary_expr_err(expr, unit, values, |expr: i64, unit: ArcStr| {
+                    Ok(DateTimeNaive::from_timestamp(expr, &unit)?)
+                })
+            }
+            Self::FromFloatTimestamp(expr, unit) => {
+                binary_expr_err(expr, unit, values, |expr: f64, unit: ArcStr| {
+                    Ok(DateTimeNaive::from_timestamp_f64(expr, &unit)?)
                 })
             }
         }
     }
 }
 
-impl DateTimeNaiveExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<DateTimeNaive> {
-        match self {
-            Self::AddDuration(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? + rhs.eval_as_duration(values)?)
-            }
-            Self::SubDuration(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? - rhs.eval_as_duration(values)?)
-            }
-            Self::Strptime(e, fmt) => Ok(DateTimeNaive::strptime(
-                &e.eval_as_string(values)?,
-                &fmt.eval_as_string(values)?,
-            )?),
-            Self::FromUtc(expr, timezone) => Ok(expr
-                .eval_as_date_time_utc(values)?
-                .to_naive_in_timezone(&timezone.eval_as_string(values)?)?),
-            Self::Round(expr, duration) => Ok(expr
-                .eval_as_date_time_naive(values)?
-                .round(duration.eval_as_duration(values)?)),
-            Self::Floor(expr, duration) => Ok(expr
-                .eval_as_date_time_naive(values)?
-                .truncate(duration.eval_as_duration(values)?)),
-            Self::FromTimestamp(expr, unit) => Ok(DateTimeNaive::from_timestamp(
-                expr.eval_as_int(values)?,
-                &unit.eval_as_string(values)?,
-            )?),
-            Self::FromFloatTimestamp(expr, unit) => Ok(DateTimeNaive::from_timestamp_f64(
-                expr.eval_as_float(values)?,
-                &unit.eval_as_string(values)?,
-            )?),
-        }
-    }
-}
-
 impl DateTimeUtcExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<DateTimeUtc> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<DateTimeUtc>> {
         match self {
             Self::AddDuration(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? + rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: Duration| l + r)
             }
             Self::SubDuration(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? - rhs.eval_as_duration(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: Duration| l - r)
             }
-            Self::Strptime(e, fmt) => Ok(DateTimeUtc::strptime(
-                &e.eval_as_string(values)?,
-                &fmt.eval_as_string(values)?,
-            )?),
-            Self::FromNaive(expr, from_timezone) => Ok(expr
-                .eval_as_date_time_naive(values)?
-                .to_utc_from_timezone(&from_timezone.eval_as_string(values)?)?),
-            Self::Round(expr, duration) => Ok(expr
-                .eval_as_date_time_utc(values)?
-                .round(duration.eval_as_duration(values)?)),
-            Self::Floor(expr, duration) => Ok(expr
-                .eval_as_date_time_utc(values)?
-                .truncate(duration.eval_as_duration(values)?)),
+            Self::Strptime(e, fmt) => binary_expr_err(e, fmt, values, |e: ArcStr, fmt: ArcStr| {
+                Ok(DateTimeUtc::strptime(&e, &fmt)?)
+            }),
+            Self::FromNaive(expr, to_timezone) => binary_expr_err(
+                expr,
+                to_timezone,
+                values,
+                |expr: DateTimeNaive, to_timezone: ArcStr| {
+                    Ok(expr.to_utc_from_timezone(&to_timezone)?)
+                },
+            ),
+            Self::Round(expr, duration) => binary_expr(
+                expr,
+                duration,
+                values,
+                |expr: DateTimeUtc, duration: Duration| expr.round(duration),
+            ),
+            Self::Floor(expr, duration) => binary_expr(
+                expr,
+                duration,
+                values,
+                |expr: DateTimeUtc, duration: Duration| expr.truncate(duration),
+            ),
         }
     }
 }
 
 impl DurationExpression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<Duration> {
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<Duration>> {
         match self {
             Self::FromTimeUnit(val, unit) => {
-                let unit = unit.eval_as_string(values)?;
-                let val = val.eval_as_int(values)?;
-                Ok(Duration::new_with_unit(val, unit.as_str())?)
+                binary_expr_err(val, unit, values, |val: i64, unit: ArcStr| {
+                    Ok(Duration::new_with_unit(val, &unit)?)
+                })
             }
-            Self::Neg(e) => Ok(-e.eval_as_duration(values)?),
-            Self::Add(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? + rhs.eval_as_duration(values)?)
+            Self::Neg(e) => unary_expr(e, values, |v: Duration| -v),
+            Self::Add(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l + r),
+            Self::Sub(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Duration, r: Duration| l - r),
+            Self::MulByInt(lhs, rhs) => binary_expr(lhs, rhs, values, |l: Duration, r: i64| l * r),
+            Self::DivByInt(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: Duration, r: i64| {
+                if r == 0 {
+                    Err(DynError::from(DataError::DivisionByZero))
+                } else {
+                    Ok(l / r)
+                }
+            }),
+            Self::TrueDivByInt(lhs, rhs) => {
+                binary_expr_err(lhs, rhs, values, |l: Duration, r: i64| {
+                    if r == 0 {
+                        Err(DynError::from(DataError::DivisionByZero))
+                    } else {
+                        Ok(l.true_div_by_i64(r))
+                    }
+                })
             }
-            Self::Sub(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? - rhs.eval_as_duration(values)?)
-            }
-            Self::MulByInt(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? * rhs.eval_as_int(values)?)
-            }
-            Self::DivByInt(lhs, rhs) => {
-                Ok((lhs.eval_as_duration(values)? / rhs.eval_as_int(values)?)?)
-            }
-            Self::TrueDivByInt(lhs, rhs) => Ok(lhs
-                .eval_as_duration(values)?
-                .true_div_by_i64(rhs.eval_as_int(values)?)?),
             Self::MulByFloat(lhs, rhs) => {
-                Ok(lhs.eval_as_duration(values)? * rhs.eval_as_float(values)?)
+                binary_expr(lhs, rhs, values, |l: Duration, r: f64| l * r)
             }
             Self::DivByFloat(lhs, rhs) => {
-                Ok((lhs.eval_as_duration(values)? / rhs.eval_as_float(values)?)?)
+                binary_expr_err(lhs, rhs, values, |l: Duration, r: f64| {
+                    if r == 0.0 {
+                        Err(DynError::from(DataError::DivisionByZero))
+                    } else {
+                        Ok(l / r)
+                    }
+                })
             }
-            Self::Mod(lhs, rhs) => {
-                Ok((lhs.eval_as_duration(values)? % rhs.eval_as_duration(values)?)?)
-            }
+            Self::Mod(lhs, rhs) => binary_expr_err(lhs, rhs, values, |l: Duration, r: Duration| {
+                if r.is_zero() {
+                    Err(DynError::from(DataError::DivisionByZero))
+                } else {
+                    Ok(l % r)
+                }
+            }),
             Self::DateTimeNaiveSub(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_naive(values)? - rhs.eval_as_date_time_naive(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeNaive, r: DateTimeNaive| l - r)
             }
             Self::DateTimeUtcSub(lhs, rhs) => {
-                Ok(lhs.eval_as_date_time_utc(values)? - rhs.eval_as_date_time_utc(values)?)
+                binary_expr(lhs, rhs, values, |l: DateTimeUtc, r: DateTimeUtc| l - r)
             }
         }
     }
 }
 
 impl Expression {
-    pub fn eval(&self, values: &[Value]) -> DynResult<Value> {
-        match self {
-            Self::Bool(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::Int(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::Float(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::Pointer(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::String(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::DateTimeNaive(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::DateTimeUtc(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::Duration(expr) => Ok(Value::from(expr.eval(values)?)),
-            Self::Any(expr) => Ok(expr.eval(values)?),
-        }
+    pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<Value>> {
+        self.eval_as(values)
     }
 
     #[cold]
@@ -1215,83 +1465,145 @@ impl Expression {
         DynError::from(DataError::ColumnTypeMismatch { expected, actual })
     }
 
-    pub fn eval_as_bool(&self, values: &[Value]) -> DynResult<bool> {
-        match self {
-            Self::Bool(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_bool(),
-            _ => Err(self.type_error("bool")),
-        }
-    }
-
-    pub fn eval_as_int(&self, values: &[Value]) -> DynResult<i64> {
-        match self {
-            Self::Int(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_int(),
-            _ => Err(self.type_error("int")),
-        }
-    }
-
-    pub fn eval_as_float(&self, values: &[Value]) -> DynResult<f64> {
-        match self {
-            Self::Float(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_float(),
-            _ => Err(self.type_error("float")),
-        }
-    }
-
-    pub fn eval_as_pointer(&self, values: &[Value]) -> DynResult<Key> {
-        match self {
-            Self::Pointer(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_pointer(),
-            _ => Err(self.type_error("pointer")),
-        }
-    }
-
-    pub fn eval_as_string(&self, values: &[Value]) -> DynResult<ArcStr> {
-        match self {
-            Self::String(expr) => expr.eval(values),
-            Self::Any(expr) => Ok(expr.eval(values)?.as_string()?.clone()),
-            _ => Err(self.type_error("string")),
-        }
-    }
-
-    pub fn eval_as_date_time_naive(&self, values: &[Value]) -> DynResult<DateTimeNaive> {
-        match self {
-            Self::DateTimeNaive(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_date_time_naive(),
-            _ => Err(self.type_error("DateTimeNaive")),
-        }
-    }
-
-    pub fn eval_as_date_time_utc(&self, values: &[Value]) -> DynResult<DateTimeUtc> {
-        match self {
-            Self::DateTimeUtc(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_date_time_utc(),
-            _ => Err(self.type_error("DateTimeUtc")),
-        }
-    }
-
-    pub fn eval_as_duration(&self, values: &[Value]) -> DynResult<Duration> {
-        match self {
-            Self::Duration(expr) => expr.eval(values),
-            Self::Any(expr) => expr.eval(values)?.as_duration(),
-            _ => Err(self.type_error("Duration")),
-        }
-    }
-
-    pub fn eval_as_tuple(&self, values: &[Value]) -> DynResult<Arc<[Value]>> {
-        match self {
-            Self::Any(expr) => expr.eval(values)?.as_tuple().cloned(),
-            _ => Err(self.type_error("Tuple")),
-        }
-    }
-
     pub fn new_const(value: Value) -> Self {
         match value {
             Value::Bool(b) => Self::Bool(BoolExpression::Const(b)),
             Value::Int(i) => Self::Int(IntExpression::Const(i)),
             Value::Float(OrderedFloat(f)) => Self::Float(FloatExpression::Const(f)),
             other => Self::Any(AnyExpression::Const(other)),
+        }
+    }
+}
+
+trait EvalAs<T> {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<T>>;
+}
+
+impl EvalAs<Value> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Value>> {
+        match self {
+            Self::Bool(_) => unary_expr(self, values, |v: bool| Value::from(v)),
+            Self::Int(_) => unary_expr(self, values, |v: i64| Value::from(v)),
+            Self::Float(_) => unary_expr(self, values, |v: f64| Value::from(v)),
+            Self::Pointer(_) => unary_expr(self, values, |v: Key| Value::from(v)),
+            Self::String(_) => unary_expr(self, values, |v: ArcStr| Value::from(v)),
+            Self::DateTimeNaive(_) => unary_expr(self, values, |v: DateTimeNaive| Value::from(v)),
+            Self::DateTimeUtc(_) => unary_expr(self, values, |v: DateTimeUtc| Value::from(v)),
+            Self::Duration(_) => unary_expr(self, values, |v: Duration| Value::from(v)),
+            Self::Any(expr) => expr.eval(values),
+        }
+    }
+}
+
+impl EvalAs<bool> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<bool>> {
+        match self {
+            Self::Bool(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_bool()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("bool")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<i64> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<i64>> {
+        match self {
+            Self::Int(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_int()),
+            _ => values.iter().map(|_| Err(self.type_error("int"))).collect(),
+        }
+    }
+}
+
+impl EvalAs<f64> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<f64>> {
+        match self {
+            Self::Float(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_float()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("float")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<ArcStr> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<ArcStr>> {
+        match self {
+            Self::String(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_string().cloned()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("string")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<Key> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Key>> {
+        match self {
+            Self::Pointer(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_pointer()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("pointer")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<DateTimeNaive> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<DateTimeNaive>> {
+        match self {
+            Self::DateTimeNaive(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_date_time_naive()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("DateTimeNaive")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<DateTimeUtc> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<DateTimeUtc>> {
+        match self {
+            Self::DateTimeUtc(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_date_time_utc()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("DateTimeUtc")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<Duration> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Duration>> {
+        match self {
+            Self::Duration(expr) => expr.eval(values),
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_duration()),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("Duration")))
+                .collect(),
+        }
+    }
+}
+
+impl EvalAs<Arc<[Value]>> for Expression {
+    fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Arc<[Value]>>> {
+        match self {
+            Self::Any(_) => unary_expr_err(self, values, &|v: Value| Ok(v.as_tuple()?.clone())),
+            _ => values
+                .iter()
+                .map(|_| Err(self.type_error("Tuple")))
+                .collect(),
         }
     }
 }

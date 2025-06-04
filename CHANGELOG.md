@@ -7,10 +7,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - Data persistence can now be configured to use Azure Blob Storage as a backend. An Azure backend instance can be created using `pw.persistence.Backend.azure` and included in the persistence config.
+- Added batching to UDFs. It is now possible to make UDFs operate on batches of data instead of single rows. To do so `max_batch_size` argument has to be set.
 
 ### Changed
 - **BREAKING**: when creating `pw.DateTimeUtc` it is now obligatory to pass the time zone information.
 - **BREAKING**: when creating `pw.DateTimeNaive` passing time zone information is not allowed.
+- **BREAKING**: expressions are now evaluated in batches. Generally, it speeds up the computations but might increase the memory usage if the intermediate state in the expressions is large.
 
 ### Fixed
 - Synchronization groups now correctly handle cases where the source file-like object is updated during the reading process.

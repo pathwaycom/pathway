@@ -109,6 +109,7 @@ class UDF(abc.ABC):
     propagate_none: bool
     executor: Executor
     cache_strategy: CacheStrategy | None
+    max_batch_size: int | None
 
     def __init__(
         self,
@@ -118,6 +119,7 @@ class UDF(abc.ABC):
         propagate_none: bool = False,
         executor: Executor = AutoExecutor(),
         cache_strategy: CacheStrategy | None = None,
+        max_batch_size: int | None = None,
     ) -> None:
         """
         Args:
@@ -141,12 +143,21 @@ class UDF(abc.ABC):
                 then it is executed asynchronously. Otherwise it is executed synchronously.
             cache_strategy: Defines the caching mechanism.
                 Defaults to None.
+            max_batch_size: If set, defines the maximal number of rows that can be passed
+                to a UDF at once. Then each argument is a list of values and a UDF has to
+                return a list with results with the same length as input lists. The result
+                at position `i` has to be the result for input at position `i`.
         """
         self.return_type = return_type
         self.deterministic = deterministic
         self.propagate_none = propagate_none
         self.executor = self._prepare_executor(executor)
         self.cache_strategy = cache_strategy
+        if not isinstance(self.executor, SyncExecutor) and max_batch_size is not None:
+            raise ValueError(
+                "Batching is currently supported only for synchronous UDFs."
+            )
+        self.max_batch_size = max_batch_size
         self.func = self._wrap_function()
 
     def _get_config(self) -> dict[str, Any]:
@@ -168,21 +179,35 @@ class UDF(abc.ABC):
             except ValueError:
                 sig_return_type = Any
 
-        if return_type is ...:
-            return sig_return_type
         try:
             wrapped_sig_return_type = dt.wrap(sig_return_type)
         except TypeError:
             wrapped_sig_return_type = None
-        if wrapped_sig_return_type is None or (
-            sig_return_type != Any
-            and not dt.dtype_issubclass(wrapped_sig_return_type, dt.wrap(return_type))
+
+        if return_type is not ... and (
+            wrapped_sig_return_type is None
+            or (
+                sig_return_type != Any
+                and not dt.dtype_issubclass(
+                    wrapped_sig_return_type, dt.wrap(return_type)
+                )
+            )
         ):
             warn(
                 f"The value of return_type parameter ({return_type}) is inconsistent with"
                 + f" UDF's return type annotation ({sig_return_type}).",
                 stacklevel=3,
             )
+        if return_type is ...:  # return type only specified in signature
+            if self.max_batch_size is None:
+                return sig_return_type
+            else:
+                if not isinstance(wrapped_sig_return_type, dt.List):
+                    raise ValueError(
+                        f"A batch UDF has to return a list but is annotated as returning {sig_return_type}"
+                    )
+                return wrapped_sig_return_type.wrapped
+
         return return_type
 
     def _wrap_function(self) -> Callable:
@@ -205,6 +230,7 @@ class UDF(abc.ABC):
             return_type=self._get_return_type(),
             propagate_none=self.propagate_none,
             deterministic=self.deterministic,
+            max_batch_size=self.max_batch_size,
             **self.executor.additional_expression_args(),
             args=args,
             kwargs=kwargs,
@@ -277,6 +303,7 @@ def udf(
     propagate_none: bool = False,
     executor: Executor = AutoExecutor(),
     cache_strategy: CacheStrategy | None = None,
+    max_batch_size: int | None = None,
 ) -> Callable[[Callable], UDF]: ...
 
 
@@ -290,6 +317,7 @@ def udf(
     propagate_none: bool = False,
     executor: Executor = AutoExecutor(),
     cache_strategy: CacheStrategy | None = None,
+    max_batch_size: int | None = None,
 ) -> UDF: ...
 
 
@@ -304,6 +332,7 @@ def udf(
     propagate_none: bool = False,
     executor: Executor = AutoExecutor(),
     cache_strategy: CacheStrategy | None = None,
+    max_batch_size: int | None = None,
 ):
     """Create a Python UDF (user-defined function) out of a callable.
 
@@ -328,6 +357,10 @@ def udf(
             then it is executed asynchronously. Otherwise it is executed synchronously.
         cache_strategy: Defines the caching mechanism.
             Defaults to None.
+        max_batch_size: If set, defines the maximal number of rows that can be passed
+            to a UDF at once. Then each argument is a list of values and a UDF has to
+            return a list with results with the same length as input lists. The result
+            at position `i` has to be the result for input at position `i`.
     Example:
 
     >>> import pathway as pw
@@ -382,4 +415,5 @@ def udf(
         propagate_none=propagate_none,
         executor=executor,
         cache_strategy=cache_strategy,
+        max_batch_size=max_batch_size,
     )

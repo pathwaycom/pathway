@@ -794,6 +794,7 @@ class ApplyExpression(ColumnExpression):
     _propagate_none: bool
     _deterministic: bool
     _check_for_disallowed_types: bool
+    _max_batch_size: int | None
     _args: tuple[ColumnExpression, ...]
     _kwargs: dict[str, ColumnExpression]
     _fun: Callable
@@ -807,6 +808,7 @@ class ApplyExpression(ColumnExpression):
         args: tuple[ColumnExpression | Value, ...],
         kwargs: Mapping[str, ColumnExpression | Value],
         _check_for_disallowed_types: bool = True,
+        max_batch_size: int | None = None,
     ):
         super().__init__()
         self._fun = fun
@@ -814,6 +816,7 @@ class ApplyExpression(ColumnExpression):
         self._propagate_none = propagate_none
         self._deterministic = deterministic
         self._check_for_disallowed_types = _check_for_disallowed_types
+        self._max_batch_size = max_batch_size
 
         self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
 
@@ -832,6 +835,7 @@ class ApplyExpression(ColumnExpression):
             self._propagate_none,
             self._deterministic,
             self._check_for_disallowed_types,
+            self._max_batch_size,
             *self._args,
             **self._kwargs,
         )
@@ -860,6 +864,7 @@ class FullyAsyncApplyExpression(ApplyExpression):
         autocommit_duration_ms: int | None,
         args: tuple[ColumnExpression | Value, ...],
         kwargs: Mapping[str, ColumnExpression | Value],
+        max_batch_size: int | None = None,
     ):
         super().__init__(fun, return_type, propagate_none, deterministic, args, kwargs)
         self.autocommit_duration_ms = autocommit_duration_ms

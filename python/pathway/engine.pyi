@@ -237,6 +237,7 @@ class Expression:
         *args: Expression,
         dtype: PathwayType,
         propagate_none: bool = False,
+        max_batch_size: int | None = None,
     ) -> Expression: ...
     @staticmethod
     def is_none(expr: Expression) -> Expression: ...
@@ -770,6 +771,7 @@ def run_with_new_graph(
     trace_parent: str | None = None,
     run_id: str | None = None,
     terminate_on_error: bool = True,
+    max_expression_batch_size: int,
 ) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
 

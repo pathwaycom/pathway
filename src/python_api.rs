@@ -1192,6 +1192,80 @@ macro_rules! binary_expr {
     };
 }
 
+fn batch_apply(
+    py: Python<'_>,
+    input: &[&[Value]],
+    n_args: usize,
+    function: &Py<PyAny>,
+    dtype: &Type,
+    propagate_none: bool,
+    max_batch_size: usize,
+) -> Vec<DynResult<Value>> {
+    input
+        .chunks(max_batch_size)
+        .flat_map(|inputs| {
+            let mut mask = vec![false; inputs.len()];
+            let mut data = Vec::with_capacity(n_args);
+            data.resize_with(n_args, || Vec::with_capacity(inputs.len()));
+            for (i, input_i) in inputs.iter().enumerate() {
+                if propagate_none && input_i.iter().any(|a| matches!(a, Value::None)) {
+                    mask[i] = true;
+                } else {
+                    for (j, input_ij) in input_i.iter().enumerate() {
+                        data[j].push(input_ij.clone());
+                    }
+                }
+            }
+            let args = PyTuple::new_bound(py, data);
+            let results = function
+                .call1(py, args)
+                .and_then(|results| results.extract::<Vec<Bound<PyAny>>>(py));
+            let batch_result: Vec<DynResult<Value>> = match results {
+                Ok(results) => {
+                    if results.len() == inputs.len() {
+                        results
+                            .into_iter()
+                            .map(|result| Ok(extract_value(&result, dtype)?))
+                            .collect()
+                    } else {
+                        let msg =
+                            format!("The number of rows produced by a UDF ({})", results.len())
+                                + &format!(
+                                    " is different than the number of rows on its input ({}).",
+                                    inputs.len()
+                                );
+                        inputs
+                            .iter()
+                            .map(|_i| Err(PyValueError::new_err(msg.clone()).into()))
+                            .collect()
+                    }
+                }
+                Err(e) => {
+                    let msg = "Error in batch UDF.";
+                    [Err(e.into())]
+                        .into_iter()
+                        .chain((1..inputs.len()).map(|_| Err(PyValueError::new_err(msg).into())))
+                        .collect()
+                }
+            };
+            if propagate_none {
+                let mut batch_result_iter = batch_result.into_iter();
+                mask.into_iter()
+                    .map(|m| {
+                        if m {
+                            Ok(Value::None)
+                        } else {
+                            batch_result_iter.next().unwrap()
+                        }
+                    })
+                    .collect()
+            } else {
+                batch_result
+            }
+        })
+        .collect()
+}
+
 #[pymethods]
 impl PyExpression {
     #[staticmethod]
@@ -1209,27 +1283,51 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (function, *args, dtype, propagate_none=false))]
+    #[pyo3(signature = (function, *args, dtype, propagate_none=false, max_batch_size=None))]
     fn apply(
         function: Py<PyAny>,
         args: Vec<PyRef<PyExpression>>,
         dtype: Type,
         propagate_none: bool,
+        max_batch_size: Option<usize>,
     ) -> Self {
         let args = args
             .into_iter()
             .map(|expr| expr.inner.clone())
             .collect_vec();
-        let func = Box::new(move |input: &[Value]| {
-            Python::with_gil(|py| -> DynResult<Value> {
-                let args = PyTuple::new_bound(py, input);
-                let result = function.call1(py, args)?;
-                Ok(extract_value(result.bind(py), &dtype)?)
-            })
-        });
-        let expression = if propagate_none {
-            AnyExpression::OptionalApply(func, args.into())
+        let n_args = args.len();
+        let expression = if let Some(max_batch_size) = max_batch_size {
+            let func = Box::new(move |input: &[&[Value]]| {
+                Python::with_gil(|py| -> Vec<DynResult<Value>> {
+                    batch_apply(
+                        py,
+                        input,
+                        n_args,
+                        &function,
+                        &dtype,
+                        propagate_none,
+                        max_batch_size,
+                    )
+                })
+            });
+            AnyExpression::Apply(func, args.into())
         } else {
+            let func = Box::new(move |input: &[&[Value]]| {
+                Python::with_gil(|py| -> Vec<DynResult<Value>> {
+                    input
+                        .iter()
+                        .map(|input_i| {
+                            if propagate_none && input_i.iter().any(|a| matches!(a, Value::None)) {
+                                Ok(Value::None)
+                            } else {
+                                let args = PyTuple::new_bound(py, *input_i);
+                                let result = function.call1(py, args)?;
+                                Ok(extract_value(result.bind(py), &dtype)?)
+                            }
+                        })
+                        .collect()
+                })
+            });
             AnyExpression::Apply(func, args.into())
         };
         Self::new(Arc::new(Expression::Any(expression)), true)
@@ -2639,9 +2737,14 @@ impl Scope {
             BatchWrapper::WithGil,
             Arc::new(Expression::Any(AnyExpression::Apply(
                 Box::new(move |input| {
-                    Python::with_gil(|py| -> DynResult<_> {
-                        let inputs = PyTuple::new_bound(py, input);
-                        Ok(function.call1(py, (inputs,))?.extract::<Value>(py)?)
+                    Python::with_gil(|py| -> Vec<DynResult<_>> {
+                        input
+                            .iter()
+                            .map(|input_i| {
+                                let inputs_i = PyTuple::new_bound(py, *input_i);
+                                Ok(function.call1(py, (inputs_i,))?.extract::<Value>(py)?)
+                            })
+                            .collect()
                     })
                 }),
                 Expressions::Arguments(0..table.columns.len()),
@@ -3507,6 +3610,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
     trace_parent = None,
     run_id = None,
     terminate_on_error = true,
+    max_expression_batch_size = 1024,
 ))]
 pub fn run_with_new_graph(
     py: Python,
@@ -3522,6 +3626,7 @@ pub fn run_with_new_graph(
     trace_parent: Option<String>,
     run_id: Option<String>,
     terminate_on_error: bool,
+    max_expression_batch_size: usize,
 ) -> PyResult<Vec<Vec<DataRow>>> {
     LOGGING_RESET_HANDLE.reset();
     defer! {
@@ -3583,6 +3688,7 @@ pub fn run_with_new_graph(
                 &license,
                 telemetry_config,
                 terminate_on_error,
+                max_expression_batch_size,
             )
         })
     })??;

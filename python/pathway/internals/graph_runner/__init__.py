@@ -55,6 +55,7 @@ class GraphRunner:
         persistence_config: PersistenceConfig | None = None,
         runtime_typechecking: bool | None = None,
         terminate_on_error: bool | None = None,
+        max_expression_batch_size: int = 1024,
         _stacklevel: int = 1,
     ) -> None:
         pathway_config = get_pathway_config()
@@ -75,6 +76,7 @@ class GraphRunner:
         if terminate_on_error is None:
             terminate_on_error = pathway_config.terminate_on_error
         self.terminate_on_error = terminate_on_error
+        self.max_expression_batch_size = max_expression_batch_size
         if not self.terminate_on_error:
             warnings.warn(
                 "terminate_on_error=False mode is experimental",
@@ -211,6 +213,7 @@ class GraphRunner:
                         trace_parent=trace_parent,
                         run_id=run_id,
                         terminate_on_error=self.terminate_on_error,
+                        max_expression_batch_size=self.max_expression_batch_size,
                     )
                 except api.EngineErrorWithTrace as e:
                     error, frame = e.args

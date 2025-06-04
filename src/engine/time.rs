@@ -360,6 +360,10 @@ impl Duration {
         Self { duration }
     }
 
+    pub fn is_zero(&self) -> bool {
+        self.duration == 0
+    }
+
     pub fn new_with_unit(duration: i64, unit: &str) -> DataResult<Self> {
         Ok(Self {
             duration: duration * get_unit_multiplier(unit)?,
@@ -403,20 +407,13 @@ impl Duration {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    pub fn true_div(self, other: Self) -> DataResult<f64> {
-        if other.duration == 0 {
-            Err(DataError::DivisionByZero)
-        } else {
-            Ok(self.duration as f64 / other.duration as f64)
-        }
+    pub fn true_div(self, other: Self) -> f64 {
+        self.duration as f64 / other.duration as f64
     }
 
-    pub fn true_div_by_i64(self, other: i64) -> DataResult<Self> {
-        if other == 0 {
-            Err(DataError::DivisionByZero)
-        } else {
-            Ok(Self::new(self.duration / other))
-        }
+    #[must_use]
+    pub fn true_div_by_i64(self, other: i64) -> Self {
+        Self::new(self.duration / other)
     }
 }
 
@@ -473,58 +470,36 @@ impl Mul<f64> for Duration {
 }
 
 impl Div for Duration {
-    type Output = DataResult<i64>;
+    type Output = i64;
 
     fn div(self, other: Self) -> Self::Output {
-        if other.duration == 0 {
-            Err(DataError::DivisionByZero)
-        } else {
-            Ok(Integer::div_floor(&self.duration, &other.duration))
-        }
+        Integer::div_floor(&self.duration, &other.duration)
     }
 }
 
 impl Div<i64> for Duration {
-    type Output = DataResult<Duration>;
+    type Output = Duration;
 
     fn div(self, other: i64) -> Self::Output {
-        if other == 0 {
-            Err(DataError::DivisionByZero)
-        } else {
-            Ok(Duration {
-                duration: Integer::div_floor(&self.duration, &other),
-            })
-        }
+        Self::new(Integer::div_floor(&self.duration, &other))
     }
 }
 
 impl Div<f64> for Duration {
-    type Output = DataResult<Duration>;
+    type Output = Duration;
 
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_precision_loss)]
     fn div(self, other: f64) -> Self::Output {
-        if other == 0.0 {
-            Err(DataError::DivisionByZero)
-        } else {
-            Ok(Duration {
-                duration: (self.duration as f64 / other) as i64,
-            })
-        }
+        Self::new((self.duration as f64 / other) as i64)
     }
 }
 
 impl Rem for Duration {
-    type Output = DataResult<Duration>;
+    type Output = Duration;
 
     fn rem(self, other: Self) -> Self::Output {
-        if other.duration == 0 {
-            Err(DataError::DivisionByZero)
-        } else {
-            Ok(Duration {
-                duration: Integer::mod_floor(&self.duration, &other.duration),
-            })
-        }
+        Self::new(Integer::mod_floor(&self.duration, &other.duration))
     }
 }
 

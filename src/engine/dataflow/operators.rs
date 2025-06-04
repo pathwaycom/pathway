@@ -18,6 +18,7 @@ use differential_dataflow::{AsCollection, Collection, Data, ExchangeData};
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::StreamExt;
 use futures::{future, Future};
+use itertools::Itertools;
 use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely::dataflow::operators::Exchange as _;
 use timely::dataflow::operators::Operator;
@@ -213,6 +214,13 @@ where
         logic: impl FnMut(D) -> D2 + 'static,
     ) -> Collection<S, D2, R>;
 
+    fn map_wrapped_batched_named<D2: Data>(
+        &self,
+        name: &str,
+        wrapper: BatchWrapper,
+        logic: impl FnMut(Vec<D>) -> Vec<D2> + 'static,
+    ) -> Collection<S, D2, R>;
+
     fn map_named_async<F: Future>(
         &self,
         name: &str,
@@ -255,6 +263,41 @@ where
                                 vector
                                     .drain(..)
                                     .map(|(data, time, diff)| (logic(data), time, diff)),
+                            );
+                        }
+                    });
+                }
+            })
+            .as_collection()
+    }
+
+    #[track_caller]
+    fn map_wrapped_batched_named<D2: Data>(
+        &self,
+        name: &str,
+        wrapper: BatchWrapper,
+        mut logic: impl FnMut(Vec<D>) -> Vec<D2> + 'static,
+    ) -> Collection<S, D2, R> {
+        let caller = Location::caller();
+        let name = format!("{name} at {caller}");
+        let mut vector = Vec::new();
+        self.inner
+            .unary(Pipeline, &name, move |_, _| {
+                move |input, output| {
+                    wrapper.run(|| {
+                        while let Some((time, data)) = input.next() {
+                            data.swap(&mut vector);
+                            let times_diffs: Vec<_> = vector
+                                .iter()
+                                .map(|(_data, time, diff)| (time.clone(), diff.clone()))
+                                .collect();
+                            let results =
+                                logic(vector.drain(..).map(|(data, _time, _diff)| data).collect());
+                            output.session(&time).give_iterator(
+                                results
+                                    .into_iter()
+                                    .zip_eq(times_diffs.into_iter())
+                                    .map(|(result, (time, diff))| (result, time, diff)),
                             );
                         }
                     });
@@ -312,7 +355,7 @@ where
         &self,
         name: &str,
         wrapper: BatchWrapper,
-        logic: impl FnMut(D) -> Option<D2> + 'static,
+        logic: impl FnMut(Vec<(D, R)>) -> Vec<Option<D2>> + 'static,
     ) -> Collection<S, D2, R>;
 
     fn map_named_async_with_deletions_handling<D2, F: Future>(
@@ -337,7 +380,7 @@ where
         &self,
         name: &str,
         wrapper: BatchWrapper,
-        mut logic: impl FnMut(D) -> Option<D2> + 'static,
+        mut logic: impl FnMut(Vec<(D, R)>) -> Vec<Option<D2>> + 'static,
     ) -> Collection<S, D2, R> {
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
@@ -349,11 +392,16 @@ where
                         while let Some((cap, data)) = input.next() {
                             data.swap(&mut vector);
                             for batch in vector.drain(..) {
-                                let OutputBatch { time, mut data } = batch;
+                                let OutputBatch { time, data } = batch;
+                                let diffs: Vec<_> =
+                                    data.iter().map(|(_data, diff)| *diff).collect();
                                 output.session(&cap.delayed(&time)).give_iterator(
-                                    data.drain(..).filter_map(|(data, diff)| {
-                                        logic(data).map(|data| (data, time.clone(), diff))
-                                    }),
+                                    logic(data)
+                                        .into_iter()
+                                        .zip_eq(diffs.into_iter())
+                                        .filter_map(|(result, diff)| {
+                                            result.map(|data| (data, time.clone(), diff))
+                                        }),
                                 );
                             }
                         }

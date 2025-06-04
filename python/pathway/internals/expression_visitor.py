@@ -178,6 +178,7 @@ class IdentityTransform(ExpressionVisitor):
             args=expr_args,
             kwargs=expr_kwargs,
             _check_for_disallowed_types=expression._check_for_disallowed_types,
+            max_batch_size=expression._max_batch_size,
         )
 
     def eval_async_apply(
@@ -195,6 +196,7 @@ class IdentityTransform(ExpressionVisitor):
             deterministic=expression._deterministic,
             args=tuple(expr_args),
             kwargs=expr_kwargs,
+            max_batch_size=expression._max_batch_size,
         )
 
     def eval_fully_async_apply(
@@ -213,6 +215,7 @@ class IdentityTransform(ExpressionVisitor):
             autocommit_duration_ms=expression.autocommit_duration_ms,
             args=tuple(expr_args),
             kwargs=expr_kwargs,
+            max_batch_size=expression._max_batch_size,
         )
 
     def eval_pointer(

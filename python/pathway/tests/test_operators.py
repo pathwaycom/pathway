@@ -1448,3 +1448,29 @@ def test_tuples_none_cmp(op):
         ),
     ):
         table.select(z=op(pw.this.x, pw.this.y))
+
+
+def test_and_or_are_lazy():
+    table = T(
+        """
+        a | b
+        1 | 0
+        3 | 2
+        6 | 3
+    """
+    )
+
+    result = table.select(
+        x=(pw.this.b != 0) & (pw.this.a // pw.this.b > 1),
+        y=(pw.this.b == 0) | (pw.this.a // pw.this.b > 1),
+    )
+    expected = T(
+        """
+            x |     y
+        False |  True
+        False | False
+         True |  True
+    """
+    )
+
+    assert_table_equality(result, expected)

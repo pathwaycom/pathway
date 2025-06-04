@@ -851,6 +851,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     current_operator_properties: Option<OperatorProperties>,
     reducer_factory: Box<dyn CreateDataflowReducer<S>>,
     connector_synchronizer: SharedConnectorSynchronizer,
+    max_expression_batch_size: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1297,6 +1298,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         default_error_log: Option<ErrorLog>,
         reducer_factory: Box<dyn CreateDataflowReducer<S>>,
         connector_synchronizer: SharedConnectorSynchronizer,
+        max_expression_batch_size: usize,
     ) -> Result<Self> {
         Ok(Self {
             scope,
@@ -1322,6 +1324,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             current_operator_properties: None,
             reducer_factory,
             connector_synchronizer,
+            max_expression_batch_size,
         })
     }
 
@@ -1590,7 +1593,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .universes
                 .get(universe_handle)
                 .ok_or(Error::InvalidUniverseHandle)?;
-            let value = wrapper.run(|| expression.eval(&[]))?;
+            let value = wrapper.run(|| expression.eval(&[&[]]).into_iter().next().unwrap())?;
             let values = universe
                 .keys()
                 .map_named("expression_column::keys_values", move |k| {
@@ -1620,7 +1623,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tuples(universe_handle, column_handles)?
             .map_wrapped_named(&name, wrapper, move |key, values| {
                 let result = expression
-                    .eval(values)
+                    .eval(&[values])
+                    .into_iter()
+                    .next()
+                    .unwrap()
                     .unwrap_with_reporter_and_trace(&error_reporter, &trace);
                 (key, result)
             });
@@ -1646,35 +1652,54 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
+        let max_expression_batch_size = self.max_expression_batch_size;
 
-        Ok(table.values_consolidated().map_wrapped_named(
+        Ok(table.values_consolidated().map_wrapped_batched_named(
             "expression_table::evaluate_expression",
             wrapper,
-            move |(key, values)| {
-                let args: Vec<Value> = column_paths
-                    .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .collect::<Result<_>>()
-                    .unwrap_with_reporter(&error_reporter);
+            move |data| {
+                let mut results = Vec::with_capacity(data.len());
+                let mut args = Vec::with_capacity(data.len());
+                let mut keys = Vec::with_capacity(data.len());
+                for (key, values) in data {
+                    let args_i: Vec<Value> = column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter);
+                    args.push(args_i);
+                    keys.push(key);
+                    results.push(vec![Value::None; expressions.len()]);
+                }
+
+                let args: Vec<&[Value]> = args.iter().map(|a| -> &[Value] { a }).collect();
                 // if a better behavior for append only is needed (then only output has to be append only, not input):
                 // split this closure here into two - first part (extraction from paths) before consolidation
                 // and second part (evals) after consolidation
-                let new_values = expressions.iter().map(|expression_data| {
-                    let result = expression_data
-                        .expression
-                        .eval(&args)
-                        .unwrap_or_log_with_trace(
+                for (i, expression_data) in expressions.iter().enumerate() {
+                    let result_for_expression: Vec<_> = args
+                        .chunks(max_expression_batch_size)
+                        .flat_map(|args| expression_data.expression.eval(args))
+                        .collect();
+                    for (j, result_i) in result_for_expression.into_iter().enumerate() {
+                        let result_i = result_i.unwrap_or_log_with_trace(
                             error_logger.as_ref(),
                             expression_data.properties.trace().as_ref(),
                             Value::Error,
                         );
-                    result
-                });
-                (key, Value::Tuple(new_values.collect()))
+                        results[j][i] = result_i;
+                    }
+                }
+                results
+                    .into_iter()
+                    .zip_eq(keys)
+                    .map(|(result_i, key)| (key, Value::Tuple(result_i.into())))
+                    .collect()
             },
         ))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn expression_table_non_deterministic(
         &mut self,
         table_handle: TableHandle,
@@ -1682,6 +1707,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
     ) -> Result<Collection<S, (Key, Value)>> {
+        struct RowData {
+            key: Key,
+            args: Vec<Value>,
+            diff: isize,
+            position: usize,
+        }
+
         let table = self
             .tables
             .get(table_handle)
@@ -1697,65 +1729,103 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let mut caches: Vec<HashMap<Key, Value>> = Vec::with_capacity(expressions.len());
         caches.resize_with(expressions.len(), HashMap::new);
         let collection = table.values().clone();
+        let max_expression_batch_size = self.max_expression_batch_size;
+
         collection.maybe_persist_with_logic(
             self,
             "expression_table::evaluate_expression",
-            |collection| {
+            move |collection| {
                 collection.flat_map_named_with_deletions_first(
                     "expression_table::evaluate_expression",
                     wrapper,
-                    move |(key, values)| {
-                        match values {
-                            OldOrNew::Old(states) => {
-                                let states = states.as_tuple().expect("saved state is a tuple");
-                                for (i, (expression, state)) in
-                                    expressions.iter().zip(states.iter()).enumerate()
-                                {
-                                    if !expression.deterministic {
-                                        let current = caches[i].insert(key, state.clone());
-                                        assert!(current.is_none());
-                                    }
-                                }
-                                None
-                            }
-                            OldOrNew::New(values) => {
-                                let args: Vec<Value> = column_paths
-                                    .iter()
-                                    .map(|path| path.extract(&key, &values))
-                                    .collect::<Result<_>>()
-                                    .unwrap_with_reporter(&error_reporter);
-
-                                let new_values =
-                                    expressions.iter().enumerate().map(|(i, expression_data)| {
-                                        if expression_data.deterministic {
-                                            // If the expression is deterministic, do nothing.
-                                        } else if expression_data.append_only {
-                                            // If the expression is append_only but the stream is not, don't remove key from cache.
-                                            if let Some(result) = caches[i].get(&key) {
-                                                return result.clone();
-                                            }
-                                        } else if let Some(result) = caches[i].remove(&key) {
-                                            // If expression is not append_only, remove key from cache as a new result can be different.
-                                            // Maybe assert that diff == -1, but that requires passing diff to the closure.
-                                            return result;
-                                        }
-                                        let result = expression_data
-                                            .expression
-                                            .eval(&args)
-                                            .unwrap_or_log_with_trace(
-                                                error_logger.as_ref(),
-                                                expression_data.properties.trace().as_ref(),
-                                                Value::Error,
-                                            );
-                                        if !expression_data.deterministic {
-                                            let current = caches[i].insert(key, result.clone());
+                    move |data_with_diffs| {
+                        let mut results = vec![None; data_with_diffs.len()];
+                        let mut rows = Vec::with_capacity(data_with_diffs.len());
+                        for (i, ((key, values), diff)) in data_with_diffs.into_iter().enumerate() {
+                            match values {
+                                OldOrNew::Old(states) => {
+                                    let states = states.as_tuple().expect("saved state is a tuple");
+                                    for (j, (expression, state)) in
+                                        expressions.iter().zip(states.iter()).enumerate()
+                                    {
+                                        if !expression.deterministic {
+                                            let current = caches[j].insert(key, state.clone());
                                             assert!(current.is_none());
                                         }
-                                        result
+                                    }
+                                }
+                                OldOrNew::New(values) => {
+                                    let args: Vec<Value> = column_paths
+                                        .iter()
+                                        .map(|path| path.extract(&key, &values))
+                                        .collect::<Result<_>>()
+                                        .unwrap_with_reporter(&error_reporter);
+                                    rows.push(RowData {
+                                        key,
+                                        args,
+                                        diff,
+                                        position: i,
                                     });
-                                Some((key, Value::Tuple(new_values.collect())))
+                                    results[i] = Some(vec![Value::None; expressions.len()]);
+                                }
                             }
                         }
+                        for (i, expression_data) in expressions.iter().enumerate() {
+                            let mut rows_for_expression = Vec::with_capacity(rows.len());
+                            let mut args_for_expression: Vec<&[Value]> =
+                                Vec::with_capacity(rows.len());
+                            for row in &rows {
+                                let mut should_be_computed = true;
+                                if expression_data.deterministic {
+                                    // If the expression is deterministic, compute it normally.
+                                } else if expression_data.append_only {
+                                    // If the expression is append_only but the stream is not, don't remove key from cache.
+                                    if let Some(result) = caches[i].get(&row.key) {
+                                        results[row.position].as_mut().unwrap()[i] = result.clone();
+                                        should_be_computed = false;
+                                    }
+                                } else if let Some(result) = caches[i].remove(&row.key) {
+                                    // If expression is not append_only, remove key from cache as a new result can be different.
+                                    assert_eq!(row.diff, -1);
+                                    results[row.position].as_mut().unwrap()[i] = result;
+                                    should_be_computed = false;
+                                }
+                                if should_be_computed {
+                                    rows_for_expression.push((row.position, row.key));
+                                    args_for_expression.push(&row.args);
+                                }
+                            }
+
+                            let result_for_expression: Vec<_> = args_for_expression
+                                .chunks(max_expression_batch_size)
+                                .flat_map(|args| expression_data.expression.eval(args))
+                                .collect();
+
+                            for (result_i, (position, key)) in result_for_expression
+                                .into_iter()
+                                .zip_eq(rows_for_expression.into_iter())
+                            {
+                                let result_i = result_i.unwrap_or_log_with_trace(
+                                    error_logger.as_ref(),
+                                    expression_data.properties.trace().as_ref(),
+                                    Value::Error,
+                                );
+                                if !expression_data.deterministic {
+                                    let current = caches[i].insert(key, result_i.clone());
+                                    assert!(current.is_none());
+                                }
+                                results[position].as_mut().unwrap()[i] = result_i;
+                            }
+                        }
+                        let mut rows_iter = rows.into_iter();
+                        results
+                            .into_iter()
+                            .map(|result_i| {
+                                result_i.map(|result_i| {
+                                    (rows_iter.next().unwrap().key, Value::Tuple(result_i.into()))
+                                })
+                            })
+                            .collect()
                     },
                 )
             },
@@ -4348,6 +4418,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 self.terminate_on_error,
                 self.current_error_log.clone(),
                 Arc::new(Mutex::new(ConnectorSynchronizer::new(false))), // doesn't matter since table creation is impossible in iterate
+                self.max_expression_batch_size,
             )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
             let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
@@ -4867,6 +4938,7 @@ where
 struct InnerDataflowGraph<S: MaybeTotalScope>(RefCell<DataflowGraphInner<S>>);
 
 impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         scope: S,
         error_reporter: ErrorReporter,
@@ -4875,6 +4947,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
         terminate_on_error: bool,
         default_error_log: Option<ErrorLog>,
         connector_synchronizer: SharedConnectorSynchronizer,
+        max_expression_batch_size: usize,
     ) -> Result<Self> {
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
@@ -4886,6 +4959,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             default_error_log,
             Box::new(NotTotalReducerFactory),
             connector_synchronizer,
+            max_expression_batch_size,
         )?)))
     }
 }
@@ -5471,6 +5545,7 @@ struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>>(
 );
 
 impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         scope: S,
         error_reporter: ErrorReporter,
@@ -5479,6 +5554,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
         config: Arc<Config>,
         terminate_on_error: bool,
         connector_synchronizer: SharedConnectorSynchronizer,
+        max_expression_batch_size: usize,
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
@@ -5499,6 +5575,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
             None,
             Box::new(TimestampReducerFactory),
             connector_synchronizer,
+            max_expression_batch_size,
         )?)))
     }
 }
@@ -6164,6 +6241,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     #[allow(unused)] license: &License,
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
+    max_expression_batch_size: usize,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
@@ -6221,6 +6299,7 @@ where
                     config.clone(),
                     terminate_on_error,
                     connector_synchronizer.clone(),
+                    max_expression_batch_size,
                 )
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());
