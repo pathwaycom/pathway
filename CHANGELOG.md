@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.22.0] - 2025-06-05
+
 ### Added
 - Data persistence can now be configured to use Azure Blob Storage as a backend. An Azure backend instance can be created using `pw.persistence.Backend.azure` and included in the persistence config.
 - Added batching to UDFs. It is now possible to make UDFs operate on batches of data instead of single rows. To do so `max_batch_size` argument has to be set.
