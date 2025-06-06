@@ -23,8 +23,7 @@ use opentelemetry_otlp::{Protocol, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
     metrics::{PeriodicReader, SdkMeterProvider},
     propagation::TraceContextPropagator,
-    runtime,
-    trace::TracerProvider,
+    trace::SdkTracerProvider,
     Resource,
 };
 use opentelemetry_semantic_conventions::resource::{
@@ -63,24 +62,26 @@ impl Telemetry {
     fn resource(&self) -> Resource {
         let root_trace_id = root_trace_id(self.config.trace_parent.as_deref()).unwrap_or_default();
 
-        Resource::new([
-            KeyValue::new(SERVICE_NAME, self.config.service_name.clone()),
-            KeyValue::new(SERVICE_VERSION, self.config.service_version.clone()),
-            KeyValue::new(SERVICE_INSTANCE_ID, self.config.service_instance_id.clone()),
-            KeyValue::new(SERVICE_NAMESPACE, self.config.service_namespace.clone()),
-            KeyValue::new(ROOT_TRACE_ID, root_trace_id.to_string()),
-            KeyValue::new(RUN_ID, self.config.run_id.clone()),
-            KeyValue::new(LICENSE_KEY, self.config.license_key.clone()),
-        ])
+        Resource::builder()
+            .with_attributes([
+                KeyValue::new(SERVICE_NAME, self.config.service_name.clone()),
+                KeyValue::new(SERVICE_VERSION, self.config.service_version.clone()),
+                KeyValue::new(SERVICE_INSTANCE_ID, self.config.service_instance_id.clone()),
+                KeyValue::new(SERVICE_NAMESPACE, self.config.service_namespace.clone()),
+                KeyValue::new(ROOT_TRACE_ID, root_trace_id.to_string()),
+                KeyValue::new(RUN_ID, self.config.run_id.clone()),
+                KeyValue::new(LICENSE_KEY, self.config.license_key.clone()),
+            ])
+            .build()
     }
 
-    fn init_tracer_provider(&self) {
+    fn init_tracer_provider(&self) -> Option<SdkTracerProvider> {
         if self.config.tracing_servers.is_empty() {
-            return;
+            return None;
         }
         global::set_text_map_propagator(TraceContextPropagator::new());
 
-        let mut provider_builder = TracerProvider::builder().with_resource(self.resource());
+        let mut provider_builder = SdkTracerProvider::builder().with_resource(self.resource());
 
         for endpoint in &self.config.tracing_servers {
             let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -92,10 +93,12 @@ impl Telemetry {
                 .build()
                 .expect("exporter initialization should not fail");
 
-            provider_builder = provider_builder.with_batch_exporter(exporter, runtime::Tokio);
+            provider_builder = provider_builder.with_batch_exporter(exporter);
         }
 
-        global::set_tracer_provider(provider_builder.build().clone());
+        let tracer_provider = provider_builder.build();
+        global::set_tracer_provider(tracer_provider.clone());
+        Some(tracer_provider)
     }
 
     fn init_meter_provider(&self) -> Option<SdkMeterProvider> {
@@ -115,7 +118,7 @@ impl Telemetry {
                 .build()
                 .expect("exporter initialization should not fail");
 
-            let reader = PeriodicReader::builder(exporter, runtime::Tokio)
+            let reader = PeriodicReader::builder(exporter)
                 .with_interval(PERIODIC_READER_INTERVAL)
                 .build();
 
@@ -123,22 +126,22 @@ impl Telemetry {
         }
 
         let meter_provider = provider_builder.build();
-
         global::set_meter_provider(meter_provider.clone());
-
         Some(meter_provider)
     }
 
     fn init(&self) -> TelemetryGuard {
-        // Since opentelemetry 0.27.0, the NoopMeterProvider is private, thus we store initial one.
-        // https://github.com/open-telemetry/opentelemetry-rust/issues/2444
         let noop_meter_provider = MeterProviderWrapper(global::meter_provider());
+        let noop_tracer_provider = SdkTracerProvider::builder().build();
+
         let meter_provider = self.init_meter_provider();
-        self.init_tracer_provider();
+        let tracer_provider = self.init_tracer_provider();
 
         TelemetryGuard {
             meter_provider,
+            tracer_provider,
             noop_meter_provider,
+            noop_tracer_provider,
         }
     }
 }
@@ -153,18 +156,27 @@ impl MeterProvider for MeterProviderWrapper {
 }
 
 #[must_use]
+#[allow(clippy::struct_field_names)]
 struct TelemetryGuard {
     meter_provider: Option<SdkMeterProvider>,
+    tracer_provider: Option<SdkTracerProvider>,
     noop_meter_provider: MeterProviderWrapper,
+    noop_tracer_provider: SdkTracerProvider,
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if let Some(provider) = self.meter_provider.take() {
             provider.force_flush().unwrap_or(());
+            provider.shutdown().unwrap_or(());
         }
         global::set_meter_provider(self.noop_meter_provider.clone());
-        global::shutdown_tracer_provider();
+
+        if let Some(provider) = self.tracer_provider.take() {
+            provider.force_flush().unwrap_or(());
+            provider.shutdown().unwrap_or(());
+        }
+        global::set_tracer_provider(self.noop_tracer_provider.clone());
     }
 }
 
