@@ -153,7 +153,8 @@ fn test_rewind_for_empty_persistent_storage() -> eyre::Result<()> {
 
     let (sender, receiver) = mpsc::channel();
     let tracker = create_persistence_manager(test_storage_path, false);
-    Connector::rewind_from_disk_snapshot(1, &tracker, &sender, PersistenceMode::Batch);
+    Connector::rewind_from_disk_snapshot(1, &tracker, &sender, PersistenceMode::Batch)
+        .expect("Snapshot rewind failure breaks data integrity");
     assert_eq!(get_entries_in_receiver::<Entry>(receiver).len(), 0); // We would not even start rewind when there is no frontier
 
     Ok(())

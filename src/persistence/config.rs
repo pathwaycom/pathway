@@ -313,7 +313,7 @@ impl PersistenceManagerConfig {
         threshold_time: TotalFrontier<Timestamp>,
         query_purpose: ReadersQueryPurpose,
     ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
-        info!("Using threshold time: {threshold_time:?}");
+        info!("Using threshold time: {threshold_time:?} to create snapshot readers. Snapshot reading purpose: {query_purpose:?}");
         let mut result: Vec<Box<dyn ReadInputSnapshot>> = Vec::new();
         if let PersistentStorageConfig::Mock(event_map) = &self.backend {
             let events = event_map
@@ -333,6 +333,10 @@ impl PersistenceManagerConfig {
                 )?;
                 result.push(Box::new(reader));
             }
+            info!(
+                "Snapshot reading purpose: {query_purpose:?}. Readers created: {}",
+                result.len()
+            );
             Ok(result)
         }
     }
@@ -453,8 +457,12 @@ impl PersistenceManagerConfig {
         query_purpose: ReadersQueryPurpose,
     ) -> Result<HashMap<usize, String>, PersistenceBackendError> {
         let object_keys = backend.list_keys()?;
-        let mut assigned_paths = HashMap::new();
+        info!(
+            "Constructing snapshot root paths based on {} keys",
+            object_keys.len()
+        );
 
+        let mut assigned_paths = HashMap::new();
         for snapshot_path_block in &object_keys {
             // snapshot_path_block has the form {worker_id}/{persistent_id}/{snapshot_block_id}
             let path_parts: Vec<&str> = snapshot_path_block.split('/').collect();
@@ -513,7 +521,7 @@ impl PersistenceManagerConfig {
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
-        info!("Using threshold time: {threshold_time:?}");
+        info!("Using threshold time: {threshold_time:?} to create operator snapshot readers");
         let mut readers: Vec<ConcreteSnapshotReader> = Vec::new();
         let backends =
             self.get_readers_backends(persistent_id, ReadersQueryPurpose::ReadSnapshot)?;

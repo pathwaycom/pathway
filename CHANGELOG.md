@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - `pw.io.deltalake.read` now correctly reads data from partitioned tables in all cases.
+- Added retries for all cloud-based persistence backend operations to improve reliability.
 
 ## [0.22.0] - 2025-06-05
 

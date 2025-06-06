@@ -50,10 +50,14 @@ impl S3KVStorage {
 
 impl PersistenceBackend for S3KVStorage {
     fn list_keys(&self) -> Result<Vec<String>, Error> {
+        let prefix_len = self.root_path.len();
         let mut keys = Vec::new();
 
-        let object_lists = self.bucket.list(self.root_path.clone(), None)?;
-        let prefix_len = self.root_path.len();
+        let object_lists = execute_with_retries(
+            || self.bucket.list(self.root_path.clone(), None),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )?;
 
         for list in &object_lists {
             for object in &list.contents {
@@ -84,7 +88,11 @@ impl PersistenceBackend for S3KVStorage {
 
     fn remove_key(&mut self, key: &str) -> Result<(), Error> {
         let full_key_path = self.full_key_path(key);
-        let _ = self.bucket.delete_object(full_key_path)?;
+        let _ = execute_with_retries(
+            || self.bucket.delete_object(full_key_path.clone()),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )?;
         Ok(())
     }
 }

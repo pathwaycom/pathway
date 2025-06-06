@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
 use adaptors::InputAdaptor;
-use differential_dataflow::input::InputSession;
 use itertools::Itertools;
 use log::{error, info, warn};
 use scopeguard::guard;
@@ -235,71 +234,84 @@ impl Connector {
         persistent_storage: &Arc<Mutex<WorkerPersistentStorage>>,
         sender: &Sender<Entry>,
         persistence_mode: PersistenceMode,
-    ) {
+    ) -> Result<(), ReadError> {
         // TODO: note that here we read snapshots again.
         // If it's slow, some kind of snapshot reader memoization may be a good idea
         // (also note it will require some communication between workers)
         let snapshot_readers = persistent_storage
             .lock()
             .unwrap()
-            .create_snapshot_readers(persistent_id, ReadersQueryPurpose::ReadSnapshot);
+            .create_snapshot_readers(persistent_id, ReadersQueryPurpose::ReadSnapshot)?;
 
-        if let Ok(snapshot_readers) = snapshot_readers {
-            for mut snapshot_reader in snapshot_readers {
-                let mut entries_read = 0;
-                loop {
-                    let entry_read = snapshot_reader.read();
-                    let Ok(entry_read) = entry_read else { break };
-                    match entry_read {
-                        SnapshotEvent::Finished => {
-                            info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
-                            break;
+        for mut snapshot_reader in snapshot_readers {
+            let mut entries_read = 0;
+            loop {
+                let entry_read = match snapshot_reader.read() {
+                    Ok(entry_read) => entry_read,
+                    Err(e) => {
+                        error!(
+                            "Error encountered while reading snapshot to rewind old inputs: {e}"
+                        );
+                        break;
+                    }
+                };
+                match entry_read {
+                    SnapshotEvent::Finished => {
+                        info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
+                        break;
+                    }
+                    SnapshotEvent::Insert(_, _) | SnapshotEvent::Delete(_, _) => {
+                        entries_read += 1;
+                        let send_res = sender.send(Entry::Snapshot(entry_read));
+                        if let Err(e) = send_res {
+                            error!("Failed to send rewind entry: {e}");
                         }
-                        SnapshotEvent::Insert(_, _) | SnapshotEvent::Delete(_, _) => {
-                            entries_read += 1;
-                            let send_res = sender.send(Entry::Snapshot(entry_read));
-                            if let Err(e) = send_res {
-                                error!("Failed to send rewind entry: {e}");
-                            }
-                        }
-                        SnapshotEvent::AdvanceTime(_, _) => {
-                            persistence_mode.handle_snapshot_time_advancement(sender, entry_read);
-                        }
+                    }
+                    SnapshotEvent::AdvanceTime(_, _) => {
+                        persistence_mode.handle_snapshot_time_advancement(sender, entry_read);
                     }
                 }
             }
         }
+
+        Ok(())
     }
 
     pub fn frontier_for(
         reader: &mut dyn Reader,
         persistent_id: PersistentId,
         persistent_storage: &Arc<Mutex<WorkerPersistentStorage>>,
-    ) -> OffsetAntichain {
+    ) -> Result<OffsetAntichain, ReadError> {
         let snapshot_readers = persistent_storage
             .lock()
             .unwrap()
-            .create_snapshot_readers(persistent_id, ReadersQueryPurpose::ReconstructFrontier);
+            .create_snapshot_readers(persistent_id, ReadersQueryPurpose::ReconstructFrontier)?;
 
         let mut frontier = OffsetAntichain::new();
 
-        if let Ok(snapshot_readers) = snapshot_readers {
-            for mut snapshot_reader in snapshot_readers {
-                loop {
-                    let entry_read = snapshot_reader.read();
-                    let Ok(entry_read) = entry_read else { break };
-                    if matches!(entry_read, SnapshotEvent::Finished) {
+        for mut snapshot_reader in snapshot_readers {
+            let mut entries_read = 0;
+            loop {
+                let entry_read = match snapshot_reader.read() {
+                    Ok(entry_read) => entry_read,
+                    Err(e) => {
+                        error!("Error encountered while re-reading snapshot to reconstruct the frontier: {e}");
                         break;
                     }
+                };
+                if matches!(entry_read, SnapshotEvent::Finished) {
+                    break;
                 }
-
-                frontier = reader
-                    .storage_type()
-                    .merge_two_frontiers(&frontier, snapshot_reader.last_frontier());
+                entries_read += 1;
             }
+
+            info!("Frontier recovery: merging the current frontier with {:?} (storage type: {:?}, {} entries processed)", snapshot_reader.last_frontier(), reader.storage_type(), entries_read);
+            frontier = reader
+                .storage_type()
+                .merge_two_frontiers(&frontier, snapshot_reader.last_frontier());
         }
 
-        frontier
+        Ok(frontier)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -445,12 +457,12 @@ impl Connector {
                             persistent_storage,
                             sender,
                             persistence_mode,
-                        );
+                        )?;
                     }
 
                     if realtime_reader_needed {
-                        frontier = Self::frontier_for(reader, persistent_id, persistent_storage);
-                        info!("Seek the data source to the frontier {frontier:?}");
+                        frontier = Self::frontier_for(reader, persistent_id, persistent_storage)?;
+                        info!("Seek the data source to the reconstructed frontier {frontier:?}");
                         reader.seek(&frontier)?;
                     }
                 }
@@ -912,58 +924,6 @@ impl Connector {
 
     fn log_parse_success(&mut self) {
         self.n_parse_attempts += 1;
-    }
-}
-
-pub struct SnapshotReaderState {
-    pub poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
-    pub input_thread_handle: std::thread::JoinHandle<()>,
-}
-
-pub fn read_persisted_state(
-    mut input_session: InputSession<Timestamp, (Key, Vec<Value>), isize>,
-    persistent_storage: Arc<Mutex<WorkerPersistentStorage>>,
-    unique_name: &UniqueName,
-    persistent_id: PersistentId,
-) -> SnapshotReaderState {
-    let (sender, receiver) = mpsc::channel();
-    let thread_name = format!("pathway:{unique_name}");
-
-    let input_thread_handle = thread::Builder::new()
-        .name(thread_name)
-        .spawn(move || {
-            Connector::rewind_from_disk_snapshot(
-                persistent_id,
-                &persistent_storage,
-                &sender,
-                PersistenceMode::Persisting,
-            );
-            let send_res = sender.send(Entry::RewindFinishSentinel(OffsetAntichain::new()));
-            if let Err(e) = send_res {
-                panic!("Failed to read the state of deduplicate operator: {e}");
-            }
-        })
-        .expect("deduplication thread creation failed");
-
-    let poller = Box::new(move || loop {
-        match receiver.recv() {
-            Ok(Entry::Snapshot(entry)) => match entry {
-                SnapshotEvent::Insert(key, values) => input_session.insert((key, values)),
-                SnapshotEvent::Delete(key, values) => input_session.remove((key, values)),
-                SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => unreachable!(),
-            },
-            Ok(
-                Entry::RealtimeEvent(_)
-                | Entry::RealtimeEntries(_, _)
-                | Entry::RealtimeParsingError(_),
-            ) => unreachable!(),
-            Ok(Entry::RewindFinishSentinel(_)) | Err(_) => return ControlFlow::Break(()),
-        }
-    });
-
-    SnapshotReaderState {
-        poller,
-        input_thread_handle,
     }
 }
 

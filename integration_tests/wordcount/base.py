@@ -172,8 +172,13 @@ def check_output_correctness(
                     count = int(tokens[count_column_index])
                     diff = int(tokens[diff_column_index])
                     output_word_counts[word] = int(count)
-                except IndexError:
+                except (IndexError, ValueError):
                     # line split in two chunks, one fsynced, another did not
+                    print(f"Broken row: {row}")
+                    print(f"Tokens: {tokens}")
+                    print(
+                        f"Indices (word, count, diff): {word_column_index}, {count_column_index}, {diff_column_index}"
+                    )
                     if not interrupted_run:
                         raise
 

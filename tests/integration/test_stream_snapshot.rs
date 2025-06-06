@@ -63,7 +63,8 @@ fn read_persistent_buffer_full(
 ) -> Vec<SnapshotEvent> {
     let tracker = create_persistence_manager(chunks_root, false);
     let (sender, receiver) = mpsc::channel();
-    Connector::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, persistence_mode);
+    Connector::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, persistence_mode)
+        .expect("Snapshot rewind failure breaks data integrity");
     let entries: Vec<Entry> = get_entries_in_receiver(receiver);
     let mut result = Vec::new();
     for entry in entries {

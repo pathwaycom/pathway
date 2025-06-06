@@ -1,18 +1,17 @@
 // Copyright © 2024 Pathway
 
+use azure_core::{ExponentialRetryOptions, RetryOptions};
 use azure_storage::StorageCredentials;
-use azure_storage_blobs::prelude::{BlobClient, ClientBuilder};
+use azure_storage_blobs::prelude::{BlobClient, ClientBuilder, ContainerClient};
 use futures::stream::StreamExt;
 use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
-use crate::retry::{execute_with_retries, RetryConfig};
 
 use super::{BackendPutFuture, BackgroundObjectUploader};
 
-const MAX_AZURE_RETRIES: usize = 2;
 const DEFAULT_CONTENT_TYPE: &str = "application/x-binary";
 
 #[derive(Debug)]
@@ -54,18 +53,12 @@ impl AzureKVStorage {
                 &key,
             );
 
-            let _ = execute_with_retries(
-                || {
-                    uploader_runtime.block_on(async {
-                        blob_client
-                            .put_block_blob(value.clone())
-                            .content_type(DEFAULT_CONTENT_TYPE)
-                            .await
-                    })
-                },
-                RetryConfig::default(),
-                MAX_AZURE_RETRIES,
-            )?;
+            uploader_runtime.block_on(async {
+                blob_client
+                    .put_block_blob(value.clone())
+                    .content_type(DEFAULT_CONTENT_TYPE)
+                    .await
+            })?;
 
             Ok(())
         };
@@ -80,6 +73,15 @@ impl AzureKVStorage {
         })
     }
 
+    fn base_client_builder(account: &str, credentials: StorageCredentials) -> ClientBuilder {
+        ClientBuilder::new(account, credentials)
+            // https://docs.rs/azure_core/0.21.0/azure_core/struct.ExponentialRetryOptions.html
+            // Initial delay: 200 ms
+            // Number of retries: 8
+            // Maximum elapsed time since starting to retry: 1 minute
+            .retry(RetryOptions::exponential(ExponentialRetryOptions::default()))
+    }
+
     fn create_blob_client_with_credentials(
         root_path: &str,
         account: &str,
@@ -87,7 +89,8 @@ impl AzureKVStorage {
         credentials: StorageCredentials,
         key: &str,
     ) -> BlobClient {
-        ClientBuilder::new(account, credentials).blob_client(container, format!("{root_path}{key}"))
+        Self::base_client_builder(account, credentials)
+            .blob_client(container, format!("{root_path}{key}"))
     }
 
     fn create_blob_client(&self, key: &str) -> BlobClient {
@@ -99,12 +102,16 @@ impl AzureKVStorage {
             key,
         )
     }
+
+    fn create_container_client(&self) -> ContainerClient {
+        Self::base_client_builder(&self.account, self.credentials.clone())
+            .container_client(&self.container)
+    }
 }
 
 impl PersistenceBackend for AzureKVStorage {
     fn list_keys(&self) -> Result<Vec<String>, Error> {
-        let container_client = ClientBuilder::new(&self.account, self.credentials.clone())
-            .container_client(&self.container);
+        let container_client = self.create_container_client();
         self.runtime.block_on(async {
             let mut result = Vec::new();
             let mut stream = container_client

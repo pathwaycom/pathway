@@ -162,15 +162,16 @@ fn compute_threshold_time_and_versions(
     should_remove: bool,
     total_workers: usize,
 ) -> Result<(TotalFrontier<Timestamp>, u128, Option<u128>), Error> {
-    // We want to start from the latest version that has metadata for all its workers
-    // In the code, we call it the latest stable version
-    let keys = backend.list_keys()?;
+    // We want to start from the latest version that has metadata for all its workers.
+    // In the code, we call it the latest stable version.
+    // Only top-level keys are needed for the metadata reconstruction.
+    let keys: Vec<_> = backend
+        .list_keys()?
+        .into_iter()
+        .filter(|key| !key.contains('/'))
+        .collect();
     let mut version_information = HashMap::new();
     for key in &keys {
-        if key.contains('/') {
-            // Only top-level keys are needed for the metadata reconstruction.
-            continue;
-        }
         let metadata_key = MetadataKey::from_str(key);
         let Some(metadata_key) = metadata_key else {
             continue;
