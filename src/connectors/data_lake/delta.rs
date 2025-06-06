@@ -1,4 +1,4 @@
-use log::{info, warn};
+use log::{error, info, warn};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -45,14 +45,14 @@ use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::parse_bool_advanced;
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_lake::ArrowDataType;
-use crate::connectors::data_storage::{ConnectorMode, ValuesMap};
+use crate::connectors::data_storage::{ConnectorMode, ConversionError, ValuesMap};
 use crate::connectors::metadata::ParquetMetadata;
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
     StorageType, WriteError,
 };
-use crate::engine::time::DateTime;
+use crate::engine::time::{DateTime, DateTimeNaive};
 use crate::engine::{Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::{BackfillingThreshold, ValueField};
@@ -418,13 +418,15 @@ pub struct DeltaReaderAction {
     action_type: DataEventType,
     path: String,
     is_last_in_version: bool,
+    partition_values: ValuesMap,
 }
 
 impl DeltaReaderAction {
-    pub fn new(action_type: DataEventType, path: String) -> Self {
+    pub fn new(action_type: DataEventType, path: String, partition_values: ValuesMap) -> Self {
         Self {
             action_type,
             path,
+            partition_values,
             is_last_in_version: false,
         }
     }
@@ -566,7 +568,7 @@ impl DeltaTableReader {
             let history = runtime.block_on(async {
                 Ok::<Vec<DeltaTableCommitInfo>, ReadError>(table.history(None).await?)
             })?;
-            Self::get_reader_actions(&table, path, history)?
+            Self::get_reader_actions(&table, path, history, &column_types)?
         };
         let mut backfilling_entries_queue = VecDeque::new();
 
@@ -644,12 +646,23 @@ impl DeltaTableReader {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     fn create_backfilling_files_queue(
         runtime: &TokioRuntime,
         table: DeltaTable,
         backfilling_thresholds: Vec<BackfillingThreshold>,
         column_types: &mut HashMap<String, Type>,
     ) -> Result<VecDeque<BackfillingEntry>, ReadError> {
+        let mut binary_partition_columns = Vec::new();
+        for partition_column in table.metadata()?.partition_columns.clone() {
+            let Some(type_) = column_types.get(&partition_column) else {
+                continue;
+            };
+            if *type_.unoptionalize() == Type::Bytes {
+                binary_partition_columns.push(partition_column);
+            }
+        }
+
         let backfilling_started_at = Instant::now();
         let ctx = DeltaSessionContext::new();
         ctx.register_table("table", Arc::new(table))?;
@@ -691,7 +704,26 @@ impl DeltaTableReader {
                     pathway_meta_column_added = true;
                 }
                 let value_maps = columns_into_pathway_values(&entry, column_types);
-                for value_map in value_maps {
+                for mut value_map in value_maps {
+                    // Perhaps a bug in DataFusion: when a query returns a binary partition column,
+                    // it returns the value of this column as a sequence of escaped characters.
+                    for column in &binary_partition_columns {
+                        let value = value_map.get_mut(column).unwrap();
+                        if let Ok(Value::Bytes(bytes)) = value {
+                            *value = String::from_utf8(bytes.to_vec())
+                                .ok()
+                                .and_then(|x| Self::decode_escaped_binary(&x))
+                                .map(|x| Value::Bytes(x.into()))
+                                .ok_or_else(|| {
+                                    Box::new(ConversionError::new(
+                                        format!("{value:?}"),
+                                        column.to_string(),
+                                        Type::Bytes,
+                                        None,
+                                    ))
+                                });
+                        }
+                    }
                     backfilling_entries.push(value_map);
                 }
                 is_first_entry = false;
@@ -777,6 +809,7 @@ impl DeltaTableReader {
         table: &DeltaTable,
         base_path: &str,
         mut history: Vec<DeltaTableCommitInfo>,
+        column_types: &HashMap<String, Type>,
     ) -> Result<VecDeque<DeltaReaderAction>, ReadError> {
         // Historical events without timestamps are useless for grouping parquet files
         // into atomically processed versions, therefore there is a need to remove them
@@ -792,10 +825,13 @@ impl DeltaTableReader {
             .file_actions()?
             .into_iter()
             .map(|action| {
+                let partition_values =
+                    Self::parse_partition_values(&action.partition_values, column_types);
                 (
                     DeltaReaderAction::new(
                         DataEventType::Insert,
                         Self::ensure_absolute_path_with_base(&action.path, base_path),
+                        partition_values,
                     ),
                     action.modification_time,
                 )
@@ -857,6 +893,105 @@ impl DeltaTableReader {
         }
     }
 
+    fn decode_escaped_binary(input: &str) -> Option<Vec<u8>> {
+        // Decode binary partition column values created by Delta writer
+        // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#partition-value-serialization
+        let mut bytes = Vec::new();
+        let mut chars = input.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if c == '\\' && chars.peek() == Some(&'u') {
+                chars.next(); // consume 'u'
+                let hex: String = chars.by_ref().take(4).collect();
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    bytes.push(byte);
+                } else {
+                    error!("Invalid escape: \\u{hex}");
+                    return None;
+                }
+            } else {
+                error!("Unexpected character in binary escape: {c}");
+                return None;
+            }
+        }
+
+        Some(bytes)
+    }
+
+    fn parse_partition_values(
+        partition_values: &HashMap<String, Option<String>>,
+        column_types: &HashMap<String, Type>,
+    ) -> ValuesMap {
+        // Deserialize partition value according to the protocol
+        // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#partition-value-serialization
+        let mut parsed_values: HashMap<String, Result<Value, Box<ConversionError>>> =
+            HashMap::new();
+        for (key, value) in partition_values {
+            let Some(expected_type) = column_types.get(key) else {
+                // There is a partition value, but it is not included in the user-requested fields.
+                continue;
+            };
+            let Some(serialized_value) = value else {
+                if expected_type.is_optional() {
+                    parsed_values.insert(key.to_string(), Ok(Value::None));
+                } else {
+                    parsed_values.insert(
+                        key.to_string(),
+                        Err(Box::new(ConversionError::new(
+                            "None".to_string(),
+                            key.to_string(),
+                            expected_type.clone(),
+                            None,
+                        ))),
+                    );
+                }
+                continue;
+            };
+            let parsed_value = match expected_type.unoptionalize() {
+                Type::String => Some(Value::String(serialized_value.to_string().into())),
+                Type::Int => serialized_value.parse::<i64>().map(Value::Int).ok(),
+                Type::Float => serialized_value
+                    .parse::<f64>()
+                    .map(|x| Value::Float(x.into()))
+                    .ok(),
+                Type::Bool => match serialized_value.to_lowercase().as_str() {
+                    "false" => Some(Value::Bool(false)),
+                    "true" => Some(Value::Bool(true)),
+                    _ => None,
+                },
+                Type::DateTimeUtc => {
+                    DateTimeNaive::strptime(serialized_value, "%Y-%m-%d %H:%M:%S%.f")
+                        .map(|x| x.to_utc_from_timezone("+00:00").unwrap())
+                        .map(Value::from)
+                        .ok()
+                }
+                Type::DateTimeNaive => {
+                    DateTimeNaive::strptime(serialized_value, "%Y-%m-%d %H:%M:%S%.f")
+                        .map(Value::from)
+                        .ok()
+                }
+                Type::Bytes => {
+                    Self::decode_escaped_binary(serialized_value).map(|x| Value::Bytes(x.into()))
+                }
+                _ => None,
+            };
+            if let Some(parsed_value) = parsed_value {
+                parsed_values.insert(key.to_string(), Ok(parsed_value));
+            } else {
+                parsed_values.insert(
+                    key.to_string(),
+                    Err(Box::new(ConversionError::new(
+                        serialized_value.to_string(),
+                        key.to_string(),
+                        expected_type.clone(),
+                        None,
+                    ))),
+                );
+            }
+        }
+        parsed_values.into()
+    }
+
     fn upgrade_table_version(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
         let runtime = create_async_tokio_runtime()?;
         runtime.block_on(async {
@@ -893,12 +1028,28 @@ impl DeltaTableReader {
                             }
                             data_changed |= action.data_change;
                             let action_path = self.ensure_absolute_path(&action.path);
-                            DeltaReaderAction::new(DataEventType::Delete, action_path)
+                            let partition_values = Self::parse_partition_values(
+                                &action.partition_values.unwrap_or_default(),
+                                &self.column_types,
+                            );
+                            DeltaReaderAction::new(
+                                DataEventType::Delete,
+                                action_path,
+                                partition_values,
+                            )
                         }
                         DeltaLakeAction::Add(action) => {
                             data_changed |= action.data_change;
                             let action_path = self.ensure_absolute_path(&action.path);
-                            DeltaReaderAction::new(DataEventType::Insert, action_path)
+                            let partition_values = Self::parse_partition_values(
+                                &action.partition_values,
+                                &self.column_types,
+                            );
+                            DeltaReaderAction::new(
+                                DataEventType::Insert,
+                                action_path,
+                                partition_values,
+                            )
                         }
                         _ => continue,
                     };
@@ -964,7 +1115,7 @@ impl DeltaTableReader {
 
 impl Reader for DeltaTableReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
-        let row_map = if let Some(maybe_row_map) = self.backfilling_entries_queue.pop_front() {
+        let mut row_map = if let Some(maybe_row_map) = self.backfilling_entries_queue.pop_front() {
             match maybe_row_map {
                 BackfillingEntry::SourceEvent(event) => return Ok(event),
                 BackfillingEntry::Entry(entry) => entry,
@@ -979,6 +1130,9 @@ impl Reader for DeltaTableReader {
                 };
             parquet_row_into_values_map(&parquet_row, &self.column_types)
         };
+        if let Some(current_action) = self.current_action.as_ref() {
+            row_map.merge(&current_action.partition_values);
+        }
 
         self.rows_read_within_version += 1;
         Ok(ReadResult::Data(

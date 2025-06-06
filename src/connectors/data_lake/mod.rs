@@ -1,18 +1,21 @@
+use log::error;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
 use deltalake::arrow::array::types::{
-    DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType, DurationSecondType,
-    Float16Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
-    TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
-    TimestampSecondType, UInt16Type, UInt32Type, UInt8Type,
+    ArrowDictionaryKeyType, DurationMicrosecondType, DurationMillisecondType,
+    DurationNanosecondType, DurationSecondType, Float16Type, Float32Type, Float64Type, Int16Type,
+    Int32Type, Int64Type, Int8Type, TimestampMicrosecondType, TimestampMillisecondType,
+    TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
 };
 use deltalake::arrow::array::{
     Array as ArrowArray, ArrowPrimitiveType, AsArray, OffsetSizeTrait,
     RecordBatch as ArrowRecordBatch,
 };
-use deltalake::arrow::datatypes::{DataType as ArrowDataType, TimeUnit as ArrowTimeUnit};
+use deltalake::arrow::datatypes::{
+    ArrowNativeType, DataType as ArrowDataType, TimeUnit as ArrowTimeUnit,
+};
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::datafusion::parquet::record::List as ParquetList;
 use deltalake::parquet::record::Row as ParquetRow;
@@ -300,6 +303,16 @@ fn column_into_pathway_values(
     rows_count: usize,
 ) -> Vec<ParsedValue> {
     let arrow_type = column.data_type();
+    let create_error_array = || {
+        vec![
+            Err(Box::new(conversion_error(
+                &format!("{arrow_type:?}"),
+                column_name,
+                expected_type
+            )));
+            rows_count
+        ]
+    };
     let expected_type_unopt = expected_type.unoptionalize();
     let mut values_vector = match (arrow_type, expected_type_unopt) {
         (ArrowDataType::Null, _) => vec![Ok(Value::None); rows_count],
@@ -376,16 +389,45 @@ fn column_into_pathway_values(
         (ArrowDataType::LargeList(_), Type::List(_) | Type::Any) => {
             convert_arrow_list_array::<i64>(column, expected_type, column_name, column.len())
         }
-        (arrow_type, expected_type) => {
-            vec![
-                Err(Box::new(conversion_error(
-                    &format!("{arrow_type:?}"),
+        (ArrowDataType::Dictionary(key_type, _), _) => {
+            // There are two ways to represent a column of any structure T:
+            // - The straightforward way is by defining a type T as the type of this column;
+            // - The optimized way is by defining a column as a ArrowDataType::Dictionary(size_type, T).
+            //
+            // When a table is written and read by Pathway, the straightforward way is used to represent the data blocks.
+            // However, when a query with DataFusion is made, and it heuristically detects that:
+            // 1. The observed type is heavy;
+            // 2. The cardinality of the set of values of this array is low.
+            // It uses the optimized representation for the values of the column.
+            //
+            // This code decodes the optimized representation of a column.
+
+            let result = match key_type.as_ref() {
+                ArrowDataType::UInt8 => convert_arrow_dictionary_array::<u8, UInt8Type>(
+                    column,
                     column_name,
-                    expected_type
-                )));
-                rows_count
-            ]
+                    expected_type_unopt,
+                ),
+                ArrowDataType::UInt16 => convert_arrow_dictionary_array::<u16, UInt16Type>(
+                    column,
+                    column_name,
+                    expected_type_unopt,
+                ),
+                ArrowDataType::UInt32 => convert_arrow_dictionary_array::<u32, UInt32Type>(
+                    column,
+                    column_name,
+                    expected_type_unopt,
+                ),
+                ArrowDataType::UInt64 => convert_arrow_dictionary_array::<u64, UInt64Type>(
+                    column,
+                    column_name,
+                    expected_type_unopt,
+                ),
+                _ => None,
+            };
+            result.unwrap_or_else(create_error_array)
         }
+        _ => create_error_array(),
     };
 
     let is_optional = expected_type.is_optional();
@@ -410,6 +452,46 @@ fn pathway_tuple_from_parsed_values(nested_list_contents: Vec<ParsedValue>) -> P
         prepared_values.push(value?);
     }
     Ok(Value::Tuple(prepared_values.into()))
+}
+
+fn convert_arrow_dictionary_array<
+    N: ArrowNativeType,
+    T: ArrowPrimitiveType<Native = N> + ArrowDictionaryKeyType,
+>(
+    column: &Arc<dyn ArrowArray>,
+    column_name: &str,
+    expected_type_unopt: &Type,
+) -> Option<Vec<ParsedValue>> {
+    // Dictionary arrays are used in DataFusion to efficiently represent arrays with low-cardinality values.
+    // They consist of two arrays: a values array, which holds all unique values,
+    // and a keys array, which holds indices pointing to entries in the values array.
+    // Each element in the keys array refers to a corresponding value by index.
+
+    let impl_ = column.as_dictionary::<T>();
+    let keys = impl_.keys();
+    let values = impl_.values();
+    let parsed_keys: Vec<_> = keys.into_iter().collect();
+
+    let parsed_values =
+        column_into_pathway_values(values, expected_type_unopt, column_name, values.len());
+    let mut result = Vec::with_capacity(parsed_keys.len());
+    for index in parsed_keys {
+        let Some(index) = index else {
+            result.push(Ok(Value::None));
+            continue;
+        };
+        let index: usize = index.as_usize();
+        if index >= parsed_values.len() {
+            error!(
+                "Broken dictionary object: key points to an object that is out of the given set."
+            );
+            return None;
+        }
+        let value = parsed_values[index].clone();
+        result.push(value);
+    }
+
+    Some(result)
 }
 
 fn convert_arrow_list_array<OffsetType: OffsetSizeTrait>(

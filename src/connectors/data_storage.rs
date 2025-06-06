@@ -147,6 +147,10 @@ impl ValuesMap {
         self.map.get(key)
     }
 
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Result<Value, Box<ConversionError>>> {
+        self.map.get_mut(key)
+    }
+
     pub fn remove(&mut self, key: &str) {
         self.map.remove(key);
     }
@@ -156,6 +160,12 @@ impl ValuesMap {
             .into_iter()
             .map(|(key, value)| Ok((key, value?)))
             .try_collect()
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        for (key, value) in &other.map {
+            self.map.entry(key.clone()).or_insert_with(|| value.clone());
+        }
     }
 }
 

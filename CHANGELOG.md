@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- `pw.io.deltalake.read` now correctly reads data from partitioned tables in all cases.
+
 ## [0.22.0] - 2025-06-05
 
 ### Added

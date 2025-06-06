@@ -3985,38 +3985,118 @@ def test_output_column_sorting_foreign_columns_error_subscribe(tmp_path: pathlib
 
 
 @only_with_license_key
-def test_deltalake_partition_columns(tmp_path: pathlib.Path):
-    data = """
-        k | v
-        1 | foo
-        2 | bar
-        3 | baz
-    """
-    input_path = tmp_path / "input.csv"
-    output_path = tmp_path / "output"
-    write_csv(input_path, data)
+@pytest.mark.parametrize(
+    "partition_column", ["i", "f", "s", "b", "tn", "tu", "bin", "io"]
+)
+def test_deltalake_partition_columns(tmp_path, partition_column):
+    random_bytes_1 = base64.b64encode(os.urandom(20)).decode("utf-8")
+    random_bytes_2 = base64.b64encode(os.urandom(20)).decode("utf-8")
+    random_bytes_3 = base64.b64encode(os.urandom(20)).decode("utf-8")
+    data = [
+        {
+            "i": 1,
+            "f": -0.5,
+            "b": True,
+            "s": "foo",
+            "tn": "2025-05-22T10:57:43.000000000",
+            "tu": "2025-03-22T10:57:43.000000000+0000",
+            "bin": random_bytes_1,
+            "io": 1,
+        },
+        {
+            "i": 2,
+            "f": -0.5,
+            "b": True,
+            "s": "bar",
+            "tn": "2025-05-21T10:57:43.000000000",
+            "tu": "2025-03-23T10:57:43.000000000+0000",
+            "bin": random_bytes_2,
+            "io": None,
+        },
+        {
+            "i": 3,
+            "f": 0.5,
+            "b": False,
+            "s": "foo",
+            "tn": "2025-05-22T10:57:43.000000000",
+            "tu": "2025-03-24T10:57:43.000000000+0000",
+            "bin": random_bytes_3,
+            "io": 2,
+        },
+    ]
+    input_path = tmp_path / "input.jsonl"
+    lake_path = tmp_path / "output"
+    reread_path = tmp_path / "reread.csv"
+    with open(input_path, "w") as f:
+        for row in data:
+            f.write(json.dumps(row))
+            f.write("\n")
 
     class InputSchema(pw.Schema):
-        k: int = pw.column_definition(primary_key=True)
-        v: str
+        i: int = pw.column_definition(primary_key=True)
+        f: float
+        b: bool
+        s: str
+        tn: pw.DateTimeNaive
+        tu: pw.DateTimeUtc
+        bin: bytes
+        io: int | None
 
-    table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
-    pw.io.deltalake.write(table, str(output_path), partition_columns=[table.k])
+    table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, lake_path, partition_columns=[table[partition_column]])
     run_all()
 
-    delta_table = DeltaTable(output_path)
-    assert delta_table._table.metadata().partition_columns == ["k"]
-    pd_table_from_delta = (
-        delta_table.to_pandas().drop("time", axis=1).drop("diff", axis=1)
-    )
+    delta_table = DeltaTable(lake_path)
+    assert delta_table._table.metadata().partition_columns == [partition_column]
+    if partition_column != "bin":
+        # Binary partition columns are supported not in all libraries.
+        # Python library doesn't support binary partition columns correctly and runs
+        # into an exception
+        pd_table_from_delta = (
+            delta_table.to_pandas().drop("time", axis=1).drop("diff", axis=1)
+        )
+        assert_table_equality(
+            table,
+            pw.debug.table_from_pandas(
+                pd_table_from_delta,
+                schema=InputSchema,
+            ),
+        )
 
-    assert_table_equality(
-        table,
-        pw.debug.table_from_pandas(
-            pd_table_from_delta,
-            schema=InputSchema,
-        ),
+    G.clear()
+    table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
+    pw.io.csv.write(table, reread_path)
+    run_all()
+
+    result = (
+        pd.read_csv(reread_path, index_col=["i"])
+        .drop("time", axis=1)
+        .drop("diff", axis=1)
     )
+    expected = pd.DataFrame(data).set_index("i")
+    assert result.equals(expected)
+
+    G.clear()
+    table = pw.io.deltalake.read(
+        lake_path,
+        schema=InputSchema,
+        mode="static",
+        _backfilling_thresholds=[
+            api.BackfillingThreshold(
+                field="i",
+                comparison_op=">=",
+                threshold=1,
+            )
+        ],
+    )
+    pw.io.csv.write(table, reread_path)
+    run_all()
+    result = (
+        pd.read_csv(reread_path, index_col=["i"])
+        .drop("time", axis=1)
+        .drop("diff", axis=1)
+    )
+    assert result.equals(expected)
 
 
 @only_with_license_key
