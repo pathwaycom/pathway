@@ -6265,6 +6265,7 @@ where
     let is_multiprocessed = config.processes() > 1;
     let connector_synchronizer =
         Arc::new(Mutex::new(ConnectorSynchronizer::new(is_multiprocessed)));
+    let stats_monitor = Arc::new(Mutex::new(stats_monitor));
 
     let guards = execute(config.to_timely_config(), move |worker| {
         catch_unwind(AssertUnwindSafe(|| {
@@ -6304,8 +6305,14 @@ where
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());
                 let res = logic(&graph).unwrap_with_reporter(&error_reporter);
+                let stats_monitor_local = if graph.worker_index() == 0 {
+                    let mut stats_monitor = stats_monitor.lock().unwrap();
+                    std::mem::take(&mut *stats_monitor)
+                } else {
+                    None
+                };
                 let progress_reporter_runner =
-                    maybe_run_reporter(&monitoring_level, &graph, stats_monitor.clone());
+                    maybe_run_reporter(&monitoring_level, &graph, stats_monitor_local);
                 let http_server_runner =
                     maybe_run_http_server_thread(with_http_server, &graph, config.process_id());
                 let graph = graph.0.into_inner();

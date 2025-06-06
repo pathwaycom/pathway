@@ -39,11 +39,11 @@ use pyo3::exceptions::{
     PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
     PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
 };
-use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::{GILOnceCell, GILProtected};
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
-use pyo3::{intern, AsPyPointer, PyTypeInfo};
+use pyo3::{intern, PyTypeInfo};
+use pyo3::{prelude::*, IntoPyObjectExt};
 use pyo3_log::ResetHandle;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
@@ -58,6 +58,7 @@ use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::mem::take;
@@ -137,7 +138,7 @@ static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 fn get_convert_python_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     CONVERT
         .get_or_init(py, || {
-            PyModule::import_bound(py, "pathway.internals.utils.convert")
+            PyModule::import(py, "pathway.internals.utils.convert")
                 .unwrap()
                 .unbind()
         })
@@ -160,15 +161,12 @@ impl<'py> FromPyObject<'py> for Key {
     }
 }
 
-impl ToPyObject for Key {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
-        Pointer(*self).into_py(py)
-    }
-}
-
-impl IntoPy<PyObject> for Key {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        Pointer(self).into_py(py)
+impl<'py> IntoPyObject<'py> for Key {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Pointer(self).into_bound_py_any(py)
     }
 }
 
@@ -221,54 +219,42 @@ fn value_json_from_py_any(ob: &Bound<PyAny>) -> PyResult<Value> {
     Ok(Value::from(json))
 }
 
-impl ToPyObject for DateTimeNaive {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for DateTimeNaive {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         get_convert_python_module(py)
             .call_method1(
                 intern!(py, "_pd_timestamp_from_naive_ns"),
                 (self.timestamp(),),
-            )
-            .unwrap()
-            .into_py(py)
+            )?
+            .into_bound_py_any(py)
     }
 }
 
-impl IntoPy<PyObject> for DateTimeNaive {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.to_object(py)
-    }
-}
-
-impl ToPyObject for DateTimeUtc {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for DateTimeUtc {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         get_convert_python_module(py)
             .call_method1(
                 intern!(py, "_pd_timestamp_from_utc_ns"),
                 (self.timestamp(),),
-            )
-            .unwrap()
-            .into_py(py)
+            )?
+            .into_bound_py_any(py)
     }
 }
 
-impl IntoPy<PyObject> for DateTimeUtc {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.to_object(py)
-    }
-}
-
-impl ToPyObject for Duration {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for Duration {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         get_convert_python_module(py)
-            .call_method1(intern!(py, "_pd_timedelta_from_ns"), (self.nanoseconds(),))
-            .unwrap()
-            .into_py(py)
-    }
-}
-
-impl IntoPy<PyObject> for Duration {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.to_object(py)
+            .call_method1(intern!(py, "_pd_timedelta_from_ns"), (self.nanoseconds(),))?
+            .into_bound_py_any(py)
     }
 }
 
@@ -290,13 +276,11 @@ fn array_with_proper_dimensions<T>(
 
 fn extract_datetime(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
     assert!(matches!(type_, Type::DateTimeNaive | Type::DateTimeUtc));
-    let type_name = ob.get_type().qualname()?;
+    let type_name_bound = ob.get_type().qualname()?;
+    let type_name = type_name_bound.to_str()?;
     let value = if type_name == "datetime" {
         value_from_python_datetime(ob)
-    } else if matches!(
-        type_name.as_ref(),
-        "Timestamp" | "DateTimeNaive" | "DateTimeUtc"
-    ) {
+    } else if matches!(type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
         value_from_pandas_timestamp(ob)
     } else {
         Err(PyValueError::new_err(format!(
@@ -360,10 +344,7 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
                 Some(extract_value(ob, arg)?)
             }
         }
-        Type::Bool => ob
-            .extract::<&PyBool>()
-            .ok()
-            .map(|b| Value::from(b.is_true())),
+        Type::Bool => ob.extract::<bool>().ok().map(Value::from),
         Type::Int => ob.extract::<i64>().ok().map(Value::from),
         Type::Float => ob.extract::<f64>().ok().map(Value::from),
         Type::Pointer => ob.extract::<Key>().ok().map(Value::from),
@@ -379,10 +360,11 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
         Type::DateTimeNaive | Type::DateTimeUtc => Some(extract_datetime(ob, type_)?),
         Type::Duration => {
             // XXX: check types, not names
-            let type_name = ob.get_type().qualname()?;
+            let type_name_bound = ob.get_type().qualname()?;
+            let type_name = type_name_bound.to_str()?;
             if type_name == "timedelta" {
                 value_from_python_timedelta(ob).ok()
-            } else if matches!(type_name.as_ref(), "Timedelta" | "Duration") {
+            } else if matches!(type_name, "Timedelta" | "Duration") {
                 value_from_pandas_timedelta(ob).ok()
             } else {
                 None
@@ -427,12 +409,12 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
             Some(Value::from(values.as_slice()))
         }
         Type::PyObjectWrapper => {
-            let value = if let Ok(ob) = ob.extract::<PyObjectWrapper>() {
-                ob
+            let value = if let Ok(ob) = ob.downcast::<PyObjectWrapper>() {
+                ob.get().as_internal(ob.py())
             } else {
-                PyObjectWrapper::new(ob.clone().unbind())
+                PyObjectWrapper::new(ob.clone().unbind()).as_internal(ob.py())
             };
-            Some(Value::from(value.into_internal()))
+            Some(Value::from(value))
         }
         Type::Future(arg) => {
             if ob.is_instance_of::<Pending>() {
@@ -478,9 +460,9 @@ impl<'py> FromPyObject<'py> for Value {
             ))
         } else if is_pathway_json(ob)? {
             value_json_from_py_any(&ob.getattr(intern!(py, "value"))?)
-        } else if let Ok(b) = ob.extract::<&PyBool>() {
+        } else if let Ok(b) = ob.extract::<bool>() {
             // Fallback checks from now on
-            Ok(Value::Bool(b.is_true()))
+            Ok(Value::Bool(b))
         } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i64>>() {
             // single-element arrays convert to scalars, so we need to check for arrays first
             Ok(Value::from(array.as_array().to_owned()))
@@ -507,18 +489,19 @@ impl<'py> FromPyObject<'py> for Value {
             Ok(Value::from(t.as_slice()))
         } else if let Ok(dict) = ob.downcast::<PyDict>() {
             value_json_from_py_any(dict)
-        } else if let Ok(ob) = ob.extract::<PyObjectWrapper>() {
-            Ok(Value::from(ob.into_internal()))
+        } else if let Ok(ob) = ob.downcast::<PyObjectWrapper>() {
+            Ok(Value::from(ob.get().as_internal(ob.py())))
         } else {
             // XXX: check types, not names
-            let type_name = ob.get_type().qualname()?;
+            let type_name_bound = ob.get_type().qualname()?;
+            let type_name = type_name_bound.to_str()?;
             if type_name == "datetime" {
                 return value_from_python_datetime(ob);
             } else if type_name == "timedelta" {
                 return value_from_python_timedelta(ob);
-            } else if matches!(&*type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
+            } else if matches!(type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
                 return value_from_pandas_timestamp(ob);
-            } else if matches!(&*type_name, "Timedelta" | "Duration") {
+            } else if matches!(type_name, "Timedelta" | "Duration") {
                 return value_from_pandas_timedelta(ob);
             }
 
@@ -537,46 +520,45 @@ impl<'py> FromPyObject<'py> for Value {
     }
 }
 
-fn json_to_py_object(py: Python<'_>, json: &JsonValue) -> PyObject {
-    get_convert_python_module(py)
-        .call_method1(intern!(py, "_parse_to_json"), (json.to_string(),))
-        .unwrap()
-        .into_py(py)
+fn json_to_py_object<'py>(py: Python<'py>, json: &JsonValue) -> PyResult<Bound<'py, PyAny>> {
+    get_convert_python_module(py).call_method1(intern!(py, "_parse_to_json"), (json.to_string(),))
 }
 
-impl ToPyObject for Value {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
+impl<'py> IntoPyObject<'py> for &Value {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Self::None => py.None(),
-            Self::Bool(b) => b.into_py(py),
-            Self::Int(i) => i.into_py(py),
-            Self::Float(f) => f.into_py(py),
-            Self::Pointer(k) => k.into_py(py),
-            Self::String(s) => s.into_py(py),
-            Self::Bytes(b) => PyBytes::new_bound(py, b).unbind().into_any(),
-            Self::Tuple(t) => PyTuple::new_bound(py, t.iter()).unbind().into_any(),
-            Self::IntArray(a) => PyArray::from_array_bound(py, a).unbind().into_any(),
-            Self::FloatArray(a) => PyArray::from_array_bound(py, a).unbind().into_any(),
-            Self::DateTimeNaive(dt) => dt.into_py(py),
-            Self::DateTimeUtc(dt) => dt.into_py(py),
-            Self::Duration(d) => d.into_py(py),
-            Self::Json(j) => json_to_py_object(py, j),
-            Self::Error => ERROR.clone_ref(py).into_py(py),
-            Self::PyObjectWrapper(op) => PyObjectWrapper::from_internal(py, op).into_py(py),
-            Self::Pending => PENDING.clone_ref(py).into_py(py),
+            Value::None => Ok(py.None().into_bound(py)),
+            Value::Bool(b) => b.into_bound_py_any(py),
+            Value::Int(i) => i.into_bound_py_any(py),
+            Value::Float(f) => f.into_bound_py_any(py),
+            Value::Pointer(k) => k.into_bound_py_any(py),
+            Value::String(s) => s.into_bound_py_any(py),
+            Value::Bytes(b) => PyBytes::new(py, b).into_bound_py_any(py),
+            Value::Tuple(t) => Ok(PyTuple::new(py, t.iter())?.into_any()),
+            Value::IntArray(a) => Ok(PyArray::from_array(py, a).into_any()),
+            Value::FloatArray(a) => Ok(PyArray::from_array(py, a).into_any()),
+            Value::DateTimeNaive(dt) => dt.into_bound_py_any(py),
+            Value::DateTimeUtc(dt) => dt.into_bound_py_any(py),
+            Value::Duration(d) => d.into_bound_py_any(py),
+            Value::Json(j) => json_to_py_object(py, j),
+            Value::Error => ERROR.clone_ref(py).into_bound_py_any(py),
+            Value::PyObjectWrapper(op) => {
+                PyObjectWrapper::from_internal(py, op).into_bound_py_any(py)
+            }
+            Value::Pending => PENDING.clone_ref(py).into_bound_py_any(py),
         }
     }
 }
 
-impl IntoPy<PyObject> for Value {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.to_object(py)
-    }
-}
-
-impl IntoPy<PyObject> for &Value {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        self.to_object(py)
+impl<'py> IntoPyObject<'py> for Value {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, PyErr> {
+        (&self).into_pyobject(py)
     }
 }
 
@@ -586,9 +568,12 @@ impl<'py> FromPyObject<'py> for Reducer {
     }
 }
 
-impl IntoPy<PyObject> for Reducer {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyReducer(self).into_py(py)
+impl<'py> IntoPyObject<'py> for Reducer {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyReducer(self).into_bound_py_any(py)
     }
 }
 
@@ -598,9 +583,12 @@ impl<'py> FromPyObject<'py> for Type {
     }
 }
 
-impl IntoPy<PyObject> for Type {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PathwayType(self).into_py(py)
+impl<'py> IntoPyObject<'py> for Type {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PathwayType(self).into_bound_py_any(py)
     }
 }
 
@@ -610,9 +598,12 @@ impl<'py> FromPyObject<'py> for ReadMethod {
     }
 }
 
-impl IntoPy<PyObject> for ReadMethod {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyReadMethod(self).into_py(py)
+impl<'py> IntoPyObject<'py> for ReadMethod {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyReadMethod(self).into_bound_py_any(py)
     }
 }
 
@@ -622,9 +613,12 @@ impl<'py> FromPyObject<'py> for ConnectorMode {
     }
 }
 
-impl IntoPy<PyObject> for ConnectorMode {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyConnectorMode(self).into_py(py)
+impl<'py> IntoPyObject<'py> for ConnectorMode {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyConnectorMode(self).into_bound_py_any(py)
     }
 }
 
@@ -634,9 +628,12 @@ impl<'py> FromPyObject<'py> for SessionType {
     }
 }
 
-impl IntoPy<PyObject> for SessionType {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PySessionType(self).into_py(py)
+impl<'py> IntoPyObject<'py> for SessionType {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PySessionType(self).into_bound_py_any(py)
     }
 }
 
@@ -646,9 +643,12 @@ impl<'py> FromPyObject<'py> for PythonConnectorEventType {
     }
 }
 
-impl IntoPy<PyObject> for PythonConnectorEventType {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyPythonConnectorEventType(self).into_py(py)
+impl<'py> IntoPyObject<'py> for PythonConnectorEventType {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyPythonConnectorEventType(self).into_bound_py_any(py)
     }
 }
 
@@ -658,9 +658,12 @@ impl<'py> FromPyObject<'py> for DebeziumDBType {
     }
 }
 
-impl IntoPy<PyObject> for DebeziumDBType {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyDebeziumDBType(self).into_py(py)
+impl<'py> IntoPyObject<'py> for DebeziumDBType {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyDebeziumDBType(self).into_bound_py_any(py)
     }
 }
 
@@ -670,9 +673,12 @@ impl<'py> FromPyObject<'py> for KeyGenerationPolicy {
     }
 }
 
-impl IntoPy<PyObject> for KeyGenerationPolicy {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyKeyGenerationPolicy(self).into_py(py)
+impl<'py> IntoPyObject<'py> for KeyGenerationPolicy {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyKeyGenerationPolicy(self).into_bound_py_any(py)
     }
 }
 
@@ -682,9 +688,12 @@ impl<'py> FromPyObject<'py> for MonitoringLevel {
     }
 }
 
-impl IntoPy<PyObject> for MonitoringLevel {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyMonitoringLevel(self).into_py(py)
+impl<'py> IntoPyObject<'py> for MonitoringLevel {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyMonitoringLevel(self).into_bound_py_any(py)
     }
 }
 
@@ -694,9 +703,12 @@ impl<'py> FromPyObject<'py> for SqlWriterInitMode {
     }
 }
 
-impl IntoPy<PyObject> for SqlWriterInitMode {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PySqlWriterInitMode(self).into_py(py)
+impl<'py> IntoPyObject<'py> for SqlWriterInitMode {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PySqlWriterInitMode(self).into_bound_py_any(py)
     }
 }
 
@@ -710,37 +722,37 @@ impl From<EngineError> for PyErr {
             if let EngineError::WithTrace { inner, trace } = error {
                 let inner = PyErr::from(EngineError::from(inner));
                 let args = (inner, trace);
-                return PyErr::from_type_bound(ENGINE_ERROR_WITH_TRACE_TYPE.bind(py).clone(), args);
+                return PyErr::from_type(ENGINE_ERROR_WITH_TRACE_TYPE.bind(py).clone(), args);
             }
             let exception_type = match error {
                 EngineError::DataError(ref error) => match error {
-                    DataError::TypeMismatch { .. } => PyTypeError::type_object_bound(py),
+                    DataError::TypeMismatch { .. } => PyTypeError::type_object(py),
                     DataError::DuplicateKey(_)
                     | DataError::ValueMissing
                     | DataError::KeyMissingInOutputTable(_)
-                    | DataError::KeyMissingInInputTable(_) => PyKeyError::type_object_bound(py),
-                    DataError::DivisionByZero => PyZeroDivisionError::type_object_bound(py),
+                    | DataError::KeyMissingInInputTable(_) => PyKeyError::type_object(py),
+                    DataError::DivisionByZero => PyZeroDivisionError::type_object(py),
                     DataError::ParseError(_) | DataError::ValueError(_) => {
-                        PyValueError::type_object_bound(py)
+                        PyValueError::type_object(py)
                     }
-                    DataError::IndexOutOfBounds => PyIndexError::type_object_bound(py),
+                    DataError::IndexOutOfBounds => PyIndexError::type_object(py),
                     _ => ENGINE_ERROR_TYPE.bind(py).clone(),
                 },
                 EngineError::IterationLimitTooSmall
                 | EngineError::InconsistentColumnProperties
-                | EngineError::IdInTableProperties => PyValueError::type_object_bound(py),
+                | EngineError::IdInTableProperties => PyValueError::type_object(py),
                 EngineError::ReaderFailed(ReadError::Py(e)) => return e,
                 EngineError::OtherWorkerPanic => OTHER_WORKER_ERROR.bind(py).clone(),
                 _ => ENGINE_ERROR_TYPE.bind(py).clone(),
             };
             let message = error.to_string();
-            PyErr::from_type_bound(exception_type, message)
+            PyErr::from_type(exception_type, message)
         })
     }
 }
 
-fn check_identity(a: &impl AsPyPointer, b: &impl AsPyPointer, msg: &'static str) -> PyResult<()> {
-    if a.as_ptr() == b.as_ptr() {
+fn check_identity<T>(a: &Py<T>, b: &Py<T>, msg: &'static str) -> PyResult<()> {
+    if a.is(b) {
         Ok(())
     } else {
         Err(PyValueError::new_err(msg))
@@ -751,12 +763,12 @@ fn from_py_iterable<'py, T>(iterable: &Bound<'py, PyAny>) -> PyResult<Vec<T>>
 where
     T: FromPyObject<'py>,
 {
-    iterable.iter()?.map(|obj| obj?.extract()).collect()
+    iterable.try_iter()?.map(|obj| obj?.extract()).collect()
 }
 
 fn engine_tables_from_py_iterable(iterable: &Bound<PyAny>) -> PyResult<Vec<EngineLegacyTable>> {
     iterable
-        .iter()?
+        .try_iter()?
         .map(|table| {
             let table: PyRef<LegacyTable> = table?.extract()?;
             Ok(table.to_engine())
@@ -773,7 +785,7 @@ pub fn generic_alias_class_getitem<'py>(
     let py = cls.py();
     GENERIC_ALIAS
         .get_or_try_init(py, || -> PyResult<_> {
-            Ok(py.import_bound("types")?.getattr("GenericAlias")?.unbind())
+            Ok(py.import("types")?.getattr("GenericAlias")?.unbind())
         })?
         .bind(py)
         .call1((cls, item))
@@ -803,15 +815,15 @@ impl Pointer {
     pub fn __richcmp__(&self, other: &Bound<PyAny>, op: CompareOp) -> Py<PyAny> {
         let py = other.py();
         if let Ok(other) = other.extract::<PyRef<Self>>() {
-            return op.matches(self.0.cmp(&other.0)).into_py(py);
+            return op.matches(self.0.cmp(&other.0)).into_py_any(py).unwrap();
         }
         if let Ok(other) = other.extract::<f64>() {
             // XXX: comparisons to ±∞
             if other == f64::NEG_INFINITY {
-                return op.matches(Ordering::Greater).into_py(py);
+                return op.matches(Ordering::Greater).into_py_any(py).unwrap();
             }
             if other == f64::INFINITY {
-                return op.matches(Ordering::Less).into_py(py);
+                return op.matches(Ordering::Less).into_py_any(py).unwrap();
             }
         }
         py.NotImplemented()
@@ -827,7 +839,6 @@ impl Pointer {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
-#[derive(Clone)]
 struct PyObjectWrapper {
     #[pyo3(get)]
     value: PyObject,
@@ -863,14 +874,17 @@ impl PyObjectWrapper {
         generic_alias_class_getitem(cls, item)
     }
 
-    fn __getnewargs__(&self) -> (PyObject,) {
-        (self.value.clone(),)
+    fn __getnewargs__(&self, py: Python<'_>) -> (PyObject,) {
+        (self.value.clone_ref(py),)
     }
 }
 
 impl PyObjectWrapper {
-    fn into_internal(self) -> InternalPyObjectWrapper {
-        InternalPyObjectWrapper::new(self.value, self.serializer)
+    fn as_internal(&self, py: Python<'_>) -> InternalPyObjectWrapper {
+        InternalPyObjectWrapper::new(
+            self.value.clone_ref(py),
+            self.serializer.as_ref().map(|s| s.clone_ref(py)),
+        )
     }
 
     fn from_internal(py: Python<'_>, ob: &InternalPyObjectWrapper) -> Self {
@@ -964,9 +978,12 @@ impl<'py> FromPyObject<'py> for ConnectorGroupDescriptor {
     }
 }
 
-impl IntoPy<PyObject> for ConnectorGroupDescriptor {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyConnectorGroupDescriptor(self).into_py(py)
+impl<'py> IntoPyObject<'py> for ConnectorGroupDescriptor {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyConnectorGroupDescriptor(self).into_bound_py_any(py)
     }
 }
 
@@ -976,6 +993,7 @@ struct PyReducerData(ReducerData);
 #[pymethods]
 impl PyReducerData {
     #[new]
+    #[pyo3(signature = (reducer, skip_errors, column_paths, trace))]
     fn new(
         reducer: Reducer,
         skip_errors: bool,
@@ -1071,12 +1089,14 @@ impl<'py> FromPyObject<'py> for UnaryOperator {
     }
 }
 
-impl IntoPy<PyObject> for UnaryOperator {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyUnaryOperator(self).into_py(py)
+impl<'py> IntoPyObject<'py> for UnaryOperator {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyUnaryOperator(self).into_bound_py_any(py)
     }
 }
-
 #[pyclass(module = "pathway.engine", frozen, name = "BinaryOperator")]
 pub struct PyBinaryOperator(BinaryOperator);
 
@@ -1128,9 +1148,12 @@ impl<'py> FromPyObject<'py> for BinaryOperator {
     }
 }
 
-impl IntoPy<PyObject> for BinaryOperator {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyBinaryOperator(self).into_py(py)
+impl<'py> IntoPyObject<'py> for BinaryOperator {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyBinaryOperator(self).into_bound_py_any(py)
     }
 }
 
@@ -1216,10 +1239,12 @@ fn batch_apply(
                     }
                 }
             }
-            let args = PyTuple::new_bound(py, data);
-            let results = function
-                .call1(py, args)
-                .and_then(|results| results.extract::<Vec<Bound<PyAny>>>(py));
+            let args = PyTuple::new(py, data);
+            let results = args.and_then(|args| {
+                function
+                    .call1(py, args)
+                    .and_then(|results| results.extract::<Vec<Bound<PyAny>>>(py))
+            });
             let batch_result: Vec<DynResult<Value>> = match results {
                 Ok(results) => {
                     if results.len() == inputs.len() {
@@ -1320,7 +1345,7 @@ impl PyExpression {
                             if propagate_none && input_i.iter().any(|a| matches!(a, Value::None)) {
                                 Ok(Value::None)
                             } else {
-                                let args = PyTuple::new_bound(py, *input_i);
+                                let args = PyTuple::new(py, *input_i)?;
                                 let result = function.call1(py, args)?;
                                 Ok(extract_value(result.bind(py), &dtype)?)
                             }
@@ -1966,7 +1991,7 @@ pub struct Universe {
 impl Universe {
     fn new<'py>(scope: &Bound<'py, Scope>, handle: UniverseHandle) -> PyResult<Bound<'py, Self>> {
         let py = scope.py();
-        if let Some(universe) = scope.borrow().universes.borrow().get(&handle) {
+        if let Some(universe) = scope.borrow().universes.get(py).borrow().get(&handle) {
             return Ok(universe.bind(py).clone());
         }
         let res = Bound::new(
@@ -1979,6 +2004,7 @@ impl Universe {
         scope
             .borrow()
             .universes
+            .get(py)
             .borrow_mut()
             .insert(handle, res.clone().unbind());
         Ok(res)
@@ -2000,8 +2026,9 @@ impl ComplexColumn {
         if let Ok(_column) = self_.downcast_exact::<Column>() {
             None
         } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
+            let py = computer.py();
             let computer = computer.get();
-            computer.is_output.then(|| computer.universe.clone())
+            computer.is_output.then(|| computer.universe.clone_ref(py))
         } else {
             unreachable!("Unknown ComplexColumn subclass");
         }
@@ -2033,7 +2060,7 @@ impl Column {
         let py = universe.py();
         let universe_ref = universe.borrow();
         let scope = universe_ref.scope.borrow(py);
-        if let Some(column) = scope.columns.borrow().get(&handle) {
+        if let Some(column) = scope.columns.get(py).borrow().get(&handle) {
             let column = column.bind(py).clone();
             assert!(column.get().universe.is(universe));
             return Ok(column);
@@ -2050,6 +2077,7 @@ impl Column {
         )?;
         scope
             .columns
+            .get(py)
             .borrow_mut()
             .insert(handle, res.clone().unbind());
         Ok(res)
@@ -2081,11 +2109,15 @@ impl LegacyTable {
     #[new]
     pub fn new(
         universe: Bound<Universe>,
-        #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<Py<Column>>,
+        #[pyo3(from_py_with = from_py_iterable)] columns: Vec<Py<Column>>,
     ) -> PyResult<Self> {
         let py = universe.py();
         for column in &columns {
-            check_identity(&column.borrow(py).universe, &universe, "universe mismatch")?;
+            check_identity(
+                &column.borrow(py).universe,
+                universe.as_unbound(),
+                "universe mismatch",
+            )?;
         }
         Ok(Self {
             universe: universe.unbind(),
@@ -2143,7 +2175,7 @@ pub struct Table {
 impl Table {
     fn new(scope: &Bound<Scope>, handle: TableHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
-        if let Some(table) = scope.borrow().tables.borrow().get(&handle) {
+        if let Some(table) = scope.borrow().tables.get(py).borrow().get(&handle) {
             return Ok(table.clone_ref(py));
         }
         let res = Py::new(
@@ -2156,8 +2188,9 @@ impl Table {
         scope
             .borrow()
             .tables
+            .get(py)
             .borrow_mut()
-            .insert(handle, res.clone());
+            .insert(handle, res.clone_ref(py));
         Ok(res)
     }
 }
@@ -2171,7 +2204,7 @@ pub struct ErrorLog {
 impl ErrorLog {
     fn new(scope: &Bound<Scope>, handle: ErrorLogHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
-        if let Some(error_log) = scope.borrow().error_logs.borrow().get(&handle) {
+        if let Some(error_log) = scope.borrow().error_logs.get(py).borrow().get(&handle) {
             return Ok(error_log.clone_ref(py));
         }
         let res = Py::new(
@@ -2184,8 +2217,9 @@ impl ErrorLog {
         scope
             .borrow()
             .error_logs
+            .get(py)
             .borrow_mut()
-            .insert(handle, res.clone());
+            .insert(handle, res.clone_ref(py));
         Ok(res)
     }
 }
@@ -2244,9 +2278,8 @@ impl<'py> FromPyObject<'py> for ColumnPath {
         let py = ob.py();
         if ob.getattr(intern!(py, "is_key")).is_ok_and(|is_key| {
             is_key
-                .extract::<&PyBool>()
+                .extract::<bool>()
                 .expect("is_key field in ColumnPath should be bool")
-                .is_true()
         }) {
             Ok(Self::Key)
         } else if let Ok(path) = ob
@@ -2265,11 +2298,11 @@ impl<'py> FromPyObject<'py> for ColumnPath {
 
 static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type_bound(
+        PyErr::new_type(
             py,
-            "pathway.engine.MissingValueError",
+            &CString::new("pathway.engine.MissingValueError").unwrap(),
             None,
-            Some(&PyBaseException::type_object_bound(py)),
+            Some(&PyBaseException::type_object(py)),
             None,
         )
         .expect("creating MissingValueError type should not fail")
@@ -2278,11 +2311,11 @@ static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 
 static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type_bound(
+        PyErr::new_type(
             py,
-            "pathway.engine.EngineError",
+            &CString::new("pathway.engine.EngineError").unwrap(),
             None,
-            Some(&PyException::type_object_bound(py)),
+            Some(&PyException::type_object(py)),
             None,
         )
         .expect("creating EngineError type should not fail")
@@ -2291,11 +2324,11 @@ static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 
 static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type_bound(
+        PyErr::new_type(
             py,
-            "pathway.engine.EngineErrorWithTrace",
+            &CString::new("pathway.engine.EngineErrorWithTrace").unwrap(),
             None,
-            Some(&PyException::type_object_bound(py)),
+            Some(&PyException::type_object(py)),
             None,
         )
         .expect("creating EngineErrorWithTrace type should not fail")
@@ -2304,11 +2337,11 @@ static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 
 static OTHER_WORKER_ERROR: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type_bound(
+        PyErr::new_type(
             py,
-            "pathway.engine.OtherWorkerError",
+            &CString::new("pathway.engine.OtherWorkerError").unwrap(),
             None,
-            Some(&PyException::type_object_bound(py)),
+            Some(&PyException::type_object(py)),
             None,
         )
         .expect("creating OtherWorkerError type should not fail")
@@ -2345,9 +2378,9 @@ impl Context {
     ) -> PyResult<Value> {
         self.0
             .with(|context| {
-                context.get(column, row, args).ok_or_else(|| {
-                    PyErr::from_type_bound(MISSING_VALUE_ERROR_TYPE.bind(py).clone(), ())
-                })
+                context
+                    .get(column, row, args)
+                    .ok_or_else(|| PyErr::from_type(MISSING_VALUE_ERROR_TYPE.bind(py).clone(), ()))
             })
             .unwrap_or_else(|| Err(PyValueError::new_err("context out of scope")))
     }
@@ -2415,16 +2448,20 @@ impl Computer {
     ) -> PyResult<Option<Value>> {
         let context = Bound::new(py, Context(SendWrapper::new(ScopedContext::default())))?;
         let mut all_args = Vec::with_capacity(args.len() + 1);
-        all_args.push(context.to_object(py));
-        all_args.extend(args.iter().map(|value| value.to_object(py)));
+        all_args.push(context.clone().into_any().unbind());
+        let args: Vec<_> = args
+            .iter()
+            .map(|value| value.into_py_any(py))
+            .try_collect()?;
+        all_args.extend(args);
         let res = context.borrow().0.scoped(
             engine_context,
-            || self.fun.bind(py).call1(PyTuple::new_bound(py, all_args)), // FIXME
+            || self.fun.bind(py).call1(PyTuple::new(py, all_args)?), // FIXME
         );
         match res {
             Ok(value) => Ok(Some(value.extract()?)),
             Err(error) => {
-                if error.is_instance_bound(py, MISSING_VALUE_ERROR_TYPE.bind(py)) {
+                if error.is_instance(py, MISSING_VALUE_ERROR_TYPE.bind(py)) {
                     Ok(None)
                 } else {
                     Err(error)
@@ -2480,19 +2517,19 @@ impl Computer {
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct Scope {
     #[pyo3(get)]
-    parent: Option<Py<Self>>,
+    parent: Option<Py<Scope>>,
     license: Option<License>,
     graph: SendWrapper<ScopedGraph>,
     is_persisted: bool,
 
     // empty_universe: Lazy<Py<Universe>>,
-    universes: RefCell<HashMap<UniverseHandle, Py<Universe>>>,
-    columns: RefCell<HashMap<ColumnHandle, Py<Column>>>,
-    tables: RefCell<HashMap<TableHandle, Py<Table>>>,
-    error_logs: RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>,
-    unique_names: RefCell<HashSet<UniqueName>>,
+    universes: GILProtected<RefCell<HashMap<UniverseHandle, Py<Universe>>>>,
+    columns: GILProtected<RefCell<HashMap<ColumnHandle, Py<Column>>>>,
+    tables: GILProtected<RefCell<HashMap<TableHandle, Py<Table>>>>,
+    error_logs: GILProtected<RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>>,
+    unique_names: GILProtected<RefCell<HashSet<UniqueName>>>,
     event_loop: PyObject,
-    total_connectors: RefCell<usize>,
+    total_connectors: GILProtected<RefCell<usize>>,
 }
 
 impl Scope {
@@ -2507,27 +2544,32 @@ impl Scope {
             license,
             is_persisted,
             graph: SendWrapper::new(ScopedGraph::new()),
-            universes: RefCell::new(HashMap::new()),
-            columns: RefCell::new(HashMap::new()),
-            tables: RefCell::new(HashMap::new()),
-            error_logs: RefCell::new(HashMap::new()),
-            unique_names: RefCell::new(HashSet::new()),
+            universes: GILProtected::new(RefCell::new(HashMap::new())),
+            columns: GILProtected::new(RefCell::new(HashMap::new())),
+            tables: GILProtected::new(RefCell::new(HashMap::new())),
+            error_logs: GILProtected::new(RefCell::new(HashMap::new())),
+            unique_names: GILProtected::new(RefCell::new(HashSet::new())),
             event_loop,
-            total_connectors: RefCell::new(0),
+            total_connectors: GILProtected::new(RefCell::new(0)),
         }
     }
 
-    fn clear_caches(&self) {
-        self.universes.borrow_mut().clear();
-        self.columns.borrow_mut().clear();
-        self.tables.borrow_mut().clear();
-        self.error_logs.borrow_mut().clear();
+    fn clear_caches(&self, py: Python<'_>) {
+        self.universes.get(py).borrow_mut().clear();
+        self.columns.get(py).borrow_mut().clear();
+        self.tables.get(py).borrow_mut().clear();
+        self.error_logs.get(py).borrow_mut().clear();
     }
 
-    fn register_unique_name(&self, unique_name: Option<&UniqueName>) -> PyResult<()> {
+    fn register_unique_name(
+        &self,
+        unique_name: Option<&UniqueName>,
+        py: Python<'_>,
+    ) -> PyResult<()> {
         if let Some(unique_name) = &unique_name {
             let is_unique_id = self
                 .unique_names
+                .get(py)
                 .borrow_mut()
                 .insert((*unique_name).to_string());
             if !is_unique_id {
@@ -2576,7 +2618,7 @@ impl Scope {
 
     pub fn static_universe<'py>(
         self_: &Bound<'py, Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] keys: Vec<Key>,
+        #[pyo3(from_py_with = from_py_iterable)] keys: Vec<Key>,
     ) -> PyResult<Bound<'py, Universe>> {
         let handle = self_.borrow().graph.static_universe(keys)?;
         Universe::new(self_, handle)
@@ -2585,10 +2627,10 @@ impl Scope {
     pub fn static_column<'py>(
         self_: &Bound<'py, Self>,
         universe: &Bound<'py, Universe>,
-        #[pyo3(from_py_with = "from_py_iterable")] values: Vec<(Key, Value)>,
+        #[pyo3(from_py_with = from_py_iterable)] values: Vec<(Key, Value)>,
         properties: ColumnProperties,
     ) -> PyResult<Bound<'py, Column>> {
-        check_identity(self_, &universe.get().scope, "scope mismatch")?;
+        check_identity(self_.as_unbound(), &universe.get().scope, "scope mismatch")?;
         let handle =
             self_
                 .borrow()
@@ -2599,7 +2641,7 @@ impl Scope {
 
     pub fn static_table(
         self_: &Bound<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] data: Vec<DataRow>,
+        #[pyo3(from_py_with = from_py_iterable)] data: Vec<DataRow>,
         properties: ConnectorProperties,
     ) -> PyResult<Py<Table>> {
         let column_properties = properties.column_properties();
@@ -2619,9 +2661,11 @@ impl Scope {
         let py = self_.py();
 
         let unique_name = properties.borrow().unique_name.clone();
-        self_.borrow().register_unique_name(unique_name.as_ref())?;
-        let connector_index = *self_.borrow().total_connectors.borrow();
-        *self_.borrow().total_connectors.borrow_mut() += 1;
+        self_
+            .borrow()
+            .register_unique_name(unique_name.as_ref(), py)?;
+        let connector_index = *self_.borrow().total_connectors.get(py).borrow();
+        *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
@@ -2653,11 +2697,11 @@ impl Scope {
     #[pyo3(signature = (iterated, iterated_with_universe, extra, logic, *, limit = None))]
     pub fn iterate<'py>(
         self_: &Bound<'py, Self>,
-        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated: Vec<EngineLegacyTable>,
-        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated_with_universe: Vec<
+        #[pyo3(from_py_with = engine_tables_from_py_iterable)] iterated: Vec<EngineLegacyTable>,
+        #[pyo3(from_py_with = engine_tables_from_py_iterable)] iterated_with_universe: Vec<
             EngineLegacyTable,
         >,
-        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] extra: Vec<EngineLegacyTable>,
+        #[pyo3(from_py_with = engine_tables_from_py_iterable)] extra: Vec<EngineLegacyTable>,
         logic: &Bound<'py, PyAny>,
         limit: Option<u32>,
     ) -> PyResult<(Vec<Bound<'py, LegacyTable>>, Vec<Bound<'py, LegacyTable>>)> {
@@ -2672,7 +2716,7 @@ impl Scope {
                     py,
                     Scope::new(
                         Some(self_.clone().unbind()),
-                        self_.borrow().event_loop.clone(),
+                        self_.borrow().event_loop.clone_ref(py),
                         None,
                         false,
                     ),
@@ -2694,14 +2738,14 @@ impl Scope {
                         .call1((scope, iterated, iterated_with_universe, extra))?
                         .extract()?;
                     let result = result
-                        .iter()?
+                        .try_iter()?
                         .map(|table| {
                             let table: PyRef<LegacyTable> = table?.extract()?;
                             Ok(table.to_engine())
                         })
                         .collect::<PyResult<_>>()?;
                     let result_with_universe = result_with_universe
-                        .iter()?
+                        .try_iter()?
                         .map(|table| {
                             let table: PyRef<LegacyTable> = table?.extract()?;
                             Ok(table.to_engine())
@@ -2731,7 +2775,7 @@ impl Scope {
         let py = self_.py();
         let universe = table.universe.bind(py);
         let universe_ref = universe.get();
-        check_identity(self_, &universe_ref.scope, "scope mismatch")?;
+        check_identity(self_.as_unbound(), &universe_ref.scope, "scope mismatch")?;
         let column_handles = table.columns.iter().map(|c| c.borrow(py).handle).collect();
         let handle = self_.borrow().graph.expression_column(
             BatchWrapper::WithGil,
@@ -2741,7 +2785,7 @@ impl Scope {
                         input
                             .iter()
                             .map(|input_i| {
-                                let inputs_i = PyTuple::new_bound(py, *input_i);
+                                let inputs_i = PyTuple::new(py, *input_i)?;
                                 Ok(function.call1(py, (inputs_i,))?.extract::<Value>(py)?)
                             })
                             .collect()
@@ -2760,28 +2804,29 @@ impl Scope {
     pub fn async_apply_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
         function: Py<PyAny>,
         propagate_none: bool,
         append_only_or_deterministic: bool,
         properties: TableProperties,
         dtype: Type,
     ) -> PyResult<Py<Table>> {
+        let py = self_.py();
         let dtype = Arc::new(dtype);
-        let event_loop = self_.borrow().event_loop.clone();
+        let event_loop = self_.borrow().event_loop.clone_ref(py);
         let table_handle = self_.borrow().graph.async_apply_table(
             Arc::new(move |_, values: &[Value]| {
                 if propagate_none && values.iter().any(|a| matches!(a, Value::None)) {
                     return Box::pin(futures::future::ok(Value::None));
                 }
                 let future = Python::with_gil(|py| {
-                    let event_loop = event_loop.clone();
-                    let args = PyTuple::new_bound(py, values);
+                    let event_loop = event_loop.clone_ref(py);
+                    let args = PyTuple::new(py, values)?;
                     let awaitable = function.call1(py, args)?;
                     let awaitable = awaitable.into_bound(py);
-                    let locals = pyo3_asyncio::TaskLocals::new(event_loop.into_bound(py))
+                    let locals = pyo3_async_runtimes::TaskLocals::new(event_loop.into_bound(py))
                         .copy_context(py)?;
-                    pyo3_asyncio::into_future_with_locals(&locals, awaitable)
+                    pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)
                 });
 
                 Box::pin({
@@ -2803,8 +2848,8 @@ impl Scope {
     pub fn expression_table(
         self_: &Bound<Self>,
         table: &Table,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
-        #[pyo3(from_py_with = "from_py_iterable")] expressions: Vec<ExpressionData>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] expressions: Vec<ExpressionData>,
         append_only_or_deterministic: bool,
     ) -> PyResult<Py<Table>> {
         let gil = expressions
@@ -2828,7 +2873,7 @@ impl Scope {
     pub fn columns_to_table(
         self_: &Bound<Self>,
         universe: &Bound<Universe>,
-        #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<PyRef<Column>>,
+        #[pyo3(from_py_with = from_py_iterable)] columns: Vec<PyRef<Column>>,
     ) -> PyResult<Py<Table>> {
         let column_handles = columns.into_iter().map(|column| column.handle).collect();
         let table_handle = self_
@@ -2873,7 +2918,7 @@ impl Scope {
     pub fn flatten_table_storage(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
     ) -> PyResult<Py<Table>> {
         let table_handle = self_
             .borrow()
@@ -3027,7 +3072,7 @@ impl Scope {
     pub fn intersect_tables(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] tables: Vec<PyRef<Table>>,
+        #[pyo3(from_py_with = from_py_iterable)] tables: Vec<PyRef<Table>>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let table_handles = tables.into_iter().map(|table| table.handle).collect();
@@ -3055,7 +3100,7 @@ impl Scope {
 
     pub fn concat_tables(
         self_: &Bound<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] tables: Vec<PyRef<Table>>,
+        #[pyo3(from_py_with = from_py_iterable)] tables: Vec<PyRef<Table>>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let table_handles = tables.into_iter().map(|table| table.handle).collect();
@@ -3115,9 +3160,13 @@ impl Scope {
         universe: &Bound<'py, Universe>,
         column: &Bound<'py, Column>,
     ) -> PyResult<Bound<'py, Column>> {
-        check_identity(self_, &universe.get().scope, "scope mismatch")?;
+        check_identity(self_.as_unbound(), &universe.get().scope, "scope mismatch")?;
         let column_universe = column.get().universe.bind(self_.py());
-        check_identity(self_, &column_universe.borrow().scope, "scope mismatch")?;
+        check_identity(
+            self_.as_unbound(),
+            &column_universe.borrow().scope,
+            "scope mismatch",
+        )?;
         let new_column_handle = self_
             .borrow()
             .graph
@@ -3160,9 +3209,13 @@ impl Scope {
         universe: &Bound<'py, Universe>,
         columns: &Bound<'py, PyAny>,
     ) -> PyResult<LegacyTable> {
-        check_identity(self_, &universe.borrow().scope, "scope mismatch")?;
+        check_identity(
+            self_.as_unbound(),
+            &universe.borrow().scope,
+            "scope mismatch",
+        )?;
         let columns = columns
-            .iter()?
+            .try_iter()?
             .map(|column| {
                 let column = column?;
                 let column = column.downcast()?;
@@ -3177,9 +3230,9 @@ impl Scope {
     pub fn group_by_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] grouping_columns_paths: Vec<ColumnPath>,
         last_column_is_instance: bool,
-        #[pyo3(from_py_with = "from_py_iterable")] reducers: Vec<ReducerData>,
+        #[pyo3(from_py_with = from_py_iterable)] reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -3198,8 +3251,8 @@ impl Scope {
     pub fn deduplicate(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
-        #[pyo3(from_py_with = "from_py_iterable")] reduced_column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] grouping_columns_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] reduced_column_paths: Vec<ColumnPath>,
         combine: Py<PyAny>,
         unique_name: Option<UniqueName>,
         table_properties: TableProperties,
@@ -3242,8 +3295,8 @@ impl Scope {
         self_: &Bound<Self>,
         left_table: PyRef<Table>,
         right_table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] left_column_paths: Vec<ColumnPath>,
-        #[pyo3(from_py_with = "from_py_iterable")] right_column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] left_column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] right_column_paths: Vec<ColumnPath>,
         last_column_is_instance: bool,
         table_properties: TableProperties,
         assign_id: bool,
@@ -3263,7 +3316,7 @@ impl Scope {
 
     fn complex_columns<'py>(
         self_: &Bound<'py, Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] inputs: Vec<Bound<'py, ComplexColumn>>,
+        #[pyo3(from_py_with = from_py_iterable)] inputs: Vec<Bound<'py, ComplexColumn>>,
     ) -> PyResult<Vec<Bound<'py, Column>>> {
         let py = self_.py();
         let mut engine_complex_columns = Vec::new();
@@ -3289,7 +3342,7 @@ impl Scope {
         table: &'py Bound<Table>,
         columns: Vec<(String, ColumnPath)>,
     ) -> PyResult<()> {
-        check_identity(self_, &table.borrow().scope, "scope mismatch")?;
+        check_identity(self_.as_unbound(), &table.borrow().scope, "scope mismatch")?;
         Ok(self_
             .borrow()
             .graph
@@ -3315,8 +3368,8 @@ impl Scope {
         self_: &Bound<Self>,
         table: PyRef<Table>,
         update: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
-        #[pyo3(from_py_with = "from_py_iterable")] update_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] update_paths: Vec<ColumnPath>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let result_table_handle = self_.borrow().graph.update_cells_table(
@@ -3330,10 +3383,11 @@ impl Scope {
         Table::new(self_, result_table_handle)
     }
 
+    #[pyo3(signature = (table, column_paths, data_sink, data_format, unique_name=None, sort_by_indices=None))]
     pub fn output_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
         data_sink: &Bound<DataStorage>,
         data_format: &Bound<DataFormat>,
         unique_name: Option<UniqueName>,
@@ -3341,7 +3395,9 @@ impl Scope {
     ) -> PyResult<()> {
         let py = self_.py();
 
-        self_.borrow().register_unique_name(unique_name.as_ref())?;
+        self_
+            .borrow()
+            .register_unique_name(unique_name.as_ref(), py)?;
         let sink_impl = data_sink
             .borrow()
             .construct_writer(py, &data_format.borrow())?;
@@ -3360,10 +3416,11 @@ impl Scope {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (table, column_paths, skip_persisted_batch, skip_errors, on_change, on_time_end, on_end, unique_name=None, sort_by_indices=None))]
     pub fn subscribe_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
         skip_persisted_batch: bool,
         skip_errors: bool,
         on_change: Py<PyAny>,
@@ -3372,7 +3429,10 @@ impl Scope {
         unique_name: Option<UniqueName>,
         sort_by_indices: Option<Vec<usize>>,
     ) -> PyResult<()> {
-        self_.borrow().register_unique_name(unique_name.as_ref())?;
+        let py = self_.py();
+        self_
+            .borrow()
+            .register_unique_name(unique_name.as_ref(), py)?;
         let callbacks = build_subscribe_callback(on_change, on_time_end, on_end);
         self_.borrow().graph.subscribe_table(
             table.handle,
@@ -3403,9 +3463,10 @@ impl Scope {
             })?)
     }
 
+    #[pyo3(signature = (error_log=None))]
     pub fn set_error_log(self_: &Bound<Self>, error_log: Option<PyRef<ErrorLog>>) -> PyResult<()> {
         if let Some(error_log) = error_log.as_ref() {
-            check_identity(self_, &error_log.scope, "scope mismatch")?;
+            check_identity(self_.as_unbound(), &error_log.scope, "scope mismatch")?;
         }
         Ok(self_
             .borrow()
@@ -3460,7 +3521,7 @@ impl Scope {
     pub fn remove_value_from_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
         value: Value,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -3477,7 +3538,7 @@ impl Scope {
     pub fn async_transformer(
         self_: &Bound<Self>,
         table: PyRef<Table>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
         on_change: Py<PyAny>,
         on_time_end: Py<PyAny>,
         on_end: Py<PyAny>,
@@ -3489,8 +3550,8 @@ impl Scope {
         let py = self_.py();
 
         let callbacks = build_subscribe_callback(on_change, on_time_end, on_end);
-        let connector_index = *self_.borrow().total_connectors.borrow();
-        *self_.borrow().total_connectors.borrow_mut() += 1;
+        let connector_index = *self_.borrow().total_connectors.get(py).borrow();
+        *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
@@ -3530,7 +3591,7 @@ fn build_subscribe_callback(
         .wrapper(BatchWrapper::WithGil)
         .on_data(Box::new(move |key, values, time, diff| {
             Python::with_gil(|py| {
-                on_change.call1(py, (key, PyTuple::new_bound(py, values), time, diff))?;
+                on_change.call1(py, (key, PyTuple::new(py, values)?, time, diff))?;
                 Ok(())
             })
         }))
@@ -3632,13 +3693,12 @@ pub fn run_with_new_graph(
     defer! {
         log::logger().flush();
     }
-    let config = Config::from_env().map_err(|msg| {
-        PyErr::from_type_bound(ENGINE_ERROR_TYPE.bind(py).clone(), msg.to_string())
-    })?;
+    let config = Config::from_env()
+        .map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.bind(py).clone(), msg.to_string()))?;
     let license = License::new(license_key)?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
-            let persistence_config = persistence_config.prepare(py)?;
+            let persistence_config = persistence_config.prepare()?;
             persistence_config.validate(&license)?;
             Some(persistence_config)
         } else {
@@ -3660,7 +3720,7 @@ pub fn run_with_new_graph(
                             py,
                             Scope::new(
                                 None,
-                                event_loop.clone(),
+                                event_loop.clone_ref(py),
                                 Some(scope_license.clone()),
                                 is_persisted,
                             ),
@@ -3669,7 +3729,7 @@ pub fn run_with_new_graph(
                             our_scope.borrow().graph.scoped(graph, || {
                                 from_py_iterable(&logic.bind(py).call1((our_scope,))?)
                             })?;
-                        our_scope.borrow().clear_caches();
+                        our_scope.borrow().clear_caches(py);
                         tables
                             .into_iter()
                             .map(|(table, paths)| capture_table_data(graph, table, paths))
@@ -3741,7 +3801,7 @@ pub fn unsafe_make_pointer(value: KeyImpl) -> Key {
 pub fn serialize(py: Python, value: Value) -> PyResult<Py<PyBytes>> {
     let bytes = bincode::serialize(&value)
         .map_err(|e| PyValueError::new_err(format!("failed to serialize: {e}")))?;
-    Ok(PyBytes::new_bound(py, &bytes).into())
+    Ok(PyBytes::new(py, &bytes).into())
 }
 
 #[pyfunction]
@@ -3780,6 +3840,7 @@ impl AzureBlobStorageSettings {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
 pub struct AwsS3Settings {
     bucket_name: Option<String>,
     region: s3::region::Region,
@@ -4017,6 +4078,7 @@ impl ElasticSearchAuth {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
 pub struct ElasticSearchParams {
     host: String,
     index_name: String,
@@ -4058,21 +4120,22 @@ impl ElasticSearchParams {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, get_all)]
+#[pyclass(module = "pathway.engine", frozen)]
 pub struct DataStorage {
     storage_type: String,
     path: Option<String>,
     rdkafka_settings: Option<HashMap<String, String>>,
     topic: Option<String>,
     connection_string: Option<String>,
-    csv_parser_settings: Option<Py<CsvParserSettings>>,
+    csv_parser_settings: Option<CsvParserSettings>,
+    #[pyo3(get)]
     mode: ConnectorMode,
     read_method: ReadMethod,
     snapshot_maintenance_on_output: bool,
-    aws_s3_settings: Option<Py<AwsS3Settings>>,
-    elasticsearch_params: Option<Py<ElasticSearchParams>>,
+    aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
+    elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
     parallel_readers: Option<usize>,
-    python_subject: Option<Py<PythonSubject>>,
+    python_subject: Option<Arc<Py<PythonSubject>>>,
     unique_name: Option<UniqueName>,
     max_batch_size: Option<usize>,
     object_pattern: String,
@@ -4119,9 +4182,12 @@ impl<'py> FromPyObject<'py> for PersistenceMode {
     }
 }
 
-impl IntoPy<PyObject> for PersistenceMode {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyPersistenceMode(self).into_py(py)
+impl<'py> IntoPyObject<'py> for PersistenceMode {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyPersistenceMode(self).into_bound_py_any(py)
     }
 }
 
@@ -4146,12 +4212,14 @@ impl<'py> FromPyObject<'py> for SnapshotAccess {
     }
 }
 
-impl IntoPy<PyObject> for SnapshotAccess {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PySnapshotAccess(self).into_py(py)
+impl<'py> IntoPyObject<'py> for SnapshotAccess {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PySnapshotAccess(self).into_bound_py_any(py)
     }
 }
-
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct PersistenceConfig {
@@ -4191,10 +4259,10 @@ impl PersistenceConfig {
 }
 
 impl PersistenceConfig {
-    fn prepare(self, py: pyo3::Python) -> PyResult<PersistenceManagerOuterConfig> {
+    fn prepare(self) -> PyResult<PersistenceManagerOuterConfig> {
         Ok(PersistenceManagerOuterConfig::new(
             self.snapshot_interval,
-            self.backend.construct_persistent_storage_config(py)?,
+            self.backend.construct_persistent_storage_config()?,
             self.snapshot_access,
             self.persistence_mode,
             self.continue_after_replay,
@@ -4261,12 +4329,14 @@ impl<'py> FromPyObject<'py> for SnapshotEvent {
     }
 }
 
-impl IntoPy<PyObject> for SnapshotEvent {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PySnapshotEvent(self).into_py(py)
+impl<'py> IntoPyObject<'py> for SnapshotEvent {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PySnapshotEvent(self).into_bound_py_any(py)
     }
 }
-
 #[pyclass(module = "pathway.engine", frozen, name = "SnapshotEvent")]
 pub struct PySnapshotEvent(SnapshotEvent);
 
@@ -4289,7 +4359,7 @@ impl PySnapshotEvent {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct PythonSubject {
     pub start: Py<PyAny>,
     pub read: Py<PyAny>,
@@ -4431,7 +4501,7 @@ impl DataStorage {
         object_pattern = "*".to_string(),
         mock_events = None,
         table_name = None,
-        header_fields = Vec::new(),
+        header_fields = None,
         key_field_index = None,
         min_commit_frequency = None,
         downloader_threads_count = None,
@@ -4451,7 +4521,7 @@ impl DataStorage {
         rdkafka_settings: Option<HashMap<String, String>>,
         topic: Option<String>,
         connection_string: Option<String>,
-        csv_parser_settings: Option<Py<CsvParserSettings>>,
+        csv_parser_settings: Option<CsvParserSettings>,
         mode: ConnectorMode,
         read_method: ReadMethod,
         snapshot_maintenance_on_output: bool,
@@ -4464,7 +4534,7 @@ impl DataStorage {
         object_pattern: String,
         mock_events: Option<HashMap<(UniqueName, usize), Vec<SnapshotEvent>>>,
         table_name: Option<String>,
-        header_fields: Vec<(String, usize)>,
+        header_fields: Option<Vec<(String, usize)>>,
         key_field_index: Option<usize>,
         min_commit_frequency: Option<u64>,
         downloader_threads_count: Option<usize>,
@@ -4487,16 +4557,16 @@ impl DataStorage {
             mode,
             read_method,
             snapshot_maintenance_on_output,
-            aws_s3_settings,
-            elasticsearch_params,
+            aws_s3_settings: aws_s3_settings.map(Into::into),
+            elasticsearch_params: elasticsearch_params.map(Into::into),
             parallel_readers,
-            python_subject,
+            python_subject: python_subject.map(Into::into),
             unique_name,
             max_batch_size,
             object_pattern,
             mock_events,
             table_name,
-            header_fields,
+            header_fields: header_fields.unwrap_or_default(),
             key_field_index,
             min_commit_frequency,
             downloader_threads_count,
@@ -4512,15 +4582,16 @@ impl DataStorage {
     }
 
     #[pyo3(signature = ())]
-    fn delta_s3_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
+    fn delta_s3_storage_options(&self) -> PyResult<HashMap<String, String>> {
         let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let s3_settings = self
+        let s3_settings_py: &Py<_> = self
             .aws_s3_settings
             .as_ref()
             .ok_or_else(|| {
                 PyValueError::new_err("S3 connection settings weren't specified for S3 data source")
             })?
-            .borrow(py);
+            .borrow();
+        let s3_settings = s3_settings_py.get();
 
         let mut storage_options = HashMap::new();
         storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "True".to_string());
@@ -4634,7 +4705,7 @@ impl DataFormat {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct CsvParserSettings {
     pub delimiter: u8,
@@ -4754,17 +4825,16 @@ impl DataStorage {
         Ok(value)
     }
 
-    fn s3_bucket(&self, py: pyo3::Python) -> PyResult<S3Bucket> {
+    fn s3_bucket(&self) -> PyResult<S3Bucket> {
         let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let bucket = self
+        let bucket_py: &Py<_> = self
             .aws_s3_settings
             .as_ref()
             .ok_or_else(|| {
                 PyValueError::new_err("For AWS storage, aws_s3_settings must be specified")
             })?
-            .borrow(py)
-            .construct_bucket(bucket_name.as_deref())?;
-        Ok(bucket)
+            .borrow();
+        bucket_py.get().construct_bucket(bucket_name.as_deref())
     }
 
     fn downloader_threads_count(&self) -> PyResult<usize> {
@@ -4782,11 +4852,12 @@ impl DataStorage {
         }
     }
 
-    fn iceberg_s3_storage_options(&self, py: pyo3::Python) -> HashMap<String, String> {
+    fn iceberg_s3_storage_options(&self) -> HashMap<String, String> {
         let Some(ref settings) = self.aws_s3_settings else {
             return HashMap::new();
         };
-        let settings = settings.borrow(py);
+        let settings_py: &Py<_> = settings.borrow();
+        let settings = settings_py.get();
         let mut props = HashMap::new();
         if let Some(access_key) = &settings.access_key {
             props.insert(
@@ -4884,9 +4955,9 @@ impl DataStorage {
         }
     }
 
-    fn build_csv_parser_settings(&self, py: pyo3::Python) -> CsvReaderBuilder {
+    fn build_csv_parser_settings(&self) -> CsvReaderBuilder {
         if let Some(parser_settings) = &self.csv_parser_settings {
-            parser_settings.borrow(py).build_csv_reader_builder()
+            parser_settings.build_csv_reader_builder()
         } else {
             let mut builder = CsvReaderBuilder::new();
             builder.has_headers(false);
@@ -4906,14 +4977,10 @@ impl DataStorage {
         Ok((Box::new(storage), 1))
     }
 
-    fn construct_s3_reader(
-        &self,
-        py: pyo3::Python,
-        is_persisted: bool,
-    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_s3_reader(&self, is_persisted: bool) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let storage = new_s3_generic_reader(
-            self.s3_bucket(py)?,
+            self.s3_bucket()?,
             deduced_path,
             self.mode,
             self.read_method,
@@ -4926,14 +4993,13 @@ impl DataStorage {
 
     fn construct_s3_csv_reader(
         &self,
-        py: pyo3::Python,
         is_persisted: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let storage = new_s3_csv_reader(
-            self.s3_bucket(py)?,
+            self.s3_bucket()?,
             deduced_path,
-            self.build_csv_parser_settings(py),
+            self.build_csv_parser_settings(),
             self.mode,
             self.downloader_threads_count()?,
             is_persisted,
@@ -4944,12 +5010,11 @@ impl DataStorage {
 
     fn construct_csv_reader(
         &self,
-        py: pyo3::Python,
         is_persisted: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let reader = new_csv_filesystem_reader(
             self.path()?,
-            self.build_csv_parser_settings(py),
+            self.build_csv_parser_settings(),
             self.mode,
             &self.object_pattern,
             is_persisted,
@@ -5094,9 +5159,13 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let subject = self.python_subject.clone().ok_or_else(|| {
-            PyValueError::new_err("For Python connector, python_subject should be specified")
-        })?;
+        let subject = self
+            .python_subject
+            .as_ref()
+            .map(|ps| ps.clone_ref(py))
+            .ok_or_else(|| {
+                PyValueError::new_err("For Python connector, python_subject should be specified")
+            })?;
 
         if subject.borrow(py).is_internal && self.unique_name.is_some() {
             return Err(PyValueError::new_err(
@@ -5130,17 +5199,17 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
-    fn object_downloader(&self, py: pyo3::Python) -> PyResult<ObjectDownloader> {
+    fn object_downloader(&self) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
-            Ok(ObjectDownloader::S3(Box::new(self.s3_bucket(py)?)))
+            Ok(ObjectDownloader::S3(Box::new(self.s3_bucket()?)))
         } else {
             Ok(ObjectDownloader::Local)
         }
     }
 
-    fn delta_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
+    fn delta_storage_options(&self) -> PyResult<HashMap<String, String>> {
         if self.aws_s3_settings.is_some() {
-            self.delta_s3_storage_options(py)
+            self.delta_s3_storage_options()
         } else {
             Ok(HashMap::new())
         }
@@ -5162,8 +5231,8 @@ impl DataStorage {
         }
         let reader = DeltaTableReader::new(
             self.path()?,
-            self.object_downloader(py)?,
-            self.delta_storage_options(py)?,
+            self.object_downloader()?,
+            self.delta_storage_options()?,
             data_format.value_fields_type_map(py),
             self.mode,
             self.start_from_timestamp_ms,
@@ -5231,7 +5300,7 @@ impl DataStorage {
             uri.to_string(),
             warehouse.clone(),
             namespace,
-            self.iceberg_s3_storage_options(py),
+            self.iceberg_s3_storage_options(),
         );
         let table_params =
             IcebergTableParams::new(table_name.to_string(), &value_fields).map_err(|e| {
@@ -5263,9 +5332,9 @@ impl DataStorage {
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(is_persisted),
-            "s3" => self.construct_s3_reader(py, is_persisted),
-            "s3_csv" => self.construct_s3_csv_reader(py, is_persisted),
-            "csv" => self.construct_csv_reader(py, is_persisted),
+            "s3" => self.construct_s3_reader(is_persisted),
+            "s3_csv" => self.construct_s3_csv_reader(is_persisted),
+            "csv" => self.construct_csv_reader(is_persisted),
             "kafka" => self.construct_kafka_reader(),
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
@@ -5278,14 +5347,11 @@ impl DataStorage {
         }
     }
 
-    fn construct_persistent_storage_config(
-        &self,
-        py: pyo3::Python,
-    ) -> PyResult<PersistentStorageConfig> {
+    fn construct_persistent_storage_config(&self) -> PyResult<PersistentStorageConfig> {
         match self.storage_type.as_ref() {
             "fs" => Ok(PersistentStorageConfig::Filesystem(self.path()?.into())),
             "s3" => {
-                let bucket = self.s3_bucket(py)?;
+                let bucket = self.s3_bucket()?;
                 let path = self.path()?;
                 Ok(PersistentStorageConfig::S3 {
                     bucket: Box::new(bucket),
@@ -5314,21 +5380,6 @@ impl DataStorage {
                 "Unsupported persistent storage format: {other:?}"
             ))),
         }
-    }
-
-    fn elasticsearch_client_params<'py>(
-        &'py self,
-        py: pyo3::Python<'py>,
-    ) -> PyResult<PyRef<ElasticSearchParams>> {
-        Ok(self
-            .elasticsearch_params
-            .as_ref()
-            .ok_or_else(|| {
-                PyValueError::new_err(
-                    "For elastic search output, elasticsearch_params section must be specified",
-                )
-            })?
-            .borrow(py))
     }
 
     fn construct_fs_writer(&self) -> PyResult<Box<dyn Writer>> {
@@ -5394,7 +5445,16 @@ impl DataStorage {
     }
 
     fn construct_elasticsearch_writer(&self, py: pyo3::Python) -> PyResult<Box<dyn Writer>> {
-        let elasticsearch_client_params = self.elasticsearch_client_params(py)?;
+        let elasticsearch_client_params_py: &Py<_> = self
+            .elasticsearch_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For elastic search output, elasticsearch_params section must be specified",
+                )
+            })?
+            .borrow();
+        let elasticsearch_client_params = elasticsearch_client_params_py.get();
         let client = elasticsearch_client_params.client(py)?;
         let index_name = elasticsearch_client_params.index_name.clone();
         let max_batch_size = self.max_batch_size;
@@ -5423,7 +5483,7 @@ impl DataStorage {
         let batch_writer = DeltaBatchWriter::new(
             path,
             &value_fields,
-            self.delta_storage_options(py)?,
+            self.delta_storage_options()?,
             partition_columns,
             table_type,
         )
@@ -5441,7 +5501,7 @@ impl DataStorage {
             Box::new(
                 SnapshotColumnBuffer::new_for_delta_table(
                     path,
-                    self.delta_storage_options(py)?,
+                    self.delta_storage_options()?,
                     &value_fields,
                     Arc::new(schema),
                 )
@@ -5490,7 +5550,7 @@ impl DataStorage {
             uri.to_string(),
             warehouse.clone(),
             namespace,
-            self.iceberg_s3_storage_options(py),
+            self.iceberg_s3_storage_options(),
         );
         let table_params =
             IcebergTableParams::new(table_name.to_string(), &value_fields).map_err(|e| {
@@ -5777,9 +5837,10 @@ impl TableProperties {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (column_properties, trace=None))]
     fn from_column_properties(
         py: Python,
-        #[pyo3(from_py_with = "from_py_iterable")] column_properties: Vec<(
+        #[pyo3(from_py_with = from_py_iterable)] column_properties: Vec<(
             ColumnPath,
             ColumnProperties,
         )>,
@@ -5833,7 +5894,7 @@ impl ConnectorProperties {
     fn new(
         commit_duration_ms: Option<u64>,
         unsafe_trusted_ids: bool,
-        #[pyo3(from_py_with = "from_py_iterable")] column_properties: Vec<ColumnProperties>,
+        #[pyo3(from_py_with = from_py_iterable)] column_properties: Vec<ColumnProperties>,
         unique_name: Option<String>,
         synchronization_group: Option<ConnectorGroupDescriptor>,
     ) -> Self {
@@ -5902,16 +5963,14 @@ impl<'py> FromPyObject<'py> for EngineTrace {
     }
 }
 
-impl ToPyObject for EngineTrace {
-    fn to_object(&self, py: Python<'_>) -> PyObject {
-        self.clone().into_py(py)
-    }
-}
+impl<'py> IntoPyObject<'py> for EngineTrace {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
 
-impl IntoPy<PyObject> for EngineTrace {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Self::Empty => py.None(),
+            Self::Empty => Ok(py.None().into_bound(py)),
             Self::Frame {
                 line,
                 file_name,
@@ -5923,7 +5982,7 @@ impl IntoPy<PyObject> for EngineTrace {
                 line_number,
                 function,
             }
-            .into_py(py),
+            .into_bound_py_any(py),
         }
     }
 }
@@ -5955,9 +6014,9 @@ impl Done {
         let py = other.py();
         if other.is_instance_of::<Self>() {
             assert!(self_.is(other));
-            op.matches(Ordering::Equal).into_py(py)
+            op.matches(Ordering::Equal).into_py_any(py).unwrap()
         } else if other.is_instance_of::<PyInt>() {
-            op.matches(Ordering::Greater).into_py(py)
+            op.matches(Ordering::Greater).into_py_any(py).unwrap()
         } else {
             py.NotImplemented()
         }
@@ -5977,26 +6036,17 @@ where
     }
 }
 
-impl<T> IntoPy<PyObject> for TotalFrontier<T>
+impl<'py, T> IntoPyObject<'py> for TotalFrontier<T>
 where
-    T: IntoPy<PyObject>,
+    T: IntoPyObject<'py>,
 {
-    fn into_py(self, py: Python<'_>) -> PyObject {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Self::At(i) => i.into_py(py),
-            Self::Done => DONE.clone_ref(py).into_py(py),
-        }
-    }
-}
-
-impl<T> ToPyObject for TotalFrontier<T>
-where
-    T: ToPyObject,
-{
-    fn to_object(&self, py: Python<'_>) -> PyObject {
-        match self {
-            Self::At(i) => i.to_object(py),
-            Self::Done => DONE.clone_ref(py).into_py(py),
+            Self::At(i) => i.into_bound_py_any(py),
+            Self::Done => DONE.clone_ref(py).into_bound_py_any(py),
         }
     }
 }
@@ -6036,7 +6086,7 @@ struct WakeupHandler<'py> {
 
 impl<'py> WakeupHandler<'py> {
     fn new(py: Python<'py>, fd: OwnedFd) -> PyResult<Option<Self>> {
-        let signal_module = py.import_bound(intern!(py, "signal"))?;
+        let signal_module = py.import(intern!(py, "signal"))?;
         let set_wakeup_fd = signal_module.getattr(intern!(py, "set_wakeup_fd"))?;
         let old_wakeup_fd = set_wakeup_fd.call1((fd.as_raw_fd(),));
         if let Err(ref error) = old_wakeup_fd {

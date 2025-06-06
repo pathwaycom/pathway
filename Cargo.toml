@@ -58,7 +58,7 @@ mongodb = { version = "3.2.0", features = ["sync"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
 nix = { version = "0.29.0", features = ["fs", "user", "resource"] }
 num-integer = "0.1.46"
-numpy = "0.21.0"
+numpy = "0.25.0"
 once_cell = "1.20.2"
 opentelemetry = { version = "0.27.1", features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.27.0", features = ["default", "tls", "tls-roots", "metrics"] }
@@ -67,9 +67,9 @@ opentelemetry_sdk = { version = "0.27.1", features = ["rt-tokio", "rt-tokio-curr
 ordered-float = { version = "4.6.0", features = ["serde"] }
 postgres = { version = "0.19.9", features = ["with-chrono-0_4", "with-serde_json-1"] }
 prometheus-client = "0.23.1"
-pyo3 = { version = "0.21.2", features = ["abi3-py310", "multiple-pymethods"] }
-pyo3-asyncio = { version = "0.21.0", package = "pyo3-asyncio-0-21" }
-pyo3-log = "0.10.0"
+pyo3 = { version = "0.25.0", features = ["abi3-py310", "multiple-pymethods"] }
+pyo3-async-runtimes = "0.25.0"
+pyo3-log = "0.12.4"
 rand = "0.8.5"
 rayon = "1.10.0"
 rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
@@ -121,4 +121,4 @@ inherits = "dev"
 debug = "full"
 
 [build-dependencies]
-pyo3-build-config = "0.21.2"
+pyo3-build-config = "0.25.0"

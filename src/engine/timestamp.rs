@@ -130,13 +130,16 @@ impl PathSummary<Timestamp> for Summary {
 
 // XXX
 mod python_conversions {
-    use pyo3::prelude::*;
+    use pyo3::{prelude::*, IntoPyObjectExt};
 
     use super::Timestamp;
 
-    impl IntoPy<PyObject> for Timestamp {
-        fn into_py(self, py: Python<'_>) -> PyObject {
-            self.0.into_py(py)
+    impl<'py> IntoPyObject<'py> for Timestamp {
+        type Target = PyAny;
+        type Output = Bound<'py, Self::Target>;
+        type Error = PyErr;
+        fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+            self.0.into_bound_py_any(py)
         }
     }
 

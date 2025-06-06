@@ -1150,7 +1150,7 @@ impl Reader for PythonReader {
         if !raw_external_offset.is_empty() {
             Python::with_gil(|py| {
                 let data: Vec<u8> = raw_external_offset.to_vec();
-                let py_external_offset = PyBytes::new_bound(py, &data).unbind().into_any();
+                let py_external_offset = PyBytes::new(py, &data).unbind().into_any();
                 self.subject
                     .borrow(py)
                     .seek

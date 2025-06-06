@@ -84,12 +84,12 @@ pub fn maybe_run_reporter(
     graph: &dyn Graph,
     stats_monitor: Option<PyObject>,
 ) -> Option<Runner> {
-    if *monitoring_level != MonitoringLevel::None && graph.worker_index() == 0 {
+    if *monitoring_level != MonitoringLevel::None && stats_monitor.is_some() {
         let stats_shared = Arc::new(ArcSwapOption::from(None));
         let progress_reporter_runner = Runner::run(
             PROGRESS_REPORTING_PERIOD,
             &stats_shared,
-            stats_monitor.expect("when monitoring is turned on, stats_monitor has to be defined"),
+            stats_monitor.unwrap(),
         );
 
         graph

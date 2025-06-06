@@ -1,6 +1,6 @@
 // Copyright © 2024 Pathway
 
-use pyo3::prelude::*;
+use pyo3::{prelude::*, IntoPyObjectExt};
 
 use std::sync::Arc;
 
@@ -80,6 +80,7 @@ pub struct PyExternalIndexData {
 #[pymethods]
 impl PyExternalIndexData {
     #[new]
+    #[pyo3(signature = (table, data_column, filter_data_column))]
     fn new(
         table: Py<Table>,
         data_column: ColumnPath,
@@ -114,6 +115,7 @@ pub struct PyExternalIndexQuery {
 #[pymethods]
 impl PyExternalIndexQuery {
     #[new]
+    #[pyo3(signature = (table, query_column, limit_column, filter_column))]
     fn new(
         table: Py<Table>,
         query_column: ColumnPath,
@@ -171,9 +173,12 @@ impl<'py> FromPyObject<'py> for USearchMetricKind {
     }
 }
 
-impl IntoPy<PyObject> for USearchMetricKind {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyUSearchMetricKind(self).into_py(py)
+impl<'py> IntoPyObject<'py> for USearchMetricKind {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyUSearchMetricKind(self).into_bound_py_any(py)
     }
 }
 
@@ -188,14 +193,17 @@ impl PyBruteForceKnnMetricKind {
     pub const COS: BruteForceKnnMetricKind = BruteForceKnnMetricKind::Cos;
 }
 
-impl<'source> FromPyObject<'source> for BruteForceKnnMetricKind {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for BruteForceKnnMetricKind {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyBruteForceKnnMetricKind>>()?.0)
     }
 }
 
-impl IntoPy<PyObject> for BruteForceKnnMetricKind {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyBruteForceKnnMetricKind(self).into_py(py)
+impl<'py> IntoPyObject<'py> for BruteForceKnnMetricKind {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyBruteForceKnnMetricKind(self).into_bound_py_any(py)
     }
 }

@@ -788,29 +788,46 @@ class BackfillingThreshold:
 
     def __init__(self, *args, **kwargs): ...
 
-class DataStorage:
-    storage_type: str
-    path: str | None
-    rdkafka_settings: dict[str, str] | None
-    topic: str | None
-    connection_string: str | None
-    csv_parser_settings: CsvParserSettings | None
-    mode: ConnectorMode
-    read_method: ReadMethod
-    aws_s3_settings: AwsS3Settings | None
-    elasticsearch_params: ElasticSearchParams | None
-    parallel_readers: int | None
-    python_subject: PythonSubject | None
-    unique_name: str | None
-    max_batch_size: int | None
-    object_pattern: str
-    mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None
-    table_name: str | None
-    sql_writer_init_mode: SqlWriterInitMode
-    topic_name_index: int | None
-    partition_columns: list[str] | None
+class SqlWriterInitMode(Enum):
+    DEFAULT: SqlWriterInitMode
+    CREATE_IF_NOT_EXISTS: SqlWriterInitMode
+    REPLACE: SqlWriterInitMode
 
-    def __init__(self, *args, **kwargs): ...
+class DataStorage:
+    mode: ConnectorMode
+    def __init__(
+        self,
+        storage_type: str,
+        path: str | None = None,
+        rdkafka_settings: dict[str, str] | None = None,
+        topic: str | None = None,
+        connection_string: str | None = None,
+        csv_parser_settings: CsvParserSettings | None = None,
+        mode: ConnectorMode = ConnectorMode.STREAMING,
+        read_method: ReadMethod = ReadMethod.BY_LINE,
+        snapshot_maintenance_on_output: bool = False,
+        aws_s3_settings: AwsS3Settings | None = None,
+        elasticsearch_params: ElasticSearchParams | None = None,
+        parallel_readers: int | None = None,
+        python_subject: PythonSubject | None = None,
+        unique_name: str | None = None,
+        max_batch_size: int | None = None,
+        object_pattern: str = "*",
+        mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None = None,
+        table_name: str | None = None,
+        header_fields: list[tuple[str, int]] | None = None,
+        key_field_index: int | None = None,
+        min_commit_frequency: int | None = None,
+        downloader_threads_count: int | None = None,
+        database: str | None = None,
+        start_from_timestamp_ms: int | None = None,
+        namespace: list[str] | None = None,
+        sql_writer_init_mode: SqlWriterInitMode = SqlWriterInitMode.DEFAULT,
+        topic_name_index: int | None = None,
+        partition_columns: list[str] | None = None,
+        backfilling_thresholds: list[BackfillingThreshold] | None = None,
+        azure_blob_storage_settings: AzureBlobStorageSettings | None = None,
+    ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 
 class CsvParserSettings:
@@ -866,11 +883,6 @@ class PythonConnectorEventType(Enum):
 class SessionType(Enum):
     NATIVE: SessionType
     UPSERT: SessionType
-
-class SqlWriterInitMode(Enum):
-    DEFAULT: SqlWriterInitMode
-    CREATE_IF_NOT_EXISTS: SqlWriterInitMode
-    REPLACE: SqlWriterInitMode
 
 class SnapshotEvent:
     @staticmethod

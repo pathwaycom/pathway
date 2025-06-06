@@ -15,7 +15,7 @@ static PICKLE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
 fn get_pickle_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     PICKLE
-        .get_or_init(py, || py.import_bound("pickle").unwrap().unbind())
+        .get_or_init(py, || py.import("pickle").unwrap().unbind())
         .bind(py)
 }
 
