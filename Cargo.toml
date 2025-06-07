@@ -72,7 +72,7 @@ pyo3-async-runtimes = "0.25.0"
 pyo3-log = "0.12.4"
 rand = "0.8.5"
 rayon = "1.10.0"
-rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
+rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd","gssapi"] }
 regex = "1.11.1"
 reqwest = { version = "0.12.11", features = ["blocking", "json"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
