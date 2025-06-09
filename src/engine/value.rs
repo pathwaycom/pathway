@@ -63,7 +63,7 @@ impl Key {
     }
 
     pub fn random() -> Self {
-        Self(rand::thread_rng().gen())
+        Self(rand::rng().random())
     }
 
     #[must_use]

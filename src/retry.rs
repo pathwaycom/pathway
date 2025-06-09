@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use log::warn;
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 
 const DEFAULT_SLEEP_INITIAL_DURATION: Duration = Duration::from_secs(1);
 const DEFAULT_SLEEP_BACKOFF_FACTOR: f64 = 1.2;
@@ -26,7 +26,7 @@ impl RetryConfig {
     pub fn sleep_after_error(&mut self) {
         std::thread::sleep(self.sleep_duration);
         self.sleep_duration = self.sleep_duration.mul_f64(self.backoff_factor)
-            + thread_rng().gen_range(Duration::ZERO..self.jitter);
+            + rng().random_range(Duration::ZERO..self.jitter);
     }
 }
 

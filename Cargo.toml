@@ -20,79 +20,79 @@ mockall = "0.13.1"
 [dependencies]
 arc-swap = "1.7.1"
 arcstr = { version = "1.2.0", default-features = false, features = ["serde", "std"] }
-async-nats = "0.38.0"
+async-nats = "0.41.0"
 azure_core = "0.21.0"
 azure_storage = "0.21.0"
 azure_storage_blobs = "0.21.0"
 base32 = "0.5.1"
 base64 = "0.22.1"
 bincode = "1.3.3"
-bitflags = { version = "2.8.0", features = ["std"] } # Hack to keep features unified between normal and dev deps
-bytes = "1.9.0"
-cached = "0.54.0"
+bitflags = { version = "2.9.1", features = ["std"] } # Hack to keep features unified between normal and dev deps
+bytes = "1.10.1"
+cached = "0.55.1"
 cfg-if = "1.0.0"
 chrono = { version = "0.4.39", features = ["std", "clock"], default-features = false }
-chrono-tz = "0.10.1"
-crossbeam-channel = "0.5.14"
+chrono-tz = "0.10.3"
+crossbeam-channel = "0.5.15"
 csv = "1.3.1"
-deltalake = { version = "0.23.2", features = ["datafusion", "s3"] }
+deltalake = { version = "0.24.0", features = ["datafusion", "s3"] }
 derivative = "2.2.0"
 differential-dataflow = { path = "./external/differential-dataflow" }
 ed25519-dalek = { version = "2.1.1", features = ["serde", "pkcs8"] }
 elasticsearch = "8.17.0-alpha.1"
 futures = "0.3.31"
 glob = "0.3.2"
-half = "2.4.1"
+half = "2.6.0"
 hex = "0.4.3"
 hyper = { version = "0.14", features = ["server"] }
 iceberg = "0.4.0"
 iceberg-catalog-rest = "0.4.0"
 id-arena = "2.2.1"
-indexmap = "2.7.1"
+indexmap = "2.9.0"
 itertools = "0.14.0"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
 jmespath = "0.3.0"
-libc = "0.2.169"
-log = { version = "0.4.25", features = ["std"] }
-mongodb = { version = "3.2.0", features = ["sync"] }
+libc = "0.2.172"
+log = { version = "0.4.27", features = ["std"] }
+mongodb = { version = "3.2.2", features = ["sync"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
-nix = { version = "0.29.0", features = ["fs", "user", "resource"] }
+nix = { version = "0.30.1", features = ["fs", "user", "resource"] }
 num-integer = "0.1.46"
 numpy = "0.25.0"
-once_cell = "1.20.2"
+once_cell = "1.21.3"
 opentelemetry = { version = "0.30.0", features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.30.0", features = ["default", "tls", "tls-roots", "metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { version = "0.30.0", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio", "rt-tokio-current-thread"] }
 ordered-float = { version = "4.6.0", features = ["serde"] }
-postgres = { version = "0.19.9", features = ["with-chrono-0_4", "with-serde_json-1"] }
+postgres = { version = "0.19.10", features = ["with-chrono-0_4", "with-serde_json-1"] }
 prometheus-client = "0.23.1"
 pyo3 = { version = "0.25.0", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-async-runtimes = "0.25.0"
 pyo3-log = "0.12.4"
-rand = "0.8.5"
+rand = "0.9.1"
 rayon = "1.10.0"
 rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
 regex = "1.11.1"
-reqwest = { version = "0.12.11", features = ["blocking", "json"] }
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+rusqlite = { version = "0.35.0", features = ["bundled"] }
 rust-s3 = { version = "0.34.0", features = ["sync-native-tls-vendored", "sync-native-tls", "fail-on-err"], default-features = false }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
-serde = { version = "1.0.217", features = ["derive", "rc"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0"
 serde_with = "3.12.0"
-smallvec = { version = "1.13.2", features = ["union", "const_generics"] }
-syn = { version = "2.0.96", features = ["default", "full", "visit", "visit-mut"] } # Hack to keep features unified between normal and build deps
-sysinfo = "0.33.1"
+smallvec = { version = "1.15.0", features = ["union", "const_generics"] }
+syn = { version = "2.0.101", features = ["default", "full", "visit", "visit-mut"] } # Hack to keep features unified between normal and build deps
+sysinfo = "0.35.1"
 tantivy = "0.22.0"
-tempfile = "3.15.0"
+tempfile = "3.20.0"
 thiserror = "1.0.63"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
-tokio = { version = "1.43.1", features = ["rt-multi-thread"] }
+tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
 tonic = { version = "0.13.1", features = ["tls-native-roots"] }
 usearch = "2.15.3"
-uuid = { version = "1.12.0", features = ["v4"] }
+uuid = { version = "1.17.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]

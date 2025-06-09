@@ -614,14 +614,14 @@ fn test_random() {
 
         let mut rng = StdRng::seed_from_u64(i);
 
-        let n_iterations = rng.gen_range(2..=max_n_iterations);
+        let n_iterations = rng.random_range(2..=max_n_iterations);
 
         for t in 0..n_iterations {
-            let n_elements = rng.gen_range(2..=max_n_elements_per_iteration);
+            let n_elements = rng.random_range(2..=max_n_elements_per_iteration);
             let mut input_current = Vec::new();
 
             for _ in 0..n_elements {
-                let elem = rng.gen_range(min_val..=max_val);
+                let elem = rng.random_range(min_val..=max_val);
                 if current.remove(&elem) {
                     input_current.push((elem, t, -1));
                 } else {
@@ -696,16 +696,16 @@ fn test_instances_random() {
 
         let mut rng = StdRng::seed_from_u64(i);
 
-        let n_iterations = rng.gen_range(2..=max_n_iterations);
+        let n_iterations = rng.random_range(2..=max_n_iterations);
 
         for t in 0..n_iterations {
-            let n_elements = rng.gen_range(2..=max_n_elements_per_iteration);
+            let n_elements = rng.random_range(2..=max_n_elements_per_iteration);
             let mut input_current = Vec::new();
 
             for _ in 0..n_elements {
                 let elem = (
-                    rng.gen_range(1..=instances),
-                    rng.gen_range(min_val..=max_val),
+                    rng.random_range(1..=instances),
+                    rng.random_range(min_val..=max_val),
                 );
                 if current.remove(&elem) {
                     input_current.push((elem, t, -1));

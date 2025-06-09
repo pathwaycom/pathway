@@ -10,12 +10,12 @@ use pathway_engine::persistence::backends::MemoryKVStorage;
 use pathway_engine::persistence::cached_object_storage::CachedObjectStorage;
 
 fn create_mock_document() -> Vec<u8> {
-    let id: u128 = rand::thread_rng().gen();
+    let id: u128 = rand::rng().random();
     id.to_le_bytes().to_vec()
 }
 
 fn create_mock_storage_metadata() -> FileLikeMetadata {
-    let random_file_id: u128 = rand::thread_rng().gen();
+    let random_file_id: u128 = rand::rng().random();
     let tempfile = tempfile().unwrap();
     let metadata = tempfile.metadata().unwrap();
     FileLikeMetadata::from_fs_meta(

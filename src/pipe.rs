@@ -1,7 +1,7 @@
 // Copyright © 2024 Pathway
 
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 
 use cfg_if::cfg_if;
 use nix::fcntl::{fcntl, FcntlArg, FdFlag, OFlag};
@@ -29,21 +29,18 @@ pub struct Pipe {
 
 fn set_non_blocking(fd: impl AsFd) -> io::Result<()> {
     let fd = fd.as_fd();
-    let flags = fcntl(fd.as_raw_fd(), FcntlArg::F_GETFL)?;
+    let flags = fcntl(fd, FcntlArg::F_GETFL)?;
     let flags = OFlag::from_bits_retain(flags);
-    fcntl(fd.as_raw_fd(), FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     Ok(())
 }
 
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 fn set_cloexec(fd: impl AsFd) -> io::Result<()> {
     let fd = fd.as_fd();
-    let flags = fcntl(fd.as_raw_fd(), FcntlArg::F_GETFD)?;
+    let flags = fcntl(fd, FcntlArg::F_GETFD)?;
     let flags = FdFlag::from_bits_retain(flags);
-    fcntl(
-        fd.as_raw_fd(),
-        FcntlArg::F_SETFD(flags | FdFlag::FD_CLOEXEC),
-    )?;
+    fcntl(fd, FcntlArg::F_SETFD(flags | FdFlag::FD_CLOEXEC))?;
     Ok(())
 }
 
