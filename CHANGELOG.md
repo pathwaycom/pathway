@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: To use `pw.sql` you now have to install `pathway[sql]`.
+
 ### Fixed
 - `pw.io.deltalake.read` now correctly reads data from partitioned tables in all cases.
 - Added retries for all cloud-based persistence backend operations to improve reliability.

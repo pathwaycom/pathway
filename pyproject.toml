@@ -22,7 +22,6 @@ dependencies = [
     "pandas >= 2.1",
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
-    "sqlglot == 10.6.1",
     "pyarrow >= 10.0.0, < 19.0.0",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",
@@ -52,6 +51,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+sql = [
+    "sqlglot == 10.6.1", # the new versions are incompatible with the current pw.sql Implementation
+]
 xpack-llm = [
     "openai ~= 1.60.2",
     "litellm ~= 1.44.28",
@@ -84,6 +86,7 @@ xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
 ]
 all = [
+    "pathway[sql]",
     "pathway[xpack-llm]",
     "pathway[xpack-llm-local]",
     "pathway[xpack-llm-docs]",
