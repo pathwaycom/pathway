@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.xpacks.llm.embedders.SentenceTransformerEmbedder` and `pw.xpacks.llm.llms.HFPipelineChat` are now computed in batches. The maximum size of a single batch can be set in the constructor with the argument `max_batch_size`.
+
 ## [0.23.0] - 2025-06-12
 
 ### Changed

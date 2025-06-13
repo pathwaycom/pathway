@@ -409,9 +409,13 @@ class KnnIndexFactory(InnerIndexFactory):
     embedder: pw.UDF | None = None
 
     def _get_embed_dimensions(self) -> int:
-        if isinstance(self.embedder, pw.UDF):
-            dim = len(_coerce_sync(self.embedder.__wrapped__)("."))
-            return dim
+        # import is here to prevent cyclical imports
+        from pathway.xpacks.llm.embedders import BaseEmbedder
+
+        if isinstance(self.embedder, BaseEmbedder):
+            return self.embedder.get_embedding_dimension()
+        elif isinstance(self.embedder, pw.UDF):
+            return len(_coerce_sync(self.embedder.__wrapped__)("."))
         else:
             raise TypeError("Embedder is not a valid `pw.UDF`.")
 

@@ -350,6 +350,8 @@ class SentenceTransformerEmbedder(BaseEmbedder):
             `the Sentence-Transformers documentation
             <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         device: defines which device will be used to run the Pipeline
+        batch_size: maximum size of a single batch to be sent to the embedder. Bigger
+            batches may reduce the time needed for embedding, especially on GPU.
         sentencetransformer_kwargs: kwargs accepted during initialization of SentenceTransformers.
             For possible arguments check
             `the Sentence-Transformers documentation
@@ -373,18 +375,19 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         model: str,
         call_kwargs: dict = {},
         device: str = "cpu",
+        batch_size: int = 1024,
         **sentencetransformer_kwargs,
     ):
         with optional_imports("xpack-llm-local"):
             from sentence_transformers import SentenceTransformer
 
-        super().__init__()
+        super().__init__(max_batch_size=batch_size)
         self.model = SentenceTransformer(
             model_name_or_path=model, device=device, **sentencetransformer_kwargs
         )
-        self.kwargs = call_kwargs
+        self.kwargs = {"batch_size": batch_size, **call_kwargs}
 
-    def __wrapped__(self, input: str, **kwargs) -> np.ndarray:
+    def __wrapped__(self, input: list[str], **kwargs) -> list[np.ndarray]:
         """
         Embed the text
 
@@ -395,9 +398,49 @@ class SentenceTransformerEmbedder(BaseEmbedder):
               `the Sentence-Transformers documentation
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         """  # noqa: E501
-        kwargs = {**self.kwargs, **kwargs}
+
         kwargs = _extract_value_inside_dict(kwargs)
-        return self.model.encode(input, **kwargs)
+        constant_kwargs = {}
+        per_row_kwargs = {}
+
+        if kwargs:
+            for key, values in kwargs.items():
+                v = values[0]
+                if all(value == v for value in values):
+                    constant_kwargs[key] = v
+                else:
+                    per_row_kwargs[key] = values
+
+        # if kwargs are not the same for every input we cannot batch them
+        if per_row_kwargs:
+
+            def embed_single(single_input, kwargs) -> np.ndarray:
+                kwargs = {**self.kwargs, **constant_kwargs, **kwargs}
+                return self.model.encode(single_input, **kwargs)
+
+            list_of_per_row_kwargs = [
+                dict(zip(per_row_kwargs, values))
+                for values in zip(*per_row_kwargs.values())
+            ]
+            result_list = [
+                embed_single(single_input, kwargs)
+                for single_input, kwargs in zip(input, list_of_per_row_kwargs)
+            ]
+            return result_list
+
+        else:
+            kwargs = {**self.kwargs, **constant_kwargs}
+            return self.model.encode(input, **kwargs)
+
+    def get_embedding_dimension(self, **kwargs):
+        """Computes number of embedder's dimensions by asking the embedder to embed ``"."``.
+
+        Args:
+            **kwargs: parameters of the embedder, if unset defaults from the constructor
+              will be taken.
+        """
+        kwargs_as_list = {k: [v] for k, v in kwargs.items()}
+        return len(self.__wrapped__(["."], **kwargs_as_list)[0])
 
 
 class GeminiEmbedder(BaseEmbedder):

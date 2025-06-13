@@ -63,6 +63,8 @@ def _check_model_accepts_arg(model_name: str, provider: str, arg: str):
 def _extract_value(data: Any | pw.Json) -> Any:
     if isinstance(data, pw.Json):
         return data.value
+    elif isinstance(data, list):
+        return [_extract_value(d) for d in data]
     return data
 
 

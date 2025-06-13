@@ -1,5 +1,6 @@
 import pytest
 
+import pathway as pw
 from pathway.internals.udfs.utils import _coerce_sync
 from pathway.xpacks.llm import embedders
 
@@ -42,3 +43,74 @@ def test_openai_embedder_fails_no_truncation(model: str):
         sync_embedder(LONG_TEXT)
 
     assert "maximum context length" in str(exc)
+
+
+def test_sentence_transformer_embedder():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str), rows=[("aaa",), ("bbb",)]
+    )
+
+    embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")
+
+    table = table.select(embedding=embedder(pw.this.text))
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 2
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) == 1024
+    assert isinstance(result[1]["embedding"][0], float)
+    assert len(result[1]["embedding"]) == 1024
+
+
+def test_sentence_transformer_embedder_with_common_parameter():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str), rows=[("aaa",), ("bbb",)]
+    )
+
+    embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")
+
+    table = table.select(embedding=embedder(pw.this.text, normalize_embeddings=True))
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 2
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) == 1024
+    assert abs(sum([x * x for x in result[0]["embedding"]]) - 1.0) < 0.001
+    assert isinstance(result[1]["embedding"][0], float)
+    assert len(result[1]["embedding"]) == 1024
+    assert abs(sum([x * x for x in result[1]["embedding"]]) - 1.0) < 0.001
+
+
+def test_sentence_transformer_embedder_with_different_parameter():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str, normalize_embeddings=bool),
+        rows=[("aaa", True), ("bbb", False)],
+    )
+
+    embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")
+
+    table = table.select(
+        embedding=embedder(
+            pw.this.text, normalize_embeddings=pw.this.normalize_embeddings
+        )
+    )
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 2
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) == 1024
+    assert abs(sum([x * x for x in result[0]["embedding"]]) - 1.0) < 0.001
+    assert isinstance(result[1]["embedding"][0], float)
+    assert len(result[1]["embedding"]) == 1024
+
+
+def test_sentence_transformer_get_embedding_dimension():
+    embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")
+    embedding_dimension = embedder.get_embedding_dimension()
+    assert embedding_dimension == 1024
+
+    embedding_dimension = embedder.get_embedding_dimension(normalize_embeddings=True)
+    assert embedding_dimension == 1024

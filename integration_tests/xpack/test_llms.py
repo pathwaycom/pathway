@@ -172,3 +172,49 @@ def test_hf_pipeline_tinyllama():
     values_ls = list(table_values["ret"].values())
 
     assert isinstance(values_ls[0], str)
+
+
+def test_hf_pipeline_multiple_rows():
+    chat = llms.HFPipelineChat(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    t = pw.debug.table_from_markdown(
+        """
+        txt
+        Wazzup?
+        foo
+        """
+    )
+    resp_table = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt), max_new_tokens=2))
+
+    _, table_values = pw.debug.table_to_dicts(resp_table)
+
+    values_ls = list(table_values["ret"].values())
+
+    assert isinstance(values_ls[0], str)
+    assert len(chat.tokenizer(values_ls[0])) <= 2
+    assert isinstance(values_ls[1], str)
+    assert len(chat.tokenizer(values_ls[1])) <= 2
+
+
+def test_hf_pipeline_multiple_rows_with_kwargs():
+    chat = llms.HFPipelineChat(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    t = pw.debug.table_from_markdown(
+        """
+        txt | max_new_tokens
+        Wazzup? | 20
+        foo | 2
+        """
+    )
+    resp_table = t.select(
+        ret=chat(
+            llms.prompt_chat_single_qa(t.txt), max_new_tokens=pw.this.max_new_tokens
+        )
+    )
+
+    _, table_values = pw.debug.table_to_dicts(resp_table)
+
+    values_ls = list(table_values["ret"].values())
+
+    assert isinstance(values_ls[0], str)
+    assert len(chat.tokenizer(values_ls[0])) <= 20
+    assert isinstance(values_ls[1], str)
+    assert len(chat.tokenizer(values_ls[1])) <= 2
