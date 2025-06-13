@@ -1,7 +1,7 @@
 evaluate==0.4.1
 bert_score==0.3.13
 seaborn
-mlflow
+mlflow~=2.1
 ragas==0.2.7
 langchain-openai
 langchain-core
