@@ -1722,3 +1722,34 @@ def test_error_in_error_log(caplog):
     ]
     for error_message, record in zip(error_messages, error_records, strict=True):
         assert error_message in record.getMessage()
+
+
+def test_repeated_keys_for_nondeterministic_udf():
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |     2    |     1
+        2 | 3 |     2    |     1
+        1 | 4 |     4    |     1
+        2 | 3 |     6    |    -1
+
+    """,
+        schema=InputSchema,
+    )
+
+    @pw.udf
+    def foo(x: int) -> int:
+        return x + 1
+
+    t.select(b=foo(pw.this.b))
+    with pytest.raises(
+        Exception,
+        match=re.escape(
+            "Expected deletion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, but got insertion instead."
+        ),
+    ):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)

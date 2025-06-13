@@ -334,6 +334,9 @@ pub enum DataError {
     #[error("updating a row that does not exist, key: {0}")]
     UpdatingNonExistingRow(Key),
 
+    #[error("Expected deletion of a row with key: {0}, but got insertion instead.")]
+    ExpectedDeletion(Key),
+
     #[error(transparent)]
     Other(DynError),
 }

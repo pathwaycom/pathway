@@ -1786,7 +1786,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     }
                                 } else if let Some(result) = caches[i].remove(&row.key) {
                                     // If expression is not append_only, remove key from cache as a new result can be different.
-                                    assert_eq!(row.diff, -1);
+                                    if row.diff != -1 {
+                                        error_reporter.report_and_panic_with_trace(
+                                            DataError::ExpectedDeletion(row.key),
+                                            expression_data.properties.trace().as_ref(),
+                                        );
+                                    }
                                     results[row.position].as_mut().unwrap()[i] = result;
                                     should_be_computed = false;
                                 }
