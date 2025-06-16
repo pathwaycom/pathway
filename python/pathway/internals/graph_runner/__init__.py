@@ -11,7 +11,7 @@ from collections.abc import Callable, Collection, Iterable
 from itertools import chain
 
 import pathway.internals.graph_runner.telemetry as telemetry
-from pathway.internals import api, parse_graph as graph, table, trace
+from pathway.internals import api, datasink, parse_graph as graph, table, trace
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.config import get_pathway_config
 from pathway.internals.graph_runner.async_utils import new_event_loop
@@ -27,6 +27,7 @@ from pathway.internals.operator import (
     ContextualizedIntermediateOperator,
     InputOperator,
     Operator,
+    OutputOperator,
 )
 from pathway.persistence import (
     Config as PersistenceConfig,
@@ -233,6 +234,14 @@ class GraphRunner:
                         sys.exit(1)
                     else:
                         raise
+                finally:
+                    for node in graph.G._current_scope.nodes:
+                        if (
+                            isinstance(node, OutputOperator)
+                            and isinstance(node.datasink, datasink.GenericDataSink)
+                            and node.datasink.on_pipeline_finished is not None
+                        ):
+                            node.datasink.on_pipeline_finished()
 
     def _get_run_id(self):
         run_id = os.environ.get("PATHWAY_RUN_ID")

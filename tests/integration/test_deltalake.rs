@@ -52,6 +52,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         HashMap::new(),
         Vec::new(),
         MaintenanceMode::StreamOfChanges,
+        None,
     )?;
     let schema = construct_arrow_schema(
         &value_fields,
@@ -536,6 +537,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
             HashMap::new(),
             Vec::new(),
             MaintenanceMode::Snapshot,
+            None,
         )?;
         let schema =
             construct_arrow_schema(&value_fields, &batch_writer, MaintenanceMode::Snapshot)?;
@@ -595,6 +597,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
         HashMap::new(),
         Vec::new(),
         MaintenanceMode::Snapshot,
+        None,
     )?;
     let schema = construct_arrow_schema(&value_fields, &batch_writer, MaintenanceMode::Snapshot)?;
     let buffer = {

@@ -23,13 +23,15 @@ use deltalake::kernel::PrimitiveType as DeltaTablePrimitiveType;
 use deltalake::kernel::StructField as DeltaTableStructField;
 use deltalake::kernel::StructType as DeltaTableStructType;
 use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
+use deltalake::operations::optimize::OptimizeBuilder;
+use deltalake::operations::vacuum::VacuumBuilder;
 use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
 use deltalake::parquet::record::Row as ParquetRow;
 use deltalake::protocol::SaveMode as DeltaTableSaveMode;
 use deltalake::table::PeekCommit as DeltaLakePeekCommit;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
 use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, TableProperty};
-use deltalake::{DeltaOps, DeltaTableError};
+use deltalake::{DeltaOps, DeltaTableError, PartitionFilter, PartitionValue};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use s3::bucket::Bucket as S3Bucket;
@@ -90,6 +92,72 @@ impl fmt::Display for FieldMismatchDetails {
     }
 }
 
+#[derive(Clone, Debug)]
+#[allow(clippy::module_name_repetitions)]
+pub struct DeltaOptimizerRule {
+    field_name: String,
+    time_format: String,
+    quick_access_window: std::time::Duration,
+    compression_frequency: std::time::Duration,
+    retention_period: chrono::TimeDelta,
+
+    last_cutoff_value: Option<String>,
+    last_compression_instant: Option<Instant>,
+}
+
+impl DeltaOptimizerRule {
+    pub fn new(
+        field_name: String,
+        time_format: String,
+        quick_access_window: std::time::Duration,
+        compression_frequency: std::time::Duration,
+        retention_period: chrono::TimeDelta,
+    ) -> Self {
+        Self {
+            field_name,
+            time_format,
+            quick_access_window,
+            compression_frequency,
+            retention_period,
+
+            last_cutoff_value: None,
+            last_compression_instant: None,
+        }
+    }
+
+    pub fn cutoff_value_to_apply(&self) -> Option<String> {
+        // Note: this place has to be modified if there is a need to work
+        // with time column different from the current time.
+        let cutoff_time = chrono::Utc::now() - self.quick_access_window;
+        let cutoff_value = cutoff_time.format(&self.time_format).to_string();
+
+        if Some(&cutoff_value) == self.last_cutoff_value.as_ref() {
+            return None;
+        }
+        let last_compression_is_too_recent = self
+            .last_compression_instant
+            .is_some_and(|t| t.elapsed() < self.compression_frequency);
+        if last_compression_is_too_recent {
+            return None;
+        }
+
+        Some(cutoff_value)
+    }
+
+    pub fn optimizer_filters_for_cutoff_value(&self, cutoff_value: &str) -> Vec<PartitionFilter> {
+        let partition_filter = PartitionFilter {
+            key: self.field_name.clone(),
+            value: PartitionValue::LessThanOrEqual(cutoff_value.to_string()),
+        };
+        vec![partition_filter]
+    }
+
+    pub fn on_cutoff_value_optimized(&mut self, cutoff_value: String) {
+        self.last_cutoff_value = Some(cutoff_value);
+        self.last_compression_instant = Some(Instant::now());
+    }
+}
+
 #[derive(Debug)]
 pub struct SchemaMismatchDetails {
     columns_outside_existing_schema: Vec<String>,
@@ -133,6 +201,7 @@ pub struct DeltaBatchWriter {
     table: DeltaTable,
     writer: DTRecordBatchWriter,
     metadata_per_column: MetadataPerColumn,
+    optimizer_rule: Option<DeltaOptimizerRule>,
 }
 
 impl DeltaBatchWriter {
@@ -142,6 +211,7 @@ impl DeltaBatchWriter {
         storage_options: HashMap<String, String>,
         partition_columns: Vec<String>,
         table_type: MaintenanceMode,
+        optimizer_rule: Option<DeltaOptimizerRule>,
     ) -> Result<Self, WriteError> {
         let (table, metadata_per_column) = Self::open_table(
             path,
@@ -155,6 +225,7 @@ impl DeltaBatchWriter {
             table,
             writer,
             metadata_per_column,
+            optimizer_rule,
         })
     }
 
@@ -370,6 +441,36 @@ impl LakeBatchWriter for DeltaBatchWriter {
                     self.writer.flush_and_commit(&mut self.table).await?;
                 }
             }
+            self.table.update().await?;
+
+            if let Some(optimizer_rule) = self.optimizer_rule.as_mut() {
+                let cutoff_to_apply = optimizer_rule.cutoff_value_to_apply();
+                if let Some(cutoff_to_apply) = cutoff_to_apply {
+                    let filters_to_apply =
+                        optimizer_rule.optimizer_filters_for_cutoff_value(&cutoff_to_apply);
+                    let (optimized_table, metrics) = OptimizeBuilder::new(
+                        self.table.log_store(),
+                        self.table.snapshot()?.clone(),
+                    )
+                    .with_filters(&filters_to_apply)
+                    .await?;
+                    info!("Output table has been optimized. Metrics: {metrics:?}");
+
+                    let (_vacuumed_table, metrics) = VacuumBuilder::new(
+                        optimized_table.log_store(),
+                        optimized_table.snapshot()?.clone(),
+                    )
+                    .with_retention_period(optimizer_rule.retention_period)
+                    .with_enforce_retention_duration(false)
+                    .with_dry_run(false)
+                    .await?;
+
+                    info!("Outdated Parquet blocks have been removed: {metrics:?}");
+                    optimizer_rule.on_cutoff_value_optimized(cutoff_to_apply);
+                    self.table.update().await?;
+                }
+            }
+
             Ok::<(), WriteError>(())
         })
     }

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import datetime
 import json
+import logging
+import os
+import threading
+import time
 from os import PathLike, fspath
 from typing import Any, Iterable, Literal
 
@@ -32,6 +37,9 @@ from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
 _PATHWAY_COLUMN_META_FIELD = "pathway.column.metadata"
 _SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
+_DELTA_LOG_REL_PATH = "_delta_log"
+_LAST_CHECKPOINT_BLOCK_NAME = "_last_checkpoint"
+_CHECKPOINT_EXTENSION = ".checkpoint.parquet"
 
 
 def _engine_s3_connection_settings(
@@ -43,6 +51,236 @@ def _engine_s3_connection_settings(
         s3_connection_settings.authorize()
         return s3_connection_settings.settings
     return None
+
+
+class TableOptimizer:
+
+    def __init__(
+        self,
+        tracked_column: ColumnReference,
+        time_format: str,
+        quick_access_window: datetime.timedelta,
+        compression_frequency: datetime.timedelta,
+        retention_period: datetime.timedelta = datetime.timedelta(0),
+        optimize_transaction_log: bool = False,
+        remove_old_checkpoints: bool = False,
+    ):
+        """
+        The table optimizer is used to optimize partitioned Delta tables created by the
+        output connector. This optimization is limited to tables that are partitioned by a
+        string column, where the values represent date and time in a specific format.
+
+        After a WRITE operation and once the specified interval has passed, the optimizer
+        runs [OPTIMIZE](https://delta.io/blog/delta-lake-optimize/) and
+        [VACUUM](https://docs.delta.io/latest/delta-utility.html#id1) operations.
+        If these operations fail, they will be retried during the next write. Keep in mind
+        that running OPTIMIZE and VACUUM may cause a delay in the output because they take
+        time to complete, but they do not slow down the overall computational pipeline.
+        This approach is necessary to prevent conflicts that could occur from simultaneous
+        writes to the Delta log.
+
+        When ``optimize_transaction_log`` is enabled, a background process will identify
+        and remove parts of the transaction log that no longer reference existing data files.
+        This helps reduce the number of Delta log files, which can grow quickly with
+        small batches or over long periods.
+
+        If ``remove_old_checkpoints`` is enabled, the background process will also make
+        sure that only the most recent checkpoint file is kept.
+
+        Please note that both ``optimize_transaction_log`` and ``remove_old_checkpoints``
+        are currently experimental features and work only when the backend uses a filesystem.
+
+        Args:
+            tracked_column: The partition column for the observed table.
+            time_format: A [strftime-like](https://strftime.org/) format string
+                that defines how values in the tracked column are interpreted.
+            quick_access_window: All partition values older than this window
+                will be compressed using the OPTIMIZE Delta Lake operation, followed by VACUUM.
+            compression_frequency: Determines how often the compression process
+                is triggered. If a compression attempt fails, it will be retried immediately
+                without waiting.
+            retention_period: Retention period for the VACUUM operation.
+            optimize_transaction_log: If ``True``, Pathway will clean the Delta transaction
+                log by removing entries that reference Parquet files already deleted by VACUUM.
+            remove_old_checkpoints: If ``True``, Pathway will keep only the most recent
+                checkpoint file to reduce storage usage.
+
+        Example:
+
+        Suppose you are writing to a table that is partitioned by the column ``day_utc``,
+        where the values follow the ISO-8601 format: ``YYYY-MM-DD``. You want to compress
+        data older than 7 days and run this compression once per day.
+
+        In that case, the optimizer settings would be configured as follows:
+
+        >>> import pathway as pw
+        >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
+        ...     tracked_column=table.day_utc,
+        ...     time_forma2t="%Y-%m-%d",
+        ...     quick_access_window=datetime.timedelta(days=7),
+        ...     compression_frequency=datetime.timedelta(days=1),
+        ... )
+
+        This optimizer object needs to be passed to the ``pw.io.deltalake.write`` function.
+
+        Note: Background cleanup of old Delta log entries will not run automatically in
+        this setup. To enable it, you can turn it on explicitly:
+
+        >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
+        ...     tracked_column=table.day_utc,
+        ...     time_format="%Y-%m-%d",
+        ...     quick_access_window=datetime.timedelta(days=7),
+        ...     compression_frequency=datetime.timedelta(days=1),
+        ...     optimize_transaction_log=True,
+        ...     remove_old_checkpoints=True,
+        ... )
+        """
+        self.compression_frequency = compression_frequency
+        self.engine_rule = api.DeltaOptimizerRule(
+            field_name=tracked_column.name,
+            time_format=time_format,
+            quick_access_window=quick_access_window,
+            compression_frequency=compression_frequency,
+            retention_period=retention_period,
+        )
+        self.tracked_column = tracked_column
+        self.is_active = False
+        self.lock = threading.Lock()
+        self.optimize_transaction_log = optimize_transaction_log
+        self.remove_old_checkpoints = remove_old_checkpoints
+        self.optimizer_thread: threading.Thread | None = None
+        self.table_path: str | None = None
+
+    def _start_compression(self, table_path: str):
+        is_background_thread_needed = (
+            self.optimize_transaction_log or self.remove_old_checkpoints
+        )
+        if not is_background_thread_needed:
+            return
+
+        self.is_active = True
+        self.table_path = table_path
+        cycle_duration = self.compression_frequency.total_seconds()
+
+        def target():
+            last_compression_at = None
+            while True:
+                with self.lock:
+                    if not self.is_active:
+                        break
+                    iteration_stated_at = time.time()
+                    is_compression_needed = (
+                        last_compression_at is None
+                        or iteration_stated_at - last_compression_at >= cycle_duration
+                    )
+                    if is_compression_needed and self._perform_compression():
+                        last_compression_at = iteration_stated_at
+                        elapsed = time.time() - iteration_stated_at
+                        if elapsed > cycle_duration:
+                            logging.warning(
+                                "Compression cycle takes more than the specified compression frequency: "
+                                f"{elapsed:.3f}s vs {cycle_duration:.3f}s"
+                            )
+                time.sleep(1.0)
+
+        self.optimizer_thread = threading.Thread(target=target, daemon=True)
+        self.optimizer_thread.start()
+
+    def _perform_compression(self) -> bool:
+        if self.table_path is not None:
+            try:
+                _ = DeltaTable(self.table_path)
+                tlog_path = os.path.join(self.table_path, _DELTA_LOG_REL_PATH)
+                tlog_file_list = os.listdir(tlog_path)
+            except Exception:
+                # The table is not ready yet
+                # There are more specific exceptions, but they are in the private part
+                # of the library (deltalake._internal)
+                logging.exception(f"The Delta table {self.table_path} is not ready yet")
+                return False
+            tlog_file_list.sort()
+            if self.optimize_transaction_log:
+                self._remove_obsolete_versions(tlog_file_list)
+            if self.remove_old_checkpoints:
+                self._remove_old_checkpoints(tlog_file_list)
+        else:
+            return False
+
+        return True
+
+    def _stop_compression(self):
+        if self.optimizer_thread is not None:
+            with self.lock:
+                self.is_active = False
+            self.optimizer_thread.join()
+            self._perform_compression()
+
+    @staticmethod
+    def _is_version_obsolete(file_path: str, actual_parquet_files: set[str]) -> bool:
+        with open(file_path, "r") as f:
+            for row in f:
+                row_decoded = json.loads(row)
+                path_add = row_decoded.get("add", {}).get("path")
+                path_remove = row_decoded.get("remove", {}).get("path")
+                path = path_add or path_remove
+                if path in actual_parquet_files:
+                    return False
+        return True
+
+    @staticmethod
+    def _version_number(tlog_file_name: str) -> int:
+        version = tlog_file_name[: tlog_file_name.find(".")]
+        return int(version)
+
+    def _get_actual_parquet_block_paths(self) -> set[str]:
+        assert isinstance(self.table_path, str)
+        result = set()
+        for folder_name in os.listdir(self.table_path):
+            nested_root = os.path.join(self.table_path, folder_name)
+            if folder_name == _DELTA_LOG_REL_PATH or not os.path.isdir(nested_root):
+                continue
+            for file_name in os.listdir(nested_root):
+                result.add(os.path.join(folder_name, file_name))
+        return result
+
+    def _remove_obsolete_versions(self, tlog_file_names: list[str]):
+        assert isinstance(self.table_path, str)
+        actual_parquet_files = self._get_actual_parquet_block_paths()
+        delta_log_path = os.path.join(self.table_path, _DELTA_LOG_REL_PATH)
+        for file_name in tlog_file_names:
+            file_path = os.path.join(delta_log_path, file_name)
+            if (
+                file_name.endswith(".json")
+                and os.path.isfile(file_path)
+                and self._version_number(file_name) > 0
+                and self._is_version_obsolete(file_path, actual_parquet_files)
+            ):
+                logging.info(f"Removing obsolete Delta log entry {file_name}")
+                file_path = os.path.join(delta_log_path, file_name)
+                os.remove(file_path)
+
+    def _remove_old_checkpoints(self, tlog_file_names: list[str]):
+        assert isinstance(self.table_path, str)
+        delta_log_path = os.path.join(self.table_path, _DELTA_LOG_REL_PATH)
+        last_checkpoint_path = os.path.join(delta_log_path, _LAST_CHECKPOINT_BLOCK_NAME)
+        try:
+            with open(last_checkpoint_path, "r") as f:
+                last_checkpoint_meta = json.load(f)
+        except Exception:
+            # There is no _last_checkpoint file or it's broken
+            return
+        last_checkpoint_version = last_checkpoint_meta["version"]
+        logging.info(
+            f"Last checkpoint version from metadata: {last_checkpoint_version}"
+        )
+        for file_name in tlog_file_names:
+            if not file_name.endswith(_CHECKPOINT_EXTENSION):
+                continue
+            version = self._version_number(file_name)
+            if version != last_checkpoint_version:
+                logging.info(f"Removing obsolete Delta checkpoint {file_name}")
+                file_path = os.path.join(delta_log_path, file_name)
+                os.remove(file_path)
 
 
 @check_arg_types
@@ -229,6 +467,7 @@ def write(
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
     output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
+    table_optimizer: TableOptimizer | None = None,
 ) -> None:
     """
     Writes the stream of changes from ``table`` into `Delta Lake <https://delta.io/>_` data
@@ -281,6 +520,7 @@ def write(
             because a deletion in a minibatch causes the entire table to be rewritten once that minibatch reaches
             the output. Please also note that this method is not suitable for the tables that don't
             fit in memory.**
+        table_optimizer: The optimization parameters for the output table.
 
     Returns:
         None
@@ -341,12 +581,21 @@ def write(
         min_commit_frequency=min_commit_frequency,
         partition_columns=prepared_partition_columns,
         snapshot_maintenance_on_output=output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE,
+        delta_optimizer_rule=(table_optimizer.engine_rule if table_optimizer else None),
     )
     data_format = api.DataFormat(
         format_type="identity",
         key_field_names=None,
         value_fields=_format_output_value_fields(table),
     )
+
+    if table_optimizer is not None:
+        if table_optimizer.tracked_column.name not in prepared_partition_columns:
+            raise ValueError(
+                f"Optimization is based on the column '{table_optimizer.tracked_column}', "
+                "which is not a partition column. Please include this column in partition_columns."
+            )
+        table_optimizer._start_compression(table_path=uri)
 
     table.to(
         datasink.GenericDataSink(
@@ -355,5 +604,10 @@ def write(
             datasink_name="deltalake",
             unique_name=name,
             sort_by=sort_by,
+            on_pipeline_finished=(
+                table_optimizer._stop_compression
+                if table_optimizer is not None
+                else None
+            ),
         )
     )

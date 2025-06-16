@@ -82,6 +82,7 @@ use crate::connectors::data_lake::arrow::construct_schema as construct_arrow_sch
 use crate::connectors::data_lake::buffering::{
     AppendOnlyColumnBuffer, ColumnBuffer, SnapshotColumnBuffer,
 };
+use crate::connectors::data_lake::delta::DeltaOptimizerRule;
 use crate::connectors::data_lake::iceberg::{
     IcebergBatchWriter, IcebergDBParams, IcebergTableParams,
 };
@@ -4120,6 +4121,57 @@ impl ElasticSearchParams {
 }
 
 #[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen, name = "DeltaOptimizerRule")]
+pub struct PyDeltaOptimizerRule {
+    field_name: String,
+    time_format: String,
+    quick_access_window: std::time::Duration,
+    compression_frequency: std::time::Duration,
+    retention_period: chrono::TimeDelta,
+}
+
+#[pymethods]
+impl PyDeltaOptimizerRule {
+    #[new]
+    #[pyo3(signature = (
+        field_name,
+        time_format,
+        quick_access_window,
+        compression_frequency,
+        retention_period,
+    ))]
+    pub fn new(
+        field_name: String,
+        time_format: String,
+        quick_access_window: std::time::Duration,
+        compression_frequency: std::time::Duration,
+        retention_period: std::time::Duration,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            field_name,
+            time_format,
+            quick_access_window,
+            compression_frequency,
+            retention_period: chrono::TimeDelta::from_std(retention_period).map_err(|e| {
+                PyValueError::new_err(format!("Failed to parse retention_period: {e}"))
+            })?,
+        })
+    }
+}
+
+impl PyDeltaOptimizerRule {
+    fn into_inner(self) -> DeltaOptimizerRule {
+        DeltaOptimizerRule::new(
+            self.field_name,
+            self.time_format,
+            self.quick_access_window,
+            self.compression_frequency,
+            self.retention_period,
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct DataStorage {
     storage_type: String,
@@ -4153,6 +4205,7 @@ pub struct DataStorage {
     partition_columns: Option<Vec<String>>,
     backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
     azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
+    delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4513,6 +4566,7 @@ impl DataStorage {
         partition_columns = None,
         backfilling_thresholds = None,
         azure_blob_storage_settings = None,
+        delta_optimizer_rule = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4546,6 +4600,7 @@ impl DataStorage {
         partition_columns: Option<Vec<String>>,
         backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
         azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
+        delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4578,6 +4633,7 @@ impl DataStorage {
             partition_columns,
             backfilling_thresholds,
             azure_blob_storage_settings,
+            delta_optimizer_rule,
         }
     }
 
@@ -5486,6 +5542,9 @@ impl DataStorage {
             self.delta_storage_options()?,
             partition_columns,
             table_type,
+            self.delta_optimizer_rule
+                .clone()
+                .map(PyDeltaOptimizerRule::into_inner),
         )
         .map_err(|e| {
             let error_text = format!("Unable to create DeltaTable writer: {e}");
@@ -6218,6 +6277,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyConnectorGroupDescriptor>()?;
     m.add_class::<TelemetryConfig>()?;
     m.add_class::<BackfillingThreshold>()?;
+    m.add_class::<PyDeltaOptimizerRule>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

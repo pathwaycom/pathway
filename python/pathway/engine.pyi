@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import datetime
 from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any, Generic, TypeVar, TypeVarTuple, Union, final
@@ -788,6 +789,16 @@ class BackfillingThreshold:
 
     def __init__(self, *args, **kwargs): ...
 
+class DeltaOptimizerRule:
+    def __init__(
+        self,
+        field_name: str,
+        time_format: str,
+        quick_access_window: datetime.timedelta,
+        compression_frequency: datetime.timedelta,
+        retention_period: datetime.timedelta,
+    ): ...
+
 class SqlWriterInitMode(Enum):
     DEFAULT: SqlWriterInitMode
     CREATE_IF_NOT_EXISTS: SqlWriterInitMode
@@ -827,6 +838,7 @@ class DataStorage:
         partition_columns: list[str] | None = None,
         backfilling_thresholds: list[BackfillingThreshold] | None = None,
         azure_blob_storage_settings: AzureBlobStorageSettings | None = None,
+        delta_optimizer_rule: DeltaOptimizerRule | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

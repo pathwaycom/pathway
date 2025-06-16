@@ -4811,3 +4811,127 @@ def test_deltalake_snapshot_mode(tmp_path):
     run_reread(second_payload)
     run_reread(third_payload)
     run_reread(fourth_payload)
+
+
+def test_wrong_delta_optimizer_rule(tmp_path):
+    input_path = tmp_path / "input"
+    output_path = tmp_path / "output"
+
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+        date: str
+
+    table = pw.io.jsonlines.read(input_path, mode="static", schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Optimization is based on the column '<table1>.key', which is not a "
+            "partition column. Please include this column in partition_columns."
+        ),
+    ):
+        pw.io.deltalake.write(
+            table,
+            output_path,
+            partition_columns=[table.date],
+            table_optimizer=pw.io.deltalake.TableOptimizer(
+                tracked_column=table.key,
+                time_format="%Y-%m-%d",
+                quick_access_window=datetime.timedelta(days=7),
+                compression_frequency=datetime.timedelta(hours=1),
+            ),
+        )
+
+
+@pytest.mark.parametrize("optimize_transaction_log", [False, True])
+def test_delta_optimizer_rule(tmp_path, optimize_transaction_log):
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "output_lake"
+
+    def run_identity_program(data):
+        G.clear()
+
+        class InputSchema(pw.Schema):
+            key: int = pw.column_definition(primary_key=True)
+            value: str
+            date: str
+
+        with open(input_path, "w") as f:
+            for row in data:
+                f.write(json.dumps(row))
+                f.write("\n")
+
+        table = pw.io.jsonlines.read(input_path, mode="static", schema=InputSchema)
+        pw.io.deltalake.write(
+            table,
+            output_path,
+            partition_columns=[table.date],
+            table_optimizer=pw.io.deltalake.TableOptimizer(
+                tracked_column=table.date,
+                time_format="%Y-%m-%d",
+                quick_access_window=datetime.timedelta(days=7),
+                compression_frequency=datetime.timedelta(hours=1),
+                optimize_transaction_log=optimize_transaction_log,
+                remove_old_checkpoints=True,
+            ),
+        )
+        pw.io.csv.write(table, tmp_path / "output.csv")
+        run_all()
+
+    today_date = datetime.date.today()
+    remote_date = today_date - datetime.timedelta(days=21)
+
+    data = [
+        {
+            "key": 1,
+            "value": "one",
+            "date": today_date.isoformat(),
+        },
+        {
+            "key": 2,
+            "value": "two",
+            "date": remote_date.isoformat(),
+        },
+    ]
+    run_identity_program(data)
+    delta_table = DeltaTable(output_path)
+    pd_table_from_delta = delta_table.to_pandas()
+    assert pd_table_from_delta.shape[0] == 2
+    assert len(delta_table.files()) == 2
+
+    data = [
+        {
+            "key": 3,
+            "value": "three",
+            "date": remote_date.isoformat(),
+        },
+    ]
+    run_identity_program(data)
+    delta_table = DeltaTable(output_path)
+    pd_table_from_delta = delta_table.to_pandas()
+    assert pd_table_from_delta.shape[0] == 3
+    # Same as in the previous run thanks to the compression
+    assert len(delta_table.files()) == 2
+
+    raw_history = delta_table.history()
+    operations_history = []
+    for item in raw_history:
+        operations_history.append(item["operation"])
+
+    if optimize_transaction_log:
+        expected_operations_history = [
+            "OPTIMIZE",
+            "WRITE",
+            "CREATE TABLE",
+        ]
+    else:
+        expected_operations_history = [
+            "VACUUM END",
+            "VACUUM START",
+            "OPTIMIZE",
+            "WRITE",
+            "WRITE",
+            "CREATE TABLE",
+        ]
+
+    assert operations_history == expected_operations_history

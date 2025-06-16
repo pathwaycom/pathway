@@ -10,6 +10,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.23.0] - 2025-06-12
 
+### Added
+- `pw.io.deltalake.write` now accepts an optional `pw.io.deltalake.TableOptimizer` object that defines the settings for the runtime output table optimization.
+
 ### Changed
 - **BREAKING**: To use `pw.sql` you now have to install `pathway[sql]`.
 

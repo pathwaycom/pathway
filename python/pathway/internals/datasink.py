@@ -37,6 +37,7 @@ class GenericDataSink(DataSink):
     datasink_name: str
     unique_name: str | None
     sort_by: Iterable[ColumnReference] | None = None
+    on_pipeline_finished: Callable | None = None
 
     @property
     def name(self) -> str:
