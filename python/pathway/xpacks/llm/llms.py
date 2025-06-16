@@ -95,8 +95,9 @@ def _prep_message_log(messages: list[dict], verbose: bool) -> str:
 class OpenAIChat(BaseChat):
     """Pathway wrapper for OpenAI Chat services.
 
-    The capacity, retry_strategy and cache_strategy need to be specified during object
-    construction. All other arguments can be overridden during application.
+    The ``capacity``, ``retry_strategy``, ``cache_strategy`` and ``base_url`` need to be specified during object
+    construction, and API key must be provided to the constructor with the ``api_key`` argument
+    or set in the ``OPENAI_API_KEY`` environment variable. All other arguments can be overridden during application.
 
     Args:
         capacity: Maximum number of concurrent operations allowed.
@@ -110,6 +111,8 @@ class OpenAIChat(BaseChat):
         model: ID of the model to use. See the
             `model endpoint compatibility <https://platform.openai.com/docs/models/model-endpoint-compatibility>`_
             table for details on which models work with the Chat API.
+        api_key: API key to be used for API calls to OpenAI. It must be either provided in the
+            constructor or set in the ``OPENAI_API_KEY`` environment variable.
         frequency_penalty: Number between -2.0 and 2.0. Positive values penalize new tokens based on their
             existing frequency in the text so far, decreasing the model's likelihood to
             repeat the same line verbatim.
@@ -255,19 +258,21 @@ class OpenAIChat(BaseChat):
             cache_strategy=cache_strategy,
         )
         self.kwargs.update(openai_kwargs)
+        api_key = self.kwargs.pop("api_key", None)
+        base_url = self.kwargs.pop("base_url", None)
+
+        self.client = openai.AsyncOpenAI(
+            api_key=api_key, base_url=base_url, max_retries=0
+        )
+
         if model is not None:
             self.kwargs["model"] = model
 
     async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
-        import openai
-
         messages_decoded = _prepare_messages(messages)
         kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
-
         verbose = kwargs.pop("verbose", False)
-        api_key = kwargs.pop("api_key", None)
-        base_url = kwargs.pop("base_url", None)
 
         msg_id = str(uuid.uuid4())[-8:]
 
@@ -279,8 +284,7 @@ class OpenAIChat(BaseChat):
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
-        client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
-        ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)  # type: ignore
+        ret = await self.client.chat.completions.create(messages=messages_decoded, **kwargs)  # type: ignore
         response: str | None = ret.choices[0].message.content
 
         if response is not None:

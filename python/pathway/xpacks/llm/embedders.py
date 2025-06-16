@@ -89,7 +89,8 @@ class OpenAIEmbedder(BaseEmbedder):
     """Pathway wrapper for OpenAI Embedding services.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
-    construction. All other arguments can be overridden during application.
+    construction, and API key must be provided to the constructor with the ``api_key`` argument
+    or set in the ``OPENAI_API_KEY`` environment variable. All other arguments can be overridden during application.
 
     Args:
         capacity: Maximum number of concurrent operations allowed.
@@ -105,6 +106,8 @@ class OpenAIEmbedder(BaseEmbedder):
             see all of your available models, or see
             `Model overview <https://platform.openai.com/docs/models/overview>`_ for
             descriptions of them.
+        api_key: API key to be used for API calls to OpenAI. It must be either provided in the
+            constructor or set in the ``OPENAI_API_KEY`` environment variable.
         truncation_keep_strategy: Strategy to keep the part of the text if truncation is necessary.
             If set, only documents that are longer than model's supported context will be truncated.
             Can be ``"start"``, ``"end"`` or ``None``. ``"start"`` will keep the first part of the text
@@ -167,6 +170,8 @@ class OpenAIEmbedder(BaseEmbedder):
         )
         self.truncation_keep_strategy = truncation_keep_strategy
         self.kwargs = dict(openai_kwargs)
+        api_key = self.kwargs.pop("api_key", None)
+        self.client = openai.AsyncOpenAI(api_key=api_key, max_retries=0)
         if model is not None:
             self.kwargs["model"] = model
 
@@ -178,8 +183,6 @@ class OpenAIEmbedder(BaseEmbedder):
             **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
-        import openai
-
         input = input or "."
 
         kwargs = {**self.kwargs, **kwargs}
@@ -191,15 +194,12 @@ class OpenAIEmbedder(BaseEmbedder):
                 "Please provide the model name either in the constructor or in the function call."
             )
 
-        api_key = kwargs.pop("api_key", None)
-        client = openai.AsyncOpenAI(api_key=api_key, max_retries=0)
-
         if self.truncation_keep_strategy:
             input = self.truncate_context(
                 kwargs["model"], input, self.truncation_keep_strategy
             )
 
-        ret = await client.embeddings.create(input=[input], **kwargs)
+        ret = await self.client.embeddings.create(input=[input], **kwargs)
         return np.array(ret.data[0].embedding)
 
     @staticmethod

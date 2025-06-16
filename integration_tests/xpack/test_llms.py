@@ -86,7 +86,9 @@ def test_llm_rerank():
 
     df = pd.DataFrame({"docs": docs, "query": query})
 
-    chat = llms.OpenAIChat(model="gpt-4o-mini")
+    chat = llms.OpenAIChat(
+        model="gpt-4o-mini", retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy()
+    )
     reranker = rerankers.LLMReranker(llm=chat)
     docs_table = pw.debug.table_from_pandas(df)
 

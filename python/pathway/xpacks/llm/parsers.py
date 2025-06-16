@@ -36,12 +36,13 @@ logger = logging.getLogger(__name__)
 
 
 # TODO: fix it
-DEFAULT_VISION_LLM = llms.OpenAIChat(
-    model=DEFAULT_VISION_MODEL,
-    cache_strategy=udfs.DefaultCache(),
-    retry_strategy=udfs.ExponentialBackoffRetryStrategy(max_retries=4),
-    verbose=True,
-)
+def default_vision_llm() -> pw.UDF:
+    return llms.OpenAIChat(
+        model=DEFAULT_VISION_MODEL,
+        cache_strategy=udfs.DefaultCache(),
+        retry_strategy=udfs.ExponentialBackoffRetryStrategy(max_retries=4),
+        verbose=True,
+    )
 
 
 class Utf8Parser(pw.UDF):
@@ -675,7 +676,8 @@ class ImageParser(pw.UDF):
     A class to parse images using vision LLMs.
 
     Args:
-        llm (pw.UDF): LLM for parsing the image. Provided LLM should support image inputs.
+        llm (pw.UDF): LLM for parsing the image. Provided LLM should support image inputs. If not
+            provided, an OpenAI LLM will be used.
         parse_prompt: The prompt used by the language model for parsing.
         detail_parse_schema: A schema for detailed parsing, if applicable.
             Providing a Pydantic schema will call the LLM second time to parse necessary information,
@@ -702,7 +704,7 @@ class ImageParser(pw.UDF):
 
     def __init__(
         self,
-        llm: pw.UDF = DEFAULT_VISION_LLM,
+        llm: pw.UDF | None = None,
         parse_prompt: str = prompts.DEFAULT_IMAGE_PARSE_PROMPT,
         detail_parse_schema: type[BaseModel] | None = None,
         include_schema_in_text: bool = False,
@@ -724,7 +726,10 @@ class ImageParser(pw.UDF):
         executor = _prepare_executor(async_mode=async_mode)
 
         super().__init__(cache_strategy=cache_strategy, executor=executor)
-        self.llm = llm
+        if llm is None:
+            self.llm = default_vision_llm()
+        else:
+            self.llm = llm
         self.parse_prompt = parse_prompt
         self.detail_parse_schema = detail_parse_schema
         self.parse_details = self.detail_parse_schema is not None
@@ -828,7 +833,8 @@ class SlideParser(pw.UDF):
     Get your license `here <https://pathway.com/get-license>`_ to gain access.
 
     Args:
-        llm: LLM for parsing the image. Provided LLM should support image inputs.
+        llm: LLM for parsing the image. Provided LLM should support image inputs. If not
+            provided, an OpenAI LLM will be used.
         parse_prompt: The prompt used by the language model for parsing.
         detail_parse_schema: A schema for detailed parsing, if applicable.
             Providing a Pydantic schema will call the LLM second time to parse necessary information,
@@ -858,7 +864,7 @@ class SlideParser(pw.UDF):
 
     def __init__(
         self,
-        llm: pw.UDF = DEFAULT_VISION_LLM,
+        llm: pw.UDF | None = None,
         parse_prompt: str = prompts.DEFAULT_IMAGE_PARSE_PROMPT,
         detail_parse_schema: type[BaseModel] | None = None,
         include_schema_in_text: bool = False,
@@ -888,7 +894,10 @@ class SlideParser(pw.UDF):
         executor = _prepare_executor(async_mode=async_mode)
 
         super().__init__(cache_strategy=cache_strategy, executor=executor)
-        self.llm = llm
+        if llm is None:
+            self.llm = default_vision_llm()
+        else:
+            self.llm = llm
         self.parse_prompt = parse_prompt
         self.detail_parse_schema = detail_parse_schema
         self.intermediate_image_format = intermediate_image_format

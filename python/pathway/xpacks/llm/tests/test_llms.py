@@ -72,7 +72,9 @@ def test_empty_init_kwargs():
 def test_init_kwargs(kwargs):
     llm = llms.OpenAIChat(**kwargs)
 
-    assert llm.kwargs.get("base_url", "not_set") == kwargs.get("base_url", "not_set")
+    assert llm.kwargs.get("temperature", "not_set") == kwargs.get(
+        "temperature", "not_set"
+    )
 
 
 VALID_ARGS = ["top_p", "temperature", "max_tokens"]

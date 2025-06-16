@@ -39,6 +39,7 @@ def environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLACK_TOKEN", "manul")
     monkeypatch.setenv("TIKTOKEN_CACHE_DIR", "")
     monkeypatch.delenv("PATHWAY_MONITORING_SERVER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "manul")
 
 
 @pytest.fixture(autouse=True)

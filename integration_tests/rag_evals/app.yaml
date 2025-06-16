@@ -28,6 +28,8 @@ $llm: !pw.xpacks.llm.llms.OpenAIChat
 
 $embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
   model: "text-embedding-ada-002"
+  retry_strategy: !pw.udfs.ExponentialBackoffRetryStrategy
+    max_retries: 6
   cache_strategy: !pw.udfs.DefaultCache {}
 
 $splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
