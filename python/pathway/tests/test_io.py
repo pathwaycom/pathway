@@ -1217,7 +1217,7 @@ def run_replacement_test(
         with_metadata=True,
     )
 
-    output_path = tmp_path / "output.csv"
+    output_path = tmp_path / "output.jsonl"
     pw.io.jsonlines.write(table, str(output_path))
 
     inputs_thread = threading.Thread(target=streaming_target, daemon=True)
@@ -1259,14 +1259,19 @@ def run_replacement_test(
 
 @needs_multiprocessing_fork
 def test_simple_replacement_with_removal(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input2.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 15, target=None
+        )
         os.remove(tmp_path / "inputs/input1.jsonlines")
 
     run_replacement_test(
@@ -1280,16 +1285,20 @@ def test_simple_replacement_with_removal(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_simple_insert_consolidation(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
 
     run_replacement_test(
         streaming_target=stream_inputs,
@@ -1303,17 +1312,24 @@ def test_simple_insert_consolidation(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_simple_replacement_on_file(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         third_line = {"key": 3, "value": "three"}
         write_lines(tmp_path / "inputs/input.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), 15, target=None
+        )
         os.remove(tmp_path / "inputs/input.jsonlines")
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 4), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input.jsonlines", json.dumps(third_line))
 
     run_replacement_test(
@@ -1328,15 +1344,20 @@ def test_simple_replacement_on_file(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_simple_replacement(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         third_line = {"key": 3, "value": "three"}
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input2.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(third_line))
 
     run_replacement_test(
@@ -1351,15 +1372,20 @@ def test_simple_replacement(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_last_file_replacement_json(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         third_line = {"key": 3, "value": "three"}
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input2.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input2.jsonlines", json.dumps(third_line))
 
     run_replacement_test(
@@ -1374,24 +1400,29 @@ def test_last_file_replacement_json(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_last_file_replacement_csv(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_file = """
             key | value
             1   | one
         """
         second_file = """
             key | value
-            2   | two
+            20  | twenty
         """
         third_file = """
             key | value
             3   | three
         """
         write_csv(tmp_path / "inputs/input1.jsonlines", first_file)
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_csv(tmp_path / "inputs/input2.jsonlines", second_file)
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 15, target=None
+        )
         write_csv(tmp_path / "inputs/input2.jsonlines", third_file)
 
     run_replacement_test(
@@ -1406,14 +1437,19 @@ def test_last_file_replacement_csv(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_file_removal_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input2.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 15, target=None
+        )
         os.remove(tmp_path / "inputs/input1.jsonlines")
 
     run_replacement_test(
@@ -1427,15 +1463,20 @@ def test_file_removal_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
 
 @needs_multiprocessing_fork
 def test_simple_replacement_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
+    output_path = tmp_path / "output.jsonl"
+
     def stream_inputs():
-        time.sleep(1)
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         third_line = {"key": 3, "value": "three"}
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input2.jsonlines", json.dumps(second_line))
-        time.sleep(1)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 15, target=None
+        )
         write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(third_line))
 
     run_replacement_test(
@@ -2800,7 +2841,7 @@ def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
 
     def stream_inputs():
         first_line = {"key": 1, "value": "one"}
-        second_line = {"key": 2, "value": "two"}
+        second_line = {"key": 20, "value": "twenty"}
         write_lines(inputs_path / "input1.jsonlines", json.dumps(first_line))
         wait_result_with_checker(
             FileLinesNumberChecker(output_path, 1), 30, target=None

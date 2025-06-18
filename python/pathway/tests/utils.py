@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -744,15 +745,23 @@ def wait_result_with_checker(
 
 def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):
     df = _markdown_to_pandas(table_def)
-    df.to_csv(path, encoding="utf-8", **kwargs)
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
+        tmp_path = f.name
+        df.to_csv(tmp_path, encoding="utf-8", **kwargs)
+    # Move is atomic in POSIX filesystems, that makes the whole write atomic as a result
+    os.replace(tmp_path, path)
 
 
 def write_lines(path: str | pathlib.Path, data: str | list[str]):
     if isinstance(data, str):
         data = [data]
     data = [row + "\n" for row in data]
-    with open(path, "w+") as f:
+
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False) as f:
         f.writelines(data)
+        tmp_path = f.name
+    # Move is atomic in POSIX filesystems, that makes the whole write atomic as a result
+    os.replace(tmp_path, path)
 
 
 def read_lines(path: str | pathlib.Path) -> list[str]:
