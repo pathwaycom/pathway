@@ -48,6 +48,10 @@ use pyo3_log::ResetHandle;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
 use rdkafka::{ClientConfig, Offset as KafkaOffset, TopicPartitionList};
+use rumqttc::{
+    mqttbytes::QoS as MqttQoS, Client as MqttClient, Event as MqttEvent, MqttOptions,
+    Packet as MqttPacket,
+};
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::OpenFlags as SqliteOpenFlags;
 use s3::bucket::Bucket as S3Bucket;
@@ -90,9 +94,10 @@ use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
-    KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, NatsReader, NatsWriter, NullWriter,
-    ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, RdkafkaWatermark,
-    ReadError, ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, WriteError, Writer,
+    KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, NatsReader,
+    NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
+    PythonReaderBuilder, RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqlWriterInitMode,
+    SqliteReader, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::synchronization::ConnectorGroupDescriptor;
@@ -4172,6 +4177,35 @@ impl PyDeltaOptimizerRule {
 }
 
 #[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen, name = "MqttSettings")]
+pub struct MqttSettings {
+    qos: MqttQoS,
+    retain: bool,
+}
+
+#[pymethods]
+impl MqttSettings {
+    #[new]
+    #[pyo3(signature = (
+        qos,
+        retain,
+    ))]
+    pub fn new(qos: usize, retain: bool) -> PyResult<Self> {
+        let qos = match qos {
+            0 => MqttQoS::AtMostOnce,
+            1 => MqttQoS::AtLeastOnce,
+            2 => MqttQoS::ExactlyOnce,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "MQTT QoS can only be 0, 1 or 2. Specified value: {qos}"
+                )))
+            }
+        };
+        Ok(Self { qos, retain })
+    }
+}
+
+#[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct DataStorage {
     storage_type: String,
@@ -4206,6 +4240,7 @@ pub struct DataStorage {
     backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
     azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
     delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
+    mqtt_settings: Option<MqttSettings>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4567,6 +4602,7 @@ impl DataStorage {
         backfilling_thresholds = None,
         azure_blob_storage_settings = None,
         delta_optimizer_rule = None,
+        mqtt_settings = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4601,6 +4637,7 @@ impl DataStorage {
         backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
         azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
         delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
+        mqtt_settings: Option<MqttSettings>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4634,6 +4671,7 @@ impl DataStorage {
             backfilling_thresholds,
             azure_blob_storage_settings,
             delta_optimizer_rule,
+            mqtt_settings,
         }
     }
 
@@ -4893,6 +4931,13 @@ impl DataStorage {
         bucket_py.get().construct_bucket(bucket_name.as_deref())
     }
 
+    fn mqtt_settings(&self) -> PyResult<MqttSettings> {
+        self.mqtt_settings
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("For MQTT, mqtt_settings must be specified"))
+            .cloned()
+    }
+
     fn downloader_threads_count(&self) -> PyResult<usize> {
         if let Some(count) = self.downloader_threads_count {
             Ok(count)
@@ -4983,7 +5028,7 @@ impl DataStorage {
         Ok(client_config)
     }
 
-    fn kafka_or_nats_topic(&self) -> PyResult<MessageQueueTopic> {
+    fn message_queue_topic(&self) -> PyResult<MessageQueueTopic> {
         if let Some(topic) = &self.topic {
             if self.topic_name_index.is_some() {
                 Err(PyValueError::new_err(
@@ -5001,12 +5046,12 @@ impl DataStorage {
         }
     }
 
-    fn kafka_or_nats_fixed_topic(&self) -> PyResult<String> {
-        let topic = self.kafka_or_nats_topic()?;
+    fn message_queue_fixed_topic(&self) -> PyResult<String> {
+        let topic = self.message_queue_topic()?;
         match topic {
             MessageQueueTopic::Fixed(t) => Ok(t),
             MessageQueueTopic::Dynamic(_) => Err(PyValueError::new_err(
-                "Dynamic topics aren't supported for Kafka and NATS readers",
+                "Dynamic topics aren't supported in the readers",
             )),
         }
     }
@@ -5178,7 +5223,7 @@ impl DataStorage {
             .create()
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
 
-        let topic = &self.kafka_or_nats_fixed_topic()?;
+        let topic = &self.message_queue_fixed_topic()?;
         consumer
             .subscribe(&[topic])
             .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
@@ -5305,7 +5350,7 @@ impl DataStorage {
         worker_index: usize,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
-        let topic: String = self.kafka_or_nats_fixed_topic()?.to_string();
+        let topic: String = self.message_queue_fixed_topic()?.to_string();
         let runtime = create_async_tokio_runtime()?;
         let subscriber = runtime.block_on(async {
             let consumer_queue = format!("pathway-reader-{connector_index}");
@@ -5377,6 +5422,40 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn construct_mqtt_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let uri = self.path()?;
+        let settings = self.mqtt_settings()?;
+        let topic: String = self.message_queue_fixed_topic()?.to_string();
+        let connection_options = MqttOptions::parse_url(uri)
+            .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        let (client, mut connection) =
+            MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
+        client.subscribe(topic, settings.qos).map_err(|e| {
+            PyIOError::new_err(format!(
+                "Failed to establish connection with MQTT broker: {e}"
+            ))
+        })?;
+
+        // Wait for the subscription acknowledgement from the broker
+        loop {
+            let maybe_event = connection
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("MQTT broker connection timeout: {e:?}"))
+                })?;
+            let event = maybe_event.map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "Failed to receive subscription confirmation from MQTT broker: {e:?}"
+                ))
+            })?;
+            if matches!(event, MqttEvent::Incoming(MqttPacket::SubAck(_))) {
+                break;
+            }
+        }
+
+        Ok((Box::new(MqttReader::new(connection)), 1))
+    }
+
     fn construct_reader(
         &self,
         py: pyo3::Python,
@@ -5397,6 +5476,7 @@ impl DataStorage {
             "deltalake" => self.construct_deltalake_reader(py, data_format, license),
             "nats" => self.construct_nats_reader(connector_index, worker_index),
             "iceberg" => self.construct_iceberg_reader(py, data_format, license),
+            "mqtt" => self.construct_mqtt_reader(),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -5461,7 +5541,7 @@ impl DataStorage {
             Err(_) => return Err(PyIOError::new_err("Producer creation failed")),
         };
 
-        let topic = self.kafka_or_nats_topic()?;
+        let topic = self.message_queue_topic()?;
         let writer = KafkaWriter::new(
             producer,
             topic,
@@ -5642,7 +5722,7 @@ impl DataStorage {
 
     fn construct_nats_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.path()?;
-        let topic = self.kafka_or_nats_topic()?;
+        let topic = self.message_queue_topic()?;
         let runtime = create_async_tokio_runtime()?;
         let client = runtime.block_on(async {
             let client = nats_connect(uri)
@@ -5664,6 +5744,17 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_mqtt_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let uri = self.path()?;
+        let topic = self.message_queue_topic()?;
+        let settings = self.mqtt_settings()?;
+        let connection_options = MqttOptions::parse_url(uri)
+            .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        let (client, eventloop) = MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
+        let writer = MqttWriter::new(client, eventloop, topic, settings.qos, settings.retain);
+        Ok(Box::new(writer))
+    }
+
     fn construct_writer(
         &self,
         py: pyo3::Python,
@@ -5679,6 +5770,7 @@ impl DataStorage {
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "iceberg" => self.construct_iceberg_writer(py, data_format),
+            "mqtt" => self.construct_mqtt_writer(),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
@@ -6278,6 +6370,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<TelemetryConfig>()?;
     m.add_class::<BackfillingThreshold>()?;
     m.add_class::<PyDeltaOptimizerRule>()?;
+    m.add_class::<MqttSettings>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

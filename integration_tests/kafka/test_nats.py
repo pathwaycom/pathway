@@ -12,6 +12,8 @@ from pathway.tests.utils import (
     wait_result_with_checker,
 )
 
+from .utils import check_keys_in_file
+
 NATS_SERVER_URI = "nats://nats:4222/"
 
 
@@ -132,20 +134,16 @@ def test_nats_dynamic_topics(tmp_path, output_format):
     )
     pw.io.jsonlines.write(stream_1, output_path_1)
     pw.io.jsonlines.write(stream_2, output_path_2)
-    wait_result_with_checker(FileLinesNumberChecker(output_path_1, 2), 30)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path_1, 2).add_path(output_path_2, 1), 30
+    )
 
-    def check_keys_in_file(path: pathlib.Path, expected_keys: set[str]):
-        keys = set()
-        with open(path, "r") as f:
-            for message in f:
-                message = json.loads(message)["data"]
-                if output_format == "json":
-                    value = json.loads(message)
-                    keys.add(value["k"])
-                    assert value.keys() == {"k", "v", "t", "time", "diff", "topic"}
-                else:
-                    keys.add(message)
-            assert keys == expected_keys
-
-    check_keys_in_file(output_path_1, {"0", "2"})
-    check_keys_in_file(output_path_2, {"1"})
+    check_keys_in_file(
+        output_path_1,
+        output_format,
+        {"0", "2"},
+        {"k", "v", "t", "time", "diff", "topic"},
+    )
+    check_keys_in_file(
+        output_path_2, output_format, {"1"}, {"k", "v", "t", "time", "diff", "topic"}
+    )

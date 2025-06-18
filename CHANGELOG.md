@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.mqtt.read` and `pw.io.mqtt.write` methods for reading from and writing to MQTT.
+
 ### Changed
 - `pw.xpacks.llm.embedders.SentenceTransformerEmbedder` and `pw.xpacks.llm.llms.HFPipelineChat` are now computed in batches. The maximum size of a single batch can be set in the constructor with the argument `max_batch_size`.
 - **BREAKING** Arguments `api_key` and `base_url` for `pw.xpacks.llm.llms.OpenAIChat` can no longer be set in the `__call__` method, and instead, if needed, should be set in the constructor.

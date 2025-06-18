@@ -65,6 +65,7 @@ pub enum OffsetValue {
         snapshot_id: IcebergSnapshotId,
     },
     NatsReadEntriesCount(usize),
+    MqttReadEntriesCount(usize),
     Empty,
 }
 
@@ -134,7 +135,9 @@ impl HashInto for OffsetValue {
                 version.hash_into(hasher);
                 rows_read_within_version.hash_into(hasher);
             }
-            OffsetValue::NatsReadEntriesCount(count) => count.hash_into(hasher),
+            OffsetValue::NatsReadEntriesCount(count) | OffsetValue::MqttReadEntriesCount(count) => {
+                count.hash_into(hasher);
+            }
             OffsetValue::IcebergSnapshot { snapshot_id } => {
                 snapshot_id.hash_into(hasher);
             }

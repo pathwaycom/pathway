@@ -799,6 +799,9 @@ class DeltaOptimizerRule:
         retention_period: datetime.timedelta,
     ): ...
 
+class MqttSettings:
+    def __init__(self, qos: int, retain: bool): ...
+
 class SqlWriterInitMode(Enum):
     DEFAULT: SqlWriterInitMode
     CREATE_IF_NOT_EXISTS: SqlWriterInitMode
@@ -839,6 +842,7 @@ class DataStorage:
         backfilling_thresholds: list[BackfillingThreshold] | None = None,
         azure_blob_storage_settings: AzureBlobStorageSettings | None = None,
         delta_optimizer_rule: DeltaOptimizerRule | None = None,
+        mqtt_settings: MqttSettings | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

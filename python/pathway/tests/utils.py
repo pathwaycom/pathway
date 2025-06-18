@@ -421,28 +421,38 @@ class CsvLinesNumberChecker:
 
 
 class FileLinesNumberChecker:
-    def __init__(self, path, n_lines):
-        self.path = path
-        self.n_lines = n_lines
+    def __init__(self, path: pathlib.Path, n_lines: int):
+        self.expected_states = [(path, n_lines)]
 
-    def __call__(self):
-        if not self.path.exists():
-            return False
-        n_lines_actual = 0
-        with open(self.path) as f:
-            for row in f:
-                n_lines_actual += 1
-        print(
-            f"Actual (expected) lines number: {n_lines_actual} ({self.n_lines})",
-            file=sys.stderr,
-        )
-        return n_lines_actual == self.n_lines
+    def add_path(self, path: pathlib.Path, n_lines: int) -> FileLinesNumberChecker:
+        self.expected_states.append((path, n_lines))
+        return self
 
-    def provide_information_on_failure(self):
-        if not self.path.exists():
-            return f"{self.path} does not exist"
-        with open(self.path) as f:
-            return f"Final output contents:\n{f.read()}"
+    def __call__(self) -> bool:
+        for path, n_lines in self.expected_states:
+            if not path.exists():
+                return False
+            n_lines_actual = 0
+            with open(path) as f:
+                for row in f:
+                    n_lines_actual += 1
+            print(
+                f"Actual (expected) lines number: {n_lines_actual} ({n_lines})",
+                file=sys.stderr,
+            )
+            if n_lines_actual != n_lines:
+                return False
+        return True
+
+    def provide_information_on_failure(self) -> str:
+        result = []
+        for path, _ in self.expected_states:
+            if path.exists():
+                with open(path) as f:
+                    result.append(f"Final output contents for {path}:\n{f.read()}")
+            else:
+                result.append(f"{path} does not exist")
+        return "\n".join(result)
 
 
 def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):

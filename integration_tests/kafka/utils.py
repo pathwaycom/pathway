@@ -1,5 +1,7 @@
 # Copyright © 2024 Pathway
 
+import json
+import pathlib
 from collections.abc import Iterable
 from uuid import uuid4
 
@@ -7,7 +9,8 @@ from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
 
-kafka_settings = {"bootstrap_servers": "kafka:9092"}
+KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
+MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
 
 
 class KafkaTestContext:
@@ -18,10 +21,10 @@ class KafkaTestContext:
 
     def __init__(self) -> None:
         self._producer = KafkaProducer(
-            bootstrap_servers=kafka_settings["bootstrap_servers"]
+            bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"]
         )
         self._admin = KafkaAdminClient(
-            bootstrap_servers=kafka_settings["bootstrap_servers"],
+            bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"],
         )
         self._input_topic = f"integration-tests-{uuid4()}"
         self._output_topic = f"integration-tests-{uuid4()}"
@@ -56,7 +59,7 @@ class KafkaTestContext:
         consumer = KafkaConsumer(
             topic,
             auto_offset_reset="earliest",
-            bootstrap_servers=kafka_settings["bootstrap_servers"],
+            bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"],
         )
         messages = []
         while True:
@@ -101,10 +104,47 @@ class KafkaTestContext:
 
     def default_rdkafka_settings(self) -> dict:
         return {
-            "bootstrap.servers": kafka_settings["bootstrap_servers"],
+            "bootstrap.servers": KAFKA_SETTINGS["bootstrap_servers"],
             "auto.offset.reset": "beginning",
             "group.id": str(uuid4()),
         }
 
     def __repr__(self) -> str:
         return f"<{type(self).__qualname__} input_topic={self.input_topic!r} output_topic={self.output_topic!r}>"
+
+
+class MqttTestContext:
+    topic: str
+    reader_connection_string: str
+    writer_connection_string: str
+
+    def __init__(self) -> None:
+        topic = str(uuid4())
+        self.topic = topic
+        reader_client_id = f"reader-{str(uuid4())}"
+        writer_client_id = f"writer-{str(uuid4())}"
+        self.reader_connection_string = MQTT_BASE_ROUTE.replace(
+            "$CLIENT_ID", reader_client_id
+        )
+        self.writer_connection_string = MQTT_BASE_ROUTE.replace(
+            "$CLIENT_ID", writer_client_id
+        )
+
+
+def check_keys_in_file(
+    path: pathlib.Path,
+    output_format: str,
+    expected_keys: set[str],
+    expected_columns: set[str],
+):
+    keys = set()
+    with open(path, "r") as f:
+        for message in f:
+            message = json.loads(message)["data"]
+            if output_format == "json":
+                value = json.loads(message)
+                keys.add(value["k"])
+                assert value.keys() == expected_columns
+            else:
+                keys.add(message)
+        assert keys == expected_keys

@@ -54,6 +54,78 @@ def _engine_s3_connection_settings(
 
 
 class TableOptimizer:
+    """
+    The table optimizer is used to optimize partitioned Delta tables created by the
+    output connector. This optimization is limited to tables that are partitioned by a
+    string column, where the values represent date and time in a specific format.
+
+    After a ``WRITE`` operation and once the specified interval has passed, the optimizer
+    runs `OPTIMIZE <https://delta.io/blog/delta-lake-optimize/>`_ and
+    `VACUUM <https://docs.delta.io/latest/delta-utility.html#id1>`_ operations.
+    If these operations fail, they will be retried during the next write. Keep in mind
+    that running ``OPTIMIZE`` and ``VACUUM`` may cause a delay in the output because they take
+    time to complete, but they do not slow down the overall computational pipeline.
+    This approach is necessary to prevent conflicts that could occur from simultaneous
+    writes to the Delta log.
+
+    When ``optimize_transaction_log`` is enabled, a background process will identify
+    and remove parts of the transaction log that no longer reference existing data files.
+    This helps reduce the number of Delta log files, which can grow quickly with
+    small batches or over long periods.
+
+    If ``remove_old_checkpoints`` is enabled, the background process will also make
+    sure that only the most recent checkpoint file is kept.
+
+    Please note that both ``optimize_transaction_log`` and ``remove_old_checkpoints``
+    are currently experimental features and work only when the backend uses a filesystem.
+
+    Args:
+        tracked_column: The partition column for the observed table.
+        time_format: A `strftime-like <https://strftime.org/>`_ format string
+            that defines how values in the tracked column are interpreted.
+        quick_access_window: All partition values older than this window
+            will be compressed using the ``OPTIMIZE`` Delta Lake operation, followed by
+            ``VACUUM``.
+        compression_frequency: Determines how often the compression process
+            is triggered. If a compression attempt fails, it will be retried immediately
+            without waiting.
+        retention_period: Retention period for the ``VACUUM`` operation.
+        optimize_transaction_log: If ``True``, Pathway will clean the Delta transaction
+            log by removing entries that reference Parquet files already deleted by
+            ``VACUUM``.
+        remove_old_checkpoints: If ``True``, Pathway will keep only the most recent
+            checkpoint file to reduce storage usage.
+
+    Example:
+
+    Suppose you are writing to a table that is partitioned by the column ``day_utc``,
+    where the values follow the ISO-8601 format: ``YYYY-MM-DD``. You want to compress
+    data older than 7 days and run this compression once per day.
+
+    In that case, the optimizer settings would be configured as follows:
+
+    >>> import pathway as pw
+    >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
+    ...     tracked_column=table.day_utc,
+    ...     time_forma2t="%Y-%m-%d",
+    ...     quick_access_window=datetime.timedelta(days=7),
+    ...     compression_frequency=datetime.timedelta(days=1),
+    ... )
+
+    This optimizer object needs to be passed to the ``pw.io.deltalake.write`` function.
+
+    Note: Background cleanup of old Delta log entries will not run automatically in
+    this setup. To enable it, you can turn it on explicitly:
+
+    >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
+    ...     tracked_column=table.day_utc,
+    ...     time_format="%Y-%m-%d",
+    ...     quick_access_window=datetime.timedelta(days=7),
+    ...     compression_frequency=datetime.timedelta(days=1),
+    ...     optimize_transaction_log=True,
+    ...     remove_old_checkpoints=True,
+    ... )
+    """
 
     def __init__(
         self,
@@ -65,76 +137,6 @@ class TableOptimizer:
         optimize_transaction_log: bool = False,
         remove_old_checkpoints: bool = False,
     ):
-        """
-        The table optimizer is used to optimize partitioned Delta tables created by the
-        output connector. This optimization is limited to tables that are partitioned by a
-        string column, where the values represent date and time in a specific format.
-
-        After a WRITE operation and once the specified interval has passed, the optimizer
-        runs [OPTIMIZE](https://delta.io/blog/delta-lake-optimize/) and
-        [VACUUM](https://docs.delta.io/latest/delta-utility.html#id1) operations.
-        If these operations fail, they will be retried during the next write. Keep in mind
-        that running OPTIMIZE and VACUUM may cause a delay in the output because they take
-        time to complete, but they do not slow down the overall computational pipeline.
-        This approach is necessary to prevent conflicts that could occur from simultaneous
-        writes to the Delta log.
-
-        When ``optimize_transaction_log`` is enabled, a background process will identify
-        and remove parts of the transaction log that no longer reference existing data files.
-        This helps reduce the number of Delta log files, which can grow quickly with
-        small batches or over long periods.
-
-        If ``remove_old_checkpoints`` is enabled, the background process will also make
-        sure that only the most recent checkpoint file is kept.
-
-        Please note that both ``optimize_transaction_log`` and ``remove_old_checkpoints``
-        are currently experimental features and work only when the backend uses a filesystem.
-
-        Args:
-            tracked_column: The partition column for the observed table.
-            time_format: A [strftime-like](https://strftime.org/) format string
-                that defines how values in the tracked column are interpreted.
-            quick_access_window: All partition values older than this window
-                will be compressed using the OPTIMIZE Delta Lake operation, followed by VACUUM.
-            compression_frequency: Determines how often the compression process
-                is triggered. If a compression attempt fails, it will be retried immediately
-                without waiting.
-            retention_period: Retention period for the VACUUM operation.
-            optimize_transaction_log: If ``True``, Pathway will clean the Delta transaction
-                log by removing entries that reference Parquet files already deleted by VACUUM.
-            remove_old_checkpoints: If ``True``, Pathway will keep only the most recent
-                checkpoint file to reduce storage usage.
-
-        Example:
-
-        Suppose you are writing to a table that is partitioned by the column ``day_utc``,
-        where the values follow the ISO-8601 format: ``YYYY-MM-DD``. You want to compress
-        data older than 7 days and run this compression once per day.
-
-        In that case, the optimizer settings would be configured as follows:
-
-        >>> import pathway as pw
-        >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
-        ...     tracked_column=table.day_utc,
-        ...     time_forma2t="%Y-%m-%d",
-        ...     quick_access_window=datetime.timedelta(days=7),
-        ...     compression_frequency=datetime.timedelta(days=1),
-        ... )
-
-        This optimizer object needs to be passed to the ``pw.io.deltalake.write`` function.
-
-        Note: Background cleanup of old Delta log entries will not run automatically in
-        this setup. To enable it, you can turn it on explicitly:
-
-        >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
-        ...     tracked_column=table.day_utc,
-        ...     time_format="%Y-%m-%d",
-        ...     quick_access_window=datetime.timedelta(days=7),
-        ...     compression_frequency=datetime.timedelta(days=1),
-        ...     optimize_transaction_log=True,
-        ...     remove_old_checkpoints=True,
-        ... )
-        """
         self.compression_frequency = compression_frequency
         self.engine_rule = api.DeltaOptimizerRule(
             field_name=tracked_column.name,
@@ -611,3 +613,11 @@ def write(
             ),
         )
     )
+
+
+# This is made to force TableOptimizer documentation
+__all__ = [
+    "TableOptimizer",
+    "read",
+    "write",
+]

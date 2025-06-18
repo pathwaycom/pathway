@@ -16,6 +16,7 @@ from pathway.io import (
     logstash,
     minio,
     mongodb,
+    mqtt,
     nats,
     null,
     plaintext,
@@ -66,4 +67,5 @@ __all__ = [
     "mongodb",
     "nats",
     "register_input_synchronization_group",
+    "mqtt",
 ]

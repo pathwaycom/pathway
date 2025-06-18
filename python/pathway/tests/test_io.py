@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
 import base64
+import copy
 import datetime
 import json
 import os
@@ -52,6 +53,26 @@ from pathway.third_party.airbyte_serverless.sources import (
     DockerAirbyteSource,
     VenvAirbyteSource,
 )
+
+MESSAGE_QUEUE_WRITE_KWARGS = {
+    "kafka": {
+        "topic_name": "test",
+        "rdkafka_settings": {},
+    },
+    "nats": {
+        "uri": "nats://nats:4222",
+        "topic": "test",
+    },
+    "mqtt": {
+        "uri": "mqtt://mqtt:1883",
+        "topic": "test",
+    },
+}
+MESSAGE_QUEUE_WRITE_METHOD = {
+    "kafka": pw.io.kafka.write,
+    "nats": pw.io.nats.write,
+    "mqtt": pw.io.mqtt.write,
+}
 
 
 def start_streaming_inputs(inputs_path, n_files, stream_interval, data_format):
@@ -3103,45 +3124,50 @@ def test_raw_kafka_raises_no_value_specified_for_key():
         )
 
 
-def test_raw_kafka_raises_no_column_selected():
+@pytest.mark.parametrize("message_queue", ["kafka", "nats", "mqtt"])
+def test_raw_mq_write_raises_no_column_selected(message_queue):
     table = pw.Table.empty(data=bytes, _metadata=dict)
+    write = MESSAGE_QUEUE_WRITE_METHOD[message_queue]
+    write_kwargs = MESSAGE_QUEUE_WRITE_KWARGS[message_queue]
     with pytest.raises(
         ValueError,
         match="'raw' format without explicit 'value' specification can only be used with single-column tables",
     ):
-        pw.io.kafka.write(
+        write(
             table,
-            topic_name="test",
-            rdkafka_settings={},
             format="raw",
+            **write_kwargs,
         )
 
 
-def test_raw_kafka_raises_wrong_type():
+@pytest.mark.parametrize("message_queue", ["kafka", "nats", "mqtt"])
+def test_raw_mq_raises_wrong_type(message_queue):
     table = pw.Table.empty(data=bytes, _metadata=dict)
-    with pytest.raises(
-        ValueError,
-        match="The key column should be of the type 'BYTES'",
-    ):
-        pw.io.kafka.write(
-            table,
-            topic_name="test",
-            rdkafka_settings={},
-            format="raw",
-            key=table._metadata,
-            value=table.data,
-        )
+    write = MESSAGE_QUEUE_WRITE_METHOD[message_queue]
+    write_kwargs = MESSAGE_QUEUE_WRITE_KWARGS[message_queue]
+    if message_queue == "kafka":
+        # No key in MQTT and NATS
+        with pytest.raises(
+            ValueError,
+            match="The key column should be of the type 'BYTES'",
+        ):
+            write(
+                table,
+                format="raw",
+                key=table._metadata,
+                value=table.data,
+                **write_kwargs,
+            )
 
     with pytest.raises(
         ValueError,
         match="The value column should be of the type 'BYTES'",
     ):
-        pw.io.kafka.write(
+        write(
             table,
-            topic_name="test",
-            rdkafka_settings={},
             format="raw",
             value=table._metadata,
+            **write_kwargs,
         )
 
 
@@ -3914,24 +3940,26 @@ def test_deltalake_start_from_timestamp(tmp_path: pathlib.Path):
     check_entries_count(start_time_9, 9)
 
 
-def test_message_queue_topic_name_error(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("message_queue", ["kafka", "nats", "mqtt"])
+def test_message_queue_topic_name_error(message_queue, tmp_path: pathlib.Path):
     input_path = tmp_path / "input.jsonl"
+    write = MESSAGE_QUEUE_WRITE_METHOD[message_queue]
+    write_kwargs = copy.deepcopy(MESSAGE_QUEUE_WRITE_KWARGS[message_queue])
 
     class InputSchema(pw.Schema):
         k: int = pw.column_definition(primary_key=True)
         v: str
 
     table = pw.io.jsonlines.read(input_path, schema=InputSchema)
+    if "topic" in write_kwargs:
+        write_kwargs["topic"] = table.k
+    if "topic_name" in write_kwargs:
+        write_kwargs["topic_name"] = table.k
     with pytest.raises(
         ValueError,
         match="The topic name column must have a string type, however <class 'int'> is used",
     ):
-        pw.io.nats.write(table, "nats://nats:4448", topic=table.k, format="json")
-    with pytest.raises(
-        ValueError,
-        match="The topic name column must have a string type, however <class 'int'> is used",
-    ):
-        pw.io.kafka.write(table, {}, topic_name=table.k, format="json")
+        write(table, format="json", **write_kwargs)
 
 
 def test_output_column_sorting_by_references(tmp_path: pathlib.Path):

@@ -75,6 +75,7 @@ rayon = "1.10.0"
 rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
 regex = "1.11.1"
 reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+rumqttc = { version = "0.24.0", features = ["url", "use-native-tls"] }
 rusqlite = { version = "0.35.0", features = ["bundled"] }
 rust-s3 = { version = "0.34.0", features = ["sync-native-tls-vendored", "sync-native-tls", "fail-on-err"], default-features = false }
 scopeguard = "1.2.0"

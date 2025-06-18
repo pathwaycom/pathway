@@ -1,5 +1,3 @@
-# Copyright © 2024 Pathway
-
 from __future__ import annotations
 
 from typing import Iterable
@@ -25,16 +23,16 @@ def read(
     uri: str,
     topic: str,
     *,
+    qos: int = 2,
     schema: type[Schema] | None = None,
     format: str = "raw",
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
-    parallel_readers: int | None = None,
     name: str | None = None,
     debug_data=None,
     **kwargs,
 ) -> Table:
-    """Reads data from a specified NATS topic.
+    """Reads data from a specified MQTT topic.
 
     It supports three formats: ``"plaintext"``, ``"raw"``, and ``"json"``.
 
@@ -48,8 +46,12 @@ def read(
     column values come from the corresponding JSON fields.
 
     Args:
-        uri: The URI of the NATS server.
-        topic: The name of the NATS topic to read data from.
+        uri: The connection string for the MQTT broker.
+        topic: The name of the MQTT topic to read data from.
+        qos: The \
+`QoS (Quality of Service) value <https://www.hivemq.com/blog/mqtt-essentials-part-6-mqtt-quality-of-service-levels/>`_
+            value for the connection. Note that the final QoS is determined by
+            the broker as the lower of the writer's and reader's QoS levels.
         schema: The table schema, used only when the format is set to ``"json"``.
         format: The input data format, which can be ``"raw"``, ``"plaintext"``, or
             ``"json"``.
@@ -60,10 +62,6 @@ def read(
             paths within the JSON structure. Use the format ``<field_name>: <path>``
             where the path follows the
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
-        parallel_readers: The number of reader instances running in parallel. If not
-            specified, it defaults to ``min(pathway_threads, total_partitions)``. It
-            can't exceed the number of Pathway engine threads and will be reduced if
-            necessary.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -74,23 +72,31 @@ def read(
 
     Example:
 
-    To run local tests, you can download the ``nats-server`` binary from the
-    `Releases page <https://github.com/nats-io/nats-server/releases>`_ and start it. By
-    default, it runs on port ``4222`` at ``localhost``.
+    To run local tests, you can either install an MQTT broker like `Mosquitto <https://mosquitto.org/>`_
+    on your machine or use a `Docker image <https://hub.docker.com/_/eclipse-mosquitto>`_
+    with the communication port exposed. By default, port ``1883`` is commonly used.
 
-    If your NATS server is running on ``localhost`` using the default port, you can
-    stream the ``"data"`` topic to a Pathway table like this:
+    If your MQTT broker is running on ``localhost`` using the default port, you can
+    stream the ``"test/data"`` topic to a Pathway table like this:
 
     >>> import pathway as pw
-    >>> table = pw.io.nats.read("nats://127.0.0.1:4222", "data")
+    >>> table = pw.io.mqtt.read("mqtt://localhost:1883/?client_id=test", "test/data")
 
-    Keep in mind that NATS doesn't normally store messages. So, make sure to start your
-    Pathway program before sending any messages.
+    Keep in mind that MQTT does not guarantee message storage. In other words, you cannot
+    assume that a message present in the queue will remain there. MQTT also lacks any
+    concept of message offsets within a topic. As a result, when Pathway persistence is enabled,
+    it saves the message stream without making assumptions about the topic's state at the time of a
+    restart. Therefore, we recommend designing your data flow to tolerate at-least-once or
+    at-most-once delivery semantics depending on the configuration.
 
     You can also parse messages as UTF-8 during reading by using the ``"format"`` parameter.
     Here's how the reading process would look:
 
-    >>> table = pw.io.nats.read("nats://127.0.0.1:4222", "data", format="plaintext")
+    >>> table = pw.io.mqtt.read(
+    ...     "mqtt://localhost:1883/?client_id=test",
+    ...     "test/data",
+    ...     format="plaintext"
+    ... )
 
     Alternatively, you can read and parse a JSON table during the reading process by
     using the ``"json"`` format and the ``schema`` parameter.
@@ -106,8 +112,8 @@ def read(
 
     Now, you can use the ``format`` and ``schema`` parameters of the connector like this:
 
-    >>> table = pw.io.nats.read(
-    ...     "nats://127.0.0.1:4222",
+    >>> table = pw.io.mqtt.read(
+    ...     "mqtt://localhost:1883/?client_id=test",
     ...     "data",
     ...     format="json",
     ...     schema=InputSchema,
@@ -118,11 +124,14 @@ def read(
     """
 
     data_storage = api.DataStorage(
-        storage_type="nats",
+        storage_type="mqtt",
         path=uri,
         topic=topic,
-        parallel_readers=parallel_readers,
         mode=api.ConnectorMode.STREAMING,
+        mqtt_settings=api.MqttSettings(
+            qos=qos,
+            retain=False,  # unused by reader
+        ),
     )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
@@ -140,7 +149,7 @@ def read(
             dataformat=data_format,
             data_source_options=data_source_options,
             schema=schema,
-            datasource_name="nats",
+            datasource_name="mqtt",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -154,39 +163,45 @@ def write(
     uri: str,
     topic: str | ColumnReference,
     *,
+    qos: int = 2,
+    retain: bool = False,
     format: str = "json",
     delimiter: str = ",",
     value: ColumnReference | None = None,
-    headers: Iterable[ColumnReference] | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
-    """Writes data into the specified NATS topic.
-
-    The produced messages consist of the payload, corresponding to the values of the table
-    that are serialized according to the chosen format and two headers: ``pathway_time``,
-    corresponding to the processing time of the entry and ``pathway_diff`` that is either ``1``
-    or ``-1``. Both header values are provided as UTF-8 encoded strings. If ``headers``
-    parameter is used, additional headers can be added to the message.
+    """Writes data into the specified MQTT topic.
 
     There are several serialization formats supported: ``"json"``, ``"dsv"``, ``"plaintext"``
     and ``"raw"``. The format defines how the message is formed. In case of JSON and DSV
     (delimiter separated values), the message is formed in accordance with the respective data format.
 
+    The produced messages consist of the payload, corresponding to the values of the table
+    that are serialized according to the chosen format. Please note that the ``time`` and
+    ``diff`` values aren't reported if ``"plaintext"`` or ``"binary"`` formats are used.
+
     If the selected format is either ``"plaintext"`` or ``"raw"``, you also need to specify,
-    which column of the table correspond to the payload of the produced NATS message. It can be
-    done by providing ``value`` parameter. In order to output extra values from the table in
-    these formats, NATS headers can be used. You can specify the column references in the
-    ``headers`` parameter, which leads to serializing the extracted fields into UTF-8
-    strings and passing them as additional message headers.
+    which column of the table correspond to the payload of the produced MQTT message. It can be
+    done by providing ``value`` parameter. It can also be deduced automatically if the table
+    consists of a single column.
+
+    Please note that MQTT v5-specific features, such as user-defined message headers,
+    are not yet supported but will be added soon. In the meantime, the connector is
+    compatible with both older MQTT versions and v5.
 
     Args:
         table: The table for output.
-        uri: The URI of the NATS server.
-        topic: The NATS topic where data will be written. This can be a specific topic name
+        uri: The URI of the MQTT broker.
+        topic: The MQTT topic where data will be written. This can be a specific topic name
             or a reference to a column whose values will be used as the topic for each message.
             If using a column reference, the column must contain string values.
-        format: format in which the data is put into NATS. Currently ``"json"``,
+        qos: The \
+`QoS (Quality of Service) value <https://www.hivemq.com/blog/mqtt-essentials-part-6-mqtt-quality-of-service-levels/>`_
+            value for the connection. Note that the final QoS is determined by
+            the broker as the lower of the writer's and reader's QoS levels.
+        retain: If set to ``True``, the MQTT broker will retain the last message published to the topic.
+        format: format in which the data is put into MQTT. Currently ``"json"``,
             ``"plaintext"``, ``"raw"`` and ``"dsv"`` are supported. If the ``"raw"`` format is selected,
             ``table`` must either contain exactly one binary column that will be dumped as it is
             into the message, or the reference to the target binary column must be specified explicitly
@@ -195,12 +210,8 @@ def write(
         delimiter: field delimiter to be used in case of delimiter-separated values format.
         value: reference to the column that should be used as a payload in
             the produced message in ``"plaintext"`` or ``"raw"`` format. It can be deduced
-            automatically if the table has exactly one column. Otherwise it must be specified directly.
-        headers: references to the table fields that must be provided as message
-            headers. These headers are named in the same way as fields that are forwarded and correspond
-            to the string representations of the respective values encoded in UTF-8. Note that
-            due to NATS constraints imposed on headers, the binary fields must also be UTF-8
-            serializable.
+            automatically if the table has exactly one column. Otherwise it must be specified
+            directly.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on the
@@ -209,8 +220,8 @@ def write(
 
     Example:
 
-    Assume you have the NATS server running locally on the default port, ``4222``. Let's
-    explore a few ways to send the contents of a table to the topic ``test_topic`` on this server.
+    Assume you have the MQTT server running locally on the default port, ``1883``. Let's
+    explore a few ways to send the contents of a table to the topic ``test/topic`` on this server.
 
     First, you'll need to create a Pathway table. You can do this using the ``table_from_markdown``
     method to set up a test table with information about pets and their owners.
@@ -226,10 +237,10 @@ def write(
 
     To output the table's contents in JSON format, use the connector like this:
 
-    >>> pw.io.nats.write(
+    >>> pw.io.mqtt.write(
     ...     table,
-    ...     "nats://127.0.0.1:4222",
-    ...     "test_topic",
+    ...     "mqtt://localhost:1883/?client_id=test",
+    ...     topic="test/topic",
     ...     format="json",
     ... )
 
@@ -237,28 +248,24 @@ def write(
     and ``diff`` fields added to each JSON payload.
 
     You can also use a single column from the table as the payload. For instance, to use
-    the ``owner`` column as the NATS message payload, implement it as follows:
+    the ``owner`` column as the MQTT message payload, implement it as follows:
 
-    >>> pw.io.nats.write(
+    >>> pw.io.mqtt.write(
     ...     table,
-    ...     "nats://127.0.0.1:4222",
-    ...     "test_topic",
+    ...     "mqtt://localhost:1883/?client_id=test",
+    ...     topic="test/topic",
     ...     format="plaintext",
     ...     value=table.owner,
     ... )
 
-    If needed, you can also send the remaining fields as headers. To do this, modify the
-    code to use the ``headers`` field, which should include all the required fields.
-    Since ``owner`` is already being sent as the message payload, you can add the
-    ``age`` and ``pet`` columns to the headers. Here's what the code would look like:
+    Finally, if you'd like the topic to be dynamic and depend on the the owner of the pet,
+    you can specify this column definition as the topic:
 
-    >>> pw.io.nats.write(
+    >>> pw.io.mqtt.write(
     ...     table,
-    ...     "nats://127.0.0.1:4222",
-    ...     "test_topic",
-    ...     format="plaintext",
-    ...     value=table.owner,
-    ...     headers=[table.age, table.pet],
+    ...     "mqtt://localhost:1883/?client_id=test",
+    ...     topic=table.owner,
+    ...     format="json",
     ... )
     """
     output_format = MessageQueueOutputFormat.construct(
@@ -266,24 +273,24 @@ def write(
         format=format,
         delimiter=delimiter,
         value=value,
-        headers=headers,
         topic_name=topic if isinstance(topic, ColumnReference) else None,
     )
     table = output_format.table
 
     data_storage = api.DataStorage(
-        storage_type="nats",
+        storage_type="mqtt",
         path=uri,
         topic=topic if isinstance(topic, str) else None,
         topic_name_index=output_format.topic_name_index,
         header_fields=list(output_format.header_fields.items()),
+        mqtt_settings=api.MqttSettings(qos=qos, retain=retain),
     )
 
     table.to(
         datasink.GenericDataSink(
             data_storage,
             output_format.data_format,
-            datasink_name="nats",
+            datasink_name="mqtt",
             unique_name=name,
             sort_by=sort_by,
         )
