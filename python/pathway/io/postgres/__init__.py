@@ -13,7 +13,7 @@ from pathway.internals.trace import trace_user_frame
 
 
 def _connection_string_from_settings(settings: dict):
-    return " ".join(k + "=" + v for (k, v) in settings.items())
+    return " ".join(k + "=" + str(v) for (k, v) in settings.items())
 
 
 def _init_mode_from_str(init_mode: str) -> api.SqlWriterInitMode:
@@ -47,7 +47,11 @@ def write(
 
     Args:
         table: Table to be written.
-        postgres_settings: Components for the connection string for Postgres.
+        postgres_settings: Components for the connection string for Postgres. The string is
+            formed by joining key-value pairs from the given dictionary with spaces,
+            with each pair formatted as `key=value`. Keys must be strings. Values can be
+            of any type; if a value is not a string, it will be converted using Python's
+            `str()` function.
         table_name: Name of the target table.
         max_batch_size: Maximum number of entries allowed to be committed within a
             single transaction.

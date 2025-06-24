@@ -5004,3 +5004,26 @@ def test_delta_optimizer_rule(tmp_path, optimize_transaction_log):
         ]
 
     assert operations_history == expected_operations_history
+
+
+def test_psql_output_connector_casts():
+    class DfSchema(pw.Schema):
+        a: float
+
+    table = pw.debug.table_from_markdown(
+        """
+        a
+        0.0
+        """,
+        schema=DfSchema,
+    )
+
+    # We check that it won't raise
+    pw.io.postgres.write(
+        table,
+        postgres_settings={
+            "host": "localhost",
+            "port": 5423,
+        },
+        table_name="output_table",
+    )

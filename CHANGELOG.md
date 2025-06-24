@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.xpacks.llm.embedders.SentenceTransformerEmbedder` and `pw.xpacks.llm.llms.HFPipelineChat` are now computed in batches. The maximum size of a single batch can be set in the constructor with the argument `max_batch_size`.
 - **BREAKING** Arguments `api_key` and `base_url` for `pw.xpacks.llm.llms.OpenAIChat` can no longer be set in the `__call__` method, and instead, if needed, should be set in the constructor.
 - **BREAKING** Argument `api_key` for `pw.xpacks.llm.llms.OpenAIEmbedder` can no longer be set in the `__call__` method, and instead, if needed, should be set in the constructor.
+- `pw.io.postgres.write` now accepts arbitrary types for the values of the `postgres_settings` dict. If a value is not a string, Python's `str()` method will be used.
 
 ## [0.23.0] - 2025-06-12
 
