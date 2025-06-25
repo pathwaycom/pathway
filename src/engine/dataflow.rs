@@ -8,6 +8,7 @@ mod complex_columns;
 pub mod config;
 mod export;
 pub mod maybe_total;
+pub mod monitoring;
 pub mod operators;
 pub mod persist;
 pub mod shard;
@@ -16,16 +17,18 @@ mod variable;
 use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
-use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
+use crate::connectors::monitoring::{ConnectorMonitor, OutputConnectorStats};
 use crate::connectors::synchronization::{
     ConnectorGroupDescriptor, ConnectorSynchronizer, SharedConnectorSynchronizer,
 };
 use crate::connectors::{Connector, PersistenceMode, SessionType, SnapshotAccess};
+use crate::engine::dataflow::monitoring::{OperatorProbe, Prober, ProberStats};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
     Epsilon, TimeColumnForget, TimeColumnFreeze,
 };
+use crate::engine::dataflow::operators::ExtendedProbeWith;
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
 use crate::persistence::config::PersistenceManagerOuterConfig;
@@ -72,7 +75,7 @@ use id_arena::Arena;
 use itertools::{chain, process_results, Itertools};
 use log::{error, info};
 use ndarray::ArrayD;
-use once_cell::unsync::{Lazy, OnceCell};
+use once_cell::unsync::OnceCell;
 use persist::{
     effective_persistent_id, EmptyPersistenceWrapper, OldOrNew, PersistableCollection,
     PersistedStatefulReduce, PersistenceWrapper, TimestampBasedPersistenceWrapper,
@@ -124,8 +127,8 @@ use super::telemetry::maybe_run_telemetry_thread;
 use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
     Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinData, JoinType, Key,
-    LegacyTable, OperatorStats, OriginalOrRetraction, ProberStats, Reducer, ReducerData, Result,
-    ShardPolicy, TableHandle, TableProperties, Timestamp, UniverseHandle, Value,
+    LegacyTable, OriginalOrRetraction, Reducer, ReducerData, Result, ShardPolicy, TableHandle,
+    TableProperties, Timestamp, UniverseHandle, Value,
 };
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
@@ -678,134 +681,6 @@ impl LogError for ErrorLogger {
     }
 }
 
-struct Prober {
-    input_time: Option<Timestamp>,
-    input_time_changed: Option<SystemTime>,
-    output_time: Option<Timestamp>,
-    output_time_changed: Option<SystemTime>,
-    intermediate_probes_required: bool,
-    run_callback_every_time: bool,
-    stats: HashMap<usize, OperatorStats>,
-    callback: Box<dyn FnMut(ProberStats)>,
-}
-
-impl Prober {
-    fn new(
-        callback: Box<dyn FnMut(ProberStats)>,
-        intermediate_probes_required: bool,
-        run_callback_every_time: bool,
-    ) -> Self {
-        Self {
-            input_time: None,
-            input_time_changed: None,
-            output_time: None,
-            output_time_changed: None,
-            intermediate_probes_required,
-            run_callback_every_time,
-            stats: HashMap::new(),
-            callback,
-        }
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    fn create_stats(
-        probe: &ProbeHandle<Timestamp>,
-        input_time: Option<Timestamp>,
-    ) -> OperatorStats {
-        let frontier = probe.with_frontier(|frontier| frontier.as_option().copied());
-        if let Some(timestamp) = frontier {
-            OperatorStats {
-                time: if timestamp.0 > 0 {
-                    Some(timestamp)
-                } else {
-                    None
-                },
-                lag: input_time.map(|input_time_unwrapped| {
-                    if input_time_unwrapped >= timestamp {
-                        input_time_unwrapped.0 - timestamp.0
-                    } else {
-                        0
-                    }
-                }),
-                done: false,
-            }
-        } else {
-            OperatorStats {
-                time: None,
-                lag: None,
-                done: true,
-            }
-        }
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    fn update(
-        &mut self,
-        input_probe: &ProbeHandle<Timestamp>,
-        output_probe: &ProbeHandle<Timestamp>,
-        intermediate_probes: &HashMap<usize, ProbeHandle<Timestamp>>,
-        connector_monitors: &[Rc<RefCell<ConnectorMonitor>>],
-    ) {
-        let now = Lazy::new(SystemTime::now);
-
-        let mut changed = false;
-
-        let new_input_time = input_probe.with_frontier(|frontier| frontier.as_option().copied());
-        if new_input_time != self.input_time {
-            self.input_time = new_input_time;
-            self.input_time_changed = Some(*now);
-            changed = true;
-        }
-
-        let new_output_time = output_probe.with_frontier(|frontier| frontier.as_option().copied());
-        if new_output_time != self.output_time {
-            self.output_time = new_output_time;
-            self.output_time_changed = Some(*now);
-            changed = true;
-        }
-
-        if self.intermediate_probes_required {
-            for (id, probe) in intermediate_probes {
-                let new_time = probe.with_frontier(|frontier| frontier.as_option().copied());
-                let stat = self.stats.get(id);
-                if let Some(stat) = stat {
-                    if new_time != stat.time {
-                        changed = true;
-                    }
-                } else {
-                    changed = true;
-                }
-            }
-        }
-
-        let connector_stats: Vec<(String, ConnectorStats)> = connector_monitors
-            .iter()
-            .map(|connector_monitor| {
-                let monitor = (**connector_monitor).borrow();
-                (monitor.get_name(), monitor.get_stats())
-            })
-            .collect();
-
-        if changed || self.run_callback_every_time {
-            if self.intermediate_probes_required {
-                for (id, probe) in intermediate_probes {
-                    self.stats
-                        .insert(*id, Self::create_stats(probe, self.input_time));
-                }
-            }
-
-            let prober_stats = ProberStats {
-                input_stats: Self::create_stats(input_probe, self.input_time),
-                output_stats: Self::create_stats(output_probe, self.input_time),
-                operators_stats: self.stats.clone(),
-                connector_stats,
-            };
-
-            (self.callback)(prober_stats);
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
 struct SortingCell {
     instance: Value,
@@ -841,7 +716,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     input_probe: ProbeHandle<S::Timestamp>,
     output_probe: ProbeHandle<S::Timestamp>,
     probers: Vec<Prober>,
-    probes: HashMap<usize, ProbeHandle<S::Timestamp>>,
+    probes: HashMap<usize, OperatorProbe<S::Timestamp>>,
     ignore_asserts: bool,
     persistence_wrapper: Box<dyn PersistenceWrapper<S>>,
     config: Arc<Config>,
@@ -3179,7 +3054,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
         table
             .values()
-            .probe_with(self.probes.entry(operator_id).or_default());
+            .extended_probe_with(self.probes.entry(operator_id).or_default());
         Ok(())
     }
 

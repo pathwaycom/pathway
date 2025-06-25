@@ -2,10 +2,9 @@
 
 use std::any::Any;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use id_arena::ArenaBehavior;
@@ -18,8 +17,8 @@ use scopeguard::defer;
 
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
-use crate::connectors::monitoring::ConnectorStats;
 use crate::connectors::synchronization::ConnectorGroupDescriptor;
+use crate::engine::dataflow::monitoring::ProberStats;
 use crate::external_integration::ExternalIndex;
 use crate::persistence::UniqueName;
 use crate::python_api::extract_value;
@@ -499,50 +498,6 @@ impl IxKeyPolicy {
             (true, true) => Ok(Self::ForwardNone),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[pyclass]
-pub struct OperatorStats {
-    #[pyo3(get, set)]
-    pub time: Option<Timestamp>,
-    #[pyo3(get, set)]
-    pub lag: Option<u64>,
-    #[pyo3(get, set)]
-    pub done: bool,
-}
-
-impl OperatorStats {
-    pub fn latency(&self, now: SystemTime) -> Option<u64> {
-        if let Some(time) = self.time {
-            let duration = u64::try_from(
-                now.duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis(),
-            )
-            .unwrap();
-            if duration < time.0 {
-                Some(0)
-            } else {
-                Some(duration - time.0)
-            }
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-#[pyclass]
-pub struct ProberStats {
-    #[pyo3(get, set)]
-    pub input_stats: OperatorStats,
-    #[pyo3(get, set)]
-    pub output_stats: OperatorStats,
-    #[pyo3(get, set)]
-    pub operators_stats: HashMap<usize, OperatorStats>,
-    #[pyo3(get, set)]
-    pub connector_stats: Vec<(String, ConnectorStats)>,
 }
 
 pub type OnDataFn = Box<dyn FnMut(Key, &[Value], Timestamp, isize) -> DynResult<()>>;

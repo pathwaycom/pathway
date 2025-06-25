@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime};
 use arc_swap::ArcSwapOption;
 use pyo3::{PyObject, Python};
 
+use crate::engine::dataflow::monitoring::ProberStats;
 use crate::python_api::threads::PythonThreadState;
 
-use super::{Graph, ProberStats};
+use super::Graph;
 
 const PROGRESS_REPORTING_PERIOD: Duration = Duration::from_millis(200);
 

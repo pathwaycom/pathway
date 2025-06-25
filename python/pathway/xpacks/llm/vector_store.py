@@ -10,7 +10,7 @@ The client queries the server and returns matching documents.
 """
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, cast
 from warnings import warn
 
@@ -251,7 +251,7 @@ class VectorStoreServer(DocumentStore):
         def node_transformer(x: str) -> list[BaseNode]:
             return [TextNode(text=x)]
 
-        def node_to_pathway(x: list[BaseNode]) -> list[tuple[str, dict]]:
+        def node_to_pathway(x: Sequence[BaseNode]) -> list[tuple[str, dict]]:
             return [
                 (node.get_content(metadata_mode=MetadataMode.NONE), node.extra_info)
                 for node in x

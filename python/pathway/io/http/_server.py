@@ -406,7 +406,7 @@ class PathwayWebserver:
             session_id = "uuid-" + str(uuid4())
             logging_context = _LoggingContext(request, session_id)
             try:
-                headers = request.headers.copy()  # type:ignore
+                headers = request.headers.copy()
                 headers["X-Pathway-Session"] = session_id
                 request = request.clone(headers=headers)
                 response = await handler_method(request)

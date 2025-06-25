@@ -5,8 +5,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::{error::DynError, license::License, Graph, ProberStats, Result};
-use crate::env::parse_env_var;
+use super::{error::DynError, license::License, Graph, Result};
+use crate::{engine::dataflow::monitoring::ProberStats, env::parse_env_var};
 use arc_swap::ArcSwapOption;
 use itertools::Itertools;
 use log::{debug, info};

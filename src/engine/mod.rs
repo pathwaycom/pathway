@@ -20,8 +20,7 @@ pub use graph::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Computer,
     ConcatHandle, Context, DataRow, ErrorLogHandle, ExportedTable, ExportedTableCallback,
     ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle, JoinData, JoinType,
-    LegacyTable, OperatorStats, ProberStats, ReducerData, ScopedGraph, TableHandle,
-    TableProperties, UniverseHandle,
+    LegacyTable, ReducerData, ScopedGraph, TableHandle, TableProperties, UniverseHandle,
 };
 
 pub mod http_server;

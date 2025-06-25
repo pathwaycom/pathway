@@ -29,6 +29,7 @@ use crate::engine::BatchWrapper;
 use self::output::ConsolidateForOutput;
 
 use super::maybe_total::{MaybeTotalScope, MaybeTotalSwitch};
+use super::monitoring::OperatorProbe;
 use super::shard::Shard;
 use super::ArrangedBySelf;
 
@@ -484,5 +485,36 @@ where
 
     fn reshard_to_first_worker(&self) -> Collection<S, D, R> {
         self.inner.exchange(|_| 0).as_collection()
+    }
+}
+
+pub trait ExtendedProbeWith<S, D>
+where
+    S: MaybeTotalScope,
+    D: ExchangeData,
+{
+    fn extended_probe_with(
+        &self,
+        probe: &mut OperatorProbe<S::MaybeTotalTimestamp>,
+    ) -> Collection<S, D, isize>;
+}
+
+impl<S, D> ExtendedProbeWith<S, D> for Collection<S, D, isize>
+where
+    S: MaybeTotalScope,
+    D: ExchangeData,
+{
+    fn extended_probe_with(
+        &self,
+        probe: &mut OperatorProbe<S::MaybeTotalTimestamp>,
+    ) -> Collection<S, D, isize> {
+        let counter = probe.counter.clone();
+        self.probe_with(&mut probe.frontier)
+            .inspect_batch(move |_time, data| {
+                let mut counter = counter.borrow_mut();
+                for (_, _, diff) in data {
+                    counter.update(*diff);
+                }
+            })
     }
 }

@@ -8,7 +8,7 @@ multiple methods for querying.
 """
 import json
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Iterable
 
@@ -172,7 +172,7 @@ class DocumentStore:
         def node_transformer(x: str) -> list[BaseNode]:
             return [TextNode(text=x)]
 
-        def node_to_pathway(x: list[BaseNode]) -> list[tuple[str, dict]]:
+        def node_to_pathway(x: Sequence[BaseNode]) -> list[tuple[str, dict]]:
             return [
                 (node.get_content(metadata_mode=MetadataMode.NONE), node.extra_info)
                 for node in x

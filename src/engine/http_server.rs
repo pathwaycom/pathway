@@ -14,9 +14,10 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
 use tokio::sync::oneshot::Sender;
 
+use crate::engine::dataflow::monitoring::ProberStats;
+
 use super::Error;
 use super::Graph;
-use super::ProberStats;
 
 const DEFAULT_MONITORING_HTTP_PORT: u16 = 20000;
 
@@ -64,6 +65,46 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
             "A latency of output in milliseconds (-1 when finished)",
             output_latency_ms,
         );
+
+        stats_owned
+            .row_counts
+            .iter()
+            .for_each(|(operator_id, count_stats)| {
+                let gauge_positive: Gauge = Gauge::default();
+                gauge_positive.set(count_stats.get_insertions() as i64);
+                registry.register(
+                    format!("{operator_id}_rows_positive").as_str(),
+                    format!("Number of positive updates in operator {operator_id}").as_str(),
+                    gauge_positive,
+                );
+                let gauge_negative: Gauge = Gauge::default();
+                gauge_negative.set(count_stats.get_deletions() as i64);
+                registry.register(
+                    format!("{operator_id}_rows_negative").as_str(),
+                    format!("Number of negative updates in operator {operator_id}").as_str(),
+                    gauge_negative,
+                );
+            });
+
+        // iterate over all stats_owned.operators_stats and register a gauge for each operator
+        for (operator_name, operator_stats) in &stats_owned.operators_stats {
+            let gauge: Gauge = Gauge::default();
+            gauge.set(if let Some(latency) = operator_stats.latency(now) {
+                if let Ok(latency_converted) = i64::try_from(latency) {
+                    latency_converted
+                } else {
+                    i64::MAX
+                }
+            } else {
+                -1
+            });
+            registry.register(
+                format!("{operator_name}_latency_ms").as_str(),
+                format!("A latency of operator {operator_name} in milliseconds (-1 when finished)")
+                    .as_str(),
+                gauge,
+            );
+        }
 
         encode(&mut metrics_text, &registry).unwrap();
     }
@@ -203,7 +244,7 @@ pub fn maybe_run_http_server_thread(
         graph
             .attach_prober(
                 Box::new(move |prober_stats| stats_shared.store(Some(Arc::new(prober_stats)))),
-                false,
+                true,
                 false,
             )
             .expect("Failed to start http monitoring server");

@@ -70,18 +70,26 @@ class MonitoringOutput:
         return None
 
     def log_line(
-        self, table: Table, node_name: str, stats: Any, skip_lag: bool = False
+        self,
+        table: Table,
+        node_name: str,
+        stats: Any,
+        skip_lag: bool = False,
+        additional: list[str] | None = None,
     ) -> None:
+        if additional is None:
+            additional = []
         if stats is None:
-            table.add_row(node_name, "no info", "")
+            table.add_row(node_name, "no info", "", *additional)
         elif stats.done:
-            table.add_row(node_name, "finished", "")
+            table.add_row(node_name, "finished", "", *additional)
         else:
             latency = self.get_latency(stats.time)
             table.add_row(
                 node_name,
                 "initializing" if latency is None else f"{latency}",
                 "" if skip_lag else f"{stats.lag}",
+                *additional,
             )
 
     def get_connectors_table(self) -> Table:
@@ -130,8 +138,12 @@ class MonitoringOutput:
             r"lag to input \[ms]",
             justify="right",
         )
+        table.add_column("total rows", justify="right")
+        table.add_column("current rows", justify="right")
 
-        self.log_line(table, "input", self.data.input_stats, skip_lag=True)
+        self.log_line(
+            table, "input", self.data.input_stats, skip_lag=True, additional=["", ""]
+        )
         max_operator_rows_to_print = max_height - 4
         # 2 lines for header, 1 line for input, 1 line for output
 
@@ -141,11 +153,20 @@ class MonitoringOutput:
                 and i + 1 == max_operator_rows_to_print
             ):
                 break
-            self.log_line(table, node_name, self.data.operators_stats.get(id_))
+            additional = [
+                f"{self.data.row_counts.get(id_).total_rows}",
+                f"{self.data.row_counts.get(id_).current_rows}",
+            ]
+            self.log_line(
+                table,
+                node_name,
+                self.data.operators_stats.get(id_),
+                additional=additional,
+            )
         if max_operator_rows_to_print < len(self.node_names):
             table.add_row("...", "...", "...")
 
-        self.log_line(table, "output", self.data.output_stats)
+        self.log_line(table, "output", self.data.output_stats, additional=["", ""])
 
         return table
 
