@@ -105,18 +105,16 @@ def read(
 
     Example:
 
-    Consider there is a queue in Kafka, running locally on port 9092. Our queue can
-    use SASL-SSL authentication over a SCRAM-SHA-256 mechanism. You can set up a queue
-    with similar parameters in `Upstash <https://upstash.com/>`_. Settings for rdkafka
-    will look as follows:
+    Consider a Kafka queue running locally on port 9092. For demonstration purposes, our
+    queue uses simple SASL/PLAIN authentication. You can set up a Kafka cluster with
+    similar parameters in `Confluent Cloud <https://confluent.cloud/>`_ or run it locally
+    using Docker or Docker Compose. The rdkafka settings in our example will look as follows:
 
     >>> import os
     >>> rdkafka_settings = {
     ...    "bootstrap.servers": "localhost:9092",
     ...    "security.protocol": "sasl_ssl",
-    ...    "sasl.mechanism": "SCRAM-SHA-256",
-    ...    "group.id": "$GROUP_NAME",
-    ...    "session.timeout.ms": "60000",
+    ...    "sasl.mechanism": "PLAIN",
     ...    "sasl.username": os.environ["KAFKA_USERNAME"],
     ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
@@ -377,121 +375,6 @@ def simple_read(
     )
 
 
-# TODO: Remove on March 11, 2025
-@check_arg_types
-@trace_user_frame
-def read_from_upstash(
-    endpoint: str,
-    username: str,
-    password: str,
-    topic: str,
-    *,
-    read_only_new: bool = False,
-    schema: type[Schema] | None = None,
-    format: str = "raw",
-    debug_data=None,
-    autocommit_duration_ms: int | None = 1500,
-    json_field_paths: dict[str, str] | None = None,
-    parallel_readers: int | None = None,
-    name: str | None = None,
-    **kwargs,
-) -> Table:
-    """Simplified method to read data from Kafka instance hosted in Upstash. It requires
-    endpoint address and topic along with credentials.
-
-    Read starts from the beginning of the topic, unless the `read_only_new` parameter is
-    set to True.
-
-    There are three formats currently supported: "plaintext", "raw", and "json".
-    If the "raw" format is chosen, the key and the payload are read from the topic as raw
-    bytes and used in the table "as is". If you choose the "plaintext" option, however,
-    they are parsed from the UTF-8 into the plaintext entries. In both cases, the
-    table consists of a primary key and a single column "data", denoting the payload read.
-
-    If "json" is chosen, the connector first parses the payload of the message
-    according to the JSON format and then creates the columns corresponding to the
-    schema defined by the ``schema`` parameter. The values of these columns are
-    taken from the respective parsed JSON fields.
-
-    Args:
-        endpoint: Upstash endpoint for the sought queue, which can be found on
-            "Details" page.
-        username: Username generated for this queue.
-        password: Password generated for this queue. These credentials are also
-            available on "Details" page.
-        topic: Name of topic in Kafka from which the data should be read.
-        read_only_new: If set to `True` only the entries which appear after the start
-            of the program will be read. Otherwise, the read will be done from the
-            beginning of the topic.
-        schema: Schema of the resulting table.
-        format: format of the input data, "raw", "plaintext", or "json".
-        debug_data: Static data replacing original one when debug mode is active.
-        autocommit_duration_ms: The maximum time between two commits. Every
-            autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
-        json_field_paths: If the format is JSON, this field allows to map field names
-            into path in the field. For the fields which require such mapping, it should be
-            given in the format ``<field_name>: <path to be mapped>``, where the path to
-            be mapped needs to be a
-            `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
-        parallel_readers: number of copies of the reader to work in parallel. In case
-            the number is not specified, min{pathway_threads, total number of partitions}
-            will be taken. This number also can't be greater than the number of Pathway
-            engine threads, and will be reduced to the number of engine threads, if it
-            exceeds.
-        name: A unique name for the connector. If provided, this name will be used in
-            logs and monitoring dashboards. Additionally, if persistence is enabled, it
-            will be used as the name for the snapshot that stores the connector's progress.
-
-    Returns:
-        Table: The table read.
-
-    When using the format "raw", the connector will produce a single-column table:
-    all the data is saved into a column named ``data``.
-
-    Example:
-
-    Consider that there is a queue running in Upstash. Let's say the endpoint name is
-    "https://example-endpoint.com:19092", topic is "test-topic" and the credentials are
-    stored in environment variables.
-
-    Suppose that we need just to read the raw messages for the further processing. Then
-    it can be done in the following way:
-
-    >>> import os
-    >>> import pathway as pw
-    >>> t = pw.io.kafka.read_from_upstash(
-    ...     endpoint="https://example-endpoint.com:19092",
-    ...     topic="test-topic",
-    ...     username=os.environ["KAFKA_USERNAME"],
-    ...     password=os.environ["KAFKA_PASSWORD"],
-    ... )
-    """
-
-    rdkafka_settings = {
-        "bootstrap.servers": endpoint,
-        "group.id": str(uuid.uuid4()),
-        "auto.offset.reset": "end" if read_only_new else "beginning",
-        "security.protocol": "sasl_ssl",
-        "sasl.mechanism": "SCRAM-SHA-256",
-        "sasl.username": username,
-        "sasl.password": password,
-    }
-    return read(
-        rdkafka_settings=rdkafka_settings,
-        topic=topic,
-        schema=schema,
-        format=format,
-        debug_data=debug_data,
-        autocommit_duration_ms=autocommit_duration_ms,
-        json_field_paths=json_field_paths,
-        parallel_readers=parallel_readers,
-        name=name,
-        _stacklevel=5,
-        **kwargs,
-    )
-
-
 @check_raw_and_plaintext_only_kwargs_for_message_queues
 @check_arg_types
 @trace_user_frame
@@ -566,16 +449,16 @@ def write(
 
     Examples:
 
-    Consider there is a queue in Kafka, running locally on port 9092. Our queue can
-    use SASL-SSL authentication over a SCRAM-SHA-256 mechanism. You can set up a queue
-    with similar parameters in `Upstash <https://upstash.com/>`_. Settings for rdkafka
-    will look as follows:
+    Consider a Kafka queue running locally on port 9092. For demonstration purposes, our
+    queue uses simple SASL/PLAIN authentication. You can set up a Kafka cluster with
+    similar parameters in `Confluent Cloud <https://confluent.cloud/>`_ or run it locally
+    using Docker or Docker Compose. The rdkafka settings in our example will look as follows:
 
     >>> import os
     >>> rdkafka_settings = {
     ...    "bootstrap.servers": "localhost:9092",
     ...    "security.protocol": "sasl_ssl",
-    ...    "sasl.mechanism": "SCRAM-SHA-256",
+    ...    "sasl.mechanism": "PLAIN",
     ...    "sasl.username": os.environ["KAFKA_USERNAME"],
     ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }

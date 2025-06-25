@@ -220,8 +220,8 @@ fn value_json_from_py_any(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let json_str = get_convert_python_module(py).call_method1(intern!(py, "_json_dumps"), (ob,))?;
     let json_str = json_str.downcast::<PyString>()?.to_str()?;
-    let json: JsonValue =
-        serde_json::from_str(json_str).map_err(|_| PyValueError::new_err("malformed json"))?;
+    let json: JsonValue = serde_json::from_str(json_str)
+        .map_err(|e| PyValueError::new_err(format!("malformed json: {e}")))?;
     Ok(Value::from(json))
 }
 
@@ -5527,7 +5527,11 @@ impl DataStorage {
                     let buf_writer = BufWriter::new(f);
                     FileWriter::new(buf_writer, path.to_string())
                 }
-                Err(_) => return Err(PyIOError::new_err("Filesystem operation (create) failed")),
+                Err(e) => {
+                    return Err(PyIOError::new_err(format!(
+                        "Filesystem operation (create) failed: {e}"
+                    )))
+                }
             }
         };
         Ok(Box::new(storage))
@@ -5538,7 +5542,7 @@ impl DataStorage {
 
         let producer: ThreadedProducer<DefaultProducerContext> = match client_config.create() {
             Ok(producer) => producer,
-            Err(_) => return Err(PyIOError::new_err("Producer creation failed")),
+            Err(e) => return Err(PyIOError::new_err(format!("Producer creation failed: {e}"))),
         };
 
         let topic = self.message_queue_topic()?;

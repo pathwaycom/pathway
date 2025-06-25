@@ -14,6 +14,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING** Argument `api_key` for `pw.xpacks.llm.llms.OpenAIEmbedder` can no longer be set in the `__call__` method, and instead, if needed, should be set in the constructor.
 - `pw.io.postgres.write` now accepts arbitrary types for the values of the `postgres_settings` dict. If a value is not a string, Python's `str()` method will be used.
 
+### Removed
+- `pw.io.kafka.read_from_upstash` has been removed, as the managed Kafka service in Upstash has been deprecated.
+
 ## [0.23.0] - 2025-06-12
 
 ### Added

@@ -70,19 +70,24 @@ def read(
 
     Example:
 
-    Consider a simple instance of Redpanda without authentication. Settings for rdkafka
-    will look as follows:
+    Consider a queue in Redpanda running locally on port 9092. Our queue uses SASL-SSL
+    authentication with the SCRAM-SHA-256 mechanism. You can set up a managed cluster
+    with similar parameters directly on the
+    `Redpanda <https://www.redpanda.com/try-redpanda>`_ website. The rdkafka settings
+    for the connection will look as follows:
 
     >>> import os
     >>> rdkafka_settings = {
     ...    "bootstrap.servers": "localhost:9092",
-    ...    "security.protocol": "plaintext",
-    ...    "group.id": "$GROUP_NAME",
-    ...    "session.timeout.ms": "60000"
+    ...    "security.protocol": "sasl_ssl",
+    ...    "sasl.mechanism": "SCRAM-SHA-256",
+    ...    "sasl.username": os.environ["KAFKA_USERNAME"],
+    ...    "sasl.password": os.environ["KAFKA_PASSWORD"],
     ... }
 
     To connect to the topic "animals" and accept messages, the connector must be used
-    as follows, depending on the format:
+    as follows, depending on the format. Please note that this topic may need to be
+    created beforehand in the interface, if the managed version is used.
 
     Raw version:
 
@@ -244,10 +249,11 @@ def write(
 
     Example:
 
-    Consider there is a queue in Redpanda, running locally on port 9092. Our queue can
-    use SASL-SSL authentication over a SCRAM-SHA-256 mechanism. You can set up a queue
-    with similar parameters in `Upstash <https://upstash.com/>`_. Settings for rdkafka
-    will look as follows:
+    Consider a queue in Redpanda running locally on port 9092. Our queue uses SASL-SSL
+    authentication with the SCRAM-SHA-256 mechanism. You can set up a managed cluster
+    with similar parameters directly on the
+    `Redpanda <https://www.redpanda.com/try-redpanda>`_ website. The rdkafka settings
+    for the connection will look as follows:
 
     >>> import os
     >>> rdkafka_settings = {
@@ -255,7 +261,7 @@ def write(
     ...    "security.protocol": "sasl_ssl",
     ...    "sasl.mechanism": "SCRAM-SHA-256",
     ...    "sasl.username": os.environ["KAFKA_USERNAME"],
-    ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
+    ...    "sasl.password": os.environ["KAFKA_PASSWORD"],
     ... }
 
     You want to send a Pathway table t to the Redpanda instance.
