@@ -237,7 +237,8 @@ def test_s3_wrong_path(tmp_path: pathlib.Path, s3_path: str):
         pw.run()
 
 
-def test_s3_creds_from_profiles(tmp_path: pathlib.Path, s3_path: str):
+def test_s3_creds_from_profiles(tmp_path: pathlib.Path, s3_path: str, monkeypatch):
+    monkeypatch.setenv("AWS_PROFILE", "aws-integrationtest")
     input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
     model_output_path = tmp_path / "model_output.csv"
