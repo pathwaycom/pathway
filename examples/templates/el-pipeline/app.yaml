@@ -1,0 +1,47 @@
+# This YAML configuration file is used to set up and configure the EL pipeline.
+# It defines the data sources, the data sinks, and the persistence configuration.
+
+
+# Structure of the data sources using Pathway schema.
+$InputStreamSchema: !pw.schema_from_types
+  date: str
+  message: str
+
+# Define your Kafka and PostgreSQL settings.
+# You can directly use environment variable defined in capital letters.
+$rdkafka_settings:
+  "bootstrap.servers": $KAFKA_HOSTNAME
+  "security.protocol": "plaintext"
+  "group.id": $KAFKA_GROUP_ID
+  "session.timeout.ms": "6000"
+  "auto.offset.reset": "earliest"
+
+$postgres_settings:
+    "host": $DB_HOSTNAME
+    "port": $DB_PORT
+    "dbname": $DB_NAME
+    "user": $DB_USER
+    "password": $DB_PASSWORD
+
+$table_name: "messages_table"
+
+# Define the Kafka data source using the schema and the configurations.
+$kafka_source: !pw.io.kafka.read
+  rdkafka_settings: $rdkafka_settings
+  topic: $KAFKA_TOPIC
+  format: "json"
+  schema: $InputStreamSchema
+  autocommit_duration_ms: 100
+  name: input_kafka_connector
+
+# Output the data in the PostgreSQL.
+output: !pw.io.postgres.write
+  table: $kafka_source
+  postgres_settings: $postgres_settings
+  table_name: $table_name
+  name: output_postgres_connector
+
+# Uncomment to use persistence on the file system.
+# persistence_config: !pw.persistence.Config
+#   backend: !pw.persistence.Backend.filesystem
+#     path: ./persistence_storage/
