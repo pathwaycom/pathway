@@ -83,6 +83,8 @@ from google.protobuf.duration_pb2 import Duration
 
 # https://cloud.google.com/python/docs/reference/run/latest/google.cloud.run_v2.types.EnvVar
 EXECUTABLE_RUNNER_NAME = "executable_runner.py"
+MAX_PIP_INSTALL_ATTEMPTS = 3
+PIP_INSTALL_RETRY_DELAY = 10.0
 
 
 class DockerAirbyteSource(ExecutableAirbyteSource):
@@ -151,22 +153,35 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
 
         logging.info(f"Installing python connector package for {connector}...")
         pip_path = os.fspath(self._venv_path / "bin" / "pip")
-        process = subprocess.run(
-            f"{pip_path} install airbyte-{connector}",
-            stderr=subprocess.STDOUT,
-            shell=True,
-        )
-        if process.returncode != 0:
-            process_stdout = process.stdout.decode("utf-8")
-            logging.error(f"Failed to install airbyte-{connector}:\n{process_stdout}")
-            raise RuntimeError(
-                f"Failed to install package airbyte-{connector} into a virtual "
-                "environment. If the problem persists, please check that the package "
-                "exists on PyPI and consider using enforce_method setting."
+        for n_attempt in range(MAX_PIP_INSTALL_ATTEMPTS):
+            process = subprocess.run(
+                f"{pip_path} install airbyte-{connector}",
+                stderr=subprocess.STDOUT,
+                shell=True,
             )
-        logging.info(
-            f"The connector package for {connector} had successfully been installed"
-        )
+            if process.returncode != 0:
+                result_stdout = process.stdout.decode("utf-8") if process.stdout else ""
+                result_stderr = process.stderr.decode("utf-8") if process.stderr else ""
+                logging.error(
+                    f"Failed to install airbyte-{connector}:\n"
+                    f"stdout:\n{result_stdout}\n"
+                    f"stderr:\n{result_stderr}"
+                )
+                if n_attempt < MAX_PIP_INSTALL_ATTEMPTS - 1:
+                    logging.info(
+                        f"Retrying pip install in {PIP_INSTALL_RETRY_DELAY} seconds..."
+                    )
+                    time.sleep(PIP_INSTALL_RETRY_DELAY)
+                else:
+                    raise RuntimeError(
+                        f"Failed to install package airbyte-{connector} into a virtual "
+                        "environment. If the problem persists, please check that the "
+                        "package exists on PyPI and consider using enforce_method "
+                        "setting."
+                    )
+            logging.info(
+                f"The connector package for {connector} had successfully been installed"
+            )
         self.executable = self._venv_path / "bin" / connector
 
 
