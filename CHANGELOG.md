@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [24.0.0] - 2025-06-26
+
 ### Added
 - `pw.io.mqtt.read` and `pw.io.mqtt.write` methods for reading from and writing to MQTT.
 
