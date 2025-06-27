@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, Literal
 
+from pathway.internals._io_helpers import SchemaRegistrySettings
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -22,6 +23,7 @@ def read(
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
     format: str = "raw",
+    schema_registry_settings: SchemaRegistrySettings | None = None,
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
@@ -43,6 +45,8 @@ def read(
             if set to ``"static"``, the engine will only read and process the data that
             is already available at the time of execution.
         format: format of the input data, "raw", "csv", or "json"
+        schema_registry_settings: settings for connecting to the Confluent Schema Registry,
+            if this type of registry is used.
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -205,6 +209,7 @@ def read(
         schema=schema,
         mode=mode,
         format=format,
+        schema_registry_settings=schema_registry_settings,
         debug_data=debug_data,
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=json_field_paths,
@@ -222,6 +227,8 @@ def write(
     topic_name: str,
     *,
     format: str = "json",
+    schema_registry_settings: SchemaRegistrySettings | None = None,
+    subject: str | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
     **kwargs,
@@ -234,6 +241,10 @@ def write(
 `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic_name: name of topic in Redpanda to which the data should be sent.
         format: format of the input data, only "json" is currently supported.
+        schema_registry_settings: settings for connecting to the Confluent Schema Registry,
+            if this type of registry is used.
+        subject: the subject name for the schema in the Confluent Schema Registry, if the
+            registry is used.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on the
@@ -289,6 +300,8 @@ def write(
         rdkafka_settings=rdkafka_settings,
         topic_name=topic_name,
         format=format,
+        schema_registry_settings=schema_registry_settings,
+        subject=subject,
         name=name,
         sort_by=sort_by,
         **kwargs,

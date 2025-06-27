@@ -205,6 +205,7 @@ fn test_metadata_json_file() -> eyre::Result<()> {
         false,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -236,6 +237,7 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
         false,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;

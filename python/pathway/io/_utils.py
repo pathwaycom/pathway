@@ -12,6 +12,7 @@ import pathway.internals.dtype as dt
 from pathway.internals import api
 from pathway.internals._io_helpers import (
     AwsS3Settings,
+    SchemaRegistrySettings,
     _form_value_fields,
     _format_output_value_fields,
 )
@@ -206,6 +207,7 @@ def construct_schema_and_data_format(
     autogenerate_key: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    schema_registry_settings: SchemaRegistrySettings | None = None,
     _stacklevel: int = 1,
 ) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
@@ -240,6 +242,9 @@ def construct_schema_and_data_format(
                 if autogenerate_key
                 else api.KeyGenerationPolicy.PREFER_MESSAGE_KEY
             ),
+            schema_registry_settings=maybe_schema_registry_settings(
+                schema_registry_settings
+            ),
         )
 
     schema = assert_schema_not_none(schema, data_format_type)
@@ -254,6 +259,9 @@ def construct_schema_and_data_format(
             **api_schema,
             format_type=data_format_type,
             delimiter=",",
+            schema_registry_settings=maybe_schema_registry_settings(
+                schema_registry_settings
+            ),
         )
     elif data_format_type == "jsonlines":
         if csv_settings is not None:
@@ -262,6 +270,9 @@ def construct_schema_and_data_format(
             **api_schema,
             format_type=data_format_type,
             column_paths=json_field_paths,
+            schema_registry_settings=maybe_schema_registry_settings(
+                schema_registry_settings
+            ),
         )
     else:
         raise ValueError(f"data format `{format}` not supported")
@@ -331,6 +342,8 @@ class MessageQueueOutputFormat:
         value: ColumnReference | None = None,
         headers: Iterable[ColumnReference] | None = None,
         topic_name: ColumnReference | None = None,
+        schema_registry_settings: SchemaRegistrySettings | None = None,
+        subject: str | None = None,
     ) -> MessageQueueOutputFormat:
         key_field_index = None
         header_fields: dict[str, int] = {}
@@ -377,6 +390,10 @@ class MessageQueueOutputFormat:
                 key_field_names=[],
                 value_fields=_format_output_value_fields(table),
                 delimiter=delimiter,
+                schema_registry_settings=maybe_schema_registry_settings(
+                    schema_registry_settings
+                ),
+                subject=subject,
             )
         elif format == "raw" or format == "plaintext":
             value_field_index = None
@@ -409,6 +426,10 @@ class MessageQueueOutputFormat:
                 key_field_names=[],
                 value_fields=_format_output_value_fields(table),
                 value_field_index=value_field_index,
+                schema_registry_settings=maybe_schema_registry_settings(
+                    schema_registry_settings
+                ),
+                subject=subject,
             )
         else:
             raise ValueError(f"Unsupported format: {format}")
@@ -438,6 +459,14 @@ class MessageQueueOutputFormat:
         field_indices[column_name] = index_in_new_table
         selection_list.append(column_reference)
         return index_in_new_table
+
+
+def maybe_schema_registry_settings(
+    schema_registry_settings: SchemaRegistrySettings | None,
+) -> api.SchemaRegistrySettings | None:
+    if schema_registry_settings is not None:
+        return schema_registry_settings.to_engine
+    return None
 
 
 def _get_unique_name(

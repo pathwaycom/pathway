@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
 import json
 
 import boto3
@@ -120,6 +122,64 @@ class AwsS3Settings:
             self._secret_access_key = creds.secret_key
         elif creds.token is not None:
             self._session_token = creds.token
+
+
+@dataclasses.dataclass(frozen=True)
+class SchemaRegistryHeader:
+    """
+    Represents an additional header to be used in Confluent Schema Registry HTTP requests.
+
+    Args:
+        key: The header key.
+        value: The header value.
+
+    Returns:
+        The constructed header object
+    """
+
+    key: str
+    value: str
+
+
+@dataclasses.dataclass(frozen=True)
+class SchemaRegistrySettings:
+    """
+    Connection settings for the Confluent Schema Registry.
+
+    Args:
+        urls: A list of URLs for connecting to the schema registry. If multiple URLs
+            are provided, they will be used in the specified order.
+        token_authorization: Token used for token-based authorization.
+        username: Username for simple authorization.
+        password: Password for simple authorization. If specified, a username
+            must also be provided.
+        headers: Additional headers to include in HTTP requests to the schema registry.
+        proxy: Proxy address for registry requests.
+        timeout: Timeout duration for network requests, in seconds.
+
+    Returns:
+        The configuration object.
+    """
+
+    urls: list[str]
+    token_authorization: str | None = None
+    username: str | None = None
+    password: str | None = None
+    headers: list[SchemaRegistryHeader] | None = None
+    proxy: str | None = None
+    timeout: datetime.timedelta | None = None
+
+    @property
+    def to_engine(self):
+        return api.SchemaRegistrySettings(
+            self.urls,
+            token_authorization=self.token_authorization,
+            username=self.username,
+            password=self.password,
+            headers=[(header.key, header.value) for header in self.headers or []],
+            proxy=self.proxy,
+            timeout=self.timeout,
+        )
 
 
 def is_s3_path(path: str) -> bool:

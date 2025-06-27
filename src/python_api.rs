@@ -55,6 +55,9 @@ use rumqttc::{
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::OpenFlags as SqliteOpenFlags;
 use s3::bucket::Bucket as S3Bucket;
+use schema_registry_converter::blocking::json::JsonDecoder as RegistryJsonDecoder;
+use schema_registry_converter::blocking::json::JsonEncoder as RegistryJsonEncoder;
+use schema_registry_converter::blocking::schema_registry::SrSettings as SchemaRegistrySettings;
 use scopeguard::defer;
 use send_wrapper::SendWrapper;
 use serde_json::Value as JsonValue;
@@ -80,7 +83,7 @@ use crate::connectors::data_format::{
     BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
     KeyGenerationPolicy, NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter,
-    SingleColumnFormatter, TransparentParser,
+    RegistryEncoderWrapper, SingleColumnFormatter, TransparentParser,
 };
 use crate::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
 use crate::connectors::data_lake::buffering::{
@@ -4551,6 +4554,107 @@ impl BackfillingThreshold {
     }
 }
 
+#[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen, name = "SchemaRegistrySettings")]
+pub struct PySchemaRegistrySettings {
+    urls: Vec<String>,
+    token_authorization: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    headers: Vec<(String, String)>,
+    proxy: Option<String>,
+    timeout: Option<std::time::Duration>,
+}
+
+#[pymethods]
+impl PySchemaRegistrySettings {
+    #[new]
+    #[pyo3(signature = (
+        urls,
+        token_authorization = None,
+        username = None,
+        password = None,
+        headers = Vec::new(),
+        proxy = None,
+        timeout = None,
+    ))]
+    pub fn new(
+        urls: Vec<String>,
+        token_authorization: Option<String>,
+        username: Option<String>,
+        password: Option<String>,
+        headers: Vec<(String, String)>,
+        proxy: Option<String>,
+        timeout: Option<std::time::Duration>,
+    ) -> PyResult<Self> {
+        // The client for Confluent Schema Registry is a wrapper around the corresponding API.
+        // It performs HTTP requests using the Reqwest library's `reqwest::blocking::get` and
+        // `reqwest::blocking::post` methods. Internally, the blocking client spins up its own
+        // async runtime on a separate thread, which relies on thread-local storage for managing tasks.
+        // This design conflicts with PyO3 and the Python GIL, causing requests to effectively
+        // time out despite successful client creation.
+        // To mitigate this, we move client creation into a separate method executed outside the GIL.
+        if urls.is_empty() {
+            return Err(PyValueError::new_err("The list of URLs must be non-empty."));
+        }
+        if username.is_none() && password.is_some() {
+            return Err(PyValueError::new_err(
+                "Username can't be empty, if password is specified.",
+            ));
+        }
+        Ok(Self {
+            urls,
+            token_authorization,
+            username,
+            password,
+            headers,
+            proxy,
+            timeout,
+        })
+    }
+}
+
+impl PySchemaRegistrySettings {
+    fn create_settings(self) -> PyResult<SchemaRegistrySettings> {
+        let mut builder = SchemaRegistrySettings::new_builder(self.urls[0].to_string());
+        for url in &self.urls[1..] {
+            builder.add_url(url.to_string());
+        }
+
+        if let Some(token_authorization) = &self.token_authorization {
+            builder.set_token_authorization(token_authorization);
+        }
+
+        if let Some(username) = &self.username {
+            builder.set_basic_authorization(username, self.password.as_deref());
+        }
+
+        if let Some(proxy) = &self.proxy {
+            builder.set_proxy(proxy);
+        }
+
+        for (key, value) in &self.headers {
+            builder.add_header(key, value);
+        }
+
+        if let Some(timeout) = self.timeout {
+            builder.set_timeout(timeout);
+        }
+
+        builder.build().map_err(|e| {
+            PyValueError::new_err(format!("Failed to connect to the schema registry: {e}"))
+        })
+    }
+
+    pub fn build_decoder(self) -> PyResult<RegistryJsonDecoder> {
+        Ok(RegistryJsonDecoder::new(self.create_settings()?))
+    }
+
+    pub fn build_encoder(self) -> PyResult<RegistryJsonEncoder> {
+        Ok(RegistryJsonEncoder::new(self.create_settings()?))
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen, get_all)]
 pub struct DataFormat {
     format_type: String,
@@ -4565,6 +4669,8 @@ pub struct DataFormat {
     session_type: SessionType,
     value_field_index: Option<usize>,
     key_generation_policy: KeyGenerationPolicy,
+    schema_registry_settings: Option<PySchemaRegistrySettings>,
+    subject: Option<String>,
 }
 
 #[pymethods]
@@ -4762,6 +4868,8 @@ impl DataFormat {
         session_type = SessionType::Native,
         value_field_index = None,
         key_generation_policy = KeyGenerationPolicy::PreferMessageKey,
+        schema_registry_settings = None,
+        subject = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4777,6 +4885,8 @@ impl DataFormat {
         session_type: SessionType,
         value_field_index: Option<usize>,
         key_generation_policy: KeyGenerationPolicy,
+        schema_registry_settings: Option<PySchemaRegistrySettings>,
+        subject: Option<String>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -4791,6 +4901,8 @@ impl DataFormat {
             session_type,
             value_field_index,
             key_generation_policy,
+            schema_registry_settings,
+            subject,
         }
     }
 
@@ -5867,6 +5979,10 @@ impl DataFormat {
                     self.field_absence_is_error,
                     self.schema(py)?,
                     self.session_type,
+                    self.schema_registry_settings
+                        .clone()
+                        .map(PySchemaRegistrySettings::build_decoder)
+                        .transpose()?,
                 )?;
                 Ok(Box::new(parser))
             }
@@ -5916,7 +6032,23 @@ impl DataFormat {
                 }
             }
             "jsonlines" => {
-                let formatter = JsonLinesFormatter::new(self.value_field_names(py));
+                let schema_registry_settings =
+                    if let Some(schema_registry_settings) = &self.schema_registry_settings {
+                        let subject = self.subject.clone().ok_or_else(|| {
+                            PyValueError::new_err(
+                                "If a data formatter has 'schema_registry_settings' ".to_owned()
+                                    + "specified, it must also have 'subject' set",
+                            )
+                        })?;
+                        Some(RegistryEncoderWrapper::new(
+                            schema_registry_settings.clone().build_encoder()?,
+                            subject,
+                        ))
+                    } else {
+                        None
+                    };
+                let formatter =
+                    JsonLinesFormatter::new(self.value_field_names(py), schema_registry_settings);
                 Ok(Box::new(formatter))
             }
             "null" => {
@@ -6375,6 +6507,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<BackfillingThreshold>()?;
     m.add_class::<PyDeltaOptimizerRule>()?;
     m.add_class::<MqttSettings>()?;
+    m.add_class::<PySchemaRegistrySettings>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

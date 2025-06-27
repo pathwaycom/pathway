@@ -12,6 +12,7 @@ use std::str::{from_utf8, Utf8Error};
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::ReaderContext::{Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
+use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::time::DateTime;
 use crate::engine::{
@@ -31,6 +32,10 @@ use mongodb::bson::{
 };
 use ndarray::ArrayD;
 use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
+use schema_registry_converter::blocking::json::JsonDecoder as RegistryJsonDecoder;
+use schema_registry_converter::blocking::json::JsonEncoder as RegistryJsonEncoder;
+use schema_registry_converter::error::SRCError as SchemaRepositoryError;
+use schema_registry_converter::schema_registry_common::SubjectNameStrategy as RegistrySubjectNameStrategy;
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -194,6 +199,9 @@ pub enum ParseError {
 
     #[error("malformed complex field JSON representation")]
     MalformedComplexField,
+
+    #[error(transparent)]
+    SchemaRepository(#[from] SchemaRepositoryError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -451,6 +459,9 @@ pub enum FormatterError {
 
     #[error("CSV separator must be a 8-bit character, but '{0}' is provided")]
     UnsupportedCsvSeparator(char),
+
+    #[error(transparent)]
+    SchemaRepository(#[from] SchemaRepositoryError),
 }
 
 pub trait Formatter: Send {
@@ -1014,7 +1025,10 @@ impl Formatter for DsvFormatter {
                 .value_column_names
                 .iter()
                 .map(std::string::ToString::to_string)
-                .chain(["time".to_string(), "diff".to_string()])
+                .chain([
+                    SPECIAL_FIELD_TIME.to_string(),
+                    SPECIAL_FIELD_DIFF.to_string(),
+                ])
                 .collect();
             payloads.push(Self::format_csv_row(header, separator)?);
             self.dsv_header_written = true;
@@ -1609,6 +1623,7 @@ pub struct JsonLinesParser {
     schema: HashMap<String, InnerSchemaField>,
     metadata_column_value: Value,
     session_type: SessionType,
+    schema_registry_decoder: Option<RegistryJsonDecoder>,
 }
 
 impl JsonLinesParser {
@@ -1619,6 +1634,7 @@ impl JsonLinesParser {
         field_absence_is_error: bool,
         schema: HashMap<String, InnerSchemaField>,
         session_type: SessionType,
+        schema_registry_decoder: Option<RegistryJsonDecoder>,
     ) -> Result<JsonLinesParser> {
         ensure_all_fields_in_schema(&key_field_names, &value_field_names, &schema)?;
         Ok(JsonLinesParser {
@@ -1629,21 +1645,48 @@ impl JsonLinesParser {
             schema,
             metadata_column_value: Value::None,
             session_type,
+            schema_registry_decoder,
         })
+    }
+
+    fn values_from_parsed_object(
+        &self,
+        payload: &JsonValue,
+        field_names: &[String],
+    ) -> ValueFieldsWithErrors {
+        values_by_names_from_json(
+            payload,
+            field_names,
+            &self.column_paths,
+            self.field_absence_is_error,
+            &self.schema,
+            &self.metadata_column_value,
+        )
+    }
+
+    fn create_events_from_parsed_object(
+        &self,
+        data_event: DataEventType,
+        payload: &JsonValue,
+    ) -> Vec<ParsedEventWithErrors> {
+        let key = self.key_field_names.as_ref().map(|key_field_names| {
+            self.values_from_parsed_object(payload, key_field_names)
+                .into_iter()
+                .collect()
+        });
+        let values = self.values_from_parsed_object(payload, &self.value_field_names);
+        let event = ParsedEventWithErrors::new(self.session_type, data_event, key, values);
+        vec![event]
     }
 }
 
 impl Parser for JsonLinesParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let (data_event, key, line) = match data {
-            RawBytes(event, line) => {
-                let line = prepare_plaintext_string(line)?;
-                (*event, None, line)
-            }
+        let (data_event, raw_bytes) = match data {
+            RawBytes(event, raw_bytes) => (*event, raw_bytes),
             KeyValue((_key, value)) => {
-                if let Some(line) = value {
-                    let line = prepare_plaintext_string(line)?;
-                    (DataEventType::Insert, None, line)
+                if let Some(raw_bytes) = value {
+                    (DataEventType::Insert, raw_bytes)
                 } else {
                     return Err(ParseError::EmptyKafkaPayload.into());
                 }
@@ -1653,48 +1696,24 @@ impl Parser for JsonLinesParser {
             }
             Empty => return Ok(vec![]),
         };
-
-        if line.is_empty() {
+        if raw_bytes.is_empty() {
             return Ok(vec![]);
         }
 
-        if line == COMMIT_LITERAL {
-            return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
-        }
-
-        let payload: JsonValue = match serde_json::from_str(&line) {
-            Ok(json_value) => json_value,
-            Err(_) => return Err(ParseError::FailedToParseJson(line).into()),
+        let payload = if let Some(decoder) = self.schema_registry_decoder.as_mut() {
+            match decoder.decode(Some(raw_bytes))? {
+                None => return Ok(vec![]),
+                Some(decode_result) => decode_result.value,
+            }
+        } else {
+            match prepare_plaintext_string(raw_bytes)?.as_str() {
+                "" => return Ok(vec![]),
+                COMMIT_LITERAL => return Ok(vec![ParsedEventWithErrors::AdvanceTime]),
+                line => serde_json::from_str(line)?,
+            }
         };
 
-        let key = key.or(match &self.key_field_names {
-            Some(key_field_names) => Some(
-                values_by_names_from_json(
-                    &payload,
-                    key_field_names,
-                    &self.column_paths,
-                    self.field_absence_is_error,
-                    &self.schema,
-                    &self.metadata_column_value,
-                )
-                .into_iter()
-                .collect(),
-            ),
-            None => None, // use method from the different PR
-        });
-
-        let values = values_by_names_from_json(
-            &payload,
-            &self.value_field_names,
-            &self.column_paths,
-            self.field_absence_is_error,
-            &self.schema,
-            &self.metadata_column_value,
-        );
-
-        let event = ParsedEventWithErrors::new(self.session_type, data_event, key, values);
-
-        Ok(vec![event])
+        Ok(self.create_events_from_parsed_object(data_event, &payload))
     }
 
     fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
@@ -1990,13 +2009,77 @@ impl Formatter for PsqlSnapshotFormatter {
 }
 
 #[derive(Debug)]
+pub struct RegistryEncoderWrapper {
+    encoder: RegistryJsonEncoder,
+    subject: String,
+}
+
+impl RegistryEncoderWrapper {
+    pub fn new(encoder: RegistryJsonEncoder, subject: String) -> Self {
+        Self { encoder, subject }
+    }
+
+    pub fn encode(&mut self, value: &JsonValue) -> Result<Vec<u8>, FormatterError> {
+        Ok(self.encoder.encode(
+            value,
+            &RegistrySubjectNameStrategy::RecordNameStrategy(self.subject.clone()),
+        )?)
+    }
+}
+
+#[derive(Debug)]
 pub struct JsonLinesFormatter {
     value_field_names: Vec<String>,
+    schema_registry_encoder: Option<RegistryEncoderWrapper>,
 }
 
 impl JsonLinesFormatter {
-    pub fn new(value_field_names: Vec<String>) -> JsonLinesFormatter {
-        JsonLinesFormatter { value_field_names }
+    pub fn new(
+        value_field_names: Vec<String>,
+        schema_registry_encoder: Option<RegistryEncoderWrapper>,
+    ) -> JsonLinesFormatter {
+        JsonLinesFormatter {
+            value_field_names,
+            schema_registry_encoder,
+        }
+    }
+
+    fn construct_json_as_raw_bytes(
+        &mut self,
+        values: &[Value],
+        time: Timestamp,
+        diff: isize,
+    ) -> Result<Vec<u8>, FormatterError> {
+        let mut serializer = serde_json::Serializer::new(Vec::<u8>::new());
+        let mut map = serializer
+            .serialize_map(Some(self.value_field_names.len() + 2))
+            .unwrap();
+        for (key, value) in zip(self.value_field_names.iter(), values) {
+            map.serialize_entry(key, &serialize_value_to_json(value)?)
+                .unwrap();
+        }
+        map.serialize_entry(SPECIAL_FIELD_DIFF, &diff).unwrap();
+        map.serialize_entry(SPECIAL_FIELD_TIME, &time).unwrap();
+        map.end().unwrap();
+        Ok(serializer.into_inner())
+    }
+
+    fn construct_json_with_encoder(
+        encoder: &mut RegistryEncoderWrapper,
+        value_field_names: &[String],
+        values: &[Value],
+        time: Timestamp,
+        diff: isize,
+    ) -> Result<Vec<u8>, FormatterError> {
+        let mut json_payload = json!({
+            SPECIAL_FIELD_DIFF: diff,
+            SPECIAL_FIELD_TIME: time,
+        });
+        let json_payload_map = json_payload.as_object_mut().unwrap();
+        for (key, value) in zip(value_field_names.iter(), values) {
+            json_payload_map.insert(key.to_string(), serialize_value_to_json(value)?);
+        }
+        encoder.encode(&json_payload)
     }
 }
 
@@ -2008,20 +2091,19 @@ impl Formatter for JsonLinesFormatter {
         time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
-        let mut serializer = serde_json::Serializer::new(Vec::<u8>::new());
-        let mut map = serializer
-            .serialize_map(Some(self.value_field_names.len() + 2))
-            .unwrap();
-        for (key, value) in zip(self.value_field_names.iter(), values) {
-            map.serialize_entry(key, &serialize_value_to_json(value)?)
-                .unwrap();
-        }
-        map.serialize_entry("diff", &diff).unwrap();
-        map.serialize_entry("time", &time).unwrap();
-        map.end().unwrap();
+        let raw_bytes = match self.schema_registry_encoder.as_mut() {
+            Some(encoder) => Self::construct_json_with_encoder(
+                encoder,
+                &self.value_field_names,
+                values,
+                time,
+                diff,
+            ),
+            None => self.construct_json_as_raw_bytes(values, time, diff),
+        }?;
 
         Ok(FormatterContext::new_single_payload(
-            serializer.into_inner(),
+            raw_bytes,
             *key,
             values.to_vec(),
             time,
@@ -2167,11 +2249,11 @@ impl Formatter for BsonFormatter {
             let _ = document.insert(key, serialize_value_to_bson(value)?);
         }
         let _ = document.insert(
-            "diff",
+            SPECIAL_FIELD_DIFF,
             BsonValue::Int64(diff.try_into().expect("diff can only be +1 or -1")),
         );
         let _ = document.insert(
-            "time",
+            SPECIAL_FIELD_TIME,
             BsonValue::Int64(
                 time.0
                     .try_into()

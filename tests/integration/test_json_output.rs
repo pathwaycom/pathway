@@ -10,7 +10,7 @@ use super::helpers::assert_document_raw_byte_contents;
 
 #[test]
 fn test_json_format_ok() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -30,7 +30,7 @@ fn test_json_format_ok() -> eyre::Result<()> {
 
 #[test]
 fn test_json_int_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -50,7 +50,7 @@ fn test_json_int_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_float_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -70,7 +70,7 @@ fn test_json_float_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_bool_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -90,7 +90,7 @@ fn test_json_bool_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_null_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -110,7 +110,7 @@ fn test_json_null_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_pointer_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let key = pathway_engine::engine::Key(1);
     let result = formatter.format(
@@ -131,7 +131,7 @@ fn test_json_pointer_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_tuple_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let value1 = Value::Bool(true);
     let value2 = Value::None;
@@ -156,7 +156,7 @@ fn test_json_tuple_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_date_time_naive_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -178,7 +178,7 @@ fn test_json_date_time_naive_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_date_time_utc_serialization() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -199,7 +199,7 @@ fn test_json_date_time_utc_serialization() -> eyre::Result<()> {
 #[test]
 fn test_json_duration_serialization() -> eyre::Result<()> {
     //The test won't work if the server summer time is different than UTC+2
-    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
@@ -219,7 +219,7 @@ fn test_json_duration_serialization() -> eyre::Result<()> {
 
 #[test]
 fn test_json_format_timestamps() -> eyre::Result<()> {
-    let mut formatter = JsonLinesFormatter::new(vec!["utc".to_string(), "naive".to_string()]);
+    let mut formatter = JsonLinesFormatter::new(vec!["utc".to_string(), "naive".to_string()], None);
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),

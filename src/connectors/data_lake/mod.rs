@@ -26,7 +26,7 @@ use once_cell::sync::Lazy;
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_storage::ConversionError;
 use crate::connectors::data_storage::ValuesMap;
-use crate::connectors::WriteError;
+use crate::connectors::{WriteError, SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::{
     value::parse_pathway_pointer, value::Kind, DateTimeNaive, DateTimeUtc,
@@ -44,8 +44,6 @@ pub use delta::DeltaBatchWriter;
 pub use iceberg::IcebergBatchWriter;
 pub use writer::LakeWriter;
 
-const SPECIAL_FIELD_TIME: &str = "time";
-const SPECIAL_FIELD_DIFF: &str = "diff";
 const SPECIAL_FIELD_ID: &str = "_id";
 const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [
     (SPECIAL_FIELD_TIME, Type::Int),

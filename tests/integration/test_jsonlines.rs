@@ -34,6 +34,7 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -80,6 +81,7 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     assert_error_shown(
@@ -114,6 +116,7 @@ fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
         false,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -143,6 +146,7 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     assert_error_shown(
@@ -222,6 +226,7 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -295,6 +300,7 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -373,6 +379,7 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     assert_error_shown(
@@ -434,6 +441,7 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
         false,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -464,6 +472,7 @@ fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     assert_error_shown(
@@ -501,6 +510,7 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     assert_error_shown(
@@ -530,6 +540,7 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     assert_error_shown(
@@ -568,6 +579,7 @@ fn test_jsonlines_timestamp() -> eyre::Result<()> {
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;

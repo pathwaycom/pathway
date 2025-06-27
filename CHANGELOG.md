@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Confluent Schema Registry support in Kafka and Redpanda input and output connectors.
+
 ### Changed
 - `pw.io.airbyte.read` will now retry the pip install command if it fails during the installation of a connector. It only applies when using the PyPI version of the connector, not the Docker one.
 

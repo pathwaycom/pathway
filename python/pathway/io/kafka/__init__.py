@@ -7,6 +7,7 @@ import warnings
 from typing import Iterable, Literal
 
 from pathway.internals import api, datasink, datasource
+from pathway.internals._io_helpers import SchemaRegistryHeader, SchemaRegistrySettings
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -32,6 +33,7 @@ def read(
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
     format: str = "raw",
+    schema_registry_settings: SchemaRegistrySettings | None = None,
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
@@ -67,6 +69,8 @@ def read(
             if set to ``"static"``, the engine will only read and process the data that
             is already available at the time of execution.
         format: format of the input data, "raw", "plaintext", or "json".
+        schema_registry_settings: settings for connecting to the Confluent Schema Registry,
+            if this type of registry is used.
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -258,6 +262,7 @@ def read(
         schema=schema,
         csv_settings=None,
         json_field_paths=json_field_paths,
+        schema_registry_settings=schema_registry_settings,
         _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(
@@ -384,6 +389,8 @@ def write(
     topic_name: str | ColumnReference,
     *,
     format: str = "json",
+    schema_registry_settings: SchemaRegistrySettings | None = None,
+    subject: str | None = None,
     delimiter: str = ",",
     key: ColumnReference | None = None,
     value: ColumnReference | None = None,
@@ -425,6 +432,10 @@ def write(
             in the ``value`` parameter. Similarly, if "plaintext" is chosen, the table should consist
             of a single column of the string type, or the reference to the target string column
             must be specified explicitly in the ``value`` parameter.
+        schema_registry_settings: settings for connecting to the Confluent Schema Registry,
+            if this type of registry is used.
+        subject: the subject name for the schema in the Confluent Schema Registry, if the
+            registry is used.
         delimiter: field delimiter to be used in case of delimiter-separated values
             format 'dsv'.
         key: reference to the column that should be used as a key in the produced message.
@@ -549,6 +560,8 @@ def write(
         value=value,
         headers=headers,
         topic_name=topic_name if isinstance(topic_name, ColumnReference) else None,
+        schema_registry_settings=schema_registry_settings,
+        subject=subject,
     )
     table = output_format.table
 
@@ -570,3 +583,11 @@ def write(
             sort_by=sort_by,
         )
     )
+
+
+__all__ = [
+    "SchemaRegistryHeader",
+    "SchemaRegistrySettings",
+    "read",
+    "write",
+]

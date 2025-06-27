@@ -71,6 +71,7 @@ fn json_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, 
         true,
         schema.into(),
         SessionType::Native,
+        None,
     )?;
     Ok((Box::new(reader), Box::new(parser)))
 }

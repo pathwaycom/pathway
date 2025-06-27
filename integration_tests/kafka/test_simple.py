@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
 import base64
+import datetime
 import json
 import pathlib
 import threading
@@ -17,7 +18,11 @@ from pathway.tests.utils import (
     wait_result_with_checker,
 )
 
-from .utils import KafkaTestContext
+from .utils import (
+    SCHEMA_REGISTRY_BASE_ROUTE,
+    KafkaTestContext,
+    create_schema_in_registry,
+)
 
 
 @pytest.mark.parametrize("with_metadata", [False, True])
@@ -700,3 +705,73 @@ def test_kafka_dynamic_topics(tmp_path, kafka_context, output_format):
 
     check_keys_in_topic(f"KafkaTopic.{dynamic_topic_1}", {"0", "2"})
     check_keys_in_topic(f"KafkaTopic.{dynamic_topic_2}", {"1"})
+
+
+@pytest.mark.flaky(reruns=3)
+def test_kafka_registry(tmp_path, kafka_context):
+    schema_subject = create_schema_in_registry(
+        column_types={
+            "key": "integer",
+            "value": "string",
+            "time": "integer",
+            "diff": "integer",
+        },
+        required_columns=["key", "value", "time", "diff"],
+    )
+
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "output.jsonl"
+    input_entries = [
+        {"key": 1, "value": "one"},
+        {"key": 2, "value": "two"},
+    ]
+
+    with open(input_path, "w") as f:
+        for entry in input_entries:
+            f.write(json.dumps(entry))
+            f.write("\n")
+
+    class TableSchema(pw.Schema):
+        key: int
+        value: str
+
+    table = pw.io.jsonlines.read(input_path, schema=TableSchema)
+
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.input_topic,
+        format="json",
+        schema_registry_settings=pw.io.kafka.SchemaRegistrySettings(
+            urls=[SCHEMA_REGISTRY_BASE_ROUTE],
+            timeout=datetime.timedelta(seconds=5),
+        ),
+        subject=schema_subject,
+    )
+
+    table_reread = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="json",
+        schema=TableSchema,
+        autocommit_duration_ms=100,
+        schema_registry_settings=pw.io.kafka.SchemaRegistrySettings(
+            urls=[SCHEMA_REGISTRY_BASE_ROUTE],
+            timeout=datetime.timedelta(seconds=5),
+        ),
+    )
+
+    pw.io.jsonlines.write(table_reread, output_path)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 30)
+    output_entries = []
+    with open(output_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            output_entries.append(
+                {
+                    "key": data["key"],
+                    "value": data["value"],
+                }
+            )
+    output_entries.sort(key=lambda x: x["key"])
+    assert output_entries == input_entries

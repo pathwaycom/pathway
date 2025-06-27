@@ -776,6 +776,18 @@ def run_with_new_graph(
 ) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
 
+class SchemaRegistrySettings:
+    def __init__(
+        self,
+        urls: list[str],
+        token_authorization: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        headers: list[tuple[str, str]] | None = None,
+        proxy: str | None = None,
+        timeout: datetime.timedelta | None = None,
+    ): ...
+
 class DataFormat:
     value_fields: list[ValueField]
 

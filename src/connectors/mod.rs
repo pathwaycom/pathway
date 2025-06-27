@@ -53,6 +53,9 @@ pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
 
+const SPECIAL_FIELD_TIME: &str = "time";
+const SPECIAL_FIELD_DIFF: &str = "diff";
+
 /*
     Below is the custom reader stuff.
     In most cases, the input can be separated into raw data reads and parsing.

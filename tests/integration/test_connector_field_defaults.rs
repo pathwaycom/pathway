@@ -268,6 +268,7 @@ fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
         true,
         schema,
         SessionType::Native,
+        None,
     )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -315,6 +316,7 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
         true,
         schema,
         SessionType::Native,
+        None,
     )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -368,6 +370,7 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
         true,
         schema,
         SessionType::Native,
+        None,
     )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -415,6 +418,7 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
         true,
         schema,
         SessionType::Native,
+        None,
     )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;

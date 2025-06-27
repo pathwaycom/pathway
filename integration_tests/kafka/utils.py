@@ -2,15 +2,19 @@
 
 import json
 import pathlib
+import uuid
 from collections.abc import Iterable
+from typing import Mapping
 from uuid import uuid4
 
+import requests
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
 
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
+SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
 
 
 class KafkaTestContext:
@@ -129,6 +133,36 @@ class MqttTestContext:
         self.writer_connection_string = MQTT_BASE_ROUTE.replace(
             "$CLIENT_ID", writer_client_id
         )
+
+
+def create_schema_in_registry(
+    column_types: Mapping[str, str], required_columns: list[str]
+) -> str:
+    properties = {}
+    for name, type_ in column_types.items():
+        assert name not in properties
+        properties[name] = {
+            "type": type_,
+        }
+    schema_subject = str(uuid.uuid4())
+    schema_basic = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "Kafka Integration Tests Schema",
+        "type": "object",
+        "properties": properties,
+        "required": required_columns,
+        "additionalProperties": False,
+    }
+    payload = {"schemaType": "JSON", "schema": json.dumps(schema_basic)}
+    response = requests.post(
+        f"{SCHEMA_REGISTRY_BASE_ROUTE}/subjects/{schema_subject}/versions",
+        headers={
+            "Content-Type": "application/vnd.schemaregistry.v1+json",
+        },
+        json=payload,
+    )
+    response.raise_for_status()
+    return schema_subject
 
 
 def check_keys_in_file(

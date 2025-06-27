@@ -78,6 +78,7 @@ reqwest = { version = "0.12.15", features = ["blocking", "json"] }
 rumqttc = { version = "0.24.0", features = ["url", "use-native-tls"] }
 rusqlite = { version = "0.35.0", features = ["bundled"] }
 rust-s3 = { version = "0.34.0", features = ["sync-native-tls-vendored", "sync-native-tls", "fail-on-err"], default-features = false }
+schema_registry_converter = { version = "4.4.0", features = ["blocking", "json"] }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }

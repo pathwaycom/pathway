@@ -40,8 +40,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
     columns_into_pathway_values, parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings,
-    MaintenanceMode, MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_FIELD_TIME,
-    SPECIAL_OUTPUT_FIELDS,
+    MaintenanceMode, MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::parse_bool_advanced;
@@ -52,7 +51,7 @@ use crate::connectors::metadata::ParquetMetadata;
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
-    StorageType, WriteError,
+    StorageType, WriteError, SPECIAL_FIELD_TIME,
 };
 use crate::engine::time::{DateTime, DateTimeNaive};
 use crate::engine::{Type, Value};
