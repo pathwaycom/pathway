@@ -15,8 +15,8 @@
 # To address this problem, Pathway allows you to write a user-defined function (UDF) in Python.
 # Such function is then applied to each row of your data individually in the same way as the predefined expressions.
 # UDFs can be customized in various ways and all of them are explored in this guide.
-
-
+#
+#
 # ## Simple UDFs
 # In the beginning, let's consider a simple case. You want to write a function that increments a number by 1.
 # Just write a regular function and decorate it with [`pw.udf`](/developers/api-docs/pathway#pathway.udf).
@@ -537,6 +537,93 @@ table = pw.debug.table_from_markdown(
 result = table.select(value=inc_async(pw.this.value))
 pw.debug.compute_and_print(result)
 
+
+# %% [markdown]
+# ## Batch UDFs
+# Pathway's UDFs, unless otherwise specified, are computed for each row separately.
+# Sometimes, however, it makes sense to compute value of a UDF for multiple rows at once for performance reasons - e.g. if UDF for each row multiplies a fixed matrix by a vector, it is faster to combine the vectors from one batch into a matrix and compute one matrix multiplication.
+# To do that you can set batching in the UDFs.
+#
+# Note, that you have no control over how the rows will be batched (other than setting the maximum batch size). For that reason, UDFs should only be used for performance reasons, and the result of one row should not be impacted by other rows.
+
+# %% [markdown]
+# To use batching in the UDFs, you need to set the `max_batch_size` in the `pw.udf` decorator. Contrary to standard UDFs, each argument in the batch UDF is a list (where each value in the list comes from a separate row in the table) and the return value should be a list of the same length. Currently, batching can only be used with synchronous UDFs, asynchronous UDFs are not yet supported.
+#
+# As an example, let's start with transforming [the first example in this guide](/developers/user-guide/data-transformation/user-defined-functions#simple-udfs) to be a batch UDF.
+
+
+# %%
+@pw.udf(max_batch_size=32)
+def inc(xs: list[int]) -> list[int]:
+    return [x + 1 for x in xs]
+
+
+table = pw.debug.table_from_markdown(
+    """
+    value
+      1
+      2
+     13
+"""
+)
+
+result = table.with_columns(value_inc=inc(table.value))
+pw.debug.compute_and_print(result)
+
+# %% [markdown]
+# While `inc` returns `list[int]`, the type of the `value_inc` column is inferred to be the type wrapped inside `list` - in this case `int`.
+
+# %%
+print(result.schema)
+
+# %% [markdown]
+# For a slightly more complex example, which will actually benefit from batching, consider a udf that given a vector multiplies it by a matrix (the same for each vector).
+# By combining vectors from one batch into a matrix, it allows to use faster matrix multiplication rather than separate matrix vector multiplications.
+
+# %%
+import numpy as np
+
+# _MD_SHOW_matrix = np.random.uniform(0, 1, (5, 5))
+# _MD_COMMENT_START_
+matrix = np.array(
+    [
+        [0.121306, 0.15556991, 0.29208624, 0.99378929, 0.33832376],
+        [0.80931326, 0.75610931, 0.0690487, 0.61254697, 0.62691232],
+        [0.8718433, 0.22426813, 0.22846933, 0.63338323, 0.96774614],
+        [0.49164946, 0.33793808, 0.4151872, 0.12082183, 0.37494915],
+        [0.70605353, 0.49374841, 0.43528145, 0.2019988, 0.28769009],
+    ]
+)
+# _MD_COMMENT_END_
+
+
+@pw.udf(max_batch_size=1000)
+def mul_vec(vectors: list[list[float]]) -> list[list[float]]:
+    vectors = np.swapaxes(np.array(vectors), 0, 1)
+    result = np.matmul(matrix, vectors)
+    return np.swapaxes(result, 0, 1)
+
+
+# _MD_SHOW_table = pw.debug.table_from_rows(
+# _MD_SHOW_    schema=pw.schema_from_types(data=list[float]),
+# _MD_SHOW_    rows=[
+# _MD_SHOW_        (np.random.uniform(0, 1, (5,)),),
+# _MD_SHOW_        (np.random.uniform(0, 1, (5,)),),
+# _MD_SHOW_        (np.random.uniform(0, 1, (5,)),),
+# _MD_SHOW_    ],
+# _MD_SHOW_)
+# _MD_COMMENT_START_
+table = pw.debug.table_from_rows(
+    schema=pw.schema_from_types(data=list[float]),
+    rows=[
+        (np.array([0.17509773, 0.00528749, 0.97003888, 0.64990409, 0.89221398]),),
+        (np.array([0.7269427, 0.36379147, 0.57496158, 0.61060426, 0.53854694]),),
+        (np.array([0.65232869, 0.80850981, 0.84683832, 0.7705896, 0.57057902]),),
+    ],
+)
+# _MD_COMMENT_END
+result = table.with_columns(result=mul_vec(pw.this.data))
+pw.debug.compute_and_print(result)
 
 # %% [markdown]
 # ## Conclusions
