@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.io.airbyte.read` will now retry the pip install command if it fails during the installation of a connector. It only applies when using the PyPI version of the connector, not the Docker one.
+
 ## [24.0.0] - 2025-06-26
 
 ### Added
@@ -15,7 +18,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING** Arguments `api_key` and `base_url` for `pw.xpacks.llm.llms.OpenAIChat` can no longer be set in the `__call__` method, and instead, if needed, should be set in the constructor.
 - **BREAKING** Argument `api_key` for `pw.xpacks.llm.llms.OpenAIEmbedder` can no longer be set in the `__call__` method, and instead, if needed, should be set in the constructor.
 - `pw.io.postgres.write` now accepts arbitrary types for the values of the `postgres_settings` dict. If a value is not a string, Python's `str()` method will be used.
-- `pw.io.airbyte.read` will now retry the pip install command if it fails during the installation of a connector. It only applies when using the PyPI version of the connector, not the Docker one.
 
 ### Removed
 - `pw.io.kafka.read_from_upstash` has been removed, as the managed Kafka service in Upstash has been deprecated.
