@@ -1075,6 +1075,17 @@ def test_hybrid_index_ignores_duplicates():
             embedder=fake_embedder,
         ),
         TantivyBM25Factory(),
+        HybridIndexFactory(
+            [
+                TantivyBM25Factory(),
+                BruteForceKnnFactory(
+                    dimensions=3,
+                    reserved_space=3,
+                    metric=BruteForceKnnMetricKind.COS,
+                    embedder=fake_embedder,
+                ),
+            ]
+        ),
     ],
 )
 def test_empty_index(factory):

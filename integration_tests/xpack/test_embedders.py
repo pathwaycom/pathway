@@ -17,10 +17,15 @@ LONG_TEXT = "B" * 50_000
 @pytest.mark.parametrize("strategy", ["start", "end"])
 def test_openai_embedder(text: str, model: str, strategy: str):
     if model is None:
-        embedder = embedders.OpenAIEmbedder(truncation_keep_strategy=strategy)
+        embedder = embedders.OpenAIEmbedder(
+            truncation_keep_strategy=strategy,
+            retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy(),
+        )
     else:
         embedder = embedders.OpenAIEmbedder(
-            model=model, truncation_keep_strategy=strategy  # type: ignore
+            model=model,
+            truncation_keep_strategy=strategy,  # type: ignore
+            retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy(),
         )
 
     sync_embedder = _coerce_sync(embedder.func)
@@ -114,3 +119,24 @@ def test_sentence_transformer_get_embedding_dimension():
 
     embedding_dimension = embedder.get_embedding_dimension(normalize_embeddings=True)
     assert embedding_dimension == 1024
+
+
+def test_litellm_embedder():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str), rows=[("aaa",), ("bbb",)]
+    )
+
+    embedder = embedders.LiteLLMEmbedder(
+        model="text-embedding-3-small",
+        retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy(),
+    )
+
+    table = table.select(embedding=embedder(pw.this.text))
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 2
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) > 1500
+    assert isinstance(result[1]["embedding"][0], float)
+    assert len(result[1]["embedding"]) > 1500

@@ -220,3 +220,24 @@ def test_hf_pipeline_multiple_rows_with_kwargs():
     assert len(chat.tokenizer(values_ls[0])) <= 20
     assert isinstance(values_ls[1], str)
     assert len(chat.tokenizer(values_ls[1])) <= 2
+
+
+def test_litellm():
+    chat = llms.LiteLLMChat(
+        model=None, retry_strategy=ExponentialBackoffRetryStrategy(max_retries=4)
+    )
+    t = pw.debug.table_from_markdown(
+        """
+        txt     | model
+        Wazzup? | gpt-3.5-turbo
+        """
+    )
+    resp_table = t.select(
+        ret=chat(llms.prompt_chat_single_qa(t.txt), model=t.model, max_tokens=2)
+    )
+
+    _, table_values = pw.debug.table_to_dicts(resp_table)
+
+    values_ls = list(table_values["ret"].values())
+
+    assert isinstance(values_ls[0], str)
