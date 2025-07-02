@@ -542,7 +542,7 @@ pw.debug.compute_and_print(result)
 # ## Batch UDFs
 # Pathway's UDFs, unless otherwise specified, are computed for each row separately.
 # Sometimes, however, it makes sense to compute value of a UDF for multiple rows at once for performance reasons - e.g. if UDF for each row multiplies a fixed matrix by a vector, it is faster to combine the vectors from one batch into a matrix and compute one matrix multiplication.
-# To do that you can set batching in the UDFs.
+# Another example when to use them would be for calculating embeddings locally - these are faster to compute in batch and were the reason we introduced the batch UDFs.
 #
 # Note, that you have no control over how the rows will be batched (other than setting the maximum batch size). For that reason, UDFs should only be used for performance reasons, and the result of one row should not be impacted by other rows.
 
@@ -598,10 +598,8 @@ matrix = np.array(
 
 
 @pw.udf(max_batch_size=1000)
-def mul_vec(vectors: list[list[float]]) -> list[list[float]]:
-    vectors = np.swapaxes(np.array(vectors), 0, 1)
-    result = np.matmul(matrix, vectors)
-    return np.swapaxes(result, 0, 1)
+def mul_vec(vectors: list[np.ndarray]) -> list[np.ndarray]:
+    return np.matmul(vectors, matrix)
 
 
 # _MD_SHOW_table = pw.debug.table_from_rows(
@@ -614,7 +612,7 @@ def mul_vec(vectors: list[list[float]]) -> list[list[float]]:
 # _MD_SHOW_)
 # _MD_COMMENT_START_
 table = pw.debug.table_from_rows(
-    schema=pw.schema_from_types(data=list[float]),
+    schema=pw.schema_from_types(data=np.ndarray),
     rows=[
         (np.array([0.17509773, 0.00528749, 0.97003888, 0.64990409, 0.89221398]),),
         (np.array([0.7269427, 0.36379147, 0.57496158, 0.61060426, 0.53854694]),),
