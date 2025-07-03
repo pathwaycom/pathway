@@ -668,8 +668,8 @@ fn test_random() {
             }
         }
 
-        println!("{:?}", inputs);
-        println!("{:?}", expected);
+        println!("{inputs:?}");
+        println!("{expected:?}");
         run_test(inputs, expected, |coll| {
             add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
         });
@@ -762,8 +762,8 @@ fn test_instances_random() {
             }
         }
 
-        println!("{:?}", inputs);
-        println!("{:?}", expected);
+        println!("{inputs:?}");
+        println!("{expected:?}");
         run_test(inputs, expected, |coll| {
             add_prev_next_pointers(coll.arrange_by_self(), &|a, b| a.0 == b.0)
         });

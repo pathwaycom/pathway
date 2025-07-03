@@ -40,7 +40,7 @@ impl Writer for LakeWriter {
         let commit_needed = self.buffer.has_updates()
             && (self
                 .min_commit_frequency
-                .map_or(true, |f| self.last_commit_at.elapsed() >= f)
+                .is_none_or(|f| self.last_commit_at.elapsed() >= f)
                 || forced);
         if commit_needed {
             let (batch, payload_type) = self.buffer.build_update_record_batch()?;

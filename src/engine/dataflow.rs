@@ -41,6 +41,7 @@ use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::hash::Hash;
 use std::iter::once;
 use std::marker::PhantomData;
@@ -610,9 +611,9 @@ impl ErrorLogInner {
     fn maybe_flush(&mut self) -> SystemTime {
         // returns time of the next flush
         let now = SystemTime::now();
-        let flush = self.last_flush.map_or(true, |last_flush| {
-            last_flush + ERROR_LOG_FLUSH_PERIOD <= now
-        });
+        let flush = self
+            .last_flush
+            .is_none_or(|last_flush| last_flush + ERROR_LOG_FLUSH_PERIOD <= now);
         if flush {
             self.last_flush = Some(now);
             let new_timestamp = Timestamp::new_from_current_time();
@@ -1368,7 +1369,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 &values,
                 column_properties.trace.clone(),
             )?;
-        };
+        }
 
         let column_handle = self.columns.alloc(
             Column::from_collection(universe_handle, values)
@@ -2112,7 +2113,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .join_core(column.values_arranged(), |k, (), v| once((*k, v.clone())));
         if !self.ignore_asserts {
             self.assert_input_keys_match_output_keys(universe.keys(), &new_values, trace)?;
-        };
+        }
         let new_column_handle = self
             .columns
             .alloc(Column::from_collection(universe_handle, new_values));
@@ -2153,7 +2154,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         if !self.ignore_asserts && same_universes {
             self.assert_input_keys_match_output_keys(original_table.keys(), &result, trace)?;
-        };
+        }
 
         Ok(self
             .tables
@@ -3040,7 +3041,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 let column_value = column_path
                     .extract(key, values)
                     .unwrap_with_reporter(&error_reporter);
-                values_str.push_str(&format!(", {name}={column_value:?}"));
+                write!(&mut values_str, ", {name}={column_value:?}").unwrap();
             }
             println!("[{worker}][{tag}] @{time:?} {diff:+} id={key}{values_str}");
         });
@@ -3724,7 +3725,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             && self
                 .persistence_wrapper
                 .get_persistence_config()
-                .map_or(true, |config| config.continue_after_replay);
+                .is_none_or(|config| config.continue_after_replay);
         let persisted_table = internal_persistent_id.is_some()
             && self
                 .persistence_wrapper
@@ -4133,7 +4134,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                             .send(OutputEvent::Commit(frontier.first().copied()))
                             .expect("sending output commit should not fail");
                     }
-                };
+                }
             })
             .probe_with(&self.output_probe);
 
@@ -6326,7 +6327,7 @@ where
             catch_unwind(AssertUnwindSafe(|| drop(guards.join()))).unwrap_or(());
             return Err(error);
         }
-    };
+    }
 
     let res = guards
         .join()

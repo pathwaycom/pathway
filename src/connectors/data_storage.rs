@@ -1306,7 +1306,7 @@ impl PsqlWriter {
         snapshot_mode: bool,
         table_name: &str,
         schema: &HashMap<String, Type>,
-        key_field_names: &Option<Vec<String>>,
+        key_field_names: Option<&Vec<String>>,
         mode: SqlWriterInitMode,
     ) -> Result<PsqlWriter, WriteError> {
         let mut writer = PsqlWriter {
@@ -1325,7 +1325,7 @@ impl PsqlWriter {
         mode: SqlWriterInitMode,
         table_name: &str,
         schema: &HashMap<String, Type>,
-        key_field_names: &Option<Vec<String>>,
+        key_field_names: Option<&Vec<String>>,
     ) -> Result<(), WriteError> {
         match mode {
             SqlWriterInitMode::Default => return Ok(()),
@@ -1353,7 +1353,7 @@ impl PsqlWriter {
         transaction: &mut PsqlTransaction,
         table_name: &str,
         schema: &HashMap<String, Type>,
-        key_field_names: &Option<Vec<String>>,
+        key_field_names: Option<&Vec<String>>,
     ) -> Result<(), WriteError> {
         let columns: Vec<String> = schema
             .iter()
@@ -1662,7 +1662,6 @@ impl Writer for KafkaWriter {
                     )) => {
                         self.producer.poll(Duration::from_millis(10));
                         entry = unsent_entry;
-                        continue;
                     }
                     Err((e, _unsent_entry)) => return Err(WriteError::Kafka(e)),
                 }

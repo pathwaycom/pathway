@@ -178,7 +178,7 @@ where
 
 struct JsonVisitor;
 
-impl<'de> Visitor<'de> for JsonVisitor {
+impl Visitor<'_> for JsonVisitor {
     type Value = Handle<JsonValue>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

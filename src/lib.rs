@@ -3,8 +3,8 @@
 #![warn(clippy::pedantic)]
 #![warn(clippy::cargo)]
 #![allow(clippy::must_use_candidate)] // too noisy
-
 // FIXME:
+#![allow(clippy::result_large_err)] // Too noisy, around 250 warnings across the codebase. Fix gradually.
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 

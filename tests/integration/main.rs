@@ -1,5 +1,7 @@
 // Copyright © 2024 Pathway
 
+#![allow(clippy::result_large_err)]
+
 mod helpers;
 mod operator_test_utils;
 

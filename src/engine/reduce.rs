@@ -9,8 +9,8 @@ use differential_dataflow::{
 };
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+use std::any::type_name;
 use std::num::NonZeroUsize;
-use std::{any::type_name, iter::repeat};
 use std::{cmp::Reverse, sync::Arc};
 
 use super::{error::DynResult, DataError, Key, Value};
@@ -506,7 +506,7 @@ impl UnaryReducerImpl for SortedTupleReducer {
             .flat_map(|(state, cnt)| {
                 state
                     .iter()
-                    .flat_map(move |v| repeat(v).take(cnt.get()))
+                    .flat_map(move |v| std::iter::repeat_n(v, cnt.get()))
                     .cloned()
             })
             .collect())
@@ -551,7 +551,7 @@ impl ReducerImpl for TupleReducer {
             .flat_map(|(state, cnt)| {
                 state
                     .iter()
-                    .flat_map(move |v| repeat(v).take(cnt.get()))
+                    .flat_map(move |v| std::iter::repeat_n(v, cnt.get()))
                     .cloned()
             })
             .collect())

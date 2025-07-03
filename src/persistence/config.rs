@@ -157,8 +157,7 @@ impl ReadersQueryPurpose {
                 if other_worker_id % total_workers == worker_id {
                     if other_worker_id != worker_id {
                         info!(
-                            "Assigning snapshot from the former worker {other_worker_id} to worker {} due to reduced number of worker threads",
-                            worker_id
+                            "Assigning snapshot from the former worker {other_worker_id} to worker {worker_id} due to reduced number of worker threads"
                         );
                     }
                     true

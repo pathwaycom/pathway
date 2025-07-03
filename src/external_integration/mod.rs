@@ -395,7 +395,7 @@ where
     fn handle_filter_and_unpack_data(&mut self, entry: AddDataEntry) -> DynResult<DataType> {
         if let Some(f_data_un) = entry.filter_data {
             self.filter_data_map.insert(entry.key, f_data_un.unpack()?);
-        };
+        }
         entry.data.unpack()
     }
 

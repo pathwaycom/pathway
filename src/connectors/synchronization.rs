@@ -241,7 +241,7 @@ impl ConnectorGroup {
         // minimal must be taken into consideration
         if self.next_proposed_value[source_id]
             .as_ref()
-            .map_or(true, |current| current > candidate)
+            .is_none_or(|current| current > candidate)
         {
             self.next_proposed_value[source_id] = Some(candidate.clone());
         }
@@ -315,7 +315,7 @@ impl ConnectorGroup {
             }
             if chosen_ws_ref
                 .as_ref()
-                .map_or(true, |current| current.requested_value > ws.requested_value)
+                .is_none_or(|current| current.requested_value > ws.requested_value)
             {
                 chosen_ws_ref = Some(ws);
             }

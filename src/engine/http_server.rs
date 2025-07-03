@@ -171,7 +171,7 @@ pub fn start_http_server_thread(
                                         _ => {
                                             *response.status_mut() = StatusCode::NOT_FOUND;
                                         }
-                                    };
+                                    }
                                     Ok::<_, Error>(response)
                                 }
                             }))

@@ -70,7 +70,7 @@ impl<K, T> CarryEntry<K, T> {
     }
 }
 
-/// Returns true, if total weight associated with the current key  
+/// Returns true, if total weight associated with the current key
 /// of the cursor passed in wrapper is zero.
 fn key_has_zero_weight<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>, time: &C::Time) -> bool
 where
@@ -216,7 +216,7 @@ fn push_insert_replace<C: Cursor>(
 fn push_prev_replace<K, C: Cursor<Key = K, Val = (Option<K>, Option<K>)>>(
     wrapper: &mut CursorStorageWrapper<C>,
     key: &K,
-    new_prev: &Option<K>,
+    new_prev: Option<&K>,
     time: &C::Time,
     batch_builder: &mut OutputBatchBuilder<C::Key, C::Val, C::Time, C::R>,
 ) where
@@ -239,11 +239,11 @@ fn push_prev_replace<K, C: Cursor<Key = K, Val = (Option<K>, Option<K>)>>(
     ));
     log::debug!(
         "bb.p inserting {:?} for {key:?} in push-prev-replace",
-        (new_prev.clone(), val.1.clone())
+        (new_prev, val.1.clone())
     );
     batch_builder.push((
         key.clone(),
-        (new_prev.clone(), val.1.clone()),
+        (new_prev.cloned(), val.1.clone()),
         time.clone(),
         weight.unwrap(),
     ));
@@ -518,7 +518,7 @@ where
                     push_prev_replace(
                         output_wrapper,
                         carry_entry.next.as_ref().unwrap(),
-                        &carry_entry.key.clone(),
+                        carry_entry.key.clone().as_ref(),
                         time,
                         batch_builder,
                     );
@@ -633,7 +633,7 @@ where
             push_prev_replace(
                 output_wrapper,
                 &carry_entry.next.unwrap(),
-                &carry_entry.key,
+                carry_entry.key.as_ref(),
                 &carry_entry.time.unwrap(),
                 batch_builder,
             );
@@ -759,7 +759,7 @@ fn handle_one_instance<
             push_prev_replace(
                 output_wrapper,
                 &key_to_fix,
-                &carry_entry.key,
+                carry_entry.key.as_ref(),
                 carry_entry.time.as_ref().unwrap(),
                 batch_builder,
             );
@@ -821,7 +821,7 @@ where
                             let (mut cursor, storage) =
                                 input_arrangement.trace.bidirectional_cursor();
 
-                            log::debug!("pushing batch {:?}", entries);
+                            log::debug!("pushing batch {entries:?}");
                             let mut output_wrapper = CursorStorageWrapper {
                                 cursor: &mut output_cursor,
                                 storage: &output_storage,

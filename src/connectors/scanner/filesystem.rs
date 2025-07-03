@@ -91,7 +91,7 @@ impl FilesystemScanner {
                         result.push(QueuedAction::Update(encoded_path.clone(), actual_metadata));
                     }
                 }
-            };
+            }
         }
         result
     }
@@ -128,7 +128,10 @@ impl FilesystemScanner {
 
             // Otherwise scan all files in all subdirectories and add them
             let Some(path) = entry.to_str() else {
-                error!("Non-unicode paths are not supported. Ignoring: {entry:?}");
+                error!(
+                    "Non-unicode paths are not supported. Ignoring: {}",
+                    entry.display()
+                );
                 continue;
             };
 

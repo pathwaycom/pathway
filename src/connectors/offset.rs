@@ -29,7 +29,7 @@ impl HashInto for OffsetKey {
             }
             OffsetKey::Nats(worker_index) => worker_index.hash_into(hasher),
             OffsetKey::Empty => {}
-        };
+        }
     }
 }
 
@@ -142,7 +142,7 @@ impl HashInto for OffsetValue {
                 snapshot_id.hash_into(hasher);
             }
             OffsetValue::Empty => {}
-        };
+        }
     }
 }
 

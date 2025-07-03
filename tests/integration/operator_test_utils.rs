@@ -59,7 +59,7 @@ pub fn run_test<
                 let collection = input.to_collection(scope);
                 let res = op(collection);
                 res.trace
-                    .map_batches(|batch| eprintln!("outer debug, res map batch{:?}", batch));
+                    .map_batches(|batch| eprintln!("outer debug, res map batch{batch:?}"));
 
                 res.as_collection(|key, val| (key.clone(), val.clone()))
                     .inner

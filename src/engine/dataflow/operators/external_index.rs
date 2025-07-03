@@ -26,15 +26,13 @@ pub trait Index<K, V, R, K2, V2, Ret> {
     fn search(&self, batch: Vec<(K2, V2, R)>) -> Vec<(K2, Ret, R)>;
 }
 
-/**
-    Trait denoting that given collection can accept:
-    - a query stream,
-    - an implementation of Index providing indices:
-        -- accepting self to modify the index (`take_update`, handling adding / removing index entries)
-        -- accepting elements of query stream as queries (`search`)
-
-    and produces a stream of queries extended by tuples of matching IDs (according to current state (as-of-now) `ExternalIndex`)
-*/
+/// Trait denoting that given collection can accept:
+/// - a query stream,
+/// - an implementation of Index providing indices:
+///   -- accepting self to modify the index (`take_update`, handling adding / removing index entries)
+///   -- accepting elements of query stream as queries (`search`)
+///
+/// and produces a stream of queries extended by tuples of matching IDs (according to current state (as-of-now) `ExternalIndex`)
 pub trait UseExternalIndexAsOfNow<G: Scope, K: ExchangeData, V: ExchangeData, R: Abelian> {
     fn use_external_index_as_of_now<K2, V2, Ret>(
         &self,
@@ -68,16 +66,13 @@ where
     }
 }
 
-/**
-    Implementation of `use_external_index_as_of_now`.
-    - it duplicates the index stream, to make it available for all workers
-    - it synchronizes index and query streams via concatenation, so that we work on data with the same timestamp
-
-    The index stream only changes the state of the external index (according to its implementation), each query
-    in the query stream generates one entry in the output stream (so it's a map-like operator from the point of view
-    of query stream)
-*/
-
+/// Implementation of `use_external_index_as_of_now`.
+///  - it duplicates the index stream, to make it available for all workers
+///  - it synchronizes index and query streams via concatenation, so that we work on data with the same timestamp
+///
+/// The index stream only changes the state of the external index (according to its implementation), each query
+/// in the query stream generates one entry in the output stream (so it's a map-like operator from the point of view
+/// of query stream)
 fn use_external_index_as_of_now_core<G, K, K2, V, V2, R, Ret>(
     index_stream: &Collection<G, (K, V), R>,
     query_stream: &Collection<G, (K2, V2), R>,

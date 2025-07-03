@@ -142,7 +142,7 @@ impl VersionInformation {
             error!("Got worker id {worker_id} while only {expected_workers} workers were expected");
             return;
         }
-        if self.worker_finalized_times[worker_id].map_or(true, |time| time < finalized_time) {
+        if self.worker_finalized_times[worker_id].is_none_or(|time| time < finalized_time) {
             self.worker_finalized_times[worker_id] = Some(finalized_time);
         }
     }
@@ -199,7 +199,7 @@ fn compute_threshold_time_and_versions(
                     }
                 }
             }
-        };
+        }
     }
 
     let mut past_runs_threshold_time = TotalFrontier::At(Timestamp(0));
@@ -209,7 +209,7 @@ fn compute_threshold_time_and_versions(
         let Some(threshold_time) = threshold_time else {
             continue;
         };
-        if latest_stable_version.map_or(true, |current_version| current_version < *version_number) {
+        if latest_stable_version.is_none_or(|current_version| current_version < *version_number) {
             latest_stable_version = Some(*version_number);
             past_runs_threshold_time = threshold_time;
         }

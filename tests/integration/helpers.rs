@@ -354,7 +354,7 @@ pub fn assert_error_shown_for_reader_context(
     error_placement: ErrorPlacement,
 ) {
     let row_parse_result = parser.parse(context);
-    println!("{:?}", row_parse_result);
+    println!("{row_parse_result:?}");
     let errors = error_placement.extract_errors(row_parse_result);
     for e in errors {
         eprintln!("Error details: {e:?}");

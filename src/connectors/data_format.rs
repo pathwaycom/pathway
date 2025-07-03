@@ -24,7 +24,7 @@ use async_nats::header::HeaderMap as NatsHeaders;
 use base64::engine::general_purpose::STANDARD as base64encoder;
 use base64::Engine;
 use bincode::ErrorKind as BincodeError;
-use itertools::{chain, Itertools};
+use itertools::Itertools;
 use log::error;
 use mongodb::bson::{
     bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents,
@@ -372,7 +372,7 @@ impl FormatterContext {
 
     fn construct_message_headers(
         &self,
-        header_fields: &Vec<(String, usize)>,
+        header_fields: &[(String, usize)],
         encode_bytes: bool,
     ) -> Vec<PreparedMessageHeader> {
         let mut headers = Vec::with_capacity(header_fields.len() + 2);
@@ -395,7 +395,7 @@ impl FormatterContext {
         headers
     }
 
-    pub fn construct_kafka_headers(&self, header_fields: &Vec<(String, usize)>) -> KafkaHeaders {
+    pub fn construct_kafka_headers(&self, header_fields: &[(String, usize)]) -> KafkaHeaders {
         let raw_headers = self.construct_message_headers(header_fields, false);
         let mut kafka_headers = KafkaHeaders::new_with_capacity(raw_headers.len());
         for header in raw_headers {
@@ -407,7 +407,7 @@ impl FormatterContext {
         kafka_headers
     }
 
-    pub fn construct_nats_headers(&self, header_fields: &Vec<(String, usize)>) -> NatsHeaders {
+    pub fn construct_nats_headers(&self, header_fields: &[(String, usize)]) -> NatsHeaders {
         let raw_headers = self.construct_message_headers(header_fields, true);
         let mut nats_headers = NatsHeaders::new();
         for header in raw_headers {
@@ -571,7 +571,7 @@ fn parse_str_with_type(raw_value: &str, type_: &Type) -> Result<Value, DynError>
             // Anything else can be safely treated as a `Value::None`
             Type::Json if raw_value != "null" => return Ok(Value::None),
             _ => {}
-        };
+        }
     }
     match type_.unoptionalize() {
         Type::Any | Type::String => Ok(Value::from(raw_value)),
@@ -640,11 +640,15 @@ fn parse_with_type(
 }
 
 fn ensure_all_fields_in_schema(
-    key_column_names: &Option<Vec<String>>,
-    value_column_names: &Vec<String>,
+    key_column_names: Option<&Vec<String>>,
+    value_column_names: &[String],
     schema: &HashMap<String, InnerSchemaField>,
 ) -> Result<()> {
-    for name in chain!(key_column_names.iter().flatten(), value_column_names) {
+    for name in key_column_names
+        .into_iter()
+        .flatten()
+        .chain(value_column_names)
+    {
         if !schema.contains_key(name) {
             return Err(Error::FieldNotInSchema {
                 name: name.clone(),
@@ -664,7 +668,7 @@ impl DsvParser {
         schema: HashMap<String, InnerSchemaField>,
     ) -> Result<DsvParser> {
         ensure_all_fields_in_schema(
-            &settings.key_column_names,
+            settings.key_column_names.as_ref(),
             &settings.value_column_names,
             &schema,
         )?;
@@ -698,7 +702,7 @@ impl DsvParser {
                 None => {
                     requested_indices.insert(field.clone(), vec![index]);
                 }
-            };
+            }
         }
 
         for (index, value) in tokenized_entries.iter().enumerate() {
@@ -870,7 +874,7 @@ pub enum KeyGenerationPolicy {
 }
 
 impl KeyGenerationPolicy {
-    fn generate(self, key: &Option<Vec<u8>>, parse_utf8: bool) -> Option<DynResult<Vec<Value>>> {
+    fn generate(self, key: Option<&Vec<u8>>, parse_utf8: bool) -> Option<DynResult<Vec<Value>>> {
         match &self {
             Self::AlwaysAutogenerate => None,
             Self::PreferMessageKey => key
@@ -917,7 +921,8 @@ impl Parser for IdentityParser {
             KeyValue((key, value)) => match value {
                 Some(bytes) => (
                     DataEventType::Insert,
-                    self.key_generation_policy.generate(key, self.parse_utf8),
+                    self.key_generation_policy
+                        .generate(key.as_ref(), self.parse_utf8),
                     value_from_bytes(bytes, self.parse_utf8),
                     Ok(None),
                 ),
@@ -1636,7 +1641,7 @@ impl JsonLinesParser {
         session_type: SessionType,
         schema_registry_decoder: Option<RegistryJsonDecoder>,
     ) -> Result<JsonLinesParser> {
-        ensure_all_fields_in_schema(&key_field_names, &value_field_names, &schema)?;
+        ensure_all_fields_in_schema(key_field_names.as_ref(), &value_field_names, &schema)?;
         Ok(JsonLinesParser {
             key_field_names,
             value_field_names,
@@ -1748,7 +1753,7 @@ impl TransparentParser {
         schema: HashMap<String, InnerSchemaField>,
         session_type: SessionType,
     ) -> Result<TransparentParser> {
-        ensure_all_fields_in_schema(&key_field_names, &value_field_names, &schema)?;
+        ensure_all_fields_in_schema(key_field_names.as_ref(), &value_field_names, &schema)?;
         Ok(TransparentParser {
             key_field_names,
             value_field_names,

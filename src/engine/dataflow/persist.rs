@@ -174,7 +174,7 @@ where
 /// Because we have `Box<dyn PersistenceWrapper<S>>` in `DataflowGraphInner`
 /// and when `PersistenceWrapper` trait has a generic method, we can't create `Box<dyn PersistenceWrapper<S>>`
 /// ("the trait cannot be made into an object" error).
-
+///
 /// And why do we need `PersistenceWrapper` at all?
 /// We need it to create operator snapshot writer that uses `Timestamp` type. The operator snapshot writer
 /// cannot be generic in `MaybeTotalTimestamp` as the whole persistence uses concrete `Timestamp`, not generic `MaybeTotalTimestamp`. It makes
@@ -183,7 +183,6 @@ where
 /// because is used in methods that don't have the constraint S: `MaybeTotalScope`<`MaybeTotalTimestamp` = `Timestamp`>.
 /// To handle this, operator snapshot writer is created in a separate object (instance of `TimestampBasedPersistenceWrapper`)
 /// that is aware that `MaybeTotalTimestamp` = `Timestamp`.
-
 pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyValueIsize(Collection<S, (Key, Value), isize>),
     KeyIntSumState(Collection<S, Key, IntSumState>),

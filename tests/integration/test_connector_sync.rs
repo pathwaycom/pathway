@@ -203,7 +203,7 @@ fn test_synchronization_several_workers() -> eyre::Result<()> {
     let group_1_repeated = sync.ensure_synchronization_group(&desc, 0).unwrap();
 
     // The `source_id` is private, but `Debug` trait can be used to compare them
-    assert_eq!(format!("{:?}", group_1), format!("{:?}", group_1_repeated));
+    assert_eq!(format!("{group_1:?}"), format!("{:?}", group_1_repeated));
 
     start_two_equal_groups(&mut group_1, &mut group_2)?;
 

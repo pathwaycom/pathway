@@ -73,6 +73,8 @@
 #![forbid(missing_docs)]
 #![allow(array_into_iter)]
 
+// Required for deriving `Abomonation`. Note: the associated crate has not been updated in 5 years and triggers warnings starting with Rust 1.85.
+#![allow(non_local_definitions)]
 
 use std::fmt::Debug;
 

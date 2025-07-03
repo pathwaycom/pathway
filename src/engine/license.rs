@@ -86,7 +86,7 @@ impl License {
             License::NoLicenseKey => false,
             License::OfflineLicense(license) => license.telemetry_required,
             License::LicenseKey(key) => check_license_key_entitlements(key.clone(), vec![])
-                .map_or(false, |result| result.telemetry_required()),
+                .is_ok_and(|result| result.telemetry_required()),
         }
     }
 

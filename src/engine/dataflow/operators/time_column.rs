@@ -258,7 +258,7 @@ fn push_key_values_to_output<K, C: Cursor, P>(
     output: &mut OutputHandle<'_, C::Time, ((K, C::Val), C::Time, C::R), P>,
     capability: &Capability<C::Time>,
     k: &K,
-    time: &Option<C::Time>,
+    time: Option<&C::Time>,
 ) where
     K: Data + 'static,
     C::Val: Data + 'static,
@@ -277,11 +277,13 @@ fn push_key_values_to_output<K, C: Cursor, P>(
         let weight = key_val_total_weight(wrapper);
         let curr_val = wrapper.cursor.val(wrapper.storage);
         if let Some(weight) = weight.filter(|w| !w.is_zero()) {
-            let time = time.as_ref().unwrap();
-            assert!(time >= capability.time());
-            output
-                .session(&capability)
-                .give(((k.clone(), curr_val.clone()), time.clone(), weight));
+            let time = time.cloned().unwrap();
+            assert!(time >= *capability.time());
+            output.session(&capability).give((
+                (k.clone(), curr_val.clone()),
+                time.clone().clone(),
+                weight,
+            ));
         }
         wrapper.cursor.step_val(wrapper.storage);
     }
@@ -451,7 +453,7 @@ where
                                             output,
                                             &capability.delayed(&time),
                                             &tk.key,
-                                            &Some(time.clone()),
+                                            Some(&time.clone()),
                                         );
                                         input_wrapper.cursor.step_key(input_wrapper.storage);
                                     }
@@ -510,7 +512,7 @@ where
                                         output,
                                         maybe_cap.as_ref().unwrap(),
                                         &tk.key,
-                                        &Some(maybe_cap.as_ref().unwrap().time().clone()),
+                                        Some(&maybe_cap.as_ref().unwrap().time().clone()),
                                     );
 
                                     input_wrapper.cursor.step_key(input_wrapper.storage);

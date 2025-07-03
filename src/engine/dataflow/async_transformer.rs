@@ -1,33 +1,5 @@
-// Copyright © 2025 Pathway
-
-use std::cell::RefCell;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::mem::take;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
-
-use differential_dataflow::input::InputSession;
-use differential_dataflow::{AsCollection, Collection};
-use timely::dataflow::operators::{Exchange, Inspect, Map};
-use timely::progress::Timestamp as _;
-
-use crate::connectors::adaptors::InputAdaptor;
-use crate::connectors::data_format::Parser;
-use crate::connectors::data_storage::ReaderBuilder;
-use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
-use crate::engine::graph::{SubscribeCallbacks, SubscribeConfig};
-use crate::engine::{
-    ColumnPath, Error, Key, OriginalOrRetraction, Result, TableHandle, TableProperties, Timestamp,
-    Value,
-};
-
-use super::maybe_total::MaybeTotalScope;
-use super::operators::output::ConsolidateForOutput;
-use super::operators::{MapWrapped, MaybeTotal, Reshard};
-use super::{DataflowGraphInner, MaybePersist, Table, Tuple};
-
+/// Copyright © 2025 Pathway
+///
 /// `AsyncTransformer` allows for fully asynchronous computation on the python side.
 /// Computation results are returned to the engine in a later (or equal) time
 /// than the entry that triggered the computation.
@@ -66,6 +38,33 @@ use super::{DataflowGraphInner, MaybePersist, Table, Tuple};
 /// - upsert operator with persistence. Upsert is there to avoid recomputation for deletions. Without upserting,
 ///   there could be problems with inconsistency as the `AsyncTransformer` can be non-deterministic.
 ///   Persistence is there to be able to update values computed in previous runs.
+use std::cell::RefCell;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::mem::take;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
+
+use differential_dataflow::input::InputSession;
+use differential_dataflow::{AsCollection, Collection};
+use timely::dataflow::operators::{Exchange, Inspect, Map};
+use timely::progress::Timestamp as _;
+
+use crate::connectors::adaptors::InputAdaptor;
+use crate::connectors::data_format::Parser;
+use crate::connectors::data_storage::ReaderBuilder;
+use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
+use crate::engine::graph::{SubscribeCallbacks, SubscribeConfig};
+use crate::engine::{
+    ColumnPath, Error, Key, OriginalOrRetraction, Result, TableHandle, TableProperties, Timestamp,
+    Value,
+};
+
+use super::maybe_total::MaybeTotalScope;
+use super::operators::output::ConsolidateForOutput;
+use super::operators::{MapWrapped, MaybeTotal, Reshard};
+use super::{DataflowGraphInner, MaybePersist, Table, Tuple};
 
 struct AsyncTransformerSession {
     input_session: InputSession<Timestamp, (Key, Value, i64), isize>,
@@ -82,12 +81,11 @@ impl AsyncTransformerSession {
     }
 }
 
+/// The implementation below mostly reuses differetial dataflow's `InputSession` internals.
+///
+/// It adds a sequential id for each entry so that it is possible later to
+/// deduplicate entries for a single (key, time) pair leaving only the last one.
 impl InputAdaptor<Timestamp> for AsyncTransformerSession {
-    /// The implementation below mostly reuses differetial dataflow's `InputSession` internals.
-    ///
-    /// It adds a sequential id for each entry so that it is possible later to
-    /// deduplicate entries for a single (key, time) pair leaving only the last one.
-
     fn new() -> Self {
         AsyncTransformerSession {
             input_session: InputSession::new(),

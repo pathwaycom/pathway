@@ -106,7 +106,7 @@ fn get_chunks(keys: Vec<String>, threshold_time: TotalFrontier<Timestamp>) -> Ch
                 too_new.push(chunk);
             } else if max_time_per_level
                 .get(1)
-                .map_or(true, |max_time| chunk.time > *max_time)
+                .is_none_or(|max_time| chunk.time > *max_time)
             {
                 // If max_time_per_level[1] exists it means there are merged chunks.
                 // Unmerged chunks are valid if their time > last merged chunk time
@@ -292,7 +292,7 @@ where
 {
     fn persist(&mut self, time: Timestamp, mut data: Vec<(D, R)>) {
         self.maybe_save(TotalFrontier::At(time));
-        assert!(self.max_time.map_or(true, |max_time| max_time <= time));
+        assert!(self.max_time.is_none_or(|max_time| max_time <= time));
         self.max_time = Some(time);
         self.buffer.append(&mut data);
     }

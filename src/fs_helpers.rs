@@ -13,10 +13,7 @@ pub fn ensure_directory(fs_path: &Path) -> Result<(), Error> {
         }
     } else if !fs_path.is_dir() {
         // use ErrorKind::NotADirectory when it becomes stable
-        return Err(Error::new(
-            ErrorKind::Other,
-            "target object should be a directory",
-        ));
+        return Err(Error::other("target object should be a directory"));
     }
     Ok(())
 }

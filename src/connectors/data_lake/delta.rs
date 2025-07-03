@@ -159,31 +159,31 @@ impl DeltaOptimizerRule {
 
 #[derive(Debug)]
 pub struct SchemaMismatchDetails {
-    columns_outside_existing_schema: Vec<String>,
-    columns_missing_in_user_schema: Vec<String>,
-    columns_mismatching_types: Vec<FieldMismatchDetails>,
+    outside_existing_schema: Vec<String>,
+    missing_in_user_schema: Vec<String>,
+    mismatching_types: Vec<FieldMismatchDetails>,
 }
 
 impl fmt::Display for SchemaMismatchDetails {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut error_parts = Vec::new();
-        if !self.columns_outside_existing_schema.is_empty() {
+        if !self.outside_existing_schema.is_empty() {
             let error_part = format!(
                 "Fields in the provided schema that aren't present in the existing table: {:?}",
-                self.columns_outside_existing_schema
+                self.outside_existing_schema
             );
             error_parts.push(error_part);
         }
-        if !self.columns_missing_in_user_schema.is_empty() {
+        if !self.missing_in_user_schema.is_empty() {
             let error_part = format!(
                 "Fields in the existing table that aren't present in the provided schema: {:?}",
-                self.columns_missing_in_user_schema
+                self.missing_in_user_schema
             );
             error_parts.push(error_part);
         }
-        if !self.columns_mismatching_types.is_empty() {
+        if !self.mismatching_types.is_empty() {
             let formatted_mismatched_types = self
-                .columns_mismatching_types
+                .mismatching_types
                 .iter()
                 .map(|item| format!("{item}"))
                 .join(", ");
@@ -304,9 +304,9 @@ impl DeltaBatchWriter {
         existing_schema: &IndexMap<String, DeltaTableStructField>,
         user_schema: &[DeltaTableStructField],
     ) -> Result<(), WriteError> {
-        let mut columns_outside_existing_schema: Vec<String> = Vec::new();
-        let mut columns_missing_in_user_schema: Vec<String> = Vec::new();
-        let mut columns_mismatching_types = Vec::new();
+        let mut outside_existing_schema: Vec<String> = Vec::new();
+        let mut missing_in_user_schema: Vec<String> = Vec::new();
+        let mut mismatching_types = Vec::new();
         let mut has_error = false;
 
         let mut defined_user_columns = HashSet::new();
@@ -314,14 +314,14 @@ impl DeltaBatchWriter {
             let name = &user_column.name;
             defined_user_columns.insert(name.to_string());
             let Some(schema_column) = existing_schema.get(name) else {
-                columns_outside_existing_schema.push(name.to_string());
+                outside_existing_schema.push(name.to_string());
                 has_error = true;
                 continue;
             };
             let nullability_differs = user_column.nullable != schema_column.nullable;
             let data_type_differs = user_column.data_type != schema_column.data_type;
             if nullability_differs || data_type_differs {
-                columns_mismatching_types.push(FieldMismatchDetails {
+                mismatching_types.push(FieldMismatchDetails {
                     schema_field: schema_column.clone(),
                     user_field: user_column.clone(),
                 });
@@ -330,16 +330,16 @@ impl DeltaBatchWriter {
         }
         for schema_column in existing_schema.keys() {
             if !defined_user_columns.contains(schema_column) {
-                columns_missing_in_user_schema.push(schema_column.to_string());
+                missing_in_user_schema.push(schema_column.to_string());
                 has_error = true;
             }
         }
 
         if has_error {
             let schema_mismatch_details = SchemaMismatchDetails {
-                columns_outside_existing_schema,
-                columns_missing_in_user_schema,
-                columns_mismatching_types,
+                outside_existing_schema,
+                missing_in_user_schema,
+                mismatching_types,
             };
             Err(WriteError::DeltaTableSchemaMismatch(
                 schema_mismatch_details,
@@ -585,7 +585,6 @@ pub fn read_delta_table<S: std::hash::BuildHasher>(
                     }
                     Err(_) => {
                         n_errors += 1;
-                        continue;
                     }
                 }
             }

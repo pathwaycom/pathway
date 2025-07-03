@@ -63,15 +63,14 @@ impl<Timestamp: TimelyTimestamp + Lattice + TotalOrder> UpsertSession<Timestamp>
     }
 }
 
+/// The implementation below mostly reuses differetial dataflow's `InputSession` internals.
+///
+/// The main difference is the consolidation of the buffer before flushing.
+/// Without consolidation, if we have multiple entries for a single key,
+/// we may end up with any entry for this key, not necessarily the final one.
 impl<Timestamp: TimelyTimestamp + Lattice + TotalOrder> InputAdaptor<Timestamp>
     for UpsertSession<Timestamp>
 {
-    /// The implementation below mostly reuses differetial dataflow's `InputSession` internals.
-    ///
-    /// The main difference is the consolidation of the buffer before flushing.
-    /// Without consolidation, if we have multiple entries for a single key,
-    /// we may end up with any entry for this key, not necessarily the final one.
-
     fn new() -> Self {
         let handle: Handle<Timestamp, _> = Handle::new();
         UpsertSession {

@@ -362,9 +362,7 @@ pub fn register_custom_panic_hook() {
             Some(message) => Some(*message),
             None => payload.downcast_ref::<String>().map(String::as_str),
         };
-        if message.map_or(true, |message| {
-            !OTHER_WORKER_ERROR_MESSAGES.contains(&message)
-        }) {
+        if message.is_none_or(|message| !OTHER_WORKER_ERROR_MESSAGES.contains(&message)) {
             prev(panic_info);
         }
     }));

@@ -111,7 +111,7 @@ impl Logger {
                                     ack_sender.send(()).unwrap_or(());
                                 }
                                 Err(channel::RecvError) => break,
-                            };
+                            }
                         }
                         drop(thread_state);
                     })

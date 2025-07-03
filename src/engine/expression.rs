@@ -35,7 +35,7 @@ pub enum MaybeOwnedValues<'a> {
     Borrowed(&'a [Value]),
 }
 
-impl<'a> Deref for MaybeOwnedValues<'a> {
+impl Deref for MaybeOwnedValues<'_> {
     type Target = [Value];
 
     fn deref(&self) -> &[Value] {

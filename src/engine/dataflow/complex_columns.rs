@@ -117,7 +117,7 @@ struct Context<'a> {
     requests: RefCell<Vec<Request>>,
 }
 
-impl<'a> ContextTrait for Context<'a> {
+impl ContextTrait for Context<'_> {
     fn this_row(&self) -> Key {
         self.key
     }

@@ -61,7 +61,7 @@ impl PersistenceBackend for FilesystemKVStorage {
                     keys.push(key);
                 }
             } else {
-                warn!("The path is not UTF-8 encoded: {entry:?}");
+                warn!("The path is not UTF-8 encoded: {}", entry.display());
             }
         }
         Ok(keys)

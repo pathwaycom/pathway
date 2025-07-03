@@ -409,7 +409,7 @@ impl Connector {
                         error_reporter.report(EngineError::ReaderFailed(error));
                     }
                 }
-            };
+            }
 
             if finished {
                 break;
@@ -803,7 +803,7 @@ impl Connector {
                     SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => {
                         unreachable!()
                     }
-                };
+                }
             }
         }
     }
@@ -905,7 +905,7 @@ impl Connector {
                             ));
                     }
                 }
-            };
+            }
         }
     }
 

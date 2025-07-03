@@ -726,7 +726,7 @@ impl From<EngineError> for PyErr {
         match error.downcast::<PyErr>() {
             Ok(error) => return error,
             Err(other) => error = other,
-        };
+        }
         Python::with_gil(|py| {
             if let EngineError::WithTrace { inner, trace } = error {
                 let inner = PyErr::from(EngineError::from(inner));
@@ -4983,7 +4983,7 @@ impl CsvParserSettings {
 
 impl DataStorage {
     fn extract_string_field<'a>(
-        field: &'a Option<String>,
+        field: Option<&'a String>,
         error_message: &'static str,
     ) -> PyResult<&'a str> {
         let value = field
@@ -4994,26 +4994,29 @@ impl DataStorage {
     }
 
     fn path(&self) -> PyResult<&str> {
-        Self::extract_string_field(&self.path, "For fs/s3 storage, path must be specified")
+        Self::extract_string_field(
+            self.path.as_ref(),
+            "For fs/s3 storage, path must be specified",
+        )
     }
 
     fn table_name(&self) -> PyResult<&str> {
         Self::extract_string_field(
-            &self.table_name,
+            self.table_name.as_ref(),
             "For MongoDB, the 'table_name' field must be specified",
         )
     }
 
     fn database(&self) -> PyResult<&str> {
         Self::extract_string_field(
-            &self.database,
+            self.database.as_ref(),
             "For MongoDB, the 'database' field must be specified",
         )
     }
 
     fn connection_string(&self) -> PyResult<&str> {
         Self::extract_string_field(
-            &self.connection_string,
+            self.connection_string.as_ref(),
             "For Postgres and MongoDB, the 'connection_string' field must be specified",
         )
     }
@@ -5498,7 +5501,7 @@ impl DataStorage {
         }
 
         let uri = self.path()?;
-        let warehouse = &self.database;
+        let warehouse = self.database.as_ref();
         let table_name = self.table_name()?;
         let namespace = self
             .namespace
@@ -5511,7 +5514,7 @@ impl DataStorage {
 
         let db_params = IcebergDBParams::new(
             uri.to_string(),
-            warehouse.clone(),
+            warehouse.cloned(),
             namespace,
             self.iceberg_s3_storage_options(),
         );
@@ -5681,7 +5684,7 @@ impl DataStorage {
                 self.snapshot_maintenance_on_output,
                 self.table_name()?,
                 &data_format.value_fields_type_map(py),
-                &data_format.key_field_names,
+                data_format.key_field_names.as_ref(),
                 self.sql_writer_init_mode,
             )
             .map_err(|e| {
@@ -5790,7 +5793,7 @@ impl DataStorage {
         }
 
         let uri = self.path()?;
-        let warehouse = &self.database;
+        let warehouse = self.database.as_ref();
         let table_name = self.table_name()?;
         let namespace = self
             .namespace
@@ -5803,7 +5806,7 @@ impl DataStorage {
 
         let db_params = IcebergDBParams::new(
             uri.to_string(),
-            warehouse.clone(),
+            warehouse.cloned(),
             namespace,
             self.iceberg_s3_storage_options(),
         );
@@ -6393,7 +6396,7 @@ impl<'py> WakeupHandler<'py> {
     }
 }
 
-impl<'py> Drop for WakeupHandler<'py> {
+impl Drop for WakeupHandler<'_> {
     fn drop(&mut self) {
         self.set_wakeup_fd
             .call1((&self.old_wakeup_fd,))

@@ -116,7 +116,7 @@ impl BackgroundObjectUploader {
                             }
                         },
                         BackgroundUploaderEvent::Finish => break,
-                    };
+                    }
                 }
             })
             .expect("background uploader failed");

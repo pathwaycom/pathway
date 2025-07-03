@@ -147,7 +147,7 @@ fn apply_to_fragment<K, V, T, R, St, Sc, C, P>(
     to: Option<&K>,
     negate: bool,
     output: &mut OutputHandle<'_, T, ((K, (V, Sc)), T, R), P>,
-    time: &Option<T>,
+    time: Option<&T>,
     capability: &Capability<T>,
 ) where
     K: ExchangeData + HasMaxValue,
@@ -213,7 +213,7 @@ fn replace_in_fragment<K, V, T, R, St, Sc, C, P>(
     from: Option<&K>,
     to: Option<&K>,
     output: &mut OutputHandle<'_, T, ((K, (V, Sc)), T, R), P>,
-    time: &Option<T>,
+    time: Option<&T>,
     capability: &Capability<T>,
 ) where
     K: ExchangeData + HasMaxValue,
@@ -255,7 +255,7 @@ fn replace_in_fragment<K, V, T, R, St, Sc, C, P>(
 }
 
 fn get_new_triplet_from_input_vec<K, V, T, R>(
-    current: &Option<ApxToBroadcast<V>>,
+    current: Option<&ApxToBroadcast<V>>,
     input: &Vec<((K, (V, V, V)), T, R)>,
 ) -> Option<(T, ApxToBroadcast<V>)>
 where
@@ -291,7 +291,7 @@ where
     let (&(_, received_triplet), _) = non_zero[0];
 
     let (&(_key, received_triplet), (retrieved_time, _r)) = if non_zero.len() == 2
-        && current == &Some(ApxToBroadcast::from_triplet(received_triplet.clone()))
+        && current == Some(&ApxToBroadcast::from_triplet(received_triplet.clone()))
     {
         non_zero[1]
     } else {
@@ -370,7 +370,7 @@ where
                                         None,
                                         false,
                                         output,
-                                        &None,
+                                        None,
                                         &cap1,
                                     );
                                 }
@@ -391,7 +391,8 @@ where
 
                         old_triplet.clone_from(&triplet);
 
-                        let processed = get_new_triplet_from_input_vec(&triplet, &input2_buffer);
+                        let processed =
+                            get_new_triplet_from_input_vec(triplet.as_ref(), &input2_buffer);
                         if processed.is_none() {
                             return;
                         }
@@ -431,7 +432,7 @@ where
                                         Some(from),
                                         Some(to),
                                         output,
-                                        &Some(time.clone()),
+                                        Some(&time.clone()),
                                         &cap2,
                                     );
                                 }
@@ -446,7 +447,7 @@ where
                                 None,
                                 None,
                                 output,
-                                &Some(time.clone()),
+                                Some(&time.clone()),
                                 &cap2,
                             );
                         } else if let Some(unwrapped_triplet) = triplet.clone() {
@@ -465,7 +466,7 @@ where
                                     Some(from),
                                     Some(to),
                                     output,
-                                    &Some(time.clone()),
+                                    Some(&time.clone()),
                                     &cap2,
                                 );
                             } else {
@@ -477,7 +478,7 @@ where
                                     None,
                                     false,
                                     output,
-                                    &Some(time.clone()),
+                                    Some(&time.clone()),
                                     &cap2,
                                 );
                             }

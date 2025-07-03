@@ -147,11 +147,7 @@ pub fn parquet_value_into_pathway_value(
         }
         (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => Some(Value::Bytes(b.data().into())),
         (ParquetValue::Bytes(b), Type::PyObjectWrapper) => {
-            if let Ok(value) = bincode::deserialize::<Value>(b.data()) {
-                Some(value)
-            } else {
-                None
-            }
+            bincode::deserialize::<Value>(b.data()).ok()
         }
         (ParquetValue::ListInternal(parquet_list), Type::List(nested_type)) => {
             let mut values = Vec::new();

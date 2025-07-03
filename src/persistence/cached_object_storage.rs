@@ -69,19 +69,19 @@ impl MetadataEvent {
 ///
 /// The implementation is as follows:
 /// * There are two types of events: object addition and object removal.
-///    These events are stored both in the selected durable storage and in several
-///    in-memory indexes, denoting events by version; sorted event sequences by the
-///    object URI and the snapshot - the actual, version-unaware state of the data
-///    structure.
+///   These events are stored both in the selected durable storage and in several
+///   in-memory indexes, denoting events by version; sorted event sequences by the
+///   object URI and the snapshot - the actual, version-unaware state of the data
+///   structure.
 /// * When the data structure starts, it reads the sequence of events and
-///    constructs the mappings described above.
+///   constructs the mappings described above.
 /// * When a rewind takes place, the versions that need to be deleted are detected
-///    and undone one by one, starting from the latest. Note that these events are
-///    also removed from the durable storage.
+///   and undone one by one, starting from the latest. Note that these events are
+///   also removed from the durable storage.
 /// * When a lookup takes place, the snapshot is used.
 /// * When an upsert or removal takes place, a new version is created. An event
-///    corresponding to this version is added to the durable storage and to the local
-///    event indexes. It is also reflected in a locally stored snapshot.
+///   corresponding to this version is added to the durable storage and to the local
+///   event indexes. It is also reflected in a locally stored snapshot.
 #[derive(Debug)]
 pub struct CachedObjectStorage {
     backend: Box<dyn PersistenceBackend>,

@@ -71,6 +71,7 @@ impl CountStats {
         self.current_rows += diff;
     }
 
+    #[allow(clippy::manual_midpoint)]
     pub fn get_insertions(&self) -> isize {
         (self.current_rows + self.total_rows) / 2
     }
