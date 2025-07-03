@@ -1196,7 +1196,7 @@ fn parse_ndarray_from_json(value: &JsonMap<String, JsonValue>, dtype: &Type) -> 
     }
 }
 
-fn create_bincoded_value(value: &Value) -> Result<String, FormatterError> {
+pub fn create_bincoded_value(value: &Value) -> Result<String, FormatterError> {
     let raw_bytes = bincode::serialize(value).map_err(|e| *e)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
     Ok(encoded)
@@ -1281,7 +1281,7 @@ fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
     }
 }
 
-fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
+pub fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
     match value {
         Value::None => Ok(JsonValue::Null),
         Value::Int(i) => Ok(json!(i)),

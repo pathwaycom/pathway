@@ -24,6 +24,7 @@ from pathway.io import (
     pubsub,
     pyfilesystem,
     python,
+    questdb,
     redpanda,
     s3,
     s3_csv,
@@ -68,4 +69,5 @@ __all__ = [
     "nats",
     "register_input_synchronization_group",
     "mqtt",
+    "questdb",
 ]

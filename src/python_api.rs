@@ -45,6 +45,7 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, Py
 use pyo3::{intern, PyTypeInfo};
 use pyo3::{prelude::*, IntoPyObjectExt};
 use pyo3_log::ResetHandle;
+use questdb::ingress::Sender as QuestDBSender;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
 use rdkafka::{ClientConfig, Offset as KafkaOffset, TopicPartitionList};
@@ -99,8 +100,9 @@ use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, NatsReader,
     NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
-    PythonReaderBuilder, RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqlWriterInitMode,
-    SqliteReader, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter, RdkafkaWatermark, ReadError,
+    ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, WriteError, Writer,
+    MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::synchronization::ConnectorGroupDescriptor;
@@ -3407,9 +3409,11 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
-        let sink_impl = data_sink
-            .borrow()
-            .construct_writer(py, &data_format.borrow())?;
+        let sink_impl = data_sink.borrow().construct_writer(
+            py,
+            &data_format.borrow(),
+            self_.borrow().license.as_ref(),
+        )?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
 
         self_.borrow().graph.output_table(
@@ -4671,6 +4675,7 @@ pub struct DataFormat {
     key_generation_policy: KeyGenerationPolicy,
     schema_registry_settings: Option<PySchemaRegistrySettings>,
     subject: Option<String>,
+    designated_timestamp_policy: Option<String>,
 }
 
 #[pymethods]
@@ -4870,6 +4875,7 @@ impl DataFormat {
         key_generation_policy = KeyGenerationPolicy::PreferMessageKey,
         schema_registry_settings = None,
         subject = None,
+        designated_timestamp_policy = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4887,6 +4893,7 @@ impl DataFormat {
         key_generation_policy: KeyGenerationPolicy,
         schema_registry_settings: Option<PySchemaRegistrySettings>,
         subject: Option<String>,
+        designated_timestamp_policy: Option<String>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -4903,6 +4910,7 @@ impl DataFormat {
             key_generation_policy,
             schema_registry_settings,
             subject,
+            designated_timestamp_policy,
         }
     }
 
@@ -5003,7 +5011,7 @@ impl DataStorage {
     fn table_name(&self) -> PyResult<&str> {
         Self::extract_string_field(
             self.table_name.as_ref(),
-            "For MongoDB, the 'table_name' field must be specified",
+            "For MongoDB or QuestDB, the 'table_name' field must be specified",
         )
     }
 
@@ -5874,10 +5882,81 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_questdb_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["questdb"])?;
+        }
+
+        let uri = self.path()?;
+        let sender = QuestDBSender::from_conf(uri)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create QuestDB sender: {e}")))?;
+        let table_name = self.table_name()?;
+        let value_fields: Vec<_> = data_format
+            .value_fields
+            .iter()
+            .map(|field| field.borrow(py).clone().name)
+            .collect();
+        let designated_timestamp_policy_name = data_format
+            .designated_timestamp_policy
+            .clone()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For QuestDB, 'designated_timestamp_policy' must be specified",
+                )
+            })?;
+        let designated_timestamp_policy = match designated_timestamp_policy_name.as_str() {
+            "use_now" => QuestDBAtColumnPolicy::UseNow,
+            "use_pathway_time" => QuestDBAtColumnPolicy::UsePathwayTime,
+            "use_column" => {
+                let column_id = self
+                    .key_field_index
+                    .ok_or_else(
+                        || PyValueError::new_err(
+                            "For QuestDB, if 'designated_timestamp_policy' is 'use_column', the 'key_column_index' must be specified"
+                        ))?;
+                if column_id >= value_fields.len() {
+                    return Err(PyValueError::new_err(format!(
+                        "Column index {column_id} is outside the total count: {}",
+                        value_fields.len()
+                    )));
+                }
+                let designated_timestamp_type =
+                    data_format.value_fields[column_id].borrow(py).type_.clone();
+                if designated_timestamp_type != Type::DateTimeNaive
+                    && designated_timestamp_type != Type::DateTimeUtc
+                {
+                    return Err(PyValueError::new_err(format!(
+                        "at column doesn't have the timestamp type: {designated_timestamp_type}"
+                    )));
+                }
+                QuestDBAtColumnPolicy::UseColumn(column_id)
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Unknown 'designated_timestamp_policy': {designated_timestamp_policy_name}"
+                )))
+            }
+        };
+        let writer = QuestDBWriter::new(
+            sender,
+            table_name.to_string(),
+            value_fields,
+            designated_timestamp_policy,
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to create QuestDB writer: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_writer(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
+        license: Option<&License>,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_writer(),
@@ -5890,6 +5969,7 @@ impl DataStorage {
             "nats" => self.construct_nats_writer(),
             "iceberg" => self.construct_iceberg_writer(py, data_format),
             "mqtt" => self.construct_mqtt_writer(),
+            "questdb" => self.construct_questdb_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),

@@ -106,6 +106,7 @@ def test_license_enterprise(caplog):
     caplog.set_level(level=logging.INFO)
     pw.set_license_key(PATHWAY_LICENSES["enterprise"])
 
+    _check_entitlements("questdb")
     _check_entitlements("xpack-spatial")
     run_all()
 

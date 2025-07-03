@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.questdb.write` method for writing to Quest DB.
+
 ## [0.24.1] - 2025-07-03
 
 ### Added

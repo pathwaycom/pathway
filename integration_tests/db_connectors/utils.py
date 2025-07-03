@@ -21,6 +21,13 @@ POSTGRES_SETTINGS = {
     "password": POSTGRES_DB_PASSWORD,
 }
 
+QUEST_DB_HOST = "questdb"
+QUEST_DB_WIRE_PORT = 8812
+QUEST_DB_LINE_PORT = 9000
+QUEST_DB_NAME = "qdb"
+QUEST_DB_USER = "admin"
+QUEST_DB_PASSWORD = "quest"
+
 MONGODB_HOST_WITH_PORT = "mongodb:27017"
 MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
@@ -37,15 +44,17 @@ KAFKA_SETTINGS = {
 DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
 
-class PostgresContext:
+class WireProtocolSupporterContext:
 
-    def __init__(self):
+    def __init__(
+        self, *, host: str, port: int, database: str, user: str, password: str
+    ):
         self.connection = psycopg2.connect(
-            host=POSTGRES_DB_HOST,
-            port=POSTGRES_DB_PORT,
-            database=POSTGRES_DB_NAME,
-            user=POSTGRES_DB_USER,
-            password=POSTGRES_DB_PASSWORD,
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
         )
         self.connection.autocommit = True
         self.cursor = self.connection.cursor()
@@ -128,7 +137,31 @@ class PostgresContext:
         return result
 
     def random_table_name(self) -> str:
-        return f'postgres_{str(uuid.uuid4()).replace("-", "")}'
+        return f'wire_{str(uuid.uuid4()).replace("-", "")}'
+
+
+class PostgresContext(WireProtocolSupporterContext):
+
+    def __init__(self):
+        super().__init__(
+            host=POSTGRES_DB_HOST,
+            port=POSTGRES_DB_PORT,
+            database=POSTGRES_DB_NAME,
+            user=POSTGRES_DB_USER,
+            password=POSTGRES_DB_PASSWORD,
+        )
+
+
+class QuestDBContext(WireProtocolSupporterContext):
+
+    def __init__(self):
+        super().__init__(
+            host=QUEST_DB_HOST,
+            port=QUEST_DB_WIRE_PORT,
+            database=QUEST_DB_NAME,
+            user=QUEST_DB_USER,
+            password=QUEST_DB_PASSWORD,
+        )
 
 
 class MongoDBContext:

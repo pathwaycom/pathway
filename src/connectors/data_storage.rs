@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
 
+use base64::Engine;
 use postgres::Transaction as PsqlTransaction;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyBytes;
@@ -34,6 +35,11 @@ use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
+use questdb::ingress::{
+    Buffer as QuestDBBuffer, Sender as QuestDBSender, Timestamp as QuestDBTimestamp,
+    TimestampMicros as QuestDBTimestampMicros, TimestampNanos as QuestDBTimestampNanos,
+};
+use questdb::Error as QuestDBError;
 use rumqttc::{
     mqttbytes::QoS as MqttQoS, Client as MqttClient, ClientError as MqttClientError,
     Connection as MqttConnection, ConnectionError as MqttConnectionError, Event as MqttEvent,
@@ -42,7 +48,10 @@ use rumqttc::{
 use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
-use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
+use crate::connectors::data_format::{
+    create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
+    COMMIT_LITERAL,
+};
 use crate::connectors::data_lake::buffering::IncorrectSnapshotError;
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
 use crate::connectors::metadata::{KafkaMetadata, SQLiteMetadata, SourceMetadata};
@@ -50,10 +59,11 @@ use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::s3::S3CommandName;
 use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
-use crate::connectors::{Offset, OffsetKey, OffsetValue};
+use crate::connectors::{Offset, OffsetKey, OffsetValue, SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
+use crate::engine::time::DateTime;
 use crate::engine::Type;
 use crate::engine::{Key, Value};
 use crate::persistence::backends::Error as PersistenceBackendError;
@@ -650,6 +660,12 @@ pub enum WriteError {
 
     #[error(transparent)]
     IcebergError(#[from] IcebergError),
+
+    #[error(transparent)]
+    QuestDBError(#[from] QuestDBError),
+
+    #[error("the 'at' QuestDB column is not of the time type: {0}")]
+    QuestDBAtColumnNotTime(Value),
 
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),
@@ -2338,6 +2354,168 @@ impl Writer for MqttWriter {
 
     fn name(&self) -> String {
         format!("MQTT({})", self.topic)
+    }
+
+    fn retriable(&self) -> bool {
+        true
+    }
+
+    fn single_threaded(&self) -> bool {
+        false
+    }
+}
+
+pub enum QuestDBAtColumnPolicy {
+    UseNow,
+    UsePathwayTime,
+    UseColumn(usize),
+}
+
+pub struct QuestDBWriter {
+    sender: QuestDBSender,
+    table_name: String,
+    field_names: Vec<String>,
+    designated_timestamp_policy: QuestDBAtColumnPolicy,
+    buffer: QuestDBBuffer,
+    has_updates: bool,
+}
+
+impl QuestDBWriter {
+    pub fn new(
+        sender: QuestDBSender,
+        table_name: String,
+        field_names: Vec<String>,
+        designated_timestamp_policy: QuestDBAtColumnPolicy,
+    ) -> Result<Self, WriteError> {
+        let mut buffer = QuestDBBuffer::new();
+        buffer.table(table_name.as_str())?;
+        Ok(Self {
+            sender,
+            table_name,
+            field_names,
+            designated_timestamp_policy,
+            buffer,
+            has_updates: false,
+        })
+    }
+}
+
+impl Writer for QuestDBWriter {
+    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        let (at_timestamp, skip_column_id) =
+            if let QuestDBAtColumnPolicy::UseColumn(column_id) = self.designated_timestamp_policy {
+                let at_value = &data.values[column_id];
+                match at_value {
+                    Value::DateTimeNaive(dt) => (
+                        Some(QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(
+                            dt.timestamp(),
+                        ))),
+                        column_id,
+                    ),
+                    Value::DateTimeUtc(dt) => (
+                        Some(QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(
+                            dt.timestamp(),
+                        ))),
+                        column_id,
+                    ),
+                    _ => return Err(WriteError::QuestDBAtColumnNotTime(at_value.clone())),
+                }
+            } else {
+                (None, data.values.len())
+            };
+
+        for (column_id, (value, column_name)) in data
+            .values
+            .into_iter()
+            .zip(self.field_names.iter())
+            .enumerate()
+        {
+            if column_id == skip_column_id {
+                continue;
+            }
+            match value {
+                Value::None => &mut self.buffer, // just don't specify the value
+                Value::Bool(b) => self.buffer.column_bool(column_name.as_str(), b)?,
+                Value::Int(i) => self.buffer.column_i64(column_name.as_str(), i)?,
+                Value::Float(f) => self.buffer.column_f64(column_name.as_str(), *f)?,
+                Value::String(s) => self.buffer.column_str(column_name.as_str(), s)?,
+                Value::DateTimeNaive(dt) => self.buffer.column_ts(
+                    column_name.as_str(),
+                    QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
+                )?,
+                Value::DateTimeUtc(dt) => self.buffer.column_ts(
+                    column_name.as_str(),
+                    QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
+                )?,
+                Value::Duration(d) => self
+                    .buffer
+                    .column_i64(column_name.as_str(), d.nanoseconds())?,
+                Value::Json(j) => self
+                    .buffer
+                    .column_str(column_name.as_str(), j.to_string())?,
+                Value::PyObjectWrapper(_) => self
+                    .buffer
+                    .column_str(column_name.as_str(), create_bincoded_value(&value)?)?,
+                Value::Pointer(p) => self
+                    .buffer
+                    .column_str(column_name.as_str(), p.to_string())?,
+                Value::Bytes(b) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+                    self.buffer.column_str(column_name.as_str(), encoded)?
+                }
+                Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
+                    let json_value = serialize_value_to_json(&value)?;
+                    self.buffer
+                        .column_str(column_name.as_str(), json_value.to_string())?
+                }
+                Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable)?,
+                Value::Pending => Err(FormatterError::PendingValueNonJsonSerializable)?,
+            };
+        }
+        self.buffer.column_i64(
+            SPECIAL_FIELD_DIFF,
+            data.diff
+                .try_into()
+                .expect("pathway diff can only be 1 or -1"),
+        )?;
+        let pathway_time_casted = QuestDBTimestampMicros::new(
+            data.time
+                .0
+                .checked_mul(1000) // Pathway minibatch time is milliseconds, hence multiplication by 1000 is needed
+                .expect("pathway time must fit 64bit signed integer")
+                .try_into()
+                .expect("pathway time must be nonnegative"),
+        );
+        match self.designated_timestamp_policy {
+            QuestDBAtColumnPolicy::UseNow => {
+                self.buffer
+                    .column_ts(SPECIAL_FIELD_TIME, pathway_time_casted)?;
+                self.buffer.at_now()?;
+            }
+            QuestDBAtColumnPolicy::UsePathwayTime => self.buffer.at(pathway_time_casted)?,
+            QuestDBAtColumnPolicy::UseColumn(_) => {
+                self.buffer
+                    .column_ts(SPECIAL_FIELD_TIME, pathway_time_casted)?;
+                self.buffer
+                    .at(at_timestamp.expect("at_timestamp must have defined upstream"))?;
+            }
+        }
+        self.has_updates = true;
+
+        Ok(())
+    }
+
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
+        if self.has_updates {
+            self.sender.flush(&mut self.buffer)?;
+            self.has_updates = false;
+            self.buffer.table(self.table_name.as_str())?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> String {
+        format!("QuestDB({})", self.table_name)
     }
 
     fn retriable(&self) -> bool {

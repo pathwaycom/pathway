@@ -40,6 +40,7 @@ def write(
     serialized as an integer number of milliseconds for consistency.
 
     Args:
+        table: The table to output.
         connection_string: The connection string for the MongoDB database. See the \
 `MongoDB documentation <https://www.mongodb.com/docs/manual/reference/connection-string/>`_ \
 for the details.

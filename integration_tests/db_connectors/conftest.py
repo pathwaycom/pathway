@@ -1,10 +1,15 @@
 import pytest
-from utils import DebeziumContext, MongoDBContext, PostgresContext
+from utils import DebeziumContext, MongoDBContext, PostgresContext, QuestDBContext
 
 
 @pytest.fixture
 def postgres():
     return PostgresContext()
+
+
+@pytest.fixture
+def questdb():
+    return QuestDBContext()
 
 
 @pytest.fixture

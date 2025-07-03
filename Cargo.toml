@@ -70,6 +70,7 @@ prometheus-client = "0.23.1"
 pyo3 = { version = "0.25.0", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-async-runtimes = "0.25.0"
 pyo3-log = "0.12.4"
+questdb-rs = "4.0.5"
 rand = "0.9.1"
 rayon = "1.10.0"
 rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
