@@ -26,6 +26,18 @@ only_enterprise_build = pytest.mark.xfail(
     strict=True,
 )
 
+SCALE_TIER_ENTITLEMENTS = [
+    "advanced-parser",
+    "bigquery",
+    "deltalake",
+    "elasticsearch",
+    "full-persistence",
+    "iceberg",
+    "monitoring",
+    "questdb",
+    "xpack-sharepoint",
+]
+
 
 def test_license_malformed():
     pw.set_license_key(PATHWAY_LICENSES["malformed"])
@@ -57,6 +69,22 @@ def test_no_license(caplog):
 
 
 @only_standard_build
+def test_entitlement_requires_scale_license(caplog):
+    caplog.set_level(level=logging.INFO)
+    pw.set_license_key(None)
+
+    for entitlement in SCALE_TIER_ENTITLEMENTS:
+        expected_message = (
+            f'one of the features you used ["{entitlement.upper()}"] '
+            "requires upgrading your Pathway license.\n"
+            "For more information and to obtain your license key, "
+            "visit: https://pathway.com/get-license/"
+        )
+        with pytest.raises(RuntimeError, match=re.escape(expected_message)):
+            _check_entitlements(entitlement)
+
+
+@only_standard_build
 def test_monitoring_insufficient_license():
     pw.set_license_key(None)
     pw.set_monitoring_config(server_endpoint="https://example.com")
@@ -73,6 +101,14 @@ def test_monitoring_insufficient_license():
 def test_license_default_policy(caplog):
     caplog.set_level(level=logging.INFO)
     pw.set_license_key(PATHWAY_LICENSES["default-key"])
+
+    _check_entitlements("bigquery")
+    _check_entitlements("deltalake")
+    _check_entitlements("elasticsearch")
+    _check_entitlements("iceberg")
+    _check_entitlements("questdb")
+    _check_entitlements("xpack-sharepoint")
+
     run_all()
     assert "Telemetry enabled" in caplog.text
     assert "Monitoring server:" in caplog.text

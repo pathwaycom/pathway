@@ -6,6 +6,7 @@ from google.cloud import bigquery
 from google.oauth2.service_account import Credentials as ServiceCredentials
 
 from pathway.internals.api import Pointer, Table
+from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
 from pathway.internals.json import Json
 from pathway.io._subscribe import subscribe
@@ -105,6 +106,7 @@ to obtain them.
     ... )
     """
 
+    _check_entitlements("bigquery")
     credentials = ServiceCredentials.from_service_account_file(
         service_user_credentials_file
     )

@@ -5707,7 +5707,15 @@ impl DataStorage {
         Ok(Box::new(storage))
     }
 
-    fn construct_elasticsearch_writer(&self, py: pyo3::Python) -> PyResult<Box<dyn Writer>> {
+    fn construct_elasticsearch_writer(
+        &self,
+        py: pyo3::Python,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["elasticsearch"])?;
+        }
+
         let elasticsearch_client_params_py: &Py<_> = self
             .elasticsearch_params
             .as_ref()
@@ -5730,7 +5738,12 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
+        license: Option<&License>,
     ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["deltalake"])?;
+        }
+
         let path = self.path()?;
         let mut value_fields = Vec::new();
         let partition_columns = self.partition_columns.clone().unwrap_or_default();
@@ -5793,7 +5806,12 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
+        license: Option<&License>,
     ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["iceberg"])?;
+        }
+
         if self.snapshot_maintenance_on_output {
             return Err(PyNotImplementedError::new_err(
                 "Snapshot mode is not implemented for Apache Iceberg output",
@@ -5962,12 +5980,12 @@ impl DataStorage {
             "fs" => self.construct_fs_writer(),
             "kafka" => self.construct_kafka_writer(),
             "postgres" => self.construct_postgres_writer(py, data_format),
-            "elasticsearch" => self.construct_elasticsearch_writer(py),
-            "deltalake" => self.construct_deltalake_writer(py, data_format),
+            "elasticsearch" => self.construct_elasticsearch_writer(py, license),
+            "deltalake" => self.construct_deltalake_writer(py, data_format, license),
             "mongodb" => self.construct_mongodb_writer(),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
-            "iceberg" => self.construct_iceberg_writer(py, data_format),
+            "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(

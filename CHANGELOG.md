@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.questdb.write` method for writing to Quest DB.
 
+### Changed
+- **BREAKING** The Elasticsearch and BigQuery connectors have been moved to the Scale license tier. You can obtain the Scale tier license for free at https://pathway.com/get-license.
+
 ## [0.24.1] - 2025-07-03
 
 ### Added

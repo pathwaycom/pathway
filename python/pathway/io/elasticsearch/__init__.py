@@ -6,6 +6,7 @@ from typing import Iterable
 
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
@@ -109,6 +110,7 @@ def write(
     All the updates of table "pets" will be indexed to "animals" as well.
     """
 
+    _check_entitlements("elasticsearch")
     data_storage = api.DataStorage(
         storage_type="elasticsearch",
         elasticsearch_params=api.ElasticSearchParams(
