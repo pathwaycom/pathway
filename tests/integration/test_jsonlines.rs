@@ -1,15 +1,15 @@
 // Copyright © 2024 Pathway
 
-use crate::helpers::ErrorPlacement;
-
-use super::helpers::{assert_error_shown, read_data_from_reader};
+use super::helpers::{
+    assert_error_shown, new_filesystem_reader, read_data_from_reader, ErrorPlacement,
+};
 
 use std::collections::HashMap;
 
 use std::sync::Arc;
 
 use pathway_engine::connectors::data_format::{InnerSchemaField, JsonLinesParser, ParsedEvent};
-use pathway_engine::connectors::data_storage::{new_filesystem_reader, ConnectorMode, ReadMethod};
+use pathway_engine::connectors::data_storage::{ConnectorMode, ReadMethod};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Type, Value};
 

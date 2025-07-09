@@ -49,6 +49,7 @@ _DATA_FORMAT_MAPPING = {
     "binary": "identity",
     "plaintext_by_file": "identity",
     "plaintext_by_object": "identity",
+    "only_metadata": "identity",
 }
 
 _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
@@ -74,6 +75,7 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "binary",
     "plaintext_by_file",
     "plaintext_by_object",
+    "only_metadata",
 }
 
 
@@ -131,7 +133,12 @@ def internal_connector_mode(mode: str | api.ConnectorMode) -> api.ConnectorMode:
 
 
 def internal_read_method(format: str) -> ReadMethod:
-    if format in ("binary", "plaintext_by_file", "plaintext_by_object"):
+    if format in (
+        "binary",
+        "plaintext_by_file",
+        "plaintext_by_object",
+        "only_metadata",
+    ):
         return ReadMethod.FULL
     return ReadMethod.BY_LINE
 
@@ -223,7 +230,7 @@ def construct_schema_and_data_format(
             if param in kwargs and kwargs[param] is not None:
                 raise ValueError(f"Unexpected argument for plaintext format: {param}")
 
-        parse_utf8 = format != "binary"
+        parse_utf8 = format not in ("binary", "only_metadata")
         if parse_utf8:
             schema = PlaintextDataSchema
         else:
@@ -276,35 +283,6 @@ def construct_schema_and_data_format(
         )
     else:
         raise ValueError(f"data format `{format}` not supported")
-
-
-def construct_s3_data_storage(
-    path: str,
-    rust_engine_s3_settings: api.AwsS3Settings,
-    format: str,
-    mode: str | api.ConnectorMode,
-    *,
-    downloader_threads_count: int | None = None,
-    csv_settings: CsvParserSettings | None = None,
-):
-    if format == "csv":
-        return api.DataStorage(
-            storage_type="s3_csv",
-            path=path,
-            aws_s3_settings=rust_engine_s3_settings,
-            csv_parser_settings=csv_settings.api_settings if csv_settings else None,
-            downloader_threads_count=downloader_threads_count,
-            mode=internal_connector_mode(mode),
-        )
-    else:
-        return api.DataStorage(
-            storage_type="s3",
-            path=path,
-            aws_s3_settings=rust_engine_s3_settings,
-            mode=internal_connector_mode(mode),
-            read_method=internal_read_method(format),
-            downloader_threads_count=downloader_threads_count,
-        )
 
 
 def check_raw_and_plaintext_only_kwargs_for_message_queues(f):

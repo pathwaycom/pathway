@@ -231,8 +231,8 @@ def test_s3_wrong_path(tmp_path: pathlib.Path, s3_path: str):
 
     pw.io.csv.write(table, str(output_path))
     with pytest.raises(
-        RuntimeError,
-        match="Creating S3 reader failed: no objects to read",
+        IOError,
+        match="Failed to initialize S3 scanner: no objects to read",
     ):
         pw.run()
 

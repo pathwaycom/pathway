@@ -1,10 +1,10 @@
 // Copyright © 2024 Pathway
 
-use super::helpers::read_data_from_reader;
+use super::helpers::{new_csv_filesystem_reader, read_data_from_reader};
 
 use pathway_engine::connectors::data_format::{DsvParser, DsvSettings};
 use pathway_engine::connectors::data_format::{InnerSchemaField, ParsedEvent};
-use pathway_engine::connectors::data_storage::{new_csv_filesystem_reader, ConnectorMode};
+use pathway_engine::connectors::data_storage::ConnectorMode;
 use pathway_engine::engine::{Type, Value};
 
 #[test]

@@ -3,7 +3,9 @@
 use crate::helpers::ErrorPlacement;
 use crate::helpers::ReplaceErrors;
 
-use super::helpers::{assert_error_shown, assert_error_shown_for_reader_context};
+use super::helpers::{
+    assert_error_shown, assert_error_shown_for_reader_context, new_filesystem_reader,
+};
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -12,7 +14,7 @@ use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, ParseResult, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::{
-    new_filesystem_reader, ConnectorMode, ReadMethod, ReadResult, ReadResult::Data, Reader,
+    ConnectorMode, ReadMethod, ReadResult, ReadResult::Data, Reader,
 };
 use pathway_engine::engine::{Key, Type, Value};
 

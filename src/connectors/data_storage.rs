@@ -53,12 +53,10 @@ use crate::connectors::data_format::{
     COMMIT_LITERAL,
 };
 use crate::connectors::data_lake::buffering::IncorrectSnapshotError;
-use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
 use crate::connectors::metadata::{KafkaMetadata, SQLiteMetadata, SourceMetadata};
 use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::s3::S3CommandName;
-use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::{Offset, OffsetKey, OffsetValue, SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
@@ -96,7 +94,6 @@ use rdkafka::TopicPartitionList;
 use rusqlite::types::ValueRef as SqliteValue;
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::Error as SqliteError;
-use s3::bucket::Bucket as S3Bucket;
 use serde::{Deserialize, Serialize};
 
 pub use super::data_lake::delta::{
@@ -394,76 +391,6 @@ impl StorageType {
             StorageType::Mqtt => MqttReader::merge_two_frontiers(lhs, rhs),
         }
     }
-}
-
-pub fn new_filesystem_reader(
-    path: &str,
-    streaming_mode: ConnectorMode,
-    read_method: ReadMethod,
-    object_pattern: &str,
-    is_persisted: bool,
-) -> Result<PosixLikeReader, ReadError> {
-    let scanner = FilesystemScanner::new(path, object_pattern)?;
-    let tokenizer = BufReaderTokenizer::new(read_method);
-    PosixLikeReader::new(
-        Box::new(scanner),
-        Box::new(tokenizer),
-        streaming_mode,
-        is_persisted,
-    )
-}
-
-pub fn new_csv_filesystem_reader(
-    path: &str,
-    parser_builder: csv::ReaderBuilder,
-    streaming_mode: ConnectorMode,
-    object_pattern: &str,
-    is_persisted: bool,
-) -> Result<PosixLikeReader, ReadError> {
-    let scanner = FilesystemScanner::new(path, object_pattern)?;
-    let tokenizer = CsvTokenizer::new(parser_builder);
-    PosixLikeReader::new(
-        Box::new(scanner),
-        Box::new(tokenizer),
-        streaming_mode,
-        is_persisted,
-    )
-}
-
-pub fn new_s3_generic_reader(
-    bucket: S3Bucket,
-    objects_prefix: impl Into<String>,
-    streaming_mode: ConnectorMode,
-    read_method: ReadMethod,
-    downloader_threads_count: usize,
-    is_persisted: bool,
-) -> Result<PosixLikeReader, ReadError> {
-    let scanner = S3Scanner::new(bucket, objects_prefix, downloader_threads_count)?;
-    let tokenizer = BufReaderTokenizer::new(read_method);
-    PosixLikeReader::new(
-        Box::new(scanner),
-        Box::new(tokenizer),
-        streaming_mode,
-        is_persisted,
-    )
-}
-
-pub fn new_s3_csv_reader(
-    bucket: S3Bucket,
-    objects_prefix: impl Into<String>,
-    parser_builder: csv::ReaderBuilder,
-    streaming_mode: ConnectorMode,
-    downloader_threads_count: usize,
-    is_persisted: bool,
-) -> Result<PosixLikeReader, ReadError> {
-    let scanner = S3Scanner::new(bucket, objects_prefix, downloader_threads_count)?;
-    let tokenizer = CsvTokenizer::new(parser_builder);
-    PosixLikeReader::new(
-        Box::new(scanner),
-        Box::new(tokenizer),
-        streaming_mode,
-        is_persisted,
-    )
 }
 
 pub trait Reader {

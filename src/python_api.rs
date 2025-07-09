@@ -96,7 +96,6 @@ use crate::connectors::data_lake::iceberg::{
 };
 use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
-    new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, NatsReader,
     NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
@@ -104,7 +103,9 @@ use crate::connectors::data_storage::{
     ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, WriteError, Writer,
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
-use crate::connectors::scanner::S3Scanner;
+use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
+use crate::connectors::posix_like::PosixLikeReader;
+use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::synchronization::ConnectorGroupDescriptor;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
@@ -4248,6 +4249,7 @@ pub struct DataStorage {
     azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
     delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
     mqtt_settings: Option<MqttSettings>,
+    only_provide_metadata: bool,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4714,6 +4716,7 @@ impl DataStorage {
         azure_blob_storage_settings = None,
         delta_optimizer_rule = None,
         mqtt_settings = None,
+        only_provide_metadata = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4749,6 +4752,7 @@ impl DataStorage {
         azure_blob_storage_settings: Option<AzureBlobStorageSettings>,
         delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
         mqtt_settings: Option<MqttSettings>,
+        only_provide_metadata: bool,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4783,6 +4787,7 @@ impl DataStorage {
             azure_blob_storage_settings,
             delta_optimizer_rule,
             mqtt_settings,
+            only_provide_metadata,
         }
     }
 
@@ -5189,64 +5194,53 @@ impl DataStorage {
         }
     }
 
-    fn construct_fs_reader(&self, is_persisted: bool) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let storage = new_filesystem_reader(
-            self.path()?,
+    fn build_tokenizer_for_posix_like_read(&self, data_format: &DataFormat) -> Box<dyn Tokenize> {
+        match data_format.format_type.as_ref() {
+            "dsv" => Box::new(CsvTokenizer::new(self.build_csv_parser_settings())),
+            _ => Box::new(BufReaderTokenizer::new(self.read_method)),
+        }
+    }
+
+    fn construct_fs_reader(
+        &self,
+        is_persisted: bool,
+        data_format: &DataFormat,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let scanner = FilesystemScanner::new(self.path()?, &self.object_pattern).map_err(|e| {
+            PyIOError::new_err(format!("Failed to initialize Filesystem scanner: {e}"))
+        })?;
+        let storage = PosixLikeReader::new(
+            Box::new(scanner),
+            self.build_tokenizer_for_posix_like_read(data_format),
             self.mode,
-            self.read_method,
-            &self.object_pattern,
+            self.only_provide_metadata,
             is_persisted,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}")))?;
         Ok((Box::new(storage), 1))
     }
 
-    fn construct_s3_reader(&self, is_persisted: bool) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_s3_reader(
+        &self,
+        is_persisted: bool,
+        data_format: &DataFormat,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let storage = new_s3_generic_reader(
+        let scanner = S3Scanner::new(
             self.s3_bucket()?,
             deduced_path,
-            self.mode,
-            self.read_method,
             self.downloader_threads_count()?,
+        )
+        .map_err(|e| PyIOError::new_err(format!("Failed to initialize S3 scanner: {e}")))?;
+        let storage = PosixLikeReader::new(
+            Box::new(scanner),
+            self.build_tokenizer_for_posix_like_read(data_format),
+            self.mode,
+            self.only_provide_metadata,
             is_persisted,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
         Ok((Box::new(storage), 1))
-    }
-
-    fn construct_s3_csv_reader(
-        &self,
-        is_persisted: bool,
-    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let storage = new_s3_csv_reader(
-            self.s3_bucket()?,
-            deduced_path,
-            self.build_csv_parser_settings(),
-            self.mode,
-            self.downloader_threads_count()?,
-            is_persisted,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
-        Ok((Box::new(storage), 1))
-    }
-
-    fn construct_csv_reader(
-        &self,
-        is_persisted: bool,
-    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let reader = new_csv_filesystem_reader(
-            self.path()?,
-            self.build_csv_parser_settings(),
-            self.mode,
-            &self.object_pattern,
-            is_persisted,
-        )
-        .map_err(|e| {
-            PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))
-        })?;
-        Ok((Box::new(reader), 1))
     }
 
     /// Returns the total number of partitions for a Kafka topic
@@ -5589,10 +5583,8 @@ impl DataStorage {
         is_persisted: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
-            "fs" => self.construct_fs_reader(is_persisted),
-            "s3" => self.construct_s3_reader(is_persisted),
-            "s3_csv" => self.construct_s3_csv_reader(is_persisted),
-            "csv" => self.construct_csv_reader(is_persisted),
+            "fs" => self.construct_fs_reader(is_persisted, data_format),
+            "s3" => self.construct_s3_reader(is_persisted, data_format),
             "kafka" => self.construct_kafka_reader(),
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),

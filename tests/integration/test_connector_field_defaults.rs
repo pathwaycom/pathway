@@ -1,15 +1,13 @@
 // Copyright © 2024 Pathway
 
-use super::helpers::read_data_from_reader;
+use super::helpers::{new_csv_filesystem_reader, new_filesystem_reader, read_data_from_reader};
 
 use std::collections::HashMap;
 
 use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, JsonLinesParser, ParsedEvent,
 };
-use pathway_engine::connectors::data_storage::{
-    new_csv_filesystem_reader, new_filesystem_reader, ConnectorMode, ReadMethod,
-};
+use pathway_engine::connectors::data_storage::{ConnectorMode, ReadMethod};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{Type, Value};
 

@@ -22,7 +22,7 @@ def read(
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
-    format: str = "raw",
+    format: Literal["raw", "csv", "json"] = "raw",
     schema_registry_settings: SchemaRegistrySettings | None = None,
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
@@ -104,45 +104,12 @@ def read(
 
     All the data will be accessible in the column data.
 
-    CSV version:
-
-    >>> import pathway as pw
-    >>>
-    >>> class InputSchema(pw.Schema):
-    ...   owner: str
-    ...   pet: str
-    >>>
-    >>> t = pw.io.redpanda.read(
-    ...     rdkafka_settings,
-    ...     topic="animals",
-    ...     format="csv",
-    ...     schema=InputSchema,
-    ... )
-
-    In case of CSV format, the first message must be the header:
-
-    .. code-block:: csv
-
-        owner,pet
-
-    Then, simple data rows are expected. For example:
-
-    .. code-block:: csv
-
-        Alice,cat
-        Bob,dog
-
-    This way, you get a table which looks as follows:
-
-    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
-    owner pet
-    Alice cat
-      Bob dog
-
-
     JSON version:
 
     >>> import pathway as pw
+    >>> class InputSchema(pw.Schema):
+    ...   owner: str
+    ...   pet: str
     >>> t = pw.io.redpanda.read(
     ...     rdkafka_settings,
     ...     topic="animals",
@@ -226,7 +193,7 @@ def write(
     rdkafka_settings: dict,
     topic_name: str,
     *,
-    format: str = "json",
+    format: Literal["json"] = "json",
     schema_registry_settings: SchemaRegistrySettings | None = None,
     subject: str | None = None,
     name: str | None = None,

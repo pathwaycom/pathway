@@ -4,6 +4,7 @@ import base64
 import copy
 import datetime
 import json
+import multiprocessing
 import os
 import pathlib
 import pickle
@@ -37,6 +38,7 @@ from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
     CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
+    ExceptionAwareThread,
     FileLinesNumberChecker,
     T,
     assert_sets_equality_from_path,
@@ -689,13 +691,13 @@ def test_python_write_on_change_only():
     )
 
 
-def test_fs_raw(tmp_path: pathlib.Path):
+def test_fs_plaintext(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     write_lines(input_path, "foo\nbar\nbaz")
 
-    table = pw.io.fs.read(str(input_path), format="raw", mode="static").update_types(
-        data=str
-    )
+    table = pw.io.fs.read(
+        str(input_path), format="plaintext", mode="static"
+    ).update_types(data=str)
 
     assert_table_equality_wo_index(
         table,
@@ -5027,3 +5029,71 @@ def test_psql_output_connector_casts():
         },
         table_name="output_table",
     )
+
+
+@needs_multiprocessing_fork
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        [("write", "1"), ("write", "2"), ("remove", "1"), ("remove", "2")],
+        [("write", "1"), ("write", "1"), ("remove", "1"), ("write", "1")],
+        [("write", "1"), ("write", "2"), ("write", "3"), ("remove", "1")],
+        [("write", "1"), ("write", "1"), ("write", "2"), ("remove", "1")],
+        [("write", "1"), ("remove", "1"), ("write", "2"), ("remove", "2")],
+    ],
+)
+def test_fs_metadata_only(tmp_path, scenario):
+    inputs_path = tmp_path / "inputs"
+    output_path = tmp_path / "output.jsonl"
+    os.mkdir(inputs_path)
+
+    known_input_paths = set()
+    for _, file_name in scenario:
+        file_path = inputs_path / file_name
+        known_input_paths.add(str(file_path))
+
+    def stream_inputs():
+        existing_files = set()
+        n_expected_actions = 0
+        for action, file_name in scenario:
+            file_path = inputs_path / file_name
+            if action == "write":
+                file_contents = n_expected_actions * "a"
+                write_lines(file_path, file_contents)
+                if file_name in existing_files:
+                    # First remove the existing version
+                    n_expected_actions += 1
+                else:
+                    existing_files.add(file_name)
+                n_expected_actions += 1
+            elif action == "remove":
+                existing_files.remove(file_name)
+                os.remove(file_path)
+                n_expected_actions += 1
+            else:
+                raise ValueError(f"unknown scenario action: {action}")
+            wait_result_with_checker(
+                FileLinesNumberChecker(output_path, n_expected_actions), 10, target=None
+            )
+
+    table = pw.io.fs.read(inputs_path, format="only_metadata", with_metadata=True)
+    pw.io.jsonlines.write(table, output_path)
+
+    stream_thread = ExceptionAwareThread(target=stream_inputs, daemon=True)
+    stream_thread.start()
+    pathway_process = multiprocessing.Process(target=run)
+    try:
+        pathway_process.start()
+
+        # Wait for the scenario to complete
+        stream_thread.join()
+    finally:
+        # Finish Pathway process in any case
+        pathway_process.terminate()
+        pathway_process.join()
+
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            assert data.keys() == {"_metadata", "time", "diff"}
+            assert data["_metadata"]["path"] in known_input_paths

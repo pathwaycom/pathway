@@ -32,7 +32,7 @@ def read(
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
-    format: str = "raw",
+    format: Literal["plaintext", "raw", "json"] = "raw",
     schema_registry_settings: SchemaRegistrySettings | None = None,
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
@@ -47,13 +47,13 @@ def read(
 ) -> Table:
     """Generalized method to read the data from the given topic in Kafka.
 
-    There are three formats currently supported: "plaintext", "raw", and "json".
-    If the "raw" format is chosen, the key and the payload are read from the topic as raw
-    bytes and used in the table "as is". If you choose the "plaintext" option, however,
+    There are three formats currently supported: ``"plaintext"``, ``"raw"``, and ``"json"``.
+    If the ``"raw"`` format is chosen, the key and the payload are read from the topic as raw
+    bytes and used in the table "as is". If you choose the ``"plaintext"`` option, however,
     they are parsed from the UTF-8 into the plaintext entries. In both cases, the
-    table consists of a primary key and a single column "data", denoting the payload read.
+    table consists of a primary key and a single column ``"data"``, denoting the payload read.
 
-    If "json" is chosen, the connector first parses the payload of the message
+    If ``"json"`` is chosen, the connector first parses the payload of the message
     according to the JSON format and then creates the columns corresponding to the
     schema defined by the ``schema`` parameter. The values of these columns are
     taken from the respective parsed JSON fields.
@@ -68,7 +68,7 @@ def read(
             process them as they arrive, and send them into the engine. Alternatively,
             if set to ``"static"``, the engine will only read and process the data that
             is already available at the time of execution.
-        format: format of the input data, "raw", "plaintext", or "json".
+        format: format of the input data, ``"raw"``, ``"plaintext"``, or ``"json"``.
         schema_registry_settings: settings for connecting to the Confluent Schema Registry,
             if this type of registry is used.
         debug_data: Static data replacing original one when debug mode is active.
@@ -137,43 +137,12 @@ def read(
 
     All the data will be accessible in the column data.
 
-    CSV version:
+    JSON version:
 
     >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    >>> t = pw.io.kafka.read(
-    ...    rdkafka_settings,
-    ...    topic="animals",
-    ...    format="csv",
-    ...    schema=InputSchema
-    ... )
-
-    In case of CSV format, the first message must be the header:
-
-    .. code-block:: csv
-
-        owner,pet
-
-    Then, simple data rows are expected. For example:
-
-    .. code-block:: csv
-
-        Alice,cat
-        Bob,dog
-
-    This way, you get a table which looks as follows:
-
-    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
-    owner pet
-    Alice cat
-      Bob dog
-
-
-    JSON version:
-
-    >>> import pathway as pw
     >>> t = pw.io.kafka.read(
     ...     rdkafka_settings,
     ...     topic="animals",
@@ -260,7 +229,6 @@ def read(
         with_metadata=with_metadata,
         autogenerate_key=autogenerate_key,
         schema=schema,
-        csv_settings=None,
         json_field_paths=json_field_paths,
         schema_registry_settings=schema_registry_settings,
         _stacklevel=5,
@@ -290,7 +258,7 @@ def simple_read(
     *,
     read_only_new: bool = False,
     schema: type[Schema] | None = None,
-    format: str = "raw",
+    format: Literal["plaintext", "raw", "json"] = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
@@ -388,7 +356,7 @@ def write(
     rdkafka_settings: dict,
     topic_name: str | ColumnReference,
     *,
-    format: str = "json",
+    format: Literal["raw", "plaintext", "json", "dsv"] = "json",
     schema_registry_settings: SchemaRegistrySettings | None = None,
     subject: str | None = None,
     delimiter: str = ",",

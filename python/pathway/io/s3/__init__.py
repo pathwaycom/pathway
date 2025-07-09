@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pathway.internals import datasource
+from pathway.internals import api, datasource
 from pathway.internals._io_helpers import AwsS3Settings
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -14,9 +14,9 @@ from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
     _get_unique_name,
-    construct_s3_data_storage,
     construct_schema_and_data_format,
     internal_connector_mode,
+    internal_read_method,
 )
 
 
@@ -94,7 +94,7 @@ class WasabiS3Settings:
 @trace_user_frame
 def read(
     path: str,
-    format: str,
+    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
     *,
     aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
@@ -261,18 +261,18 @@ def read(
     example: you may use ``pw.io.minio.read`` connector which wouldn't require any custom
     settings object creation from you.
     """
-    internal_mode = internal_connector_mode(mode)
     if aws_s3_settings:
         prepared_aws_settings = aws_s3_settings
     else:
         prepared_aws_settings = AwsS3Settings.new_from_path(path)
 
-    data_storage = construct_s3_data_storage(
+    data_storage = api.DataStorage(
+        storage_type="s3",
         path=path,
-        rust_engine_s3_settings=prepared_aws_settings.settings,
-        format=format,
-        mode=internal_mode,
-        csv_settings=csv_settings,
+        aws_s3_settings=prepared_aws_settings.settings,
+        csv_parser_settings=csv_settings.api_settings if csv_settings else None,
+        mode=internal_connector_mode(mode),
+        read_method=internal_read_method(format),
         downloader_threads_count=downloader_threads_count,
     )
 
@@ -305,7 +305,7 @@ def read(
 def read_from_digital_ocean(
     path: str,
     do_s3_settings: DigitalOceanS3Settings,
-    format: str,
+    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
@@ -396,13 +396,13 @@ def read_from_digital_ocean(
     work with Digital Ocean version.
     """
     prepared_s3_settings = do_s3_settings.create_aws_settings()
-    internal_mode = internal_connector_mode(mode)
-    data_storage = construct_s3_data_storage(
+    data_storage = api.DataStorage(
+        storage_type="s3",
         path=path,
-        rust_engine_s3_settings=prepared_s3_settings.settings,
-        format=format,
-        mode=internal_mode,
-        csv_settings=csv_settings,
+        aws_s3_settings=prepared_s3_settings.settings,
+        csv_parser_settings=csv_settings.api_settings if csv_settings else None,
+        mode=internal_connector_mode(mode),
+        read_method=internal_read_method(format),
         downloader_threads_count=downloader_threads_count,
     )
 
@@ -435,7 +435,7 @@ def read_from_digital_ocean(
 def read_from_wasabi(
     path: str,
     wasabi_s3_settings: WasabiS3Settings,
-    format: str,
+    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
@@ -524,16 +524,17 @@ def read_from_wasabi(
     therefore all examples concerning different data formats in ``pw.io.s3.read`` also
     work with Wasabi version.
     """
-    internal_mode = internal_connector_mode(mode)
     prepared_s3_settings = wasabi_s3_settings.create_aws_settings()
-    data_storage = construct_s3_data_storage(
+    data_storage = api.DataStorage(
+        storage_type="s3",
         path=path,
-        rust_engine_s3_settings=prepared_s3_settings.settings,
-        format=format,
-        mode=internal_mode,
+        aws_s3_settings=prepared_s3_settings.settings,
+        csv_parser_settings=csv_settings.api_settings if csv_settings else None,
+        mode=internal_connector_mode(mode),
+        read_method=internal_read_method(format),
         downloader_threads_count=downloader_threads_count,
-        csv_settings=csv_settings,
     )
+
     schema, data_format = construct_schema_and_data_format(
         format,
         schema=schema,

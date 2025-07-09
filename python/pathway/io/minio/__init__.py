@@ -59,7 +59,7 @@ class MinIOSettings:
 def read(
     path: str,
     minio_settings: MinIOSettings,
-    format: str,
+    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",

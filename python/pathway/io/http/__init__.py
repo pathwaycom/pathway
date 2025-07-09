@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pathway.internals.api import Pointer
 from pathway.internals.runtime_type_check import check_arg_types
@@ -33,7 +33,7 @@ def read(
     payload: Any | None = None,
     headers: dict[str, str] | None = None,
     response_mapper: Callable[[str | bytes], bytes] | None = None,
-    format: str = "json",
+    format: Literal["json", "raw"] = "json",
     delimiter: str | bytes | None = None,
     n_retries: int = 0,
     retry_policy: RetryPolicy = RetryPolicy.default(),
@@ -147,7 +147,7 @@ def write(
     url: str,
     *,
     method: str = "POST",
-    format: str = "json",
+    format: Literal["json", "custom"] = "json",
     request_payload_template: str | None = None,
     n_retries: int = 0,
     retry_policy: RetryPolicy = RetryPolicy.default(),

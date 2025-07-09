@@ -3,13 +3,11 @@
 use pathway_engine::connectors::data_format::{
     IdentityParser, KeyGenerationPolicy, ParseResult, ParsedEvent, Parser,
 };
-use pathway_engine::connectors::data_storage::{
-    new_filesystem_reader, ConnectorMode, ReadMethod, ReadResult, Reader,
-};
+use pathway_engine::connectors::data_storage::{ConnectorMode, ReadMethod, ReadResult, Reader};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 
-use crate::helpers::ReplaceErrors;
+use crate::helpers::{new_filesystem_reader, ReplaceErrors};
 
 fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
     let mut reader =

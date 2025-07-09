@@ -31,7 +31,9 @@ SUPPORTED_OUTPUT_FORMATS: set[str] = {
 @trace_user_frame
 def read(
     path: str | PathLike,
-    format: str,
+    format: Literal[
+        "csv", "json", "plaintext", "plaintext_by_file", "binary", "only_metadata"
+    ],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
@@ -47,34 +49,41 @@ def read(
 ) -> Table:
     """Reads a table from one or several files with the specified format.
 
-    In case the format is "plaintext", the table will consist of a single column
+    In case the format is ``"plaintext"``, the table will consist of a single column
     ``data`` with each cell containing a single line from the file.
 
-    In case the format is one of "plaintext_by_file" or "binary" the table will consist of
-    a single column ``data`` with each cell containing contents of the whole file.
+    In case the format is one of ``"plaintext_by_file"`` or ``"binary"`` the table will
+    consist of a single column ``data`` with each cell containing contents of the whole file.
+
+    If the format is ``"only_metadata"``, only the metadata column will be read, without
+    opening and without reading the contents of the files. The metadata is then available
+    in the ``_metadata`` column.
 
     Args:
         path: Path to the file or to the folder with files or
             `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the
             objects to be read. The connector will read the contents of all matching files as well
             as recursively read the contents of all matching folders.
-        format: Format of data to be read. Currently "csv", "json", "plaintext",
-            "plaintext_by_file" and "binary" formats are supported. The difference between
-            "plaintext" and "plaintext_by_file" is how the input is tokenized: if the "plaintext"
-            option is chosen, it's split by the newlines. Otherwise, the files are split in full
-            and one row will correspond to one file. In case the "binary" format is specified,
-            the data is read as raw bytes without UTF-8 parsing.
+        format: Format of data to be read. Currently ``"csv"``, ``"json"``, ``"plaintext"``,
+            ``"plaintext_by_file"``, ``"binary"``, and ``"only_metadata"`` formats are
+            supported. The difference between ``"plaintext"`` and ``"plaintext_by_file"`` is
+            how the input is tokenized: if the ``"plaintext"`` option is chosen, it's split
+            by the newlines. Otherwise, the files are split in full and one row will
+            correspond to one file. In case the ``"binary"`` format is specified,
+            the data is read as raw bytes without UTF-8 parsing. Finally, if ``"only_metadata"``
+            is chosen, the connector only scans the filesystem for file additions,
+            changes, modifications, and provides them in the metadata column.
         schema: Schema of the resulting table.
         mode: Denotes how the engine polls the new data from the source. Currently
-            "streaming" and "static" are supported. If set to "streaming" the engine will wait for
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
             the updates in the specified directory. It will track file additions, deletions, and
             modifications and reflect these events in the state. For example, if a file was deleted,
-            "streaming" mode will also remove rows obtained by reading this file from the table. On
-            the other hand, the "static" mode will only consider the available data and ingest all
-            of it in one commit. The default value is "streaming".
+            ``"streaming"`` mode will also remove rows obtained by reading this file from the table. On
+            the other hand, the ``"static"`` mode will only consider the available data and ingest all
+            of it in one commit. The default value is ``"streaming"``.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
-            the specified format is "csv".
-        json_field_paths: If the format is "json", this field allows to map field names
+            the specified format is ``"csv"``.
+        json_field_paths: If the format is ``"json"``, this field allows to map field names
             into path in the read json object. For the field which require such mapping,
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
@@ -83,11 +92,11 @@ def read(
             directory. Ignored in case a path to a single file is specified. This value will be
             deprecated soon, please use glob pattern in ``path`` instead.
         with_metadata: When set to true, the connector will add an additional column
-            named ``_metadata`` to the table. This JSON field may contain: (1) created_at - UNIX
-            timestamp of file creation; (2) modified_at - UNIX timestamp of last modification;
-            (3) seen_at is a UNIX timestamp of when they file was found by the engine;
-            (4) owner - Name of the file owner (only for Un); (5) path - Full file path of the
-            source row. (6) size - File size in bytes.
+            named ``_metadata`` to the table. This JSON field may contain: (1) ``created_at`` - UNIX
+            timestamp of file creation; (2) ``modified_at`` - UNIX timestamp of last modification;
+            (3) ``seen_at`` is a UNIX timestamp of when they file was found by the engine;
+            (4) ``owner`` - Name of the file ``owner`` (only for Unix); (5) ``path`` - Full file path of the
+            source row. (6) ``size`` - File size in bytes.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -137,7 +146,7 @@ def read(
         {\\"id\\":3,\\"owner\\":\\"Bob\\",\\"pet\\":\\"cat\\"}
         {\\"id\\":4,\\"owner\\":\\"Bob\\",\\"pet\\":\\"cat\\"}" > dataset.jsonlines
 
-    And then, we use the method with the "json" format:
+    And then, we use the method with the ``"json"`` format:
 
     >>> t = pw.io.fs.read("dataset.jsonlines", format="json", schema=InputSchema)
 
@@ -165,7 +174,7 @@ def read(
     The only difference is that you specified the name of the directory instead of the
     file name, as opposed to what you had done in the previous example. It's that simple!
 
-    Alternatively, we can do the same for the "json" variant:
+    Alternatively, we can do the same for the ``"json"`` variant:
 
     The dataset creation would look as follows:
 
@@ -191,7 +200,7 @@ def read(
 
     >>> t = pw.io.fs.read("logs/", format="csv", schema=InputSchema, mode="streaming")
 
-    Or, for the "json" format case:
+    Or, for the ``"json"`` format case:
 
     >>> t = pw.io.fs.read("logs/", format="json", schema=InputSchema, mode="streaming")
 
@@ -212,22 +221,17 @@ def read(
             stacklevel=_stacklevel + 4,
         )
 
-    if format == "csv":
-        data_storage = api.DataStorage(
-            storage_type="csv",
-            path=path,
-            csv_parser_settings=csv_settings.api_settings if csv_settings else None,
-            mode=internal_connector_mode(mode),
-            object_pattern=object_pattern,
-        )
-    else:
-        data_storage = api.DataStorage(
-            storage_type="fs",
-            path=path,
-            mode=internal_connector_mode(mode),
-            read_method=internal_read_method(format),
-            object_pattern=object_pattern,
-        )
+    only_provide_metadata = format == "only_metadata"
+    with_metadata = with_metadata or only_provide_metadata
+    data_storage = api.DataStorage(
+        storage_type="fs",
+        csv_parser_settings=csv_settings.api_settings if csv_settings else None,
+        path=path,
+        mode=internal_connector_mode(mode),
+        read_method=internal_read_method(format),
+        object_pattern=object_pattern,
+        only_provide_metadata=only_provide_metadata,
+    )
 
     schema, data_format = construct_schema_and_data_format(
         format,
@@ -242,7 +246,8 @@ def read(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs, _stacklevel + 5),
     )
-    return table_from_datasource(
+
+    table = table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
@@ -252,6 +257,10 @@ def read(
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+
+    return table
 
 
 @check_arg_types
@@ -259,7 +268,7 @@ def read(
 def write(
     table: Table,
     filename: str | PathLike,
-    format: str,
+    format: Literal["json", "csv"],
     *,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
@@ -270,7 +279,7 @@ def write(
         table: Table to be written.
         filename: Path to the target output file.
         format: Format to use for data output. Currently, there are two supported
-            formats: "json" and "csv".
+            formats: ``"json"`` and ``"csv"``.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on the
@@ -288,7 +297,7 @@ def write(
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown("age owner pet \\n1 10 Alice dog \\n2 9 Bob cat \\n3 8 Alice cat")
 
-    Consider you would want to output the stream of changes of this table in csv format.
+    Consider you would want to output the stream of changes of this table in ``"csv"`` format.
     In order to do that you simply do:
 
     >>> pw.io.fs.write(t, "table.csv", format="csv")
@@ -306,15 +315,15 @@ def write(
         9,"Bob","cat",0,1
         8,"Alice","cat",0,1
 
-    The first three columns clearly represent the data columns you have. The column time
+    The first three columns clearly represent the data columns you have. The column ``time``
     represents the number of operations minibatch, in which each of the rows was read. In
-    this example, since the data is static: you have 0. The diff is another
-    element of this stream of updates. In this context, it is 1 because all three rows were read from
+    this example, since the data is static: you have ``0``. The ``diff`` is another
+    element of this stream of updates. In this context, it is ``1`` because all three rows were read from
     the input. All in all, the extra information in ``time`` and ``diff`` columns - in this case -
     shows us that in the initial minibatch (``time = 0``), you have read three rows and all of
     them were added to the collection (``diff = 1``).
 
-    Alternatively, this data can be written in JSON format:
+    Alternatively, this data can be written in ``"json"`` format:
 
     >>> pw.io.fs.write(t, "table.jsonlines", format="json")
 

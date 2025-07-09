@@ -40,6 +40,7 @@ pub struct PosixLikeReader {
     scanner: Box<dyn PosixLikeScanner>,
     tokenizer: Box<dyn Tokenize>,
     streaming_mode: ConnectorMode,
+    only_provide_metadata: bool,
     is_persisted: bool,
 
     total_entries_read: u64,
@@ -54,12 +55,14 @@ impl PosixLikeReader {
         scanner: Box<dyn PosixLikeScanner>,
         tokenizer: Box<dyn Tokenize>,
         streaming_mode: ConnectorMode,
+        only_provide_metadata: bool,
         is_persisted: bool,
     ) -> Result<Self, ReadError> {
         Ok(Self {
             scanner,
             tokenizer,
             streaming_mode,
+            only_provide_metadata,
             is_persisted,
 
             total_entries_read: 0,
@@ -202,9 +205,18 @@ impl PosixLikeReader {
             let action = self.scanner_actions_queue.pop_front();
             match &action {
                 Some(QueuedAction::Read(path, metadata)) => {
-                    let Ok(cached_object_contents) = self.scanner.read_object(path.as_ref()) else {
-                        error!("Failed to get contents of a queued object {metadata:?}");
-                        continue;
+                    let cached_object_contents = if self.only_provide_metadata {
+                        Vec::with_capacity(0)
+                    } else {
+                        match self.scanner.read_object(path.as_ref()) {
+                            Ok(contents) => contents,
+                            Err(e) => {
+                                error!(
+                                    "Failed to get contents of a queued object {metadata:?}: {e}"
+                                );
+                                continue;
+                            }
+                        }
                     };
                     let contents_for_caching = if are_deletions_enabled {
                         cached_object_contents.clone()

@@ -7,9 +7,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.questdb.write` method for writing to Quest DB.
+- `pw.io.fs.read` now supports the `"only_metadata"` format. When this format is used, the table will contain only metadata updates for the tracked directory, without reading file contents.
 
 ### Changed
 - **BREAKING** The Elasticsearch and BigQuery connectors have been moved to the Scale license tier. You can obtain the Scale tier license for free at https://pathway.com/get-license.
+- **BREAKING** `pw.io.fs.read` no longer accepts `format="raw"`. Use `format="binary"` to read binary objects, `format="plaintext_by_file"` to read plaintext objects per file, or `format="plaintext"` to read plaintext objects split into lines.
 
 ## [0.24.1] - 2025-07-03
 

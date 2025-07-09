@@ -16,8 +16,12 @@ use pathway_engine::connectors::data_format::{
     ParsedEventWithErrors, Parser, ValueFieldsWithErrors,
 };
 use pathway_engine::connectors::data_storage::{
-    DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
+    ConnectorMode, DataEventType, ReadError, ReadMethod, ReadResult, Reader, ReaderBuilder,
+    ReaderContext,
 };
+use pathway_engine::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
+use pathway_engine::connectors::posix_like::PosixLikeReader;
+use pathway_engine::connectors::scanner::FilesystemScanner;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
 use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;
@@ -398,4 +402,40 @@ pub fn assert_document_raw_byte_contents(document: &FormattedDocument, target: &
     } else {
         unreachable!("Unexpected comparison with raw bytes document: {document:?}");
     }
+}
+
+pub fn new_filesystem_reader(
+    path: &str,
+    streaming_mode: ConnectorMode,
+    read_method: ReadMethod,
+    object_pattern: &str,
+    is_persisted: bool,
+) -> Result<PosixLikeReader, ReadError> {
+    let scanner = FilesystemScanner::new(path, object_pattern)?;
+    let tokenizer = BufReaderTokenizer::new(read_method);
+    PosixLikeReader::new(
+        Box::new(scanner),
+        Box::new(tokenizer),
+        streaming_mode,
+        false, // read the contents in full, not only metadata
+        is_persisted,
+    )
+}
+
+pub fn new_csv_filesystem_reader(
+    path: &str,
+    parser_builder: csv::ReaderBuilder,
+    streaming_mode: ConnectorMode,
+    object_pattern: &str,
+    is_persisted: bool,
+) -> Result<PosixLikeReader, ReadError> {
+    let scanner = FilesystemScanner::new(path, object_pattern)?;
+    let tokenizer = CsvTokenizer::new(parser_builder);
+    PosixLikeReader::new(
+        Box::new(scanner),
+        Box::new(tokenizer),
+        streaming_mode,
+        false, // read the contents in full, not only metadata
+        is_persisted,
+    )
 }

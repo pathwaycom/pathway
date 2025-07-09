@@ -855,6 +855,7 @@ class DataStorage:
         azure_blob_storage_settings: AzureBlobStorageSettings | None = None,
         delta_optimizer_rule: DeltaOptimizerRule | None = None,
         mqtt_settings: MqttSettings | None = None,
+        only_provide_metadata: bool = False,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

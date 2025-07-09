@@ -1,6 +1,9 @@
 // Copyright © 2024 Pathway
 
-use super::helpers::{create_persistence_manager, full_cycle_read, FullReadResult};
+use super::helpers::{
+    create_persistence_manager, full_cycle_read, new_csv_filesystem_reader, new_filesystem_reader,
+    FullReadResult,
+};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -12,9 +15,7 @@ use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, JsonLinesParser, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::ReaderBuilder;
-use pathway_engine::connectors::data_storage::{
-    new_csv_filesystem_reader, new_filesystem_reader, ConnectorMode, ReadMethod,
-};
+use pathway_engine::connectors::data_storage::{ConnectorMode, ReadMethod};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{Result, Type, Value};
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;

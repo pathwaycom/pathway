@@ -6,7 +6,7 @@ import time
 import warnings
 from abc import ABC, abstractmethod
 from queue import Queue
-from typing import Any, Iterable, final
+from typing import Any, Iterable, Literal, final
 
 import pandas as pd
 import panel as pn
@@ -360,7 +360,7 @@ def read(
     subject: ConnectorSubject,
     *,
     schema: type[Schema] | None = None,
-    format: str | None = None,
+    format: Literal["json", "raw", "binary"] | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data=None,
     name: str | None = None,

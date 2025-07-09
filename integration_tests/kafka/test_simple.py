@@ -146,49 +146,6 @@ def test_kafka_json(tmp_path, kafka_context, with_metadata):
     )
 
 
-@pytest.mark.parametrize("with_metadata", [False, True])
-@pytest.mark.flaky(reruns=3)
-def test_kafka_csv(tmp_path, kafka_context, with_metadata):
-    kafka_context.fill(
-        [
-            "k,v",
-            "0,foo",
-            "1,bar",
-            "2,baz",
-        ]
-    )
-
-    class InputSchema(pw.Schema):
-        k: int = pw.column_definition(primary_key=True)
-        v: str
-
-    table = pw.io.kafka.read(
-        rdkafka_settings=kafka_context.default_rdkafka_settings(),
-        topic=kafka_context.input_topic,
-        format="csv",
-        schema=InputSchema,
-        with_metadata=with_metadata,
-        autocommit_duration_ms=100,
-    )
-
-    pw.io.csv.write(table, tmp_path / "output.csv")
-
-    wait_result_with_checker(
-        expect_csv_checker(
-            """
-            k    | v
-            0    | foo
-            1    | bar
-            2    | baz
-            """,
-            tmp_path / "output.csv",
-            usecols=["v"],
-            index_col=["k"],
-        ),
-        10,
-    )
-
-
 @pytest.mark.flaky(reruns=3)
 def test_kafka_simple_wrapper_bytes_io(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext

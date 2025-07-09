@@ -1,6 +1,6 @@
 // Copyright © 2024 Pathway
 
-use crate::helpers::{ErrorPlacement, ReplaceErrors};
+use crate::helpers::{new_filesystem_reader, ErrorPlacement, ReplaceErrors};
 
 use super::helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
 
@@ -12,9 +12,7 @@ use assert_matches::assert_matches;
 use pathway_engine::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, ParseError, ParsedEvent, Parser,
 };
-use pathway_engine::connectors::data_storage::{
-    new_filesystem_reader, ConnectorMode, ReadMethod, ReaderContext,
-};
+use pathway_engine::connectors::data_storage::{ConnectorMode, ReadMethod, ReaderContext};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 

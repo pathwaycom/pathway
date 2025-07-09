@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Literal
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals.expression import ColumnReference
@@ -25,7 +25,7 @@ def read(
     *,
     qos: int = 2,
     schema: type[Schema] | None = None,
-    format: str = "raw",
+    format: Literal["plaintext", "raw", "json"] = "raw",
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     name: str | None = None,
@@ -165,7 +165,7 @@ def write(
     *,
     qos: int = 2,
     retain: bool = False,
-    format: str = "json",
+    format: Literal["json", "dsv", "plaintext", "raw"] = "json",
     delimiter: str = ",",
     value: ColumnReference | None = None,
     name: str | None = None,
