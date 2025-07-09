@@ -193,3 +193,46 @@ foo: !pw.tests.test_yaml.qux
 
     with pytest.warns(DeprecationWarning):
         load_yaml(yaml_config)
+
+
+@pytest.mark.parametrize(
+    ["env_var", "expected_value"],
+    [
+        ("42", 42),
+        ("2.14", 2.14),
+        ("True", True),
+        ("false", False),
+    ],
+)
+def test_env_vars_parsing(monkeypatch, env_var, expected_value):
+    monkeypatch.setenv("FOO", env_var)
+    yaml_config = """
+foo: $FOO
+"""
+    d = load_yaml(yaml_config)
+    assert "foo" in d.keys()
+    assert d["foo"] == expected_value
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    [
+        "foo",
+        "c:",
+        "$BAR",
+        """
+- 1
+- 2""",
+        """
+foo: 42
+bar: 1""",
+    ],
+)
+def test_env_vars_no_parsing(monkeypatch, env_var):
+    monkeypatch.setenv("FOO", env_var)
+    yaml_config = """
+foo: $FOO
+"""
+    d = load_yaml(yaml_config)
+    assert "foo" in d.keys()
+    assert d["foo"] == env_var

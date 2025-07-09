@@ -18,6 +18,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.io.airbyte.read` will now retry the pip install command if it fails during the installation of a connector. It only applies when using the PyPI version of the connector, not the Docker one.
+- Environment variables used in YAML configuration files are no longer being parsed as if they were YAML files by the `pw.load_yaml`. Now, the value of the environment variable is only parsed if it's an integer, a float or a boolean.
 
 ## [0.24.0] - 2025-06-26
 
