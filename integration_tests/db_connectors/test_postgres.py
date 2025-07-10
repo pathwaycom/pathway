@@ -409,3 +409,78 @@ def test_psql_json_datetimes(postgres):
     assert result["a"] == expected
     assert result["b"] == expected
     assert result["c"] == expected
+
+
+def test_psql_external_diff_column(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        name: str = pw.column_definition(primary_key=True)
+        count: int
+        price: float
+        available: bool
+        external_diff: int
+
+    input_path = tmp_path / "input.txt"
+    output_table = postgres.create_table(InputSchema, used_for_output=True)
+
+    def _run(test_items: list[dict]) -> None:
+        G.clear()
+        with open(input_path, "w") as f:
+            for test_item in test_items:
+                f.write(json.dumps(test_item) + "\n")
+        table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+        pw.io.postgres.write_snapshot(
+            table,
+            POSTGRES_SETTINGS,
+            output_table,
+            ["name"],
+            _external_diff_column=table.external_diff,
+        )
+        run()
+
+    test_items = [
+        {
+            "name": "Milk",
+            "count": 500,
+            "price": 1.5,
+            "available": False,
+            "external_diff": 1,
+        },
+        {
+            "name": "Water",
+            "count": 600,
+            "price": 0.5,
+            "available": True,
+            "external_diff": 1,
+        },
+    ]
+    _run(test_items)
+
+    rows = postgres.get_table_contents(output_table, InputSchema.column_names())
+    rows.sort(key=lambda item: (item["name"], item["available"]))
+    assert rows == test_items
+
+    # Also test that the junk data in the additional columns would not break deletion
+    new_test_items = [
+        {
+            "name": "Milk",
+            "count": -1,
+            "price": -1.0,
+            "available": True,
+            "external_diff": -1,
+        }
+    ]
+    _run(new_test_items)
+
+    rows = postgres.get_table_contents(
+        output_table, InputSchema.column_names(), ("name", "available")
+    )
+    expected_rows = [
+        {
+            "name": "Water",
+            "count": 600,
+            "price": 0.5,
+            "available": True,
+            "external_diff": 1,
+        },
+    ]
+    assert rows == expected_rows

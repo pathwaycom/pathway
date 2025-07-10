@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Iterable, Literal
 
-from pathway.internals import api, datasink
+from pathway.internals import api, datasink, dtype
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
+from pathway.io._utils import get_column_index
 
 
 def _connection_string_from_settings(settings: dict):
@@ -159,6 +160,7 @@ def write_snapshot(
     init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    _external_diff_column: ColumnReference | None = None,
 ) -> None:
     """Maintains a snapshot of a table within a Postgres table.
 
@@ -232,11 +234,19 @@ def write_snapshot(
         table_name=table_name,
         sql_writer_init_mode=_init_mode_from_str(init_mode),
     )
+
+    if (
+        _external_diff_column is not None
+        and _external_diff_column._column.dtype != dtype.INT
+    ):
+        raise ValueError("_external_diff_column can only have an integer type")
+    external_diff_column_index = get_column_index(table, _external_diff_column)
     data_format = api.DataFormat(
         format_type="sql_snapshot",
         key_field_names=primary_key,
         value_fields=_format_output_value_fields(table),
         table_name=table_name,
+        external_diff_column_index=external_diff_column_index,
     )
 
     table.to(

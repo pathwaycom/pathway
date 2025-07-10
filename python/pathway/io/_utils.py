@@ -488,3 +488,14 @@ def _prepare_s3_connection_engine_settings(
     if aws_s3_settings is None:
         return None
     return aws_s3_settings.settings
+
+
+def get_column_index(table: Table, column: ColumnReference | None) -> int | None:
+    if column is None:
+        return None
+    if column._table != table:
+        raise ValueError(f"The column {column} doesn't belong to the target table")
+    for index, table_column in enumerate(table._columns):
+        if table_column == column.name:
+            return index
+    raise RuntimeError(f"The column {column} is not found in the table {table}")

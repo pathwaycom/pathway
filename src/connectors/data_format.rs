@@ -462,6 +462,9 @@ pub enum FormatterError {
 
     #[error(transparent)]
     SchemaRepository(#[from] SchemaRepositoryError),
+
+    #[error("incorrect external diff value: {0}")]
+    IncorrectDiffColumnValue(Value),
 }
 
 pub trait Formatter: Send {
@@ -1877,6 +1880,7 @@ pub struct PsqlSnapshotFormatter {
 
     key_field_positions: Vec<usize>,
     value_field_positions: Vec<usize>,
+    external_diff_column_index: Option<usize>,
 }
 
 impl PsqlSnapshotFormatter {
@@ -1884,8 +1888,9 @@ impl PsqlSnapshotFormatter {
         table_name: String,
         mut key_field_names: Vec<String>,
         mut value_field_names: Vec<String>,
+        external_diff_column_index: Option<usize>,
     ) -> Result<PsqlSnapshotFormatter, PsqlSnapshotFormatterError> {
-        let mut field_positions = HashMap::<String, usize>::new();
+        let mut field_positions = HashMap::<String, usize>::with_capacity(value_field_names.len());
         for (index, field_name) in value_field_names.iter_mut().enumerate() {
             if field_positions.contains_key(field_name) {
                 return Err(PsqlSnapshotFormatterError::RepeatedValueField(take(
@@ -1914,6 +1919,7 @@ impl PsqlSnapshotFormatter {
 
             key_field_positions,
             value_field_positions,
+            external_diff_column_index,
         })
     }
 }
@@ -1932,7 +1938,20 @@ impl Formatter for PsqlSnapshotFormatter {
 
         let mut result = Vec::new();
 
-        if diff == 1 {
+        let effective_diff: isize =
+            if let Some(external_diff_column_index) = self.external_diff_column_index {
+                let value = &values[external_diff_column_index];
+                match value {
+                    Value::Int(x) if *x == -1 || *x == 1 => (*x)
+                        .try_into()
+                        .expect("the values from {-1, 1} must convert into isize"),
+                    _ => return Err(FormatterError::IncorrectDiffColumnValue(value.clone())),
+                }
+            } else {
+                diff
+            };
+
+        if effective_diff == 1 {
             let update_pairs = self
                 .value_field_positions
                 .iter()

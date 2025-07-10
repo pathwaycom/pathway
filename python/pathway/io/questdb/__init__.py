@@ -9,6 +9,7 @@ from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
+from pathway.io._utils import get_column_index
 
 
 @check_arg_types
@@ -142,13 +143,7 @@ def write(
                 f"designated_timestamp is passed, but designated_timestamp_policy is {designated_timestamp_policy}"
             )
         designated_timestamp_policy = "use_column"
-        if designated_timestamp._table != table:
-            raise ValueError(
-                f"The column {designated_timestamp} doesn't belong to the target table"
-            )
-        for index, column in enumerate(table._columns):
-            if column == designated_timestamp.name:
-                designated_timestamp_index = index
+        designated_timestamp_index = get_column_index(table, designated_timestamp)
     elif designated_timestamp_policy is None:
         designated_timestamp_policy = "use_now"
 

@@ -4686,6 +4686,7 @@ pub struct DataFormat {
     schema_registry_settings: Option<PySchemaRegistrySettings>,
     subject: Option<String>,
     designated_timestamp_policy: Option<String>,
+    external_diff_column_index: Option<usize>,
 }
 
 #[pymethods]
@@ -4889,6 +4890,7 @@ impl DataFormat {
         schema_registry_settings = None,
         subject = None,
         designated_timestamp_policy = None,
+        external_diff_column_index = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4907,6 +4909,7 @@ impl DataFormat {
         schema_registry_settings: Option<PySchemaRegistrySettings>,
         subject: Option<String>,
         designated_timestamp_policy: Option<String>,
+        external_diff_column_index: Option<usize>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -4924,6 +4927,7 @@ impl DataFormat {
             schema_registry_settings,
             subject,
             designated_timestamp_policy,
+            external_diff_column_index,
         }
     }
 
@@ -6124,6 +6128,7 @@ impl DataFormat {
                     self.table_name()?,
                     key_field_names,
                     self.value_field_names(py),
+                    self.external_diff_column_index,
                 );
                 match maybe_formatter {
                     Ok(formatter) => Ok(Box::new(formatter)),
