@@ -97,12 +97,12 @@ def test_openai_call_args(model, call_arg):
     [
         "claude-3-5-sonnet-20240620",
         "claude-3-opus-20240229",
-        "antrophic/claude-3-5-sonnet-20240620",
+        "anthropic/claude-3-5-sonnet-20240620",
         None,
     ],
 )
 @pytest.mark.parametrize("call_arg", [*VALID_ARGS, *INVALID_ARGS])
-def test_antrophic_call_args(model, call_arg):
+def test_anthropic_call_args(model, call_arg):
     llm = llms.LiteLLMChat(model=model)
 
     if model is None:

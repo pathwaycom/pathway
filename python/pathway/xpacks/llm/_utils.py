@@ -49,7 +49,7 @@ def _coerce_sync(func: Callable) -> Callable:
         return func
 
 
-def _check_model_accepts_arg(model_name: str, provider: str, arg: str):
+def _check_model_accepts_arg(model_name: str, provider: str | None, arg: str):
     from litellm import get_supported_openai_params
 
     supported_params = (

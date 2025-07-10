@@ -442,10 +442,14 @@ class LiteLLMChat(BaseChat):
         if self.model is None:
             return False
 
-        provider = self.model.split("/")[0]
-        model = "".join(
-            self.model.split("/")[1:]
-        )  # handle case: replicate/meta/meta-llama-3-8b
+        if "/" in self.model:
+            provider = self.model.split("/")[0]
+            model = "".join(
+                self.model.split("/")[1:]
+            )  # handle case: replicate/meta/meta-llama-3-8b
+        else:
+            model = self.model
+            provider = None
         return _check_model_accepts_arg(model, provider, arg_name)
 
 
