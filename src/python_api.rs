@@ -3992,7 +3992,15 @@ impl AwsS3Settings {
             } else {
                 let aws_credentials = AwsCredentials::from_sts_env("aws-creds")
                     .or_else(|_| AwsCredentials::from_env())
-                    .or_else(|_| AwsCredentials::from_profile(self.profile.as_deref()))
+                    // The rust-s3 crate doesn't check the AWS_PROFILE env var, so we do it by ourselves
+                    .or_else(|_| {
+                        AwsCredentials::from_profile(
+                            self.profile
+                                .clone()
+                                .or_else(|| std::env::var("AWS_PROFILE").ok())
+                                .as_deref(),
+                        )
+                    })
                     .or_else(|_| AwsCredentials::from_instance_metadata());
 
                 // first, try to deduce credentials from various sources

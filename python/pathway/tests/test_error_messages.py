@@ -437,7 +437,6 @@ def test_traceback_static():
         pw.io.plaintext.read,
         pw.io.python.read,
         pw.io.redpanda.read,
-        pw.io.s3_csv.read,
         pw.io.csv.write,
         pw.io.fs.write,
         pw.io.http.write,

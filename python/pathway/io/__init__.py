@@ -27,7 +27,6 @@ from pathway.io import (
     questdb,
     redpanda,
     s3,
-    s3_csv,
     slack,
     sqlite,
 )
@@ -59,7 +58,6 @@ __all__ = [
     "slack",
     "subscribe",
     "s3",
-    "s3_csv",
     "gdrive",
     "sqlite",
     "pubsub",

@@ -12,6 +12,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **BREAKING** The Elasticsearch and BigQuery connectors have been moved to the Scale license tier. You can obtain the Scale tier license for free at https://pathway.com/get-license.
 - **BREAKING** `pw.io.fs.read` no longer accepts `format="raw"`. Use `format="binary"` to read binary objects, `format="plaintext_by_file"` to read plaintext objects per file, or `format="plaintext"` to read plaintext objects split into lines.
+- **BREAKING** The `pw.io.s3_csv.read` connector has been removed. Please use `pw.io.s3.read` with `format="csv"` instead.
+
+### Fixed
+- `pw.io.s3.read` and `pw.io.s3.write` now also check the `AWS_PROFILE` environment variable for AWS credentials if none are explicitly provided.
 
 ## [0.24.1] - 2025-07-03
 

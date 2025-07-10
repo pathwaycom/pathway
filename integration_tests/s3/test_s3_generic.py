@@ -24,10 +24,11 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
 
     input_contents = "key,value\n1,Hello\n2,World"
     put_aws_object(s3_input_path, input_contents)
-    table = pw.io.s3_csv.read(
+    table = pw.io.s3.read(
         s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         schema=pw.schema_from_types(key=int, value=str),
+        format="csv",
         mode="static",
         autocommit_duration_ms=1000,
         name="1",
@@ -44,11 +45,12 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
 
     input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde\n"
     put_aws_object(s3_input_path, input_contents)
-    table = pw.io.s3_csv.read(
+    table = pw.io.s3.read(
         s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         schema=pw.schema_from_types(key=int, value=str),
         mode="static",
+        format="csv",
         autocommit_duration_ms=1000,
         name="1",
     )
@@ -68,11 +70,12 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     output_path = tmp_path / "output_final.csv"
     put_aws_object(s3_input_path, input_contents)
     put_aws_object(s3_input_path_2, input_contents_2)
-    table = pw.io.s3_csv.read(
+    table = pw.io.s3.read(
         s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         schema=pw.schema_from_types(key=int, value=str),
         mode="static",
+        format="csv",
         autocommit_duration_ms=1000,
         name="1",
     )
@@ -189,15 +192,16 @@ def test_s3_alternative_path(tmp_path: pathlib.Path, s3_path: str):
     put_aws_object(input_s3_path, input_contents)
     write_lines(model_output_path, input_contents)
 
-    table = pw.io.s3_csv.read(
+    table = pw.io.s3.read(
         f"s3://aws-integrationtest/{input_s3_path}",
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
+        aws_s3_settings=pw.io.s3.AwsS3Settings(
             access_key=os.environ["AWS_S3_ACCESS_KEY"],
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         ),
         schema=pw.schema_from_types(key=int, value=str),
         mode="static",
+        format="csv",
         autocommit_duration_ms=1000,
     )
 
@@ -217,13 +221,14 @@ def test_s3_wrong_path(tmp_path: pathlib.Path, s3_path: str):
     input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
 
-    table = pw.io.s3_csv.read(
+    table = pw.io.s3.read(
         f"s3://aws-integrationtest/{input_s3_path}",
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
+        aws_s3_settings=pw.io.s3.AwsS3Settings(
             access_key=os.environ["AWS_S3_ACCESS_KEY"],
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         ),
+        format="csv",
         schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
@@ -248,10 +253,11 @@ def test_s3_creds_from_profiles(tmp_path: pathlib.Path, s3_path: str, monkeypatc
     put_aws_object(input_s3_path, input_contents)
     write_lines(model_output_path, input_contents)
 
-    table = pw.io.s3_csv.read(
+    table = pw.io.s3.read(
         f"s3://aws-integrationtest/{input_s3_path}",
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(region="eu-central-1"),
+        aws_s3_settings=pw.io.s3.AwsS3Settings(region="eu-central-1"),
         schema=pw.schema_from_types(key=int, value=str),
+        format="csv",
         mode="static",
         autocommit_duration_ms=1000,
     )
