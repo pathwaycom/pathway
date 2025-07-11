@@ -1493,3 +1493,66 @@ class AsyncTransformerEvaluator(
             self.context.datasource.connector_properties,
             skip_errors=True,
         )
+
+
+class TableToStreamEvaluator(
+    ExpressionEvaluator, context_type=clmn.TableToStreamContext
+):
+    context: clmn.TableToStreamContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        properties = self._table_properties(output_storage)
+        return self.scope.table_to_stream(
+            self.state.get_table(self.context.input_universe()),
+            properties,
+        )
+
+
+class StreamToTableEvaluator(
+    ExpressionEvaluator, context_type=clmn.StreamToTableContext
+):
+    context: clmn.StreamToTableContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
+        is_upsert_column_path = input_storage.get_path(self.context.is_upsert_column)
+        properties = self._table_properties(output_storage)
+        return self.scope.stream_to_table(
+            self.state.get_table(input_storage._universe),
+            is_upsert_column_path,
+            properties,
+        )
+
+
+class MergeStreamsToTableEvaluator(
+    ExpressionEvaluator, context_type=clmn.MergeStreamsToTableContext
+):
+    context: clmn.MergeStreamsToTableContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        properties = self._table_properties(output_storage)
+        return self.scope.merge_streams_to_table(
+            self.state.get_table(self.context.insertions_id_column.universe),
+            self.state.get_table(self.context.deletions_id_column.universe),
+            properties,
+        )
+
+
+class AssertAppendOnlyEvaluator(
+    ExpressionEvaluator, context_type=clmn.AssertAppendOnlyContext
+):
+    context: clmn.AssertAppendOnlyContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
+        column_paths = []
+        for column in output_storage.get_columns():
+            assert isinstance(column, clmn.ColumnWithReference)
+            path = input_storage.get_path(column.expression._column)
+            column_paths.append(path)
+        properties = self._table_properties(output_storage)
+        return self.scope.assert_append_only(
+            self.state.get_table(input_storage._universe),
+            column_paths,
+            properties,
+        )

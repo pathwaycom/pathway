@@ -146,6 +146,8 @@ const YOLO: &[&str] = &[
     "id64",
 ];
 
+const DIFF_INSERTION: isize = 1;
+const DIFF_DELETION: isize = -1;
 const OUTPUT_RETRIES: usize = 5;
 const ERROR_LOG_FLUSH_PERIOD: Duration = Duration::from_secs(1);
 
@@ -864,14 +866,14 @@ impl<S: MaybeTotalScope> ReplaceDuplicatesWithError for Collection<S, (Key, Valu
     ) -> Self {
         self.reduce(move |key, input, output| {
             let res = match input {
-                [(value, 1)] => (*value).clone(),
+                [(value, DIFF_INSERTION)] => (*value).clone(),
                 [] => unreachable!(),
                 [(value, _), ..] => {
                     error_logger.log_error_with_trace(DataError::DuplicateKey(*key).into(), &trace);
                     error_logic(value)
                 }
             };
-            output.push((res, 1));
+            output.push((res, DIFF_INSERTION));
         })
     }
 }
@@ -1662,7 +1664,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     }
                                 } else if let Some(result) = caches[i].remove(&row.key) {
                                     // If expression is not append_only, remove key from cache as a new result can be different.
-                                    if row.diff != -1 {
+                                    if row.diff != DIFF_DELETION {
                                         error_reporter.report_and_panic_with_trace(
                                             DataError::ExpectedDeletion(row.key),
                                             expression_data.properties.trace().as_ref(),
@@ -1952,7 +1954,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                             let cache = cache.clone();
                             move |(key, value), diff| match value {
                                 OldOrNew::Old(state) => {
-                                    assert!(diff == 1);
+                                    assert!(diff == DIFF_INSERTION);
                                     let current = cache.borrow_mut().insert(key, state);
                                     assert!(current.is_none());
                                     None
@@ -2460,9 +2462,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             "update_rows_table::updated",
             move |key, input, output| {
                 let values = match input {
-                    [(MaybeUpdate::Original(original_values), 1)] => original_values,
-                    [(MaybeUpdate::Update(new_values), 1)] => new_values,
-                    [(MaybeUpdate::Original(_), 1), (MaybeUpdate::Update(new_values), 1)] => {
+                    [(MaybeUpdate::Original(original_values), DIFF_INSERTION)] => original_values,
+                    [(MaybeUpdate::Update(new_values), DIFF_INSERTION)] => new_values,
+                    [(MaybeUpdate::Original(_), DIFF_INSERTION), (MaybeUpdate::Update(new_values), DIFF_INSERTION)] => {
                         new_values
                     }
                     _ => {
@@ -2471,7 +2473,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         return;
                     }
                 };
-                output.push((values.clone(), 1));
+                output.push((values.clone(), DIFF_INSERTION));
             },
         );
         let result = updated_values
@@ -2501,24 +2503,24 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             "update_cells_table::updated",
             move |key, input, output| {
                 let (original_values, selected_values, selected_paths) = match input {
-                    [(MaybeUpdate::Original(original_values), 1)] => {
+                    [(MaybeUpdate::Original(original_values), DIFF_INSERTION)] => {
                         (original_values, original_values, &column_paths)
                     }
                     [
-                        (MaybeUpdate::Original(original_values), 1),
-                        (MaybeUpdate::Update(new_values), 1),
+                        (MaybeUpdate::Original(original_values), DIFF_INSERTION),
+                        (MaybeUpdate::Update(new_values), DIFF_INSERTION),
                     ] => {
                         (original_values, new_values, &update_paths)
                     }
                     [
-                        (MaybeUpdate::Original(original_values), 1),
+                        (MaybeUpdate::Original(original_values), DIFF_INSERTION),
                         (MaybeUpdate::Update(_), _),
                         ..
                     ] => { // if there's exactly one original entry, keep it to preserve the universe keys
                         error_logger.log_error_with_trace(DataError::DuplicateKey(*key).into(), &trace);
                         (original_values, &Value::Error, &update_paths)
                     },
-                    [(MaybeUpdate::Update(_), 1)] => {
+                    [(MaybeUpdate::Update(_), DIFF_INSERTION)] => {
                         error_logger.log_error_with_trace(DataError::UpdatingNonExistingRow(*key).into(), &trace);
                         return;
                     }
@@ -2534,7 +2536,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     .unwrap_with_reporter(&error_reporter);
 
                 let result = Value::Tuple(chain!([original_values.clone()], updates).collect());
-                output.push((result, 1));
+                output.push((result, DIFF_INSERTION));
             },
         );
 
@@ -3120,6 +3122,87 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
+
+    fn table_to_stream(
+        &mut self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
+        let new_values = table
+            .values()
+            .consolidate_for_output_named("table_to_stream", false)
+            .flat_map(move |batch| {
+                let OutputBatch { time, mut data } = batch;
+                data.sort_by_key(|&((key, ref _values), diff)| (key, -diff)); // insertions first
+                let mut previous_key = None;
+                let mut result = Vec::with_capacity(data.len());
+                for ((key, values), diff) in data {
+                    if Some(key) == previous_key {
+                        continue; // skip deletion if there was insertion before
+                    }
+                    previous_key = Some(key);
+                    let is_upsert = match diff {
+                        DIFF_INSERTION => Some(true),
+                        DIFF_DELETION => Some(false),
+                        _ => {
+                            error_logger
+                                .log_error_with_trace(DataError::DuplicateKey(key).into(), &trace);
+                            None
+                        }
+                    };
+                    if let Some(is_upsert) = is_upsert {
+                        result.push((
+                            (
+                                key,
+                                Value::from([values, Value::Bool(is_upsert)].as_slice()),
+                            ),
+                            time.clone(),
+                            DIFF_INSERTION,
+                        ));
+                    }
+                }
+                result
+            })
+            .as_collection();
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
+
+    fn assert_append_only(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let error_reporter = self.error_reporter.clone();
+        let trace = table_properties.trace();
+        let new_values = self
+            .extract_columns(table_handle, column_paths)?
+            .as_collection()
+            .consolidate()
+            .inner
+            .map(move |((key, tuple), time, diff)| {
+                if diff != DIFF_INSERTION {
+                    error_reporter.report_and_panic_with_trace(
+                        DataError::AppendOnlyViolation(key, diff),
+                        &trace,
+                    )
+                }
+                ((key, Value::from(tuple.as_value_slice())), time, diff)
+            })
+            .as_collection();
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
 }
 
 trait DataflowReducer<S: MaybeTotalScope> {
@@ -3175,7 +3258,7 @@ where
                             }))
                             .ok_with_logger(error_logger.as_ref())
                     };
-                    output.push((result, 1));
+                    output.push((result, DIFF_INSERTION));
                 }
             })
             .map_named("DataFlowReducer::reduce", move |(key, state)| {
@@ -3615,7 +3698,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 row.shard.unwrap_or_else(|| row.key.shard_as_usize()) % worker_count == worker_index
             })
             .map(|row| {
-                assert!(row.diff == 1 || row.diff == -1);
+                assert!(row.diff == DIFF_INSERTION || row.diff == DIFF_DELETION);
                 (
                     (row.key, Value::from(row.values.as_slice())),
                     row.time,
@@ -3645,15 +3728,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                         let value = match value {
                             OldOrNew::Old(value) | OldOrNew::New(value) => value,
                         };
-                        let value_for_upsert = if diff == 1 {
+                        let value_for_upsert = if diff == DIFF_INSERTION {
                             Some(value)
                         } else {
-                            assert_eq!(diff, -1);
+                            assert_eq!(diff, DIFF_DELETION);
                             None
                         };
                         (key, value_for_upsert, time)
                     });
-                    arrange_from_upsert::<S, Spine<Rc<OrdValBatch<Key, Value, Timestamp, isize>>>>(
+                    arrange_from_upsert::<S, Spine<Rc<OrdValBatch<Key, Value, S::Timestamp, isize>>>>(
                         &upsert_stream,
                         "UpsertSession",
                     )
@@ -4383,6 +4466,98 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
     fn import_table(&mut self, table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
         import_table(self, table)
+    }
+
+    fn stream_to_table(
+        &mut self,
+        table_handle: TableHandle,
+        is_upsert_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let error_reporter = self.error_reporter.clone();
+        let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
+        let prepared_values = table
+            .values()
+            .inner
+            .flat_map(move |((key, value), time, diff)| {
+                if diff == DIFF_INSERTION {
+                    let is_upsert = is_upsert_path
+                        .extract(&key, &value)
+                        .unwrap_with_reporter(&error_reporter)
+                        .as_bool()
+                        .unwrap_with_reporter(&error_reporter);
+                    let new_diff = if is_upsert {
+                        DIFF_INSERTION
+                    } else {
+                        DIFF_DELETION
+                    };
+                    Some(((key, value), time, new_diff))
+                } else {
+                    error_logger
+                        .log_error_with_trace(DataError::ExpectedAppendOnly(key).into(), &trace);
+                    None
+                }
+            })
+            .as_collection();
+        let new_values = self.maybe_persisted_upsert_collection(&prepared_values)?;
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
+
+    fn merge_streams_to_table(
+        &mut self,
+        insertions_stream_handle: TableHandle,
+        deletions_stream_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        fn prepare_insertions_or_deletions<S: MaybeTotalScope>(
+            graph: &DataflowGraphInner<S>,
+            table_handle: TableHandle,
+            new_diff_value: isize,
+            trace: Arc<Trace>,
+        ) -> Result<Collection<S, (Key, Value)>> {
+            let table = graph
+                .tables
+                .get(table_handle)
+                .ok_or(Error::InvalidTableHandle)?;
+            let error_logger = graph.create_error_logger()?;
+            Ok(table
+                .values()
+                .inner
+                .flat_map(move |((key, value), time, diff)| {
+                    if diff == DIFF_INSERTION {
+                        Some(((key, value), time, new_diff_value))
+                    } else {
+                        error_logger.log_error_with_trace(
+                            DataError::ExpectedAppendOnly(key).into(),
+                            &trace,
+                        );
+                        None
+                    }
+                })
+                .as_collection())
+        }
+        let trace = table_properties.trace();
+        let insertions_prepared = prepare_insertions_or_deletions(
+            self,
+            insertions_stream_handle,
+            DIFF_INSERTION,
+            trace.clone(),
+        )?;
+        let deletions_prepared =
+            prepare_insertions_or_deletions(self, deletions_stream_handle, DIFF_DELETION, trace)?;
+
+        let new_values = self
+            .maybe_persisted_upsert_collection(&insertions_prepared.concat(&deletions_prepared))?;
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 }
 
@@ -5419,6 +5594,45 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
     ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
     }
+
+    fn table_to_stream(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .table_to_stream(table_handle, table_properties)
+    }
+
+    fn stream_to_table(
+        &self,
+        _table_handle: TableHandle,
+        _is_upsert_path: ColumnPath,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        Err(Error::NotSupportedInIteration)
+    }
+
+    fn merge_streams_to_table(
+        &self,
+        _insertions_stream_handle: TableHandle,
+        _deletions_stream_handle: TableHandle,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        Err(Error::NotSupportedInIteration)
+    }
+
+    fn assert_append_only(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .assert_append_only(table_handle, column_paths, table_properties)
+    }
 }
 
 struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>>(
@@ -6104,6 +6318,51 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_properties,
             skip_errors,
         )
+    }
+
+    fn table_to_stream(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .table_to_stream(table_handle, table_properties)
+    }
+
+    fn stream_to_table(
+        &self,
+        table_handle: TableHandle,
+        is_upsert_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .stream_to_table(table_handle, is_upsert_path, table_properties)
+    }
+
+    fn merge_streams_to_table(
+        &self,
+        insertions_stream_handle: TableHandle,
+        deletions_stream_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().merge_streams_to_table(
+            insertions_stream_handle,
+            deletions_stream_handle,
+            table_properties,
+        )
+    }
+
+    fn assert_append_only(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .assert_append_only(table_handle, column_paths, table_properties)
     }
 }
 

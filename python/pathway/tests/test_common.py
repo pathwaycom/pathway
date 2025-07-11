@@ -6783,3 +6783,147 @@ def test_debug_operator():
 [0][foo] @Timestamp(8) +1 id=^3HN31E1PBT7YHH5PWVKTZCPRJ8, a=Int(5), t=Int(7)
 """
     assert p.stdout.decode() == expected_output
+
+
+def test_table_to_stream():
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |    2     |    1
+        3 | 4 |    2     |    1
+        5 | 6 |    4     |    1
+        3 | 4 |    4     |   -1
+        3 | 8 |    4     |    1
+        5 | 6 |    6     |   -1
+        """,
+        id_from=["a"],
+    )
+    stream = t.to_stream()
+    assert stream._id_column.universe != t._id_column.universe
+    assert stream.is_append_only
+    expected = pw.debug.table_from_markdown(
+        """
+        a | b | is_upsert | __time__
+        1 | 2 |   True    |    2
+        3 | 4 |   True    |    2
+        5 | 6 |   True    |    4
+        3 | 8 |   True    |    4
+        5 | 6 |  False    |    6
+        """,
+        id_from=["a"],
+    )
+    assert_stream_equality(stream, expected)
+
+    table = stream.stream_to_table(pw.this.is_upsert).without(pw.this.is_upsert)
+    assert_stream_equality(t, table)
+
+
+def test_stream_to_table():
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | is_upsert | __time__
+        1 | 2 |   True    |    2
+        3 | 4 |   True    |    2
+        5 | 6 |   True    |    4
+        3 | 8 |   True    |    4
+        5 | 6 |  False    |    6
+        1 | 3 |  False    |    8
+        """,  # (1, 3) to check that values for deletions are ignored, only key is taken.
+        id_from=["a"],
+    )
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Expected 'is_upsert' to be of type 'bool', got '<class 'int'>"
+        ),
+    ):
+        t.stream_to_table(pw.this.b)
+    table = t.stream_to_table(pw.this.is_upsert).without(pw.this.is_upsert)
+    expected = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |    2     |    1
+        3 | 4 |    2     |    1
+        5 | 6 |    4     |    1
+        3 | 4 |    4     |   -1
+        3 | 8 |    4     |    1
+        5 | 6 |    6     |   -1
+        1 | 2 |    8     |   -1
+        """,
+        id_from=["a"],
+    )
+    assert_stream_equality(table, expected)
+
+
+def test_from_streams():
+    insertions = pw.debug.table_from_markdown(
+        """
+        a | b | __time__
+        1 | 2 |    2
+        3 | 4 |    2
+        5 | 6 |    4
+        3 | 8 |    4
+        """,
+        id_from=["a"],
+    )
+    deletions = pw.debug.table_from_markdown(
+        """
+        a | __time__
+        4 |    2
+        5 |    6
+        1 |    8
+        """,  # a=4 to check that deletion without earlier insert is ignored
+        id_from=["a"],
+    )
+    table = pw.Table.from_streams(insertions, deletions)
+    expected = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |    2     |    1
+        3 | 4 |    2     |    1
+        5 | 6 |    4     |    1
+        3 | 4 |    4     |   -1
+        3 | 8 |    4     |    1
+        5 | 6 |    6     |   -1
+        1 | 2 |    8     |   -1
+        """,
+        id_from=["a"],
+    )
+    assert_stream_equality(table, expected)
+
+
+def test_assert_append_only():
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |    2     |    1
+        3 | 4 |    2     |    1
+        5 | 6 |    4     |    1
+        3 | 4 |    4     |   -1
+        3 | 5 |    4     |    1
+        """,
+        id_from=["a"],
+    )
+    # t is not append only due to the update (row with a=3)
+    assert not t.is_append_only
+    t.assert_append_only()
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Expected table to be append-only, but got diff=-1 for key: ^3CZ78B48PASGNT231ZECWPER90"
+        ),
+    ):
+        run_all()
+
+    t_filtered = t.filter(pw.this.a != 3)
+    t_append_only = t_filtered.assert_append_only()
+    assert t_append_only.is_append_only
+    expected = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |    2     |    1
+        5 | 6 |    4     |    1
+        """,
+        id_from=["a"],
+    )
+    assert_stream_equality(t_append_only, expected)

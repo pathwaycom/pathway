@@ -337,6 +337,12 @@ pub enum DataError {
     #[error("Expected deletion of a row with key: {0}, but got insertion instead.")]
     ExpectedDeletion(Key),
 
+    #[error("Expected table to be append-only, but got deletion for key: {0}.")]
+    ExpectedAppendOnly(Key),
+
+    #[error("Expected table to be append-only, but got diff={1} for key: {0}.")]
+    AppendOnlyViolation(Key, isize),
+
     #[error(transparent)]
     Other(DynError),
 }

@@ -1047,6 +1047,9 @@ class FlattenContext(
     orig_universe: Universe
     flatten_column: Column
 
+    def input_universe(self) -> Universe:
+        return self.orig_universe
+
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.flatten_column]
 
@@ -1089,6 +1092,10 @@ class FlattenContext(
                 append_only=self.flatten_column.properties.append_only,
             ),
         )
+
+    @property
+    def new_column(self) -> Column:
+        return self.flatten_result_column
 
     def id_column_type(self) -> dt.DType:
         return dt.ANY_POINTER  # Pointer(Pointer,Int), but this might change
@@ -1201,3 +1208,125 @@ class AsyncTransformerContext(
     @cached_property
     def universe(self) -> Universe:
         return self.input_id_column.universe.subset()
+
+
+@dataclass(eq=False, frozen=True)
+class TableToStreamContext(
+    Context, column_properties_evaluator=cp.AppendOnlyPropsEvaluator
+):
+    """Context of `table.to_stream() operation."""
+
+    input_id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.input_id_column]
+
+    @cached_property
+    def universe(self) -> Universe:
+        ret = Universe()
+        if self.input_id_column.universe.is_empty():
+            ret.register_as_empty(no_warn=False)
+        return ret
+
+    def input_universe(self) -> Universe:
+        return self.input_id_column.universe
+
+    def id_column_type(self) -> dt.DType:
+        return self.input_id_column.dtype
+
+    @cached_property
+    def is_upsert_column(self) -> Column:
+        return MaterializedColumn(
+            self.universe, cp.ColumnProperties(dtype=dt.BOOL, append_only=True)
+        )
+
+    @property
+    def new_column(self) -> Column:
+        return self.is_upsert_column
+
+
+@dataclass(eq=False, frozen=True)
+class StreamToTableContext(
+    Context, column_properties_evaluator=cp.DefaultPropsEvaluator
+):
+    """Context of `stream.to_table() operation."""
+
+    input_id_column: IdColumn
+    is_upsert_column: ColumnWithExpression
+
+    def column_dependencies_internal(self) -> Iterable[Column]:
+        return [self.is_upsert_column]
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.input_id_column]
+
+    def input_universe(self) -> Universe:
+        return self.input_id_column.universe
+
+    def id_column_type(self) -> dt.DType:
+        return self.input_id_column.dtype
+
+    @cached_property
+    def universe(self) -> Universe:
+        ret = Universe()
+        if self.input_id_column.universe.is_empty():
+            ret.register_as_empty(no_warn=False)
+        return ret
+
+
+@dataclass(eq=False, frozen=True)
+class MergeStreamsToTableContext(
+    Context, column_properties_evaluator=cp.DefaultPropsEvaluator
+):
+    """Context of `merge_streams_to_table() operation."""
+
+    insertions_id_column: IdColumn
+    deletions_id_column: IdColumn
+
+    def input_universe(self) -> Universe:
+        return self.insertions_id_column.universe
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.insertions_id_column, self.deletions_id_column]
+
+    def id_column_type(self) -> dt.DType:
+        return dt.ANY_POINTER
+
+    @cached_property
+    def universe(self) -> Universe:
+        ret = Universe()
+        if (
+            self.insertions_id_column.universe.is_empty()
+            and self.deletions_id_column.universe.is_empty()
+        ):
+            ret.register_as_empty(no_warn=False)
+        return ret
+
+
+@dataclass(eq=False, frozen=True)
+class AssertAppendOnlyContext(
+    Context, column_properties_evaluator=cp.AppendOnlyPropsEvaluator
+):
+    """Context of `table.assert_append_only() operation."""
+
+    orig_id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
+
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
+
+    def id_column_type(self) -> dt.DType:
+        return self.orig_id_column.dtype
+
+    @cached_property
+    def universe(self) -> Universe:
+        # We only declare that the columns in the table are append-only.
+        # Other columns in the same universe can be non-append-only.
+        # We need a new universe so that non-append-only and append-only columns
+        # don't share a common stream in the computation graph because this stream
+        # is then non-append-only.
+        ret = Universe()
+        G.universe_solver.register_as_equal(self.orig_id_column.universe, ret)
+        return ret

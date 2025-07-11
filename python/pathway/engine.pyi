@@ -734,6 +734,29 @@ class Scope:
         table_properties: ConnectorProperties,
         skip_errors: bool,
     ) -> Table: ...
+    def table_to_stream(
+        self,
+        table: Table,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def stream_to_table(
+        self,
+        stream: Table,
+        is_upsert_path: ColumnPath,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def merge_streams_to_table(
+        self,
+        insertions_stream: Table,
+        deletions_stream: Table,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def assert_append_only(
+        self,
+        table: Table,
+        column_paths: Iterable[ColumnPath],
+        table_properties: TableProperties,
+    ) -> Table: ...
 
 class Error: ...
 

@@ -806,3 +806,46 @@ def test_fully_async_udf(append_only_1, append_only_2):
     assert result.a._column.properties.append_only == append_only_1
     assert result.b._column.properties.append_only == append_only_2
     assert result.c._column.properties.append_only is False
+
+
+@pytest.mark.parametrize("append_only_1", [True, False])
+@pytest.mark.parametrize("append_only_2", [True, False])
+def test_to_stream(append_only_1, append_only_2):
+    class Schema(pw.Schema):
+        a: int = pw.column_definition(append_only=append_only_1)
+        b: int = pw.column_definition(append_only=append_only_2)
+
+    table = table_from_datasource(TestDataSource(schema=Schema))
+    result = table.to_stream()
+
+    assert result._id_column.properties.append_only
+    assert result.a._column.properties.append_only
+    assert result.b._column.properties.append_only
+    assert result.is_upsert._column.properties.append_only
+
+
+def test_stream_to_table():
+    class Schema(pw.Schema):
+        a: bool = pw.column_definition(append_only=True)
+        b: int = pw.column_definition(append_only=True)
+
+    table = table_from_datasource(TestDataSource(schema=Schema))
+    result = table.stream_to_table(pw.this.a)
+
+    assert not result._id_column.properties.append_only
+    assert not result.a._column.properties.append_only
+    assert not result.b._column.properties.append_only
+
+
+def test_from_streams():
+    class Schema(pw.Schema):
+        a: int = pw.column_definition(append_only=True)
+        b: int = pw.column_definition(append_only=True)
+
+    table_1 = table_from_datasource(TestDataSource(schema=Schema))
+    table_2 = table_from_datasource(TestDataSource(schema=Schema))
+    result = pw.Table.from_streams(table_1, table_2)
+
+    assert not result._id_column.properties.append_only
+    assert not result.a._column.properties.append_only
+    assert not result.b._column.properties.append_only

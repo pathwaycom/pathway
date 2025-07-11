@@ -2619,6 +2619,205 @@ id_type=<class 'pathway.engine.Pointer'>>
         }
         return Table(_columns=columns, _context=context)
 
+    @trace_user_frame
+    @contextualized_operator
+    @check_arg_types
+    def to_stream(self, upsert_column_name: str = "is_upsert") -> Table:
+        """Converts a table to a stream of changes.
+
+        If in a given batch there is:
+        - an insert or an update for a given key, a row with ``True`` in the
+        ``update_column_name`` column is produced
+        - a delete for a given key, a row with ``False`` in the ``update_column_name`` column is produced.
+
+        The values in all other columns are kept. This is a stateless operation.
+
+        Args:
+            upsert_column_name: name of the boolean column that will be added to the table
+                and contain information about the type of action.
+
+        Returns:
+            Table: An append only table with an additional column informing about the action type.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown('''
+        ... id | age | owner | pet | __time__ | __diff__
+        ...  1 | 10  | Alice | dog |     2    |     1
+        ...  2 | 9   | Bob   | cat |     2    |     1
+        ...  1 | 10  | Alice | dog |     4    |    -1
+        ...  1 | 11  | Alice | dog |     4    |     1
+        ...  2 | 9   | Bob   | cat |     4    |    -1
+        ...  2 | 10  | Bob   | cat |     4    |     1
+        ...  1 | 11  | Alice | dog |     6    |    -1
+        ...  1 | 12  | Alice | dog |     6    |     1
+        ...  2 | 10  | Bob   | cat |     6    |    -1
+        ... ''')
+        >>> t2 = t1.to_stream()
+        >>> pw.debug.compute_and_print_update_stream(t2, include_id=False)
+        age | owner | pet | is_upsert | __time__ | __diff__
+        9   | Bob   | cat | True      | 2        | 1
+        10  | Alice | dog | True      | 2        | 1
+        10  | Bob   | cat | True      | 4        | 1
+        11  | Alice | dog | True      | 4        | 1
+        10  | Bob   | cat | False     | 6        | 1
+        12  | Alice | dog | True      | 6        | 1
+        """
+        context = clmn.TableToStreamContext(self._id_column)
+        columns = {
+            name: self._wrap_column_in_context(context, column, name)
+            for name, column in self._columns.items()
+        }
+        columns[upsert_column_name] = context.is_upsert_column
+        return Table(_columns=columns, _context=context)
+
+    @trace_user_frame
+    @desugar
+    @check_arg_types
+    @contextualized_operator
+    def stream_to_table(self, is_upsert: expr.ColumnExpression) -> Table[TSchema]:
+        """
+        Converts a stream of changes (updates and deletions) into a table.
+
+        In Pathway, a stream is a sequence of row changes, where each row has an id and a boolean column
+        (e.g., "is_upsert") indicating whether the row is an update (``True``) or a deletion (``False``).
+
+        This method reconstructs the current state of the table from such a stream by applying the updates
+        and deletions in order. It is a stateful operation: the operator keeps track of the latest value for each id.
+        If there are multiple events for a single id in a single batch in a stream, the order of applying
+        the actions is not specified.
+        For deletions, only ids are important. The values in columns are ignored.
+
+        Args:
+            is_upsert: An expression that evaluates to a boolean value. ``True`` means the row
+                is an upsert (insert or update), ``False`` means the row is a deletion.
+
+        Returns:
+            Table: A table with the same columns as the original stream, representing the current state.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown(
+        ...     '''
+        ... id | pet | age | is_upsert | __time__
+        ...  1 | cat |  3  |   True    |     2
+        ...  2 | dog | 11  |   True    |     2
+        ...  1 | cat | 4   |   True    |     4
+        ...  2 | dog | 0   |  False    |     4
+        ... '''
+        ... )
+        >>> t2 = t1.stream_to_table(pw.this.is_upsert)
+        >>> pw.debug.compute_and_print_update_stream(t2, include_id=False)
+        pet | age | is_upsert | __time__ | __diff__
+        cat | 3   | True      | 2        | 1
+        dog | 11  | True      | 2        | 1
+        cat | 3   | True      | 4        | -1
+        dog | 11  | True      | 4        | -1
+        cat | 4   | True      | 4        | 1
+        """
+        is_upsert_type = self.eval_type(is_upsert)
+        if is_upsert_type != dt.BOOL:
+            raise TypeError(
+                f"Expected 'is_upsert' to be of type 'bool', got '{is_upsert_type.typehint}'"
+            )
+        self._validate_expression(is_upsert)
+        is_upsert_column = self._eval(is_upsert)
+        assert self._universe == is_upsert_column.universe
+        context = clmn.StreamToTableContext(self._id_column, is_upsert_column)
+        return self._table_with_context(context)
+
+    @trace_user_frame
+    @contextualized_operator
+    @check_arg_types
+    def from_streams(self, deletion_stream: Table) -> Table[TSchema]:
+        """
+        Converts streams of changes (updates and deletions) into a table.
+
+        This method reconstructs the current state of the table from such streams by applying the updates
+        and deletions in order. It is a stateful operation: the operator keeps track of the latest value for each id.
+        If there are multiple events for a single id in a single batch in the input streams, the order of applying
+        the actions is not specified.
+
+        Args:
+            self: A stream with updates (insertions or modifications).
+            deletion_stream: A stream with deletions. Only ids in this stream are important.
+                The columns don't have to be compatible with the updates stream.
+
+        Returns:
+            Table: A table with the same columns as the updates stream, representing the current state.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown(
+        ...     '''
+        ... id | pet | age | __time__
+        ...  1 | cat |  3  |     2
+        ...  2 | dog | 11  |     2
+        ...  1 | cat | 4   |     4
+        ... '''
+        ... )
+        >>> t2 = pw.debug.table_from_markdown(
+        ...     '''
+        ... id | pet | __time__
+        ...  2 | dog |     4
+        ... '''
+        ... )
+        >>> t3 = pw.Table.from_streams(t1, t2)
+        >>> pw.debug.compute_and_print_update_stream(t3, include_id=False)
+        pet | age | __time__ | __diff__
+        cat | 3   | 2        | 1
+        dog | 11  | 2        | 1
+        cat | 3   | 4        | -1
+        dog | 11  | 4        | -1
+        cat | 4   | 4        | 1
+        """
+        context = clmn.MergeStreamsToTableContext(
+            self._id_column, deletion_stream._id_column
+        )
+        return self._table_with_context(context)
+
+    @trace_user_frame
+    @contextualized_operator
+    def assert_append_only(self) -> Table[TSchema]:
+        """
+        Sets the append_only property of all columns from a table to ``True``.
+
+        Sometimes Pathway can't automatically deduce that a table is append only. If you
+        know that the table is append-only (contains only insertions), you can tell Pathway
+        about it by using this method. At runtime Pathway will check if the table is
+        really append-only and exit with an error otherwise.
+
+        Returns:
+            Table: A table with the same columns as the original one but with append_only
+            property of the columns set to ``True``.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t = pw.debug.table_from_markdown(
+        ...     '''
+        ...     a | b | __time__ | __diff__
+        ...     1 | 2 |    2     |    1
+        ...     3 | 4 |    2     |    1
+        ...     5 | 6 |    4     |    1
+        ...     3 | 4 |    4     |   -1
+        ...     3 | 5 |    4     |    1
+        ...     ''',
+        ...     id_from=["a"],
+        ... ) # t is not append only due to the update (row with a=3)
+        >>> t.is_append_only
+        False
+        >>> t_filtered = t.filter(pw.this.a != 3)
+        >>> t_append_only = t_filtered.assert_append_only()
+        >>> t_append_only.is_append_only
+        True
+        """
+        context = clmn.AssertAppendOnlyContext(self._id_column)
+        return self._table_with_context(context)
+
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])
 

@@ -10,6 +10,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.questdb.write` method for writing to Quest DB.
 - `pw.io.fs.read` now supports the `"only_metadata"` format. When this format is used, the table will contain only metadata updates for the tracked directory, without reading file contents.
+- `pw.Table.to_stream` that transforms a table to a stream of changes from this table.
+- `pw.Table.stream_to_table`, `pw.Table.from_streams` that transform a streams of changes to tables.
+- `pw.Table.assert_append_only` that sets append_only property of a table and verifies at runtime if the condition is met.
 
 ### Changed
 - **BREAKING** The Elasticsearch and BigQuery connectors have been moved to the Scale license tier. You can obtain the Scale tier license for free at https://pathway.com/get-license.

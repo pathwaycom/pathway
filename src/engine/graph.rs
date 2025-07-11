@@ -974,6 +974,33 @@ pub trait Graph {
         table_properties: Arc<TableProperties>,
         skip_errors: bool,
     ) -> Result<TableHandle>;
+
+    fn table_to_stream(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn stream_to_table(
+        &self,
+        table_handle: TableHandle,
+        is_upsert_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn merge_streams_to_table(
+        &self,
+        insertions_stream_handle: TableHandle,
+        deletions_stream_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn assert_append_only(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -1656,5 +1683,46 @@ impl Graph for ScopedGraph {
                 skip_errors,
             )
         })
+    }
+
+    fn table_to_stream(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.table_to_stream(table_handle, table_properties))
+    }
+
+    fn stream_to_table(
+        &self,
+        table_handle: TableHandle,
+        is_upsert_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.stream_to_table(table_handle, is_upsert_path, table_properties))
+    }
+
+    fn merge_streams_to_table(
+        &self,
+        insertions_stream_handle: TableHandle,
+        deletions_stream_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.merge_streams_to_table(
+                insertions_stream_handle,
+                deletions_stream_handle,
+                table_properties,
+            )
+        })
+    }
+
+    fn assert_append_only(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.assert_append_only(table_handle, column_paths, table_properties))
     }
 }

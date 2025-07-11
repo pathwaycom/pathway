@@ -744,9 +744,9 @@ impl From<EngineError> for PyErr {
                     | DataError::KeyMissingInOutputTable(_)
                     | DataError::KeyMissingInInputTable(_) => PyKeyError::type_object(py),
                     DataError::DivisionByZero => PyZeroDivisionError::type_object(py),
-                    DataError::ParseError(_) | DataError::ValueError(_) => {
-                        PyValueError::type_object(py)
-                    }
+                    DataError::ParseError(_)
+                    | DataError::ValueError(_)
+                    | DataError::AppendOnlyViolation(_, _) => PyValueError::type_object(py),
                     DataError::IndexOutOfBounds => PyIndexError::type_object(py),
                     _ => ENGINE_ERROR_TYPE.bind(py).clone(),
                 },
@@ -3591,6 +3591,60 @@ impl Scope {
             commit_duration,
             Arc::new(EngineTableProperties::flat(column_properties)),
             skip_errors,
+        )?;
+        Table::new(self_, table_handle)
+    }
+
+    pub fn table_to_stream(
+        self_: &Bound<Self>,
+        table: PyRef<Table>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_
+            .borrow()
+            .graph
+            .table_to_stream(table.handle, table_properties.0)?;
+        Table::new(self_, table_handle)
+    }
+
+    pub fn stream_to_table(
+        self_: &Bound<Self>,
+        stream: PyRef<Table>,
+        is_upsert_path: ColumnPath,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_.borrow().graph.stream_to_table(
+            stream.handle,
+            is_upsert_path,
+            table_properties.0,
+        )?;
+        Table::new(self_, table_handle)
+    }
+
+    pub fn merge_streams_to_table(
+        self_: &Bound<Self>,
+        insertions_stream_handle: PyRef<Table>,
+        deletions_stream_handle: PyRef<Table>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_.borrow().graph.merge_streams_to_table(
+            insertions_stream_handle.handle,
+            deletions_stream_handle.handle,
+            table_properties.0,
+        )?;
+        Table::new(self_, table_handle)
+    }
+
+    fn assert_append_only(
+        self_: &Bound<Self>,
+        table_handle: PyRef<Table>,
+        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_.borrow().graph.assert_append_only(
+            table_handle.handle,
+            column_paths,
+            table_properties.0,
         )?;
         Table::new(self_, table_handle)
     }

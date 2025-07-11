@@ -1037,3 +1037,50 @@ def test_fully_async_udf(tmp_path, mode):
     wait_result(["a,b", "8,8"], {"6,5,-1", "8,7,1"})
     os.remove(input_path / "3")
     wait_result(["a,b"], {"0,3,-1", "2,2,-1"})
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
+)
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+def test_stream_to_table(tmp_path, mode):
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+        c: bool
+
+    def logic(t_1: pw.Table) -> pw.Table:
+        return t_1.stream_to_table(pw.this.c).without(pw.this.c)
+
+    run, _ = get_one_table_runner(tmp_path, mode, logic, InputSchema)
+
+    run(["a,b,c", "1,1,True", "2,3,True"], {"1,1,1", "2,3,1"})
+    run(["a,b,c", "2,4,True", "3,5,True"], {"2,3,-1", "2,4,1", "3,5,1"})
+    run(["a,b,c", "1,3,False"], {"1,1,-1"})
+    run(["a,b,c", "4,7,True"], {"4,7,1"})
+    run(["a,b,c", "3,6,True", "4,7,False"], {"3,5,-1", "3,6,1", "4,7,-1"})
+    run(["a,b,c", "3,6,False"], {"3,6,-1"})
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
+)
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+def test_from_streams(tmp_path, mode):
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    def logic(t_1: pw.Table, t_2: pw.Table) -> pw.Table:
+        return pw.Table.from_streams(t_1, t_2)
+
+    run, _, _ = get_two_tables_runner(tmp_path, mode, logic, InputSchema)
+
+    run(["a,b", "1,1", "2,3"], ["a,b"], {"1,1,1", "2,3,1"})
+    run(["a,b", "2,4", "3,5"], ["a,b"], {"2,3,-1", "2,4,1", "3,5,1"})
+    run(["a,b"], ["a,b", "1,3"], {"1,1,-1"})
+    run(["a,b", "4,7"], ["a,b"], {"4,7,1"})
+    run(["a,b", "3,6"], ["a,b", "4,7"], {"3,5,-1", "3,6,1", "4,7,-1"})
+    run(["a,b"], ["a,b", "3,6"], {"3,6,-1"})

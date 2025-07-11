@@ -98,6 +98,7 @@ class FlatStoragePathEvaluator(
     context_types=[
         clmn.GroupedContext,
         clmn.FilterOutValueContext,
+        clmn.AssertAppendOnlyContext,
     ],
 ):
     def compute(
@@ -299,10 +300,9 @@ NoNewColumnsContext = (
     | clmn.FilterOutForgettingContext
     | clmn.FreezeContext
     | clmn.BufferContext
-    | clmn.ConcatUnsafeContext
-    | clmn.UpdateRowsContext
     | clmn.SetSchemaContext
     | clmn.RemoveRetractionsContext
+    | clmn.StreamToTableContext
 )
 
 
@@ -318,6 +318,7 @@ class NoNewColumnsPathEvaluator(
         clmn.BufferContext,
         clmn.SetSchemaContext,
         clmn.RemoveRetractionsContext,
+        clmn.StreamToTableContext,
     ],
 ):
     context: NoNewColumnsContext
@@ -346,9 +347,15 @@ class NoNewColumnsWithDataStoredPathEvaluator(
         clmn.IntersectContext,
         clmn.DifferenceContext,
         clmn.HavingContext,
+        clmn.MergeStreamsToTableContext,
     ],
 ):
-    context: clmn.IntersectContext | clmn.DifferenceContext | clmn.HavingContext
+    context: (
+        clmn.IntersectContext
+        | clmn.DifferenceContext
+        | clmn.HavingContext
+        | clmn.MergeStreamsToTableContext
+    )
 
     def compute(
         self,
@@ -530,8 +537,10 @@ class JoinPathEvaluator(PathEvaluator, context_types=[clmn.JoinContext]):
         )
 
 
-class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
-    context: clmn.FlattenContext
+class AddSingleNewColumnPathEvaluator(
+    PathEvaluator, context_types=[clmn.FlattenContext, clmn.TableToStreamContext]
+):
+    context: clmn.FlattenContext | clmn.TableToStreamContext
 
     def compute(
         self,
@@ -539,12 +548,12 @@ class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
         input_storages: dict[Universe, Storage],
         table_columns: Iterable[clmn.Column],
     ) -> Storage:
-        prefixed_input_storage = input_storages[self.context.orig_universe].with_prefix(
-            (0,)
-        )
+        prefixed_input_storage = input_storages[
+            self.context.input_universe()
+        ].with_prefix((0,))
         paths = {}
         for column in output_columns:
-            if column == self.context.flatten_result_column:
+            if column == self.context.new_column:
                 paths[column] = ColumnPath((1,))
             else:
                 assert isinstance(column, clmn.ColumnWithReference)
