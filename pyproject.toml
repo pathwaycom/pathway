@@ -18,7 +18,7 @@ dependencies = [
     "click >= 8.1",
     "geopy >= 2.4.0",
     "h3 >= 4",
-    "numpy >= 1.21",
+    "numpy >= 2",
     "pandas >= 2.1",
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
@@ -45,7 +45,7 @@ dependencies = [
     "networkx >= 3.2.1",
     "google-cloud-pubsub >= 2.21.1",
     "google-cloud-bigquery ~= 3.29.0",
-    "pydantic ~= 2.9.0",
+    "pydantic ~= 2.9",
     "gitpython >= 3.1.43",
     "deltalake >= 0.17.0, < 0.18.0"
 ]
@@ -55,29 +55,28 @@ sql = [
     "sqlglot == 10.6.1", # the new versions are incompatible with the current pw.sql Implementation
 ]
 xpack-llm = [
-    "openai ~= 1.60.2",
-    "litellm ~= 1.44.28",
-    "cohere ~= 5.1.0",
+    "openai ~= 1.60",
+    "litellm ~= 1.44",
+    "cohere ~= 5.1",
     "tiktoken >= 0.5",
-    "langchain ~= 0.2.0",
-    "langchain_community ~= 0.2.0",
-    "llama-index-core ~= 0.10.0",
-    "llama-index-readers-pathway ~= 0.1.0",
-    "llama-index-retrievers-pathway ~= 0.1.3",
+    "langchain >= 0.2.0, < 0.4.0",
+    "langchain_community >= 0.2.0, < 0.4.0",
+    "llama-index-core >= 0.10.0, < 0.13.0",
+    "llama-index-readers-pathway >= 0.1.3",
+    "llama-index-retrievers-pathway >= 0.1.3",
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
-    "instructor == 1.2.6",
+    "instructor ~= 1.2",
     "google-generativeai ~= 0.8.4",
     "google-api-core ~= 2.24.1",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
-    "unstructured[all-docs] >= 0.16, < 0.16.15",
     "sentence_transformers", 
     "transformers >= 4.42.0, <= 4.49.0",  # >= 4.50.2, this can be updated after docling updates
 ]
 xpack-llm-docs = [
     "docling >= 2.15, < 3.0.0",
     "python-docx >= 1.1.2",
-    "unstructured >= 0.16, < 0.16.12",
+    "unstructured[all-docs] ~= 0.18.1",
     "pdf2image",
     "pypdf",
     "pdfplumber == 0.11.5",

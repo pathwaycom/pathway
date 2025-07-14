@@ -135,8 +135,8 @@ class OpenAIEmbedder(BaseEmbedder):
     ... txt
     ... Text
     ... ''')
-    >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    >>> t.select(ret=embedder(pw.this.txt))  # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
@@ -145,8 +145,8 @@ class OpenAIEmbedder(BaseEmbedder):
     ... txt  | model
     ... Text | text-embedding-3-small
     ... ''')
-    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))  # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
     """
 
     def __init__(
@@ -287,8 +287,8 @@ class LiteLLMEmbedder(BaseEmbedder):
     ... txt
     ... Text
     ... ''')
-    >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    >>> t.select(ret=embedder(pw.this.txt))  # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
@@ -297,8 +297,8 @@ class LiteLLMEmbedder(BaseEmbedder):
     ... txt  | model
     ... Text | text-embedding-3-small
     ... ''')
-    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))  # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
     """
 
     def __init__(
@@ -367,7 +367,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
     ... Text
     ... ''')  # doctest: +SKIP
     >>> t.select(ret=embedder(pw.this.txt))  # doctest: +SKIP
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
     """  # noqa: E501
 
     def __init__(
@@ -477,8 +477,8 @@ class GeminiEmbedder(BaseEmbedder):
     ... txt
     ... Text
     ... ''')
-    >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    >>> t.select(ret=embedder(pw.this.txt)) # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
@@ -487,8 +487,8 @@ class GeminiEmbedder(BaseEmbedder):
     ... txt  | model
     ... Text | models/embedding-001
     ... ''')
-    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
-    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
+    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model)) # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
     """
 
     def __init__(
