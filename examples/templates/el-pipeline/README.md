@@ -175,6 +175,16 @@ To run this example, you need to set the following environment variables:
 - `DB_USER`: The username for the PostgreSQL database.
 - `DB_PASSWORD`: The password for the PostgreSQL database.
 
+## Pathway License
+
+If you are using advanced connectors or functionalities like SharePoint connectors or persistence, your project will require Pathway license.
+You can learn about the license [here](/developers/user-guide/introduction/licensing-guide), and you can get a free Pathway license [here](/get-license).
+
+Setting up the license is easy, you simply need to set it as the environment variable `PATHWAY_LICENSE_KEY`:
+
+```bash
+export PATHWAY_LICENSE_KEY=your_pathway_key
+```
 
 ## Running the Project
 Run the pipeline directly using Python:
