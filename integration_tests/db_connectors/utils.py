@@ -8,6 +8,9 @@ from pymongo import MongoClient
 import pathway as pw
 from pathway.internals import dtype
 
+# from pgvector.psycopg2 import register_vector # FIXME enable once pgvector can be added to env
+
+
 POSTGRES_DB_HOST = "postgres"
 POSTGRES_DB_PORT = 5432
 POSTGRES_DB_USER = "user"
@@ -15,6 +18,14 @@ POSTGRES_DB_PASSWORD = "password"
 POSTGRES_DB_NAME = "tests"
 POSTGRES_SETTINGS = {
     "host": POSTGRES_DB_HOST,
+    "port": str(POSTGRES_DB_PORT),
+    "dbname": POSTGRES_DB_NAME,
+    "user": POSTGRES_DB_USER,
+    "password": POSTGRES_DB_PASSWORD,
+}
+PGVECTOR_DB_HOST = "pgvector"
+PGVECTOR_SETTINGS = {
+    "host": PGVECTOR_DB_HOST,
     "port": str(POSTGRES_DB_PORT),
     "dbname": POSTGRES_DB_NAME,
     "user": POSTGRES_DB_USER,
@@ -94,6 +105,12 @@ class WireProtocolSupporterContext:
                 parts.append("DOUBLE PRECISION")
             elif field_type == dtype.BOOL:
                 parts.append("BOOLEAN")
+            elif isinstance(field_type, dtype.Array) and "_vector" in field_name:
+                # hack to create an array with a specific type
+                parts.append("VECTOR")
+            elif isinstance(field_type, dtype.Array) and "_halfvec" in field_name:
+                # hack to create an array with a specific type
+                parts.append("HALFVEC")
             else:
                 raise RuntimeError(f"This test doesn't support field type {field_type}")
             if field_schema.primary_key:
@@ -150,6 +167,20 @@ class PostgresContext(WireProtocolSupporterContext):
             user=POSTGRES_DB_USER,
             password=POSTGRES_DB_PASSWORD,
         )
+
+
+class PgvectorContext(WireProtocolSupporterContext):
+
+    def __init__(self):
+        super().__init__(
+            host=PGVECTOR_DB_HOST,
+            port=POSTGRES_DB_PORT,
+            database=POSTGRES_DB_NAME,
+            user=POSTGRES_DB_USER,
+            password=POSTGRES_DB_PASSWORD,
+        )
+        self.cursor.execute("CREATE EXTENSION vector")
+        # register_vector(self.connection) # FIXME
 
 
 class QuestDBContext(WireProtocolSupporterContext):

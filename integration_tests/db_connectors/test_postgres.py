@@ -1,9 +1,10 @@
 import datetime
 import json
 
+import numpy as np
 import pandas as pd
 import pytest
-from utils import POSTGRES_SETTINGS
+from utils import PGVECTOR_SETTINGS, POSTGRES_SETTINGS
 
 import pathway as pw
 from pathway.internals import api
@@ -484,3 +485,41 @@ def test_psql_external_diff_column(tmp_path, postgres):
         },
     ]
     assert rows == expected_rows
+
+
+def test_pgvector_vectors(pgvector):
+    class OutputSchema(pw.Schema):
+        i: int
+        a_vector: np.ndarray
+        b_halfvec: np.ndarray
+
+    output_table = pgvector.create_table(OutputSchema, used_for_output=True)
+
+    @pw.udf
+    def make_array(a: int) -> np.ndarray:
+        return np.ones(3) * a
+
+    t = pw.debug.table_from_markdown(
+        """
+        i | a | b
+        1 | 1 | 2
+        2 | 3 | 4
+        3 | 5 | 6
+    """
+    ).select(pw.this.i, a_vector=make_array(pw.this.a), b_halfvec=make_array(pw.this.b))
+
+    pw.io.postgres.write(t, PGVECTOR_SETTINGS, output_table)
+    run()
+
+    rows = pgvector.get_table_contents(output_table, OutputSchema.column_names())
+    expected = {
+        1: {"a_vector": "[1,1,1]", "b_halfvec": "[2,2,2]"},
+        2: {"a_vector": "[3,3,3]", "b_halfvec": "[4,4,4]"},
+        3: {"a_vector": "[5,5,5]", "b_halfvec": "[6,6,6]"},
+    }
+    assert len(rows) == 3
+    for row in rows:
+        expected_row = expected.pop(row["i"])
+        for name in ["a_vector", "b_halfvec"]:
+            assert row[name] == expected_row[name]
+            # assert np.all(np.isclose(row[name], expected_row[name])) # FIXME

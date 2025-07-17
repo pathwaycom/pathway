@@ -1379,10 +1379,14 @@ pub enum SqlWriterInitMode {
 
 mod to_sql {
     use std::error::Error;
+    use std::ops::Deref;
 
     use bytes::BytesMut;
     use chrono::{DateTime, NaiveDateTime, Utc};
+    use half::f16;
+    use numpy::Ix1;
     use ordered_float::OrderedFloat;
+    use pgvector::{HalfVector, Vector};
     use postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type};
 
     use crate::engine::time::DateTime as _;
@@ -1454,8 +1458,24 @@ mod to_sql {
                     try_forward!(&[Value], &t[..]);
                     "tuple"
                 }
-                Self::IntArray(_) => "int array",     // TODO
-                Self::FloatArray(_) => "float array", // TODO
+                Self::IntArray(_) => "int array", // TODO
+                #[allow(clippy::cast_possible_truncation)]
+                Self::FloatArray(a) => {
+                    // TODO regular arrays
+                    if a.ndim() == 1 {
+                        let v = a
+                            .deref()
+                            .clone()
+                            .into_dimensionality::<Ix1>()
+                            .expect("ndim == 1")
+                            .to_vec();
+                        let v_32: Vec<f32> = v.iter().map(|e| *e as f32).collect();
+                        try_forward!(Vector, Vector::from(v_32));
+                        let v_16: Vec<f16> = v.iter().map(|e| f16::from_f64(*e)).collect();
+                        try_forward!(HalfVector, HalfVector::from(v_16));
+                    }
+                    "float array"
+                }
                 Self::DateTimeNaive(dt) => {
                     try_forward!(NaiveDateTime, dt.as_chrono_datetime());
                     "naive date/time"
