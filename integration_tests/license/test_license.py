@@ -36,6 +36,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "monitoring",
     "questdb",
     "xpack-sharepoint",
+    "xpack-llm-mcp",
 ]
 
 
@@ -108,6 +109,7 @@ def test_license_default_policy(caplog):
     _check_entitlements("iceberg")
     _check_entitlements("questdb")
     _check_entitlements("xpack-sharepoint")
+    _check_entitlements("xpack-llm-mcp")
 
     run_all()
     assert "Telemetry enabled" in caplog.text

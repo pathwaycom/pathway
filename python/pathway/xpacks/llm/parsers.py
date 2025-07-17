@@ -524,16 +524,18 @@ class DoclingParser(pw.UDF):
         for item, level in doc.iterate_items():
 
             if isinstance(item, TextItem):
-                if item.label in [
+                label: DocItemLabel = item.label
+
+                if label in [
                     DocItemLabel.CAPTION,
                     DocItemLabel.PAGE_FOOTER,
                     DocItemLabel.FOOTNOTE,
                 ]:
                     continue
 
-                if item.label == DocItemLabel.TITLE:
+                if label == DocItemLabel.TITLE:
                     text += "# "
-                if item.label == DocItemLabel.SECTION_HEADER:  # type: ignore
+                if label == DocItemLabel.SECTION_HEADER:
                     text += "#" * (level + 1) + " "
 
                 text += item.text

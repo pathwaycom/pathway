@@ -17,6 +17,7 @@ from pathway.xpacks.llm.document_store import (
     _get_jmespath_filter,
 )
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
+from pathway.xpacks.llm.mcp_server import McpServable, McpServer
 from pathway.xpacks.llm.vector_store import (
     SlidesVectorStoreServer,
     VectorStoreClient,
@@ -385,7 +386,7 @@ def answer_with_geometric_rag_strategy_from_index(
     )
 
 
-class BaseQuestionAnswerer:
+class BaseQuestionAnswerer(McpServable, ABC):
     AnswerQuerySchema: type[pw.Schema] = pw.Schema
     RetrieveQuerySchema: type[pw.Schema] = pw.Schema
     StatisticsQuerySchema: type[pw.Schema] = pw.Schema
@@ -403,12 +404,40 @@ class BaseQuestionAnswerer:
     @abstractmethod
     def list_documents(self, list_documents_queries: pw.Table) -> pw.Table: ...
 
+    def register_mcp(self, server: McpServer):
+        server.tool(
+            "retrieve",
+            request_handler=self.retrieve,
+            schema=self.RetrieveQuerySchema,
+        )
+        server.tool(
+            "statistics",
+            request_handler=self.statistics,
+            schema=self.StatisticsQuerySchema,
+        )
+        server.tool(
+            "list_documents",
+            request_handler=self.list_documents,
+            schema=self.InputsQuerySchema,
+        )
+        server.tool(
+            "answer", request_handler=self.answer_query, schema=self.AnswerQuerySchema
+        )
+
 
 class SummaryQuestionAnswerer(BaseQuestionAnswerer):
     SummarizeQuerySchema: type[pw.Schema] = pw.Schema
 
     @abstractmethod
     def summarize_query(self, summarize_queries: pw.Table) -> pw.Table: ...
+
+    def register_mcp(self, server: McpServer):
+        super().register_mcp(server)
+        server.tool(
+            "summarize",
+            request_handler=self.summarize_query,
+            schema=self.SummarizeQuerySchema,
+        )
 
 
 class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):

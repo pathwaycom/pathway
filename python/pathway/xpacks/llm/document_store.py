@@ -1,5 +1,4 @@
 # Copyright © 2024 Pathway
-
 """
 Pathway Document Store for processing and indexing documents.
 
@@ -22,6 +21,7 @@ from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.retrievers import AbstractRetrieverFactory
 from pathway.stdlib.ml.classifiers import _knn_lsh
 from pathway.xpacks.llm._utils import _wrap_doc_post_processor, _wrap_udf
+from pathway.xpacks.llm.mcp_server import McpServable, McpServer
 from pathway.xpacks.llm.utils import combine_metadata
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ class IndexingStatus(str, Enum):
     INGESTED = "INGESTED"
 
 
-class DocumentStore:
+class DocumentStore(McpServable):
     """
     Builds a document indexing pipeline for processing documents and querying closest documents
     to a query according to a specified index.
@@ -98,8 +98,24 @@ class DocumentStore:
             if splitter is not None
             else pathway.xpacks.llm.splitters.NullSplitter()
         )
-
         self.build_pipeline()
+
+    def register_mcp(self, server: McpServer):
+        server.tool(
+            name="retrieve_query",
+            request_handler=self.retrieve_query,
+            schema=self.RetrieveQuerySchema,
+        )
+        server.tool(
+            name="statistics_query",
+            request_handler=self.statistics_query,
+            schema=self.StatisticsQuerySchema,
+        )
+        server.tool(
+            name="inputs_query",
+            request_handler=self.inputs_query,
+            schema=self.InputsQuerySchema,
+        )
 
     @classmethod
     def from_langchain_components(

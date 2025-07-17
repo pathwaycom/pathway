@@ -31,6 +31,7 @@ with optional_imports("xpack-llm-docs"):
         SectionHeaderItem,
         TableItem,
         TextItem,
+        TitleItem,
     )
     from docling_core.types.doc.labels import DocItemLabel
 
@@ -348,14 +349,15 @@ class _HierarchicalChunker(HierarchicalChunker):
                         )
                         list_items = []  # reset
 
-                if isinstance(item, SectionHeaderItem) or (
+                if isinstance(item, (SectionHeaderItem, TitleItem)) or (
                     isinstance(item, TextItem)
                     and item.label in [DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE]
                 ):
+                    label: DocItemLabel = item.label
                     level = (
                         item.level
                         if isinstance(item, SectionHeaderItem)
-                        else (0 if item.label == DocItemLabel.TITLE else 1)
+                        else (0 if label == DocItemLabel.TITLE else 1)
                     )
                     heading_by_level[level] = item.text
 

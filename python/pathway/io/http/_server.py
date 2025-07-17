@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import Any, Sequence
@@ -326,7 +327,159 @@ def _request_scheme(request: web.Request):
     return request.scheme
 
 
-class PathwayWebserver:
+class PathwayServer(ABC):
+    _tasks: dict[Any, Any]
+    _loop: asyncio.AbstractEventLoop
+
+    def __init__(self):
+        self._tasks = {}
+        self._loop = asyncio.new_event_loop()
+
+    @abstractmethod
+    def _run(self) -> None: ...
+
+    @abstractmethod
+    def _register_endpoint(
+        self, route, handler, *, format, schema, methods, documentation
+    ) -> None: ...
+
+    def _get_response_writer(
+        self, delete_completed_queries: bool
+    ) -> Callable[[pw.Table], None]:
+        def response_writer(responses: pw.Table):
+            def on_change(
+                key: Pointer, row: dict[str, Any], time: int, is_addition: bool
+            ):
+                if not is_addition:
+                    return
+
+                task = self._tasks.get(key, None)
+
+                if task is None:
+                    if delete_completed_queries:
+                        logging.info(
+                            "Query response has changed. It probably indicates an error in the pipeline."
+                        )
+                    return
+
+                def set_task():
+                    task["result"] = row["result"]
+                    task["event"].set()
+
+                self._loop.call_soon_threadsafe(set_task)
+
+            internal_subscribe(
+                table=responses,
+                on_change=on_change,
+                skip_errors=False,
+                skip_persisted_batch=True,
+            )
+
+        return response_writer
+
+
+class ServerSubject(io.python.ConnectorSubject, ABC):
+    _webserver: PathwayServer
+    _schema: type[pw.Schema]
+    _delete_completed_queries: bool
+    _format: str
+
+    def __init__(
+        self,
+        webserver: PathwayServer,
+        route: str,
+        methods: Sequence[str],
+        schema: type[pw.Schema],
+        delete_completed_queries: bool,
+        format: str = "raw",
+        request_validator: Callable | None = None,
+        documentation: EndpointDocumentation = EndpointDocumentation(),
+        cache_strategy: CacheStrategy | None = None,
+    ) -> None:
+        super().__init__(datasource_name="rest-connector")
+        self._webserver = webserver
+        self._tasks = webserver._tasks
+        self._schema = schema
+        self._delete_completed_queries = delete_completed_queries
+        self._format = format
+        self._request_validator = request_validator
+        self._cache_strategy = cache_strategy
+        self._request_processor = self._create_request_processor()
+
+        webserver._register_endpoint(
+            route,
+            self.handle,
+            format=format,
+            schema=schema,
+            methods=methods,
+            documentation=documentation,
+        )
+
+    def run(self):
+        self._webserver._run()
+
+    @abstractmethod
+    async def handle(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def _process_response(self, response: Any) -> web.Response:
+        """
+        Processes the response from the request handler and returns a web.Response.
+        This method should be implemented by subclasses to handle specific response formats.
+        """
+        pass
+
+    def _create_request_processor(self):
+        async def inner(payload_encoded: str) -> web.Response:
+            id = unsafe_make_pointer(uuid4().int)
+            payload = json.loads(payload_encoded)
+            self._cast_types_to_schema(payload)
+            event = asyncio.Event()
+
+            self._tasks[id] = {
+                "event": event,
+                "result": "-PENDING-",
+            }
+
+            self._add_inner(id, payload)
+            response = await self._fetch_response(id, event)
+            if self._delete_completed_queries:
+                self._remove_inner(id, payload)
+            return self._process_response(response)
+
+        if not self._cache_strategy:
+            return inner
+
+        return self._cache_strategy.wrap_async(inner)
+
+    async def _fetch_response(self, id, event) -> Any:
+        await event.wait()
+        task = self._tasks.pop(id)
+        return task["result"]
+
+    def _cast_types_to_schema(self, payload: dict):
+        dtypes = self._schema._dtypes()
+        for column, dtype in dtypes.items():
+            if payload.get(column) is None:
+                continue
+            try:
+                exact_type = unoptionalize(dtype).typehint
+                payload[column] = exact_type(payload[column])
+            except Exception:
+                logging.exception(
+                    f"Failed to cast column '{column}' to type '{exact_type}'"
+                )
+
+    @property
+    def _deletions_enabled(self) -> bool:
+        return self._delete_completed_queries
+
+    def _is_finite(self):
+        return False
+
+
+class PathwayWebserver(PathwayServer):
     """
     The basic configuration class for ``pw.io.http.rest_connector``.
 
@@ -351,11 +504,9 @@ class PathwayWebserver:
     _is_launched: bool
 
     def __init__(self, host, port, with_schema_endpoint=True, with_cors=False):
+        super().__init__()
         self._host = host
         self._port = port
-
-        self._tasks = {}
-        self._loop = asyncio.new_event_loop()
         self._app = web.Application()
         self._registered_routes = {}
         if with_cors:
@@ -445,7 +596,7 @@ class PathwayWebserver:
         )
 
     def _register_endpoint(
-        self, route, handler, format, schema, methods, documentation
+        self, route, handler, *, format, schema, methods, documentation
     ) -> None:
         endpoint_docs = {}
         for method in methods:
@@ -487,41 +638,7 @@ class PathwayWebserver:
         return yaml.dump(dict(self.openapi_description_json(origin)), sort_keys=False)
 
 
-class RestServerSubject(io.python.ConnectorSubject):
-    _webserver: PathwayWebserver
-    _schema: type[pw.Schema]
-    _delete_completed_queries: bool
-    _format: str
-
-    def __init__(
-        self,
-        webserver: PathwayWebserver,
-        route: str,
-        methods: Sequence[str],
-        schema: type[pw.Schema],
-        delete_completed_queries: bool,
-        format: str = "raw",
-        request_validator: Callable | None = None,
-        documentation: EndpointDocumentation = EndpointDocumentation(),
-        cache_strategy: CacheStrategy | None = None,
-    ) -> None:
-        super().__init__(datasource_name="rest-connector")
-        self._webserver = webserver
-        self._tasks = webserver._tasks
-        self._schema = schema
-        self._delete_completed_queries = delete_completed_queries
-        self._format = format
-        self._request_validator = request_validator
-        self._cache_strategy = cache_strategy
-        self._request_processor = self._create_request_processor()
-
-        webserver._register_endpoint(
-            route, self.handle, format, schema, methods, documentation
-        )
-
-    def run(self):
-        self._webserver._run()
-
+class RestServerSubject(ServerSubject):
     async def handle(self, request: web.Request):
         if self._format == "raw":
             payload = {QUERY_SCHEMA_COLUMN: await request.text()}
@@ -563,61 +680,16 @@ class RestServerSubject(io.python.ConnectorSubject):
         )
         return copy.deepcopy(result)
 
-    def _create_request_processor(self):
-        async def inner(payload_encoded: str) -> web.Response:
-            id = unsafe_make_pointer(uuid4().int)
-            payload = json.loads(payload_encoded)
-            self._cast_types_to_schema(payload)
-            event = asyncio.Event()
-
-            self._tasks[id] = {
-                "event": event,
-                "result": "-PENDING-",
-            }
-
-            self._add_inner(id, payload)
-            response = await self._fetch_response(id, event)
-            if self._delete_completed_queries:
-                self._remove_inner(id, payload)
-            if response is api.ERROR:
-                return web.json_response(status=500)
-            return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
-
-        if not self._cache_strategy:
-            return inner
-
-        return self._cache_strategy.wrap_async(inner)
-
-    async def _fetch_response(self, id, event) -> Any:
-        await event.wait()
-        task = self._tasks.pop(id)
-        return task["result"]
-
-    def _cast_types_to_schema(self, payload: dict):
-        dtypes = self._schema._dtypes()
-        for column, dtype in dtypes.items():
-            if payload.get(column) is None:
-                continue
-            try:
-                exact_type = unoptionalize(dtype).typehint
-                payload[column] = exact_type(payload[column])
-            except Exception:
-                logging.exception(
-                    f"Failed to cast column '{column}' to type '{exact_type}'"
-                )
+    def _process_response(self, response):
+        if response is api.ERROR:
+            return web.json_response(status=500)
+        return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
 
     def _verify_payload(self, payload: dict):
         defaults = self._schema.default_values()
         for column in self._schema.keys():
             if column not in payload and column not in defaults:
                 raise web.HTTPBadRequest(reason=f"`{column}` is required")
-
-    @property
-    def _deletions_enabled(self) -> bool:
-        return self._delete_completed_queries
-
-    def _is_finite(self):
-        return False
 
 
 @check_arg_types
@@ -756,7 +828,6 @@ def rest_connector(
                 "If webserver object is specified, host and port shouldn't be set"
             )
 
-    tasks = webserver._tasks
     input_table = io.python.read(
         subject=RestServerSubject(
             webserver=webserver,
@@ -774,31 +845,4 @@ def rest_connector(
         autocommit_duration_ms=autocommit_duration_ms,
     )
 
-    def response_writer(responses: pw.Table):
-        def on_change(key: Pointer, row: dict[str, Any], time: int, is_addition: bool):
-            if not is_addition:
-                return
-
-            task = tasks.get(key, None)
-
-            if task is None:
-                if delete_completed_queries:
-                    logging.info(
-                        "Query response has changed. It probably indicates an error in the pipeline."
-                    )
-                return
-
-            def set_task():
-                task["result"] = row["result"]
-                task["event"].set()
-
-            webserver._loop.call_soon_threadsafe(set_task)
-
-        internal_subscribe(
-            table=responses,
-            on_change=on_change,
-            skip_errors=False,
-            skip_persisted_batch=True,
-        )
-
-    return input_table, response_writer
+    return input_table, webserver._get_response_writer(delete_completed_queries)

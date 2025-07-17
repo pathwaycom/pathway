@@ -68,6 +68,7 @@ xpack-llm = [
     "instructor ~= 1.2",
     "google-generativeai ~= 0.8.4",
     "google-api-core ~= 2.24.1",
+    "fastmcp ~= 2.8",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "sentence_transformers", 
