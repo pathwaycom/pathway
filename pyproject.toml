@@ -79,7 +79,8 @@ xpack-llm-docs = [
     "unstructured[all-docs] ~= 0.18.1",
     "pdf2image",
     "pypdf",
-    "pdfplumber == 0.11.5",
+    # unstructured dependency, but unstructured doesn't force this version even though it's needed
+    "pdfminer.six == 20250506", 
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
