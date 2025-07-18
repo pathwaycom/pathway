@@ -183,22 +183,27 @@ def asof_now_join(
     right_instance: pw.ColumnReference | None = None,
 ) -> AsofNowJoinResult:
     """
-    Performs asof now join of self with other using join expressions. Each row of self
-    is joined with rows from other at a given processing time. Rows from self are not stored.
-    They are joined with rows of other at their processing time. If other is updated
-    in the future, rows from self from the past won't be updated.
-    Rows from other are stored. They can be joined with future rows of self.
+    Performs an asof now join between ``self`` and ``other`` using the provided join expressions.
+
+    In an asof now join, each row of ``self`` is joined with rows from ``other`` that are available
+    at the processing time of that row. Rows from ``self`` are not stored: they are joined with
+    the current state of ``other`` at their processing time, and will not be updated if ``other``
+    changes in the future. The ``self`` table has to be append-only. Rows from ``other``
+    are stored and can be joined with future rows of ``self``.
 
     Args:
-        other: the right side of a join.
-        on: a list of column expressions. Each must have == as the top level operation
-            and be of the form LHS: ColumnReference == RHS: ColumnReference.
-        id: optional argument for id of result, can be only self.id or other.id
-        how: by default, inner join is performed. Possible values are JoinMode.{INNER,LEFT}
-            which correspond to inner and left join respectively.
+        other: The right side of the join.
+        on: One or more column expressions, each of the form ``LHS: ColumnReference == RHS: ColumnReference``.
+            Each must use ``==`` as the top-level operation.
+        id: Optional. Specifies the id column of the result; can be only ``self.id`` or ``other.id``.
+        how: Specifies the join mode. By default, an inner join is performed. Possible values are
+            ``JoinMode.INNER`` and ``JoinMode.LEFT``, corresponding to inner and left joins, respectively.
+        left_instance: Optional. Determines the partitioning of the left table and is used in a join condition.
+        right_instance: Optional. Determines the partitioning of the right table and is used in a join condition.
+            If provided, both ``left_instance`` and ``right_instance`` must be specified
 
     Returns:
-        AsofNowJoinResult: an object on which `.select()` may be called to extract relevant
+        AsofNowJoinResult: An object on which ``.select()`` may be called to extract relevant
         columns from the result of the join.
 
     Example:
@@ -262,20 +267,25 @@ def asof_now_join_inner(
     right_instance: pw.ColumnReference | None = None,
 ) -> AsofNowJoinResult:
     """
-    Performs asof now join of self with other using join expressions. Each row of self
-    is joined with rows from other at a given processing time. Rows from self are not stored.
-    They are joined with rows of other at their processing time. If other is updated
-    in the future, rows from self from the past won't be updated.
-    Rows from other are stored. They can be joined with future rows of self.
+    Performs an asof now inner join between ``self`` and ``other`` using the provided join expressions.
+
+    In an asof now join, each row of ``self`` is joined with rows from ``other`` that are available
+    at the processing time of that row. Rows from ``self`` are not stored: they are joined with
+    the current state of ``other`` at their processing time, and will not be updated if ``other``
+    changes in the future. The ``self`` table has to be append-only. Rows from ``other``
+    are stored and can be joined with future rows of ``self``.
 
     Args:
-        other: the right side of a join.
-        on: a list of column expressions. Each must have == as the top level operation
-            and be of the form LHS: ColumnReference == RHS: ColumnReference.
-        id: optional argument for id of result, can be only self.id or other.id
+        other: The right side of the join.
+        on: One or more column expressions, each of the form ``LHS: ColumnReference == RHS: ColumnReference``.
+            Each must use ``==`` as the top-level operation.
+        id: Optional. Specifies the id column of the result; can be only ``self.id`` or ``other.id``.
+        left_instance: Optional. Determines the partitioning of the left table and is used in a join condition.
+        right_instance: Optional. Determines the partitioning of the right table and is used in a join condition.
+            If provided, both ``left_instance`` and ``right_instance`` must be specified
 
     Returns:
-        AsofNowJoinResult: an object on which `.select()` may be called to extract relevant
+        AsofNowJoinResult: An object on which ``.select()`` may be called to extract relevant
         columns from the result of the join.
 
     Example:
@@ -338,21 +348,27 @@ def asof_now_join_left(
     right_instance: pw.ColumnReference | None = None,
 ) -> AsofNowJoinResult:
     """
-    Performs asof now join of self with other using join expressions. Each row of self
-    is joined with rows from other at a given processing time. If there are no matching
-    rows in other, missing values on the right side are replaced with `None`.
-    Rows from self are not stored. They are joined with rows of other at their processing
-    time. If other is updated in the future, rows from self from the past won't be updated.
-    Rows from other are stored. They can be joined with future rows of self.
+    Performs an asof now left join between ``self`` and ``other`` using the provided join expressions.
+
+    In an asof now join, each row of ``self`` is joined with rows from ``other`` that are available
+    at the processing time of that row. Rows from ``self`` are not stored: they are joined with
+    the current state of ``other`` at their processing time, and will not be updated if ``other``
+    changes in the future. The ``self`` table has to be append-only. Rows from ``other``
+    are stored and can be joined with future rows of ``self``.
 
     Args:
-        other: the right side of a join.
-        on: a list of column expressions. Each must have == as the top level operation
-            and be of the form LHS: ColumnReference == RHS: ColumnReference.
-        id: optional argument for id of result, can be only self.id or other.id
+        other: The right side of the join.
+        on: One or more column expressions, each of the form ``LHS: ColumnReference == RHS: ColumnReference``.
+            Each must use ``==`` as the top-level operation.
+        id: Optional. Specifies the id column of the result; can be only ``self.id`` or ``other.id``.
+        how: Specifies the join mode. By default, an inner join is performed. Possible values are
+            ``JoinMode.INNER`` and ``JoinMode.LEFT``, corresponding to inner and left joins, respectively.
+        left_instance: Optional. Determines the partitioning of the left table and is used in a join condition.
+        right_instance: Optional. Determines the partitioning of the right table and is used in a join condition.
+            If provided, both ``left_instance`` and ``right_instance`` must be specified
 
     Returns:
-        AsofNowJoinResult: an object on which `.select()` may be called to extract relevant
+        AsofNowJoinResult: An object on which ``.select()`` may be called to extract relevant
         columns from the result of the join.
 
     Example:
