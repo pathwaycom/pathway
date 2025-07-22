@@ -15,9 +15,6 @@ use differential_dataflow::difference::{Monoid, Semigroup};
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::trace::{Batch, Trace, TraceReader};
 use differential_dataflow::{AsCollection, Collection, Data, ExchangeData};
-use futures::stream::{FuturesOrdered, FuturesUnordered};
-use futures::StreamExt;
-use futures::{future, Future};
 use itertools::Itertools;
 use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely::dataflow::operators::Exchange as _;
@@ -218,24 +215,8 @@ where
     fn map_wrapped_batched_named<D2: Data>(
         &self,
         name: &str,
-        wrapper: BatchWrapper,
         logic: impl FnMut(Vec<D>) -> Vec<D2> + 'static,
     ) -> Collection<S, D2, R>;
-
-    fn map_named_async<F: Future>(
-        &self,
-        name: &str,
-        logic: impl Fn(D) -> F + 'static,
-    ) -> Collection<S, F::Output, R>
-    where
-        F::Output: Data;
-
-    fn map_async<F: Future>(&self, logic: impl Fn(D) -> F + 'static) -> Collection<S, F::Output, R>
-    where
-        F::Output: Data,
-    {
-        self.map_named_async("MapAsync", logic)
-    }
 }
 
 impl<S, D, R> MapWrapped<S, D, R> for Collection<S, D, R>
@@ -276,7 +257,6 @@ where
     fn map_wrapped_batched_named<D2: Data>(
         &self,
         name: &str,
-        wrapper: BatchWrapper,
         mut logic: impl FnMut(Vec<D>) -> Vec<D2> + 'static,
     ) -> Collection<S, D2, R> {
         let caller = Location::caller();
@@ -285,61 +265,20 @@ where
         self.inner
             .unary(Pipeline, &name, move |_, _| {
                 move |input, output| {
-                    wrapper.run(|| {
-                        while let Some((time, data)) = input.next() {
-                            data.swap(&mut vector);
-                            let times_diffs: Vec<_> = vector
-                                .iter()
-                                .map(|(_data, time, diff)| (time.clone(), diff.clone()))
-                                .collect();
-                            let results =
-                                logic(vector.drain(..).map(|(data, _time, _diff)| data).collect());
-                            output.session(&time).give_iterator(
-                                results
-                                    .into_iter()
-                                    .zip_eq(times_diffs.into_iter())
-                                    .map(|(result, (time, diff))| (result, time, diff)),
-                            );
-                        }
-                    });
-                }
-            })
-            .as_collection()
-    }
-
-    #[track_caller]
-    fn map_named_async<F: Future>(
-        &self,
-        name: &str,
-        logic: impl Fn(D) -> F + 'static,
-    ) -> Collection<S, F::Output, R>
-    where
-        F::Output: Data,
-    {
-        let caller = Location::caller();
-        let name = format!("{name} at {caller}");
-        let mut vector = Vec::new();
-        let mut result = Vec::new();
-        self.inner
-            .unary(Pipeline, &name, move |_, _| {
-                move |input, output| {
                     while let Some((time, data)) = input.next() {
                         data.swap(&mut vector);
-
-                        let futures: FuturesUnordered<_> = vector
-                            .drain(..)
-                            .map(|(data, time, diff)| async { (logic(data).await, time, diff) })
+                        let times_diffs: Vec<_> = vector
+                            .iter()
+                            .map(|(_data, time, diff)| (time.clone(), diff.clone()))
                             .collect();
-
-                        assert!(result.is_empty());
-                        result.reserve(futures.len());
-
-                        futures::executor::block_on(futures.for_each(|item| {
-                            result.push(item);
-                            future::ready(())
-                        }));
-
-                        output.session(&time).give_vec(&mut result);
+                        let results =
+                            logic(vector.drain(..).map(|(data, _time, _diff)| data).collect());
+                        output.session(&time).give_iterator(
+                            results
+                                .into_iter()
+                                .zip_eq(times_diffs.into_iter())
+                                .map(|(result, (time, diff))| (result, time, diff)),
+                        );
                     }
                 }
             })
@@ -355,19 +294,8 @@ where
     fn flat_map_named_with_deletions_first<D2: Data>(
         &self,
         name: &str,
-        wrapper: BatchWrapper,
         logic: impl FnMut(Vec<(D, R)>) -> Vec<Option<D2>> + 'static,
     ) -> Collection<S, D2, R>;
-
-    fn map_named_async_with_deletions_handling<D2, F: Future>(
-        &self,
-        name: &str,
-        preprocess: impl FnMut(D, R) -> Option<D2> + 'static,
-        async_logic: impl Fn(D2) -> F + 'static,
-        postprocess: impl FnMut(F::Output, R) -> F::Output + 'static,
-    ) -> Collection<S, F::Output, R>
-    where
-        F::Output: Data;
 }
 
 impl<S, D, R> FlatMapWithDeletionsFirst<S, D, R> for Collection<S, D, R>
@@ -380,7 +308,6 @@ where
     fn flat_map_named_with_deletions_first<D2: Data>(
         &self,
         name: &str,
-        wrapper: BatchWrapper,
         mut logic: impl FnMut(Vec<(D, R)>) -> Vec<Option<D2>> + 'static,
     ) -> Collection<S, D2, R> {
         let caller = Location::caller();
@@ -389,70 +316,19 @@ where
             .unary(Pipeline, &name, move |_, _| {
                 let mut vector = Vec::new();
                 move |input, output| {
-                    wrapper.run(|| {
-                        while let Some((cap, data)) = input.next() {
-                            data.swap(&mut vector);
-                            for batch in vector.drain(..) {
-                                let OutputBatch { time, data } = batch;
-                                let diffs: Vec<_> =
-                                    data.iter().map(|(_data, diff)| *diff).collect();
-                                output.session(&cap.delayed(&time)).give_iterator(
-                                    logic(data)
-                                        .into_iter()
-                                        .zip_eq(diffs.into_iter())
-                                        .filter_map(|(result, diff)| {
-                                            result.map(|data| (data, time.clone(), diff))
-                                        }),
-                                );
-                            }
-                        }
-                    });
-                }
-            })
-            .as_collection()
-    }
-
-    #[track_caller]
-    fn map_named_async_with_deletions_handling<D2, F: Future>(
-        &self,
-        name: &str,
-        mut preprocess: impl FnMut(D, R) -> Option<D2> + 'static,
-        async_logic: impl Fn(D2) -> F + 'static,
-        mut postprocess: impl FnMut(F::Output, R) -> F::Output + 'static,
-    ) -> Collection<S, F::Output, R>
-    where
-        F::Output: Data,
-    {
-        let caller = Location::caller();
-        let name = format!("{name} at {caller}");
-        let mut buffer = Vec::new();
-        self.consolidate_for_output_named(&format!("ConsolidateForOutput: {name}"), false)
-            .unary(Pipeline, &name, move |_, _| {
-                let mut vector = Vec::new();
-                move |input, output| {
                     while let Some((cap, data)) = input.next() {
                         data.swap(&mut vector);
                         for batch in vector.drain(..) {
-                            let OutputBatch { time, mut data } = batch;
-                            let futures: FuturesOrdered<_> = data
-                                .drain(..)
-                                .filter_map(|(data, diff)| {
-                                    preprocess(data, diff).map(|data| (data, diff))
-                                })
-                                .map(|(data, diff)| {
-                                    let async_logic = &async_logic;
-                                    async move { (async_logic(data).await, diff) }
-                                })
-                                .collect();
-                            assert!(buffer.is_empty());
-                            buffer.reserve(futures.len());
-
-                            futures::executor::block_on(futures.for_each(|(data, diff)| {
-                                let result = postprocess(data, diff);
-                                buffer.push((result, time.clone(), diff));
-                                future::ready(())
-                            }));
-                            output.session(&cap.delayed(&time)).give_vec(&mut buffer);
+                            let OutputBatch { time, data } = batch;
+                            let diffs: Vec<_> = data.iter().map(|(_data, diff)| *diff).collect();
+                            output.session(&cap.delayed(&time)).give_iterator(
+                                logic(data)
+                                    .into_iter()
+                                    .zip_eq(diffs.into_iter())
+                                    .filter_map(|(result, diff)| {
+                                        result.map(|data| (data, time.clone(), diff))
+                                    }),
+                            );
                         }
                     }
                 }

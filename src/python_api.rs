@@ -28,6 +28,9 @@ use elasticsearch::{
     },
     Elasticsearch,
 };
+use futures::future;
+use futures::stream::FuturesOrdered;
+use futures::StreamExt;
 use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
@@ -1368,6 +1371,65 @@ impl PyExpression {
             AnyExpression::Apply(func, args.into())
         };
         Self::new(Arc::new(Expression::Any(expression)), true)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (scope, function, *args, dtype, propagate_none=false))]
+    fn async_apply(
+        scope: &Bound<Scope>,
+        function: Py<PyAny>,
+        args: Vec<PyRef<PyExpression>>,
+        dtype: Type,
+        propagate_none: bool,
+    ) -> Self {
+        let args = args
+            .into_iter()
+            .map(|expr| expr.inner.clone())
+            .collect_vec();
+        let dtype = Arc::new(dtype);
+        let py = scope.py();
+        let event_loop = scope.borrow().event_loop.clone_ref(py);
+        let logic = move |input_i: &[Value]| {
+            let pass_none = propagate_none && input_i.iter().any(|a| matches!(a, Value::None));
+            let future = if pass_none {
+                // Conditional future because the final result has to be returned from the same async block.
+                // Thanks to that only a single future type is returned and there's no need to Box the closure.
+                None
+            } else {
+                Some(Python::with_gil(|py| {
+                    let event_loop = event_loop.clone_ref(py);
+                    let args = PyTuple::new(py, input_i)?;
+                    let awaitable = function.call1(py, args)?;
+                    let awaitable = awaitable.into_bound(py);
+                    let locals = pyo3_async_runtimes::TaskLocals::new(event_loop.into_bound(py))
+                        .copy_context(py)?;
+                    pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)
+                }))
+            };
+
+            let dtype = dtype.clone();
+            Box::pin(async {
+                if let Some(future) = future {
+                    let result = future?.await?;
+                    Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
+                } else {
+                    Ok(Value::None)
+                }
+            })
+        };
+        let func = Box::new(move |input: &[&[Value]]| {
+            let futures: FuturesOrdered<_> = input.iter().map(|input_i| logic(input_i)).collect();
+            let mut result = Vec::with_capacity(futures.len());
+            futures::executor::block_on(futures.for_each(|item| {
+                result.push(item);
+                future::ready(())
+            }));
+            result
+        });
+        Self::new(
+            Arc::new(Expression::Any(AnyExpression::Apply(func, args.into()))),
+            true,
+        )
     }
 
     #[staticmethod]
@@ -2812,51 +2874,6 @@ impl Scope {
         Column::new(universe, handle)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn async_apply_table(
-        self_: &Bound<Self>,
-        table: PyRef<Table>,
-        #[pyo3(from_py_with = from_py_iterable)] column_paths: Vec<ColumnPath>,
-        function: Py<PyAny>,
-        propagate_none: bool,
-        append_only_or_deterministic: bool,
-        properties: TableProperties,
-        dtype: Type,
-    ) -> PyResult<Py<Table>> {
-        let py = self_.py();
-        let dtype = Arc::new(dtype);
-        let event_loop = self_.borrow().event_loop.clone_ref(py);
-        let table_handle = self_.borrow().graph.async_apply_table(
-            Arc::new(move |_, values: &[Value]| {
-                if propagate_none && values.iter().any(|a| matches!(a, Value::None)) {
-                    return Box::pin(futures::future::ok(Value::None));
-                }
-                let future = Python::with_gil(|py| {
-                    let event_loop = event_loop.clone_ref(py);
-                    let args = PyTuple::new(py, values)?;
-                    let awaitable = function.call1(py, args)?;
-                    let awaitable = awaitable.into_bound(py);
-                    let locals = pyo3_async_runtimes::TaskLocals::new(event_loop.into_bound(py))
-                        .copy_context(py)?;
-                    pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)
-                });
-
-                Box::pin({
-                    let dtype = dtype.clone();
-                    async {
-                        let result = future?.await?;
-                        Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
-                    }
-                })
-            }),
-            table.handle,
-            column_paths,
-            properties.0,
-            append_only_or_deterministic,
-        )?;
-        Table::new(self_, table_handle)
-    }
-
     pub fn expression_table(
         self_: &Bound<Self>,
         table: &Table,
@@ -2864,19 +2881,10 @@ impl Scope {
         #[pyo3(from_py_with = from_py_iterable)] expressions: Vec<ExpressionData>,
         append_only_or_deterministic: bool,
     ) -> PyResult<Py<Table>> {
-        let gil = expressions
-            .iter()
-            .any(|expression_data| expression_data.gil);
-        let wrapper = if gil {
-            BatchWrapper::WithGil
-        } else {
-            BatchWrapper::None
-        };
         let table_handle = self_.borrow().graph.expression_table(
             table.handle,
             column_paths,
             expressions,
-            wrapper,
             append_only_or_deterministic,
         )?;
         Table::new(self_, table_handle)

@@ -273,7 +273,7 @@ class RowwiseEvaluator(
                 )
             )
 
-        # START temporary solution for eval_async_apply
+        # START solution for eval_fully_async_apply
         for intermediate_storage in eval_state.storages:
             properties = self._table_properties(intermediate_storage)
             # restrict instead of override because of edge case in fully async UDF
@@ -286,7 +286,7 @@ class RowwiseEvaluator(
             input_storage = Storage.merge_storages(
                 self.context.universe, intermediate_storage, input_storage
             )
-        # END temporary solution for eval_async_apply
+        # END solution for eval_fully_async_apply
 
         paths = [input_storage.get_path(dep) for dep in eval_state.columns]
 
@@ -457,30 +457,18 @@ class RowwiseEvaluator(
         eval_state: RowwiseEvalState | None = None,
     ):
         fun, args = self._prepare_positional_apply(
-            fun=expression._fun,
-            args=expression._args,
-            kwargs=expression._kwargs,
+            fun=expression._fun, args=expression._args, kwargs=expression._kwargs
         )
-
-        columns, input_storage, engine_input_table = self.run_subexpressions(args)
-        tmp_column = clmn.MaterializedColumn(
-            self.context.universe, ColumnProperties(dtype=expression._dtype)
-        )
-        output_storage = Storage.flat(self.context.universe, [tmp_column])
-        paths = [input_storage.get_path(column) for column in columns]
-        engine_table = self.scope.async_apply_table(
-            engine_input_table,
-            paths,
+        if not expression._deterministic:
+            assert eval_state is not None
+            eval_state.set_non_deterministic()
+        return api.Expression.async_apply(
+            self.scope,
             fun,
-            expression._propagate_none,
-            expression._deterministic or input_storage.append_only,
-            self._table_properties(output_storage),
-            expression._dtype.to_engine(),
+            *(self.eval_expression(arg, eval_state=eval_state) for arg in args),
+            propagate_none=expression._propagate_none,
+            dtype=expression._dtype.to_engine(),
         )
-
-        assert eval_state is not None
-        eval_state.set_temporary_table(output_storage, engine_table)
-        return self.eval_dependency(tmp_column, eval_state=eval_state)
 
     def eval_fully_async_apply(
         self,

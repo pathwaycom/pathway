@@ -6,7 +6,6 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
 use id_arena::ArenaBehavior;
 use itertools::Itertools;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -445,6 +444,7 @@ pub type IterationLogic<'a> = Box<
 
 #[derive(Clone, Debug)]
 pub enum BatchWrapper {
+    // TODO remove BatchWrapper completely
     None,
     WithGil,
 }
@@ -656,7 +656,6 @@ pub trait Graph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle>;
 
@@ -685,15 +684,6 @@ pub trait Graph {
         &self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
-    ) -> Result<TableHandle>;
-
-    fn async_apply_table(
-        &self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        table_properties: Arc<TableProperties>,
-        append_only_or_deterministic: bool,
     ) -> Result<TableHandle>;
 
     #[allow(clippy::too_many_arguments)]
@@ -1124,7 +1114,6 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1132,7 +1121,6 @@ impl Graph for ScopedGraph {
                 table_handle,
                 column_paths,
                 expressions,
-                wrapper,
                 append_only_or_deterministic,
             )
         })
@@ -1173,25 +1161,6 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
     ) -> Result<TableHandle> {
         self.try_with(|g| g.flatten_table_storage(table_handle, column_paths))
-    }
-
-    fn async_apply_table(
-        &self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        table_properties: Arc<TableProperties>,
-        append_only_or_deterministic: bool,
-    ) -> Result<TableHandle> {
-        self.try_with(|g| {
-            g.async_apply_table(
-                function,
-                table_handle,
-                column_paths,
-                table_properties,
-                append_only_or_deterministic,
-            )
-        })
     }
 
     fn subscribe_table(

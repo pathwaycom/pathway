@@ -71,7 +71,6 @@ use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpin
 use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::{AsCollection as _, Data};
 use differential_dataflow::{Collection, ExchangeData};
-use futures::future::BoxFuture;
 use id_arena::Arena;
 use itertools::{chain, process_results, Itertools};
 use log::{error, info};
@@ -1521,7 +1520,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
     ) -> Result<Collection<S, (Key, Value)>> {
         let table = self
             .tables
@@ -1534,7 +1532,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         Ok(table.values_consolidated().map_wrapped_batched_named(
             "expression_table::evaluate_expression",
-            wrapper,
             move |data| {
                 let mut results = Vec::with_capacity(data.len());
                 let mut args = Vec::with_capacity(data.len());
@@ -1583,7 +1580,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
     ) -> Result<Collection<S, (Key, Value)>> {
         struct RowData {
             key: Key,
@@ -1615,7 +1611,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             move |collection| {
                 collection.flat_map_named_with_deletions_first(
                     "expression_table::evaluate_expression",
-                    wrapper,
                     move |data_with_diffs| {
                         let mut results = vec![None; data_with_diffs.len()];
                         let mut rows = Vec::with_capacity(data_with_diffs.len());
@@ -1737,7 +1732,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         let properties: Vec<_> = expressions
@@ -1748,14 +1742,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             TableProperties::Table(properties.as_slice().into(), Arc::new(Trace::Empty));
 
         let new_values = if append_only_or_deterministic {
-            self.expression_table_deterministic(table_handle, column_paths, expressions, wrapper)
+            self.expression_table_deterministic(table_handle, column_paths, expressions)
         } else {
-            self.expression_table_non_deterministic(
-                table_handle,
-                column_paths,
-                expressions,
-                wrapper,
-            )
+            self.expression_table_non_deterministic(table_handle, column_paths, expressions)
         }?;
 
         Ok(self
@@ -1901,105 +1890,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .alloc(Table::from_collection(table_values).with_properties(properties));
         Ok(table_handle)
-    }
-
-    fn async_apply_table(
-        &mut self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        table_properties: Arc<TableProperties>,
-        append_only_or_deterministic: bool,
-    ) -> Result<TableHandle> {
-        let table = self
-            .tables
-            .get(table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-        let error_reporter = self.error_reporter.clone();
-        let error_logger: Rc<dyn LogError> = self.create_error_logger()?.into();
-        let trace = table_properties.trace();
-        let closure = move |(key, values)| {
-            let args: Vec<Value> = column_paths
-                .iter()
-                .map(|path| path.extract(&key, &values))
-                .collect::<Result<_>>()
-                .unwrap_with_reporter_and_trace(&error_reporter, &trace);
-            let error_logger = error_logger.clone();
-            let function = function.clone();
-            let trace = trace.clone();
-            let future = async move {
-                let value = function(key, &args).await.unwrap_or_log_with_trace(
-                    error_logger.as_ref(),
-                    &trace,
-                    Value::Error,
-                );
-                (key, Value::from([value].as_slice()))
-            };
-            Box::pin(future)
-        };
-        let new_values = if append_only_or_deterministic {
-            table
-                .values_consolidated()
-                .map_named_async("expression_column::apply_async", closure)
-        } else {
-            let cache = Rc::new(RefCell::new(HashMap::<Key, Value>::new()));
-            let collection = table.values().clone();
-            collection.maybe_persist_with_logic(
-                self,
-                "expression_column::apply_async",
-                |collection| {
-                    collection.map_named_async_with_deletions_handling(
-                        "expression_column::apply_async",
-                        {
-                            let cache = cache.clone();
-                            move |(key, value), diff| match value {
-                                OldOrNew::Old(state) => {
-                                    assert!(diff == DIFF_INSERTION);
-                                    let current = cache.borrow_mut().insert(key, state);
-                                    assert!(current.is_none());
-                                    None
-                                }
-                                OldOrNew::New(value) => {
-                                    let maybe_result = if diff < 0 {
-                                        Some(
-                                            cache
-                                                .borrow_mut()
-                                                .remove(&key)
-                                                .expect("result for negative diff should be stored")
-                                                .clone(),
-                                        )
-                                    } else {
-                                        None
-                                    };
-                                    Some((key, value, maybe_result))
-                                }
-                            }
-                        },
-                        move |(key, value, maybe_result)| {
-                            let closure = closure.clone();
-                            async move {
-                                if let Some(result) = maybe_result {
-                                    (key, result)
-                                } else {
-                                    closure((key, value)).await
-                                }
-                            }
-                        },
-                        move |(key, value), diff| {
-                            if diff > 0 {
-                                let current = cache.borrow_mut().insert(key, value.clone());
-                                assert!(current.is_none());
-                            }
-                            (key, value)
-                        },
-                    )
-                },
-                |values| values,
-            )?
-        };
-        Ok(self
-            .tables
-            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 
     fn filter_table(
@@ -5100,7 +4990,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         if append_only_or_deterministic {
@@ -5108,7 +4997,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
                 table_handle,
                 column_paths,
                 expressions,
-                wrapper,
                 append_only_or_deterministic,
             )
         } else {
@@ -5157,23 +5045,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0
             .borrow_mut()
             .flatten_table_storage(table_handle, column_paths)
-    }
-
-    fn async_apply_table(
-        &self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        table_properties: Arc<TableProperties>,
-        append_only_or_deterministic: bool,
-    ) -> Result<TableHandle> {
-        self.0.borrow_mut().async_apply_table(
-            function,
-            table_handle,
-            column_paths,
-            table_properties,
-            append_only_or_deterministic,
-        )
     }
 
     fn subscribe_table(
@@ -5755,14 +5626,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
-        wrapper: BatchWrapper,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().expression_table(
             table_handle,
             column_paths,
             expressions,
-            wrapper,
             append_only_or_deterministic,
         )
     }
@@ -5808,23 +5677,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0
             .borrow_mut()
             .flatten_table_storage(table_handle, column_paths)
-    }
-
-    fn async_apply_table(
-        &self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        table_properties: Arc<TableProperties>,
-        append_only_or_deterministic: bool,
-    ) -> Result<TableHandle> {
-        self.0.borrow_mut().async_apply_table(
-            function,
-            table_handle,
-            column_paths,
-            table_properties,
-            append_only_or_deterministic,
-        )
     }
 
     fn subscribe_table(
