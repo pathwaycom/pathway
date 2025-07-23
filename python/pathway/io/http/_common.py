@@ -11,7 +11,17 @@ import pathway as pw
 
 
 class RetryPolicy:
-    """Class representing policy of delays or backoffs for the retries."""
+    """
+    Represents a retry policy defining delays or backoff strategies for retries.
+
+    Args:
+        first_delay_ms: Duration of the initial retry delay, in milliseconds.
+        backoff_factor: Factor by which the retry delay increases after each attempt.
+        jitter_ms: Maximum random jitter (in milliseconds) to add to the scaled delay.
+
+    Returns:
+        A retry policy object.
+    """
 
     def __init__(self, first_delay_ms: int, backoff_factor: float, jitter_ms: int):
         self._next_retry_duration = first_delay_ms * 1e-3
@@ -20,6 +30,14 @@ class RetryPolicy:
 
     @classmethod
     def default(cls):
+        """
+        Constructs the default retry settings:
+
+        - The initial delay between calls is 1 second.
+        - The backoff factor is 1.5, meaning each subsequent retry will wait at
+          least 1.5 times longer than the previous one.
+        - The maximum jitter added to the delay is 300 milliseconds.
+        """
         return cls(
             first_delay_ms=1000,
             backoff_factor=1.5,

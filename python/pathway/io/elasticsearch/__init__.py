@@ -14,11 +14,25 @@ from pathway.internals.trace import trace_user_frame
 
 
 class ElasticSearchAuth:
+    """
+    Elasticsearch authentication object to be used in the ``write`` method.
+    """
+
     def __init__(self, engine_es_auth: api.ElasticSearchAuth) -> None:
         self._engine_es_auth = engine_es_auth
 
     @classmethod
     def apikey(cls, apikey_id, apikey):
+        """
+        Constructs API key-based Elasticsearch authorization.
+
+        Args:
+            apikey_id: The ID of the API key.
+            apikey: The API key.
+
+        Returns:
+            An authentication object to use for Elasticsearch authorization.
+        """
         return cls(
             api.ElasticSearchAuth(
                 "apikey",
@@ -29,6 +43,16 @@ class ElasticSearchAuth:
 
     @classmethod
     def basic(cls, username, password):
+        """
+        Constructs basic Elasticsearch authorization using a username and password.
+
+        Args:
+            username: The username to use for authentication.
+            password: The password for the specified user.
+
+        Returns:
+            An authentication object to use for Elasticsearch authorization.
+        """
         return cls(
             api.ElasticSearchAuth(
                 "basic",
@@ -39,6 +63,15 @@ class ElasticSearchAuth:
 
     @classmethod
     def bearer(cls, bearer):
+        """
+        Constructs Elasticsearch authorization using the specified bearer token.
+
+        Args:
+            bearer: The bearer token.
+
+        Returns:
+            An authentication object to use for Elasticsearch authorization.
+        """
         return cls(
             api.ElasticSearchAuth(
                 "bearer",
@@ -64,6 +97,13 @@ def write(
 ) -> None:
     """Write a table to a given index in ElasticSearch.
 
+    The rows of the table are serialized into JSON. Type conversions are the same as in
+    the `JSON output connector </developers/api-docs/pathway-io/jsonlines/>`_.
+
+    Note that two additional fields are included in the generated JSON: ``time``, which
+    indicates the time of the Pathway minibatch, and ``diff``, which can be either
+    ``1`` (row addition) or ``-1`` (row deletion).
+
     Args:
         table: the table to output.
         host: the host and port, on which Elasticsearch server works.
@@ -80,12 +120,12 @@ def write(
 
     Example:
 
-    Consider there is an instance of Elasticsearch, running locally on a port 9200.
-    There we have an index "animals", containing an information about pets and their
+    Consider there is an instance of Elasticsearch, running locally on a port ``9200``.
+    There we have an index ``"animals"``, containing an information about pets and their
     owners.
 
     For the sake of simplicity we will also consider that the cluster has a simple
-    username-password authentication having both username and password equal to "admin".
+    username-password authentication having both username and password equal to ``"admin"``.
 
     Now suppose we want to send a Pathway table pets to this local instance of
     Elasticsearch.
@@ -107,7 +147,7 @@ def write(
     ...     index_name="animals",
     ... )
 
-    All the updates of table "pets" will be indexed to "animals" as well.
+    All the updates of table ``"pets"`` will be indexed to ``"animals"`` as well.
     """
 
     _check_entitlements("elasticsearch")
@@ -135,3 +175,10 @@ def write(
             sort_by=sort_by,
         )
     )
+
+
+# This is made to force ElasticSearchAuth documentation
+__all__ = [
+    "ElasticSearchAuth",
+    "write",
+]
