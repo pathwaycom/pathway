@@ -6,7 +6,7 @@ from pathway.internals import reducers, udfs, universes
 from pathway.internals.api import (
     Pointer,
     PyObjectWrapper,
-    SqlWriterInitMode,
+    TableWriterInitMode,
     wrap_py_object,
 )
 from pathway.internals.common import (
@@ -157,5 +157,5 @@ __all__ = [
     "local_error_log",
     "ColumnDefinition",
     "load_yaml",
-    "SqlWriterInitMode",
+    "TableWriterInitMode",
 ]

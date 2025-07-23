@@ -1,6 +1,7 @@
 import time
 import uuid
 
+import boto3
 import psycopg2
 import requests
 from pymongo import MongoClient
@@ -280,3 +281,45 @@ class DebeziumContext:
             },
         }
         return self._register_connector(payload, f"{connector_id}.public.{table_name}")
+
+
+class DynamoDBContext:
+
+    def __init__(self):
+        self.dynamodb = boto3.resource("dynamodb", region_name="us-west-2")
+
+    def get_table_contents(self, table_name: str) -> list[dict]:
+        table = self.dynamodb.Table(table_name)
+        response = table.scan()
+        data = response["Items"]
+
+        while "LastEvaluatedKey" in response:
+            response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+            data.extend(response["Items"])
+
+        return data
+
+    def generate_table_name(self) -> str:
+        return "table" + str(uuid.uuid4())
+
+
+class EntryCountChecker:
+
+    def __init__(
+        self,
+        n_expected_entries: int,
+        db_context: DynamoDBContext | WireProtocolSupporterContext,
+        **get_table_contents_kwargs,
+    ):
+        self.n_expected_entries = n_expected_entries
+        self.db_context = db_context
+        self.get_table_contents_kwargs = get_table_contents_kwargs
+
+    def __call__(self) -> bool:
+        try:
+            table_contents = self.db_context.get_table_contents(
+                **self.get_table_contents_kwargs
+            )
+        except Exception:
+            return False
+        return len(table_contents) == self.n_expected_entries

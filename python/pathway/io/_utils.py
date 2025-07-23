@@ -499,3 +499,15 @@ def get_column_index(table: Table, column: ColumnReference | None) -> int | None
         if table_column == column.name:
             return index
     raise RuntimeError(f"The column {column} is not found in the table {table}")
+
+
+def init_mode_from_str(init_mode: str) -> api.TableWriterInitMode:
+    match init_mode:
+        case "default":
+            return api.TableWriterInitMode.DEFAULT
+        case "create_if_not_exists":
+            return api.TableWriterInitMode.CREATE_IF_NOT_EXISTS
+        case "replace":
+            return api.TableWriterInitMode.REPLACE
+        case _:
+            raise ValueError(f"Invalid init_mode: {init_mode}")

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pathway.internals import parse_graph
+from pathway.tests.utils import SerializationTestHelper
 
 CREDENTIALS_DIR = Path(os.getenv("CREDENTIALS_DIR", default=Path(__file__).parent))
 
@@ -39,3 +40,8 @@ def disable_monitoring(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def credentials_dir() -> Path:
     return CREDENTIALS_DIR
+
+
+@pytest.fixture
+def serialization_tester():
+    return SerializationTestHelper()

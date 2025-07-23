@@ -17,6 +17,9 @@ use deltalake::arrow::datatypes::{
 use ndarray::ArrayD;
 
 use super::{LakeWriterSettings, MaintenanceMode};
+use crate::connectors::data_format::{
+    NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME, NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
+};
 use crate::connectors::data_lake::LakeBatchWriter;
 use crate::connectors::WriteError;
 use crate::engine::time::DateTime as EngineDateTime;
@@ -259,8 +262,11 @@ fn arrow_data_type(
         Type::List(wrapped_type) => {
             let wrapped_type_is_optional = wrapped_type.is_optional();
             let wrapped_arrow_type = arrow_data_type(wrapped_type, settings)?;
-            let list_field =
-                ArrowField::new("element", wrapped_arrow_type, wrapped_type_is_optional);
+            let list_field = ArrowField::new(
+                NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
+                wrapped_arrow_type,
+                wrapped_type_is_optional,
+            );
             ArrowDataType::List(list_field.into())
         }
         Type::Array(_, wrapped_type) => {
@@ -272,16 +278,26 @@ fn arrow_data_type(
             };
             let struct_fields_vector = vec![
                 ArrowField::new(
-                    "shape",
+                    NDARRAY_SHAPE_FIELD_NAME,
                     ArrowDataType::List(
-                        ArrowField::new("element", ArrowDataType::Int64, true).into(),
+                        ArrowField::new(
+                            NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
+                            ArrowDataType::Int64,
+                            true,
+                        )
+                        .into(),
                     ),
                     false,
                 ),
                 ArrowField::new(
-                    "elements",
+                    NDARRAY_ELEMENTS_FIELD_NAME,
                     ArrowDataType::List(
-                        ArrowField::new("element", elements_arrow_type, true).into(),
+                        ArrowField::new(
+                            NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
+                            elements_arrow_type,
+                            true,
+                        )
+                        .into(),
                     ),
                     false,
                 ),

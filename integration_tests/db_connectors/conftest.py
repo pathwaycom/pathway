@@ -1,6 +1,7 @@
 import pytest
 from utils import (
     DebeziumContext,
+    DynamoDBContext,
     MongoDBContext,
     PgvectorContext,
     PostgresContext,
@@ -31,3 +32,8 @@ def mongodb():
 @pytest.fixture
 def debezium():
     return DebeziumContext()
+
+
+@pytest.fixture
+def dynamodb():
+    return DynamoDBContext()

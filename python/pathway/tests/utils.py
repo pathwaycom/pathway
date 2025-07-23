@@ -18,11 +18,13 @@ from abc import abstractmethod
 from collections.abc import Callable, Generator, Hashable, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
 import pytest
+from dateutil import tz
 
 import pathway as pw
 from pathway.debug import _markdown_to_pandas, table_from_markdown, table_from_pandas
@@ -909,3 +911,68 @@ def assert_sets_equality_from_path(path: pathlib.Path, expected: set[str]) -> No
     except pd.errors.EmptyDataError:
         result = pd.Series([])
     assert set(result) == expected
+
+
+class SerializationTestHelper:
+
+    def create_variety_table(self, with_optionals: bool) -> tuple[pw.Table, dict]:
+        composite_types: dict[str, type] = {
+            "ints": np.ndarray[None, int],  # type: ignore
+            "floats": np.ndarray[None, float],  # type: ignore
+            "ints_flat": np.ndarray[None, int],  # type: ignore
+            "floats_flat": np.ndarray[None, float],  # type: ignore
+            "tuple_data": tuple[bytes, bool],
+            "list_data": list[str | None],
+        }
+
+        table = pw.debug.table_from_markdown("field\n1")
+        table = table.select(**self.filled_column_values)
+        pkey_row_mapping = {
+            1: self.filled_column_values,
+        }
+        if with_optionals:
+            # Prepare a row with all types None except for pkey
+            none_column_values: dict[str, int | None] = {}
+            for key in self.filled_column_values.keys():
+                none_column_values[key] = None
+            none_column_values["pkey"] = 2
+            none_column_values["skey"] = 20
+            pkey_row_mapping[2] = none_column_values
+
+            # Append this row to an existing table
+            table_with_optionals = pw.debug.table_from_markdown("field\n1")
+            table_with_optionals = table.select(**none_column_values)
+            pw.universes.promise_are_pairwise_disjoint(table, table_with_optionals)
+            table = table.concat(table_with_optionals)
+
+            # Update composite types
+            optional_composite_types = {}
+            for field_name, field_type in composite_types.items():
+                optional_composite_types[field_name] = field_type | None
+            composite_types = optional_composite_types  # type: ignore
+
+        table = table.update_types(**composite_types)
+        return (table, pkey_row_mapping)
+
+    @cached_property
+    def filled_column_values(self):
+        return {
+            "pkey": 1,
+            "skey": 10,
+            "boolean": True,
+            "integer": 123,
+            "double": -5.6,
+            "string": "abcdef",
+            "binary_data": b"fedcba",
+            "datetime_naive": pw.DateTimeNaive(year=2025, month=1, day=17),
+            "datetime_utc_aware": pw.DateTimeUtc(year=2025, month=1, day=17, tz=tz.UTC),
+            "duration": pw.Duration(days=5),
+            "ints": np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=int),
+            "floats": np.array([[1.1, 2.2], [3.3, 4.4]], dtype=float),
+            "ints_flat": np.array([9, 9, 9], dtype=int),
+            "floats_flat": np.array([1.1, 2.2, 3.3], dtype=float),
+            "json_data": pw.Json.parse('{"a": 15, "b": "hello"}'),
+            "tuple_data": (b"world", True),
+            "list_data": ("lorem", None, "ipsum"),
+            "ptr": api.ref_scalar(42),
+        }

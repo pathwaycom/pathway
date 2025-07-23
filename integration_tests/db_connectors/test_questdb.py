@@ -2,45 +2,20 @@ import copy
 import datetime
 import json
 import os
-import threading
-import time
 
 import pytest
-from utils import QUEST_DB_HOST, QUEST_DB_LINE_PORT, QuestDBContext
+from utils import QUEST_DB_HOST, QUEST_DB_LINE_PORT, EntryCountChecker
 
 import pathway as pw
-from pathway.tests.utils import wait_result_with_checker
+from pathway.tests.utils import ExceptionAwareThread, wait_result_with_checker
 
 QUESTDB_CONNECTION_STRING = f"http::addr={QUEST_DB_HOST}:{QUEST_DB_LINE_PORT};"
-
-
-class EntryCountChecker:
-
-    def __init__(
-        self,
-        n_expected_entries: int,
-        questdb: QuestDBContext,
-        table_name: str,
-        column_names: list[str],
-    ):
-        self.n_expected_entries = n_expected_entries
-        self.questdb = questdb
-        self.table_name = table_name
-        self.column_names = column_names
-
-    def __call__(self):
-        try:
-            table_contents = self.questdb.get_table_contents(
-                self.table_name, self.column_names
-            )
-        except Exception:
-            return False
-        return len(table_contents) == self.n_expected_entries
 
 
 @pytest.mark.parametrize(
     "designated_timestamp_policy", ["use_now", "use_pathway_time", "use_column"]
 )
+@pytest.mark.flaky(reruns=5)  # No way to check that DB is ready to accept queries
 def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
     class InputSchema(pw.Schema):
         name: str
@@ -49,6 +24,7 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
         available: bool
         updated_at: pw.DateTimeUtc
 
+    table_name = questdb.random_table_name()
     inputs_path = tmp_path / "inputs"
     os.mkdir(inputs_path)
     input_items = [
@@ -86,18 +62,18 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
         )
 
     def stream_inputs(test_items: list[dict]) -> None:
-        file_idx = 0
-        for test_item in test_items:
-            time.sleep(1.5)
-            file_idx += 1
+        for file_idx, test_item in enumerate(test_items):
             input_path = inputs_path / f"{file_idx}.json"
             with open(input_path, "w") as f:
                 f.write(json.dumps(test_item))
+            checker = EntryCountChecker(
+                file_idx + 1, questdb, table_name=table_name, column_names=["name"]
+            )
+            wait_result_with_checker(checker, 15, target=None)
 
     table = pw.io.jsonlines.read(
         inputs_path, schema=InputSchema, autocommit_duration_ms=200
     )
-    table_name = questdb.random_table_name()
     extra_params = {}
     if designated_timestamp_policy == "use_column":
         extra_params["designated_timestamp"] = table.updated_at
@@ -110,9 +86,11 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
         **extra_params,
     )
 
-    t = threading.Thread(target=stream_inputs, args=(input_items,))
+    t = ExceptionAwareThread(target=stream_inputs, args=(input_items,))
     t.start()
-    checker = EntryCountChecker(len(input_items), questdb, table_name, ["name"])
+    checker = EntryCountChecker(
+        len(input_items), questdb, table_name=table_name, column_names=["name"]
+    )
     wait_result_with_checker(checker, 15)
     table_reread = questdb.get_table_contents(
         table_name,

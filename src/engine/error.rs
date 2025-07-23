@@ -120,7 +120,7 @@ pub enum Error {
     },
 
     #[error("snapshot writer failed: {0}")]
-    SnapshotWriterError(#[source] WriteError),
+    SnapshotWriterError(#[source] Box<WriteError>),
 
     #[error("reader failed: {0:?}")]
     ReaderFailed(#[source] ReadError),

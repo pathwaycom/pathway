@@ -43,7 +43,9 @@ use super::{
     MaintenanceMode, MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
-use crate::connectors::data_format::parse_bool_advanced;
+use crate::connectors::data_format::{
+    parse_bool_advanced, NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME,
+};
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_lake::ArrowDataType;
 use crate::connectors::data_storage::{ConnectorMode, ConversionError, ValuesMap};
@@ -393,8 +395,12 @@ impl DeltaBatchWriter {
                     DeltaTableArrayType::new(elements_kernel_type, true).into(),
                 );
                 let struct_descriptor = DeltaTableStructType::new(vec![
-                    DeltaTableStructField::new("shape", shape_data_type, false),
-                    DeltaTableStructField::new("elements", elements_data_type, false),
+                    DeltaTableStructField::new(NDARRAY_SHAPE_FIELD_NAME, shape_data_type, false),
+                    DeltaTableStructField::new(
+                        NDARRAY_ELEMENTS_FIELD_NAME,
+                        elements_data_type,
+                        false,
+                    ),
                 ]);
                 DeltaTableKernelType::Struct(struct_descriptor.into())
             }

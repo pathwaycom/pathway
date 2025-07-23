@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime};
 use timely::dataflow::operators::probe::Handle;
 
 pub mod adaptors;
+pub mod aws;
 pub mod data_format;
 pub mod data_lake;
 pub mod data_storage;
@@ -549,7 +550,7 @@ impl Connector {
             persistent_storage.as_ref(),
             snapshot_access,
         )
-        .map_err(EngineError::SnapshotWriterError)?;
+        .map_err(|e| EngineError::SnapshotWriterError(Box::new(e)))?;
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)

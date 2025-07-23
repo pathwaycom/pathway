@@ -30,6 +30,7 @@ use super::{
     columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
+use crate::connectors::data_format::NDARRAY_SINGLE_ELEMENT_FIELD_NAME;
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_storage::ConnectorMode;
 use crate::connectors::metadata::IcebergMetadata;
@@ -190,7 +191,7 @@ impl IcebergTableParams {
                 let nested_element_type = Self::iceberg_type(element_type.unoptionalize())?;
                 let nested_type = IcebergNestedField::new(
                     0,
-                    "element",
+                    NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
                     nested_element_type,
                     !element_type_is_optional,
                 );

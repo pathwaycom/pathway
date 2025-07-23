@@ -43,6 +43,10 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use super::data_storage::{ConversionError, SpecialEvent};
 
 pub const COMMIT_LITERAL: &str = "*COMMIT*";
+pub const NDARRAY_ELEMENTS_FIELD_NAME: &str = "elements";
+pub const NDARRAY_SINGLE_ELEMENT_FIELD_NAME: &str = "element";
+pub const NDARRAY_SHAPE_FIELD_NAME: &str = "shape";
+
 const DEBEZIUM_EMPTY_KEY_PAYLOAD: &str = "{\"payload\": {\"before\": {}, \"after\": {}}}";
 
 fn is_commit_literal(value: &DynResult<Value>) -> bool {
@@ -1142,10 +1146,10 @@ fn parse_tuple_from_json(values: &[JsonValue], dtypes: &[Type]) -> Option<Value>
 }
 
 fn parse_ndarray_from_json(value: &JsonMap<String, JsonValue>, dtype: &Type) -> Option<Value> {
-    let JsonValue::Array(ref elements) = value["elements"] else {
+    let JsonValue::Array(ref elements) = value[NDARRAY_ELEMENTS_FIELD_NAME] else {
         return None;
     };
-    let JsonValue::Array(ref json_field_shape) = value["shape"] else {
+    let JsonValue::Array(ref json_field_shape) = value[NDARRAY_SHAPE_FIELD_NAME] else {
         return None;
     };
     let mut shape = Vec::new();
@@ -1309,8 +1313,8 @@ pub fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterErro
                 flat_elements.push(json!(item));
             }
             let serialized_values = json!({
-                "shape": a.shape(),
-                "elements": flat_elements,
+                NDARRAY_SHAPE_FIELD_NAME: a.shape(),
+                NDARRAY_ELEMENTS_FIELD_NAME: flat_elements,
             });
             Ok(serialized_values)
         }
@@ -1320,8 +1324,8 @@ pub fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterErro
                 flat_elements.push(json!(item));
             }
             let serialized_values = json!({
-                "shape": a.shape(),
-                "elements": flat_elements,
+                NDARRAY_SHAPE_FIELD_NAME: a.shape(),
+                NDARRAY_ELEMENTS_FIELD_NAME: flat_elements,
             });
             Ok(serialized_values)
         }

@@ -23,6 +23,7 @@ use half::f16;
 use ndarray::ArrayD;
 use once_cell::sync::Lazy;
 
+use crate::connectors::data_format::{NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME};
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_storage::ConversionError;
 use crate::connectors::data_storage::ValuesMap;
@@ -206,19 +207,19 @@ pub fn parse_pathway_tuple_from_row(row: &ParquetRow, nested_types: &[Type]) -> 
 }
 
 pub fn parse_pathway_array_from_parquet_row(row: &ParquetRow, array_type: &Type) -> Option<Value> {
-    let shape_i64 = parse_int_array_from_parquet_row(row, "shape")?;
+    let shape_i64 = parse_int_array_from_parquet_row(row, NDARRAY_SHAPE_FIELD_NAME)?;
     let mut shape: Vec<usize> = Vec::new();
     for element in shape_i64 {
         shape.push(element.try_into().ok()?);
     }
     match array_type {
         Type::Int => {
-            let values = parse_int_array_from_parquet_row(row, "elements")?;
+            let values = parse_int_array_from_parquet_row(row, NDARRAY_ELEMENTS_FIELD_NAME)?;
             let array_impl = ArrayD::<i64>::from_shape_vec(shape, values).ok()?;
             Some(Value::from(array_impl))
         }
         Type::Float => {
-            let values = parse_float_array_from_parquet_row(row, "elements")?;
+            let values = parse_float_array_from_parquet_row(row, NDARRAY_ELEMENTS_FIELD_NAME)?;
             let array_impl = ArrayD::<f64>::from_shape_vec(shape, values).ok()?;
             Some(Value::from(array_impl))
         }

@@ -10,23 +10,11 @@ from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import get_column_index
+from pathway.io._utils import get_column_index, init_mode_from_str
 
 
 def _connection_string_from_settings(settings: dict):
     return " ".join(k + "=" + str(v) for (k, v) in settings.items())
-
-
-def _init_mode_from_str(init_mode: str) -> api.SqlWriterInitMode:
-    match init_mode:
-        case "default":
-            return api.SqlWriterInitMode.DEFAULT
-        case "create_if_not_exists":
-            return api.SqlWriterInitMode.CREATE_IF_NOT_EXISTS
-        case "replace":
-            return api.SqlWriterInitMode.REPLACE
-        case _:
-            raise ValueError(f"Invalid init_mode: {init_mode}")
 
 
 @check_arg_types
@@ -129,7 +117,7 @@ def write(
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
         table_name=table_name,
-        sql_writer_init_mode=_init_mode_from_str(init_mode),
+        table_writer_init_mode=init_mode_from_str(init_mode),
     )
     data_format = api.DataFormat(
         format_type="sql",
@@ -232,7 +220,7 @@ def write_snapshot(
         max_batch_size=max_batch_size,
         snapshot_maintenance_on_output=True,
         table_name=table_name,
-        sql_writer_init_mode=_init_mode_from_str(init_mode),
+        table_writer_init_mode=init_mode_from_str(init_mode),
     )
 
     if (

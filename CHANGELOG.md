@@ -6,8 +6,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
-
 - `pw.xpacks.llm.mcp_server.PathwayMcp` that allows serving `pw.xpacks.llm.document_store.DocumentStore` and `pw.xpacks.llm.question_answering` endpoints as MCP (Model Context Protocol) tools.
+- `pw.io.dynamodb.write` method for writing to Dynamo DB.
 
 ## [0.25.0] - 2025-07-10
 

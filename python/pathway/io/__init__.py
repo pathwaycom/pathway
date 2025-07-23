@@ -6,6 +6,7 @@ from pathway.io import (
     csv,
     debezium,
     deltalake,
+    dynamodb,
     elasticsearch,
     fs,
     gdrive,
@@ -68,4 +69,5 @@ __all__ = [
     "register_input_synchronization_group",
     "mqtt",
     "questdb",
+    "dynamodb",
 ]

@@ -846,10 +846,10 @@ class DeltaOptimizerRule:
 class MqttSettings:
     def __init__(self, qos: int, retain: bool): ...
 
-class SqlWriterInitMode(Enum):
-    DEFAULT: SqlWriterInitMode
-    CREATE_IF_NOT_EXISTS: SqlWriterInitMode
-    REPLACE: SqlWriterInitMode
+class TableWriterInitMode(Enum):
+    DEFAULT: TableWriterInitMode
+    CREATE_IF_NOT_EXISTS: TableWriterInitMode
+    REPLACE: TableWriterInitMode
 
 class DataStorage:
     mode: ConnectorMode
@@ -880,7 +880,7 @@ class DataStorage:
         database: str | None = None,
         start_from_timestamp_ms: int | None = None,
         namespace: list[str] | None = None,
-        sql_writer_init_mode: SqlWriterInitMode = SqlWriterInitMode.DEFAULT,
+        table_writer_init_mode: TableWriterInitMode = TableWriterInitMode.DEFAULT,
         topic_name_index: int | None = None,
         partition_columns: list[str] | None = None,
         backfilling_thresholds: list[BackfillingThreshold] | None = None,
@@ -888,6 +888,7 @@ class DataStorage:
         delta_optimizer_rule: DeltaOptimizerRule | None = None,
         mqtt_settings: MqttSettings | None = None,
         only_provide_metadata: bool = False,
+        sort_key_index: int | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

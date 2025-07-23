@@ -30,6 +30,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "advanced-parser",
     "bigquery",
     "deltalake",
+    "dynamodb",
     "elasticsearch",
     "full-persistence",
     "iceberg",

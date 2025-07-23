@@ -18,6 +18,7 @@ use crate::persistence::frontier::OffsetAntichain;
 use async_nats::connect as nats_connect;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
+use aws_sdk_dynamodb::Client as DynamoDBClient;
 use azure_storage::StorageCredentials as AzureStorageCredentials;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
@@ -83,6 +84,7 @@ use self::external_index_wrappers::{
 };
 use self::threads::PythonThreadState;
 
+use crate::connectors::aws::DynamoDBWriter;
 use crate::connectors::data_format::{
     BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
@@ -103,7 +105,7 @@ use crate::connectors::data_storage::{
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, NatsReader,
     NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
     PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter, RdkafkaWatermark, ReadError,
-    ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, WriteError, Writer,
+    ReadMethod, ReaderBuilder, SqliteReader, TableWriterInitMode, WriteError, Writer,
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
@@ -712,18 +714,18 @@ impl<'py> IntoPyObject<'py> for MonitoringLevel {
     }
 }
 
-impl<'py> FromPyObject<'py> for SqlWriterInitMode {
+impl<'py> FromPyObject<'py> for TableWriterInitMode {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(ob.extract::<PyRef<PySqlWriterInitMode>>()?.0)
+        Ok(ob.extract::<PyRef<PyTableWriterInitMode>>()?.0)
     }
 }
 
-impl<'py> IntoPyObject<'py> for SqlWriterInitMode {
+impl<'py> IntoPyObject<'py> for TableWriterInitMode {
     type Target = PyAny;
     type Output = Bound<'py, Self::Target>;
     type Error = PyErr;
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        PySqlWriterInitMode(self).into_bound_py_any(py)
+        PyTableWriterInitMode(self).into_bound_py_any(py)
     }
 }
 
@@ -2043,17 +2045,17 @@ impl PyMonitoringLevel {
     pub const ALL: MonitoringLevel = MonitoringLevel::All;
 }
 
-#[pyclass(module = "pathway.engine", frozen, name = "SqlWriterInitMode")]
-pub struct PySqlWriterInitMode(SqlWriterInitMode);
+#[pyclass(module = "pathway.engine", frozen, name = "TableWriterInitMode")]
+pub struct PyTableWriterInitMode(TableWriterInitMode);
 
 #[pymethods]
-impl PySqlWriterInitMode {
+impl PyTableWriterInitMode {
     #[classattr]
-    pub const DEFAULT: SqlWriterInitMode = SqlWriterInitMode::Default;
+    pub const DEFAULT: TableWriterInitMode = TableWriterInitMode::Default;
     #[classattr]
-    pub const CREATE_IF_NOT_EXISTS: SqlWriterInitMode = SqlWriterInitMode::CreateIfNotExists;
+    pub const CREATE_IF_NOT_EXISTS: TableWriterInitMode = TableWriterInitMode::CreateIfNotExists;
     #[classattr]
-    pub const REPLACE: SqlWriterInitMode = SqlWriterInitMode::Replace;
+    pub const REPLACE: TableWriterInitMode = TableWriterInitMode::Replace;
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
@@ -4312,7 +4314,7 @@ pub struct DataStorage {
     database: Option<String>,
     start_from_timestamp_ms: Option<i64>,
     namespace: Option<Vec<String>>,
-    sql_writer_init_mode: SqlWriterInitMode,
+    table_writer_init_mode: TableWriterInitMode,
     topic_name_index: Option<usize>,
     partition_columns: Option<Vec<String>>,
     backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
@@ -4320,6 +4322,7 @@ pub struct DataStorage {
     delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
     mqtt_settings: Option<MqttSettings>,
     only_provide_metadata: bool,
+    sort_key_index: Option<usize>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4780,7 +4783,7 @@ impl DataStorage {
         database = None,
         start_from_timestamp_ms = None,
         namespace = None,
-        sql_writer_init_mode = SqlWriterInitMode::Default,
+        table_writer_init_mode = TableWriterInitMode::Default,
         topic_name_index = None,
         partition_columns = None,
         backfilling_thresholds = None,
@@ -4788,6 +4791,7 @@ impl DataStorage {
         delta_optimizer_rule = None,
         mqtt_settings = None,
         only_provide_metadata = false,
+        sort_key_index = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4816,7 +4820,7 @@ impl DataStorage {
         database: Option<String>,
         start_from_timestamp_ms: Option<i64>,
         namespace: Option<Vec<String>>,
-        sql_writer_init_mode: SqlWriterInitMode,
+        table_writer_init_mode: TableWriterInitMode,
         topic_name_index: Option<usize>,
         partition_columns: Option<Vec<String>>,
         backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
@@ -4824,6 +4828,7 @@ impl DataStorage {
         delta_optimizer_rule: Option<PyDeltaOptimizerRule>,
         mqtt_settings: Option<MqttSettings>,
         only_provide_metadata: bool,
+        sort_key_index: Option<usize>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4851,7 +4856,7 @@ impl DataStorage {
             database,
             start_from_timestamp_ms,
             namespace,
-            sql_writer_init_mode,
+            table_writer_init_mode,
             topic_name_index,
             partition_columns,
             backfilling_thresholds,
@@ -4859,6 +4864,7 @@ impl DataStorage {
             delta_optimizer_rule,
             mqtt_settings,
             only_provide_metadata,
+            sort_key_index,
         }
     }
 
@@ -5759,7 +5765,7 @@ impl DataStorage {
                 self.table_name()?,
                 &data_format.value_fields_type_map(py),
                 data_format.key_field_names.as_ref(),
-                self.sql_writer_init_mode,
+                self.table_writer_init_mode,
             )
             .map_err(|e| {
                 PyIOError::new_err(format!("Unable to initialize PostgreSQL table: {e}"))
@@ -6036,6 +6042,41 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_dynamodb_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["dynamodb"])?;
+        }
+
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let config = runtime.block_on(async { ::aws_config::load_from_env().await });
+        let table_name = self.table_name()?;
+
+        let client = DynamoDBClient::new(&config);
+        let writer = DynamoDBWriter::new(
+            runtime,
+            client,
+            table_name.to_string(),
+            data_format
+                .value_fields
+                .iter()
+                .map(|f| f.borrow(py).clone())
+                .collect(),
+            self.key_field_index
+                .ok_or_else(|| PyValueError::new_err("'key_field_index' must be specified"))?,
+            self.sort_key_index,
+            self.table_writer_init_mode,
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to create DynamoDB writer: {e}")))?;
+
+        Ok(Box::new(writer))
+    }
+
     fn construct_writer(
         &self,
         py: pyo3::Python,
@@ -6054,6 +6095,7 @@ impl DataStorage {
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
+            "dynamodb" => self.construct_dynamodb_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
@@ -6647,7 +6689,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyKeyGenerationPolicy>()?;
     m.add_class::<PyReadMethod>()?;
     m.add_class::<PyMonitoringLevel>()?;
-    m.add_class::<PySqlWriterInitMode>()?;
+    m.add_class::<PyTableWriterInitMode>()?;
     m.add_class::<Universe>()?;
     m.add_class::<Column>()?;
     m.add_class::<LegacyTable>()?;

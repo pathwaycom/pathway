@@ -24,6 +24,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use arcstr::ArcStr;
+use aws_sdk_dynamodb::error::BuildError as DynamoDBBuildError;
 use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::error::ArrowError;
 use deltalake::datafusion::common::DataFusionError;
@@ -48,6 +49,7 @@ use rumqttc::{
 use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
+use crate::connectors::aws::dynamodb::AwsRequestError;
 use crate::connectors::data_format::{
     create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
     COMMIT_LITERAL,
@@ -630,6 +632,9 @@ pub enum WriteError {
     #[error("delta table schema mismatch: {0}")]
     DeltaTableSchemaMismatch(DeltaSchemaMismatchDetails),
 
+    #[error("table {0} doesn't exist in the destination storage")]
+    TableDoesNotExist(String),
+
     #[error("table written in snapshot mode has a duplicate primary key: {0:?}")]
     TableAlreadyContainsKey(Key),
 
@@ -638,6 +643,18 @@ pub enum WriteError {
 
     #[error("the snapshot of the existing data in the output delta table does not correspond to the schema: {0}")]
     IncorrectInitialSnapshot(IncorrectSnapshotError),
+
+    #[error(transparent)]
+    AwsDynamoDBBuild(#[from] DynamoDBBuildError),
+
+    #[error(transparent)]
+    AwsRequest(#[from] AwsRequestError),
+
+    #[error("after several retried attempts, {0} items haven't been saved")]
+    SomeItemsNotDelivered(usize),
+
+    #[error("the type {0} can't be used in the index")]
+    NotIndexType(Type),
 }
 
 pub trait Writer: Send {
@@ -1250,7 +1267,7 @@ impl PsqlWriter {
         table_name: &str,
         schema: &HashMap<String, Type>,
         key_field_names: Option<&Vec<String>>,
-        mode: SqlWriterInitMode,
+        mode: TableWriterInitMode,
     ) -> Result<PsqlWriter, WriteError> {
         let mut writer = PsqlWriter {
             client,
@@ -1265,17 +1282,17 @@ impl PsqlWriter {
 
     pub fn initialize(
         &mut self,
-        mode: SqlWriterInitMode,
+        mode: TableWriterInitMode,
         table_name: &str,
         schema: &HashMap<String, Type>,
         key_field_names: Option<&Vec<String>>,
     ) -> Result<(), WriteError> {
         match mode {
-            SqlWriterInitMode::Default => return Ok(()),
-            SqlWriterInitMode::Replace | SqlWriterInitMode::CreateIfNotExists => {
+            TableWriterInitMode::Default => return Ok(()),
+            TableWriterInitMode::Replace | TableWriterInitMode::CreateIfNotExists => {
                 let mut transaction = self.client.transaction()?;
 
-                if mode == SqlWriterInitMode::Replace {
+                if mode == TableWriterInitMode::Replace {
                     Self::drop_table_if_exists(&mut transaction, table_name)?;
                 }
                 Self::create_table_if_not_exists(
@@ -1371,7 +1388,7 @@ impl PsqlWriter {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum SqlWriterInitMode {
+pub enum TableWriterInitMode {
     Default,
     CreateIfNotExists,
     Replace,
