@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use log::warn;
+use log::error;
 use rand::{rng, Rng};
 
 const DEFAULT_SLEEP_INITIAL_DURATION: Duration = Duration::from_secs(1);
@@ -40,19 +40,21 @@ impl Default for RetryConfig {
     }
 }
 
-pub fn execute_with_retries<T, E>(
+pub fn execute_with_retries<T, E: std::fmt::Debug>(
     mut func: impl FnMut() -> Result<T, E>,
     mut retry_config: RetryConfig,
     max_retries: usize,
 ) -> Result<T, E> {
     let mut exec_result = func();
-    for attempt_idx in 0..max_retries {
+    for _ in 0..max_retries {
         if exec_result.is_ok() {
             return exec_result;
         }
-        warn!("Attempt {attempt_idx}: retrying operation after an error...");
         retry_config.sleep_after_error();
         exec_result = func();
+    }
+    if let Err(ref e) = exec_result {
+        error!("Operation failed after {max_retries} retries: {e:?}");
     }
 
     exec_result
