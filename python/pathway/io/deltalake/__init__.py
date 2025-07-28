@@ -198,7 +198,7 @@ class TableOptimizer:
                 # The table is not ready yet
                 # There are more specific exceptions, but they are in the private part
                 # of the library (deltalake._internal)
-                logging.exception(f"The Delta table {self.table_path} is not ready yet")
+                logging.info(f"The Delta table {self.table_path} is not ready yet")
                 return False
             tlog_file_list.sort()
             if self.optimize_transaction_log:

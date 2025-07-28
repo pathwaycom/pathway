@@ -2,9 +2,11 @@ use log::{error, info, warn};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::fmt::Write as WriteTrait;
 use std::fs::File;
 use std::hash::RandomState;
 use std::io::{Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -25,6 +27,7 @@ use deltalake::kernel::StructType as DeltaTableStructType;
 use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
 use deltalake::operations::optimize::OptimizeBuilder;
 use deltalake::operations::vacuum::VacuumBuilder;
+use deltalake::operations::vacuum::VacuumMetrics;
 use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
 use deltalake::parquet::record::Row as ParquetRow;
 use deltalake::protocol::SaveMode as DeltaTableSaveMode;
@@ -423,6 +426,26 @@ impl DeltaBatchWriter {
         };
         Ok(delta_type)
     }
+
+    fn format_vacuum_metrics(metrics: VacuumMetrics) -> String {
+        let mut result = String::new();
+        let mut partition_paths = Vec::with_capacity(metrics.files_deleted.len());
+        for deleted_file in metrics.files_deleted {
+            let file_path = Path::new(&deleted_file);
+            if let Some(partition_path) = file_path.parent() {
+                partition_paths.push(partition_path.display().to_string());
+            }
+        }
+        partition_paths.sort();
+        partition_paths.dedup();
+        write!(
+            &mut result,
+            "Dry run: {} Optimized partitions: {:?}",
+            metrics.dry_run, partition_paths
+        )
+        .unwrap();
+        result
+    }
 }
 
 impl LakeBatchWriter for DeltaBatchWriter {
@@ -448,6 +471,8 @@ impl LakeBatchWriter for DeltaBatchWriter {
             }
             self.table.update().await?;
 
+            // Saving the name for logs before the mutable borrow
+            let connector_name = self.name();
             if let Some(optimizer_rule) = self.optimizer_rule.as_mut() {
                 let cutoff_to_apply = optimizer_rule.cutoff_value_to_apply();
                 if let Some(cutoff_to_apply) = cutoff_to_apply {
@@ -459,7 +484,7 @@ impl LakeBatchWriter for DeltaBatchWriter {
                     )
                     .with_filters(&filters_to_apply)
                     .await?;
-                    info!("Output table has been optimized. Metrics: {metrics:?}");
+                    info!("Table {connector_name}: has been optimized. Metrics: {metrics:?}");
 
                     let (_vacuumed_table, metrics) = VacuumBuilder::new(
                         optimized_table.log_store(),
@@ -470,7 +495,10 @@ impl LakeBatchWriter for DeltaBatchWriter {
                     .with_dry_run(false)
                     .await?;
 
-                    info!("Outdated Parquet blocks have been removed: {metrics:?}");
+                    info!(
+                        "Table {connector_name}: outdated Parquet blocks have been removed. {}",
+                        Self::format_vacuum_metrics(metrics)
+                    );
                     optimizer_rule.on_cutoff_value_optimized(cutoff_to_apply);
                     self.table.update().await?;
                 }

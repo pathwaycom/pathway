@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- Delta table compression logging has been improved: logs now include table names, and verbose messages have been streamlined while preserving details of important processing steps.
+
 ## [0.25.1] - 2025-07-24
 
 ### Added
