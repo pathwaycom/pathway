@@ -3747,6 +3747,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
     license_key = None,
     monitoring_server = None,
     trace_parent = None,
+    metrics_reader_interval_secs = None,
     run_id = None,
     terminate_on_error = true,
     max_expression_batch_size = 1024,
@@ -3763,6 +3764,7 @@ pub fn run_with_new_graph(
     license_key: Option<String>,
     monitoring_server: Option<String>,
     trace_parent: Option<String>,
+    metrics_reader_interval_secs: Option<u64>,
     run_id: Option<String>,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
@@ -3784,8 +3786,13 @@ pub fn run_with_new_graph(
         }
     };
     let is_persisted = persistence_config.is_some();
-    let telemetry_config =
-        EngineTelemetryConfig::create(&license, run_id, monitoring_server, trace_parent)?;
+    let telemetry_config = EngineTelemetryConfig::create(
+        &license,
+        run_id,
+        monitoring_server,
+        trace_parent,
+        metrics_reader_interval_secs,
+    )?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         let scope_license = license.clone();
         py.allow_threads(|| {
@@ -4462,14 +4469,22 @@ impl TelemetryConfig {
         run_id = None,
         license_key = None,
         monitoring_server = None,
+        metrics_reader_interval_secs = None,
     ))]
     fn create(
         run_id: Option<String>,
         license_key: Option<String>,
         monitoring_server: Option<String>,
+        metrics_reader_interval_secs: Option<u64>,
     ) -> PyResult<TelemetryConfig> {
         let license = License::new(license_key)?;
-        let config = EngineTelemetryConfig::create(&license, run_id, monitoring_server, None)?;
+        let config = EngineTelemetryConfig::create(
+            &license,
+            run_id,
+            monitoring_server,
+            None,
+            metrics_reader_interval_secs,
+        )?;
         Ok(config.into())
     }
 }

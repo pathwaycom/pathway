@@ -119,7 +119,7 @@ impl Telemetry {
                 .expect("exporter initialization should not fail");
 
             let reader = PeriodicReader::builder(exporter)
-                .with_interval(PERIODIC_READER_INTERVAL)
+                .with_interval(self.config.periodic_reader_interval)
                 .build();
 
             provider_builder = provider_builder.with_reader(reader);
@@ -212,6 +212,7 @@ pub struct TelemetryEnabled {
     pub run_id: String,
     pub trace_parent: Option<String>,
     pub license_key: String,
+    pub periodic_reader_interval: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -226,6 +227,7 @@ impl Config {
         run_id: Option<String>,
         monitoring_server: Option<String>,
         trace_parent: Option<String>,
+        periodic_reader_interval: Option<u64>,
     ) -> Result<Self> {
         let run_id = run_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
@@ -245,6 +247,15 @@ impl Config {
             return Ok(Config::Disabled);
         }
 
+        let periodic_reader_interval = if let Some(interval) = periodic_reader_interval {
+            license
+                .check_entitlements(["monitoring-internal"])
+                .map_err(DynError::from)?;
+            Duration::from_secs(interval)
+        } else {
+            PERIODIC_READER_INTERVAL
+        };
+
         match license {
             License::NoLicenseKey => Ok(Config::Disabled),
             _ => Config::create_enabled(
@@ -253,6 +264,7 @@ impl Config {
                 monitoring_server,
                 trace_parent,
                 license,
+                periodic_reader_interval,
             ),
         }
     }
@@ -263,6 +275,7 @@ impl Config {
         monitoring_server: Option<String>,
         trace_parent: Option<String>,
         license: &License,
+        periodic_reader_interval: Duration,
     ) -> Result<Self> {
         let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
             .map_err(DynError::from)?
@@ -289,6 +302,7 @@ impl Config {
             run_id,
             trace_parent,
             license_key: license.shortcut(),
+            periodic_reader_interval,
         })))
     }
 }

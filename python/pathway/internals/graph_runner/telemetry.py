@@ -78,11 +78,13 @@ class Telemetry:
         run_id: str,
         license_key: str | None = None,
         monitoring_server: str | None = None,
+        metrics_reader_interval_secs: int | None = None,
     ) -> Telemetry:
         config = api.TelemetryConfig.create(
             run_id=run_id,
             license_key=license_key,
             monitoring_server=monitoring_server,
+            metrics_reader_interval_secs=metrics_reader_interval_secs,
         )
         return cls(config)
 

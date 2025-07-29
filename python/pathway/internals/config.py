@@ -7,11 +7,18 @@ from pathway import persistence
 from pathway.internals import api
 
 
-def _env_field(name: str, default: str | None = None, default_if_empty: bool = False):
+def _env_field(
+    name: str,
+    default: str | int | float | None = None,
+    default_if_empty: bool = False,
+    _type=str,
+):
     def factory():
         value = os.environ.get(name, default)
         if default_if_empty and value == "":
             value = default
+        if value is not None:
+            return _type(value)
         return value
 
     return field(default_factory=factory)
@@ -72,6 +79,12 @@ class PathwayConfig:
     process_id: str = _env_field("PATHWAY_PROCESS_ID", default="0")
     suppress_other_worker_errors: bool = _env_bool_field(
         "PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"
+    )
+    metrics_reader_interval_secs: int | None = _env_field(
+        "PATHWAY_METRICS_READER_INTERVAL_SECONDS",
+        default=None,
+        default_if_empty=True,
+        _type=int,
     )
 
     @property

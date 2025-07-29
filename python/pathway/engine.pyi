@@ -802,6 +802,7 @@ def run_with_new_graph(
     license_key: str | None = None,
     monitoring_server: str | None = None,
     trace_parent: str | None = None,
+    metrics_reader_interval_secs: int | None = None,
     run_id: str | None = None,
     terminate_on_error: bool = True,
     max_expression_batch_size: int,
@@ -975,6 +976,7 @@ class TelemetryConfig:
         run_id: str,
         license_key: str | None = None,
         monitoring_server: str | None = None,
+        metrics_reader_interval_secs: int | None = None,
     ) -> TelemetryConfig: ...
 
 class ExternalIndexFactory:

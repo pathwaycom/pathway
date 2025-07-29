@@ -143,6 +143,7 @@ class GraphRunner:
             run_id=run_id,
             license_key=self.license_key,
             monitoring_server=pathway_config.monitoring_server,
+            metrics_reader_interval_secs=pathway_config.metrics_reader_interval_secs,
         )
         with otel.tracer.start_as_current_span("graph_runner.run"):
             trace_context, trace_parent = telemetry.get_current_context()
@@ -212,6 +213,7 @@ class GraphRunner:
                         license_key=self.license_key,
                         monitoring_server=pathway_config.monitoring_server,
                         trace_parent=trace_parent,
+                        metrics_reader_interval_secs=pathway_config.metrics_reader_interval_secs,
                         run_id=run_id,
                         terminate_on_error=self.terminate_on_error,
                         max_expression_batch_size=self.max_expression_batch_size,
