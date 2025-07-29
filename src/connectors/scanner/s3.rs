@@ -5,6 +5,7 @@ use std::str::from_utf8;
 use std::time::SystemTime;
 
 use arcstr::ArcStr;
+use glob::Pattern as GlobPattern;
 use log::{info, warn};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -65,6 +66,7 @@ pub struct S3Scanner {
     */
     bucket: S3Bucket,
     objects_prefix: String,
+    object_pattern: GlobPattern,
     pending_modifications: HashMap<String, Vec<u8>>,
     downloader_pool: ThreadPool,
 }
@@ -121,6 +123,9 @@ impl PosixLikeScanner for S3Scanner {
         let mut pending_modification_download_tasks = Vec::new();
         for list in object_lists {
             for object in &list.contents {
+                if !self.object_pattern.matches(&object.key) {
+                    continue;
+                }
                 seen_object_keys.insert(object.key.clone());
                 let actual_metadata = FileLikeMetadata::from_s3_object(object);
                 let object_key = object.key.as_bytes();
@@ -180,9 +185,11 @@ impl S3Scanner {
     pub fn new(
         bucket: S3Bucket,
         objects_prefix: impl Into<String>,
+        object_pattern: impl Into<String>,
         downloader_threads_count: usize,
     ) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
+        let object_pattern = object_pattern.into();
 
         let object_lists = execute_with_retries(
             || bucket.list(objects_prefix.clone(), None),
@@ -205,6 +212,7 @@ impl S3Scanner {
         Ok(S3Scanner {
             bucket,
             objects_prefix,
+            object_pattern: GlobPattern::new(&object_pattern)?,
             downloader_pool: ThreadPoolBuilder::new()
                 .num_threads(downloader_threads_count)
                 .build()

@@ -5324,6 +5324,7 @@ impl DataStorage {
         let scanner = S3Scanner::new(
             self.s3_bucket()?,
             deduced_path,
+            self.object_pattern.clone(),
             self.downloader_threads_count()?,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize S3 scanner: {e}")))?;

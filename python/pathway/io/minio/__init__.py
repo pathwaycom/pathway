@@ -66,6 +66,7 @@ def read(
     with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    path_filter: str | None = None,
     downloader_threads_count: int | None = None,
     name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
@@ -107,6 +108,10 @@ def read(
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        path_filter: A wildcard pattern used to match full object paths. Supports ``*``
+            (any number of any characters, including none) and ``?`` (any single character).
+            If specified, only paths matching this pattern will be included. Applied as an
+            additional filter after the initial ``path`` matching.
         downloader_threads_count: The number of threads created to download the contents
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
@@ -159,6 +164,7 @@ def read(
         autocommit_duration_ms=autocommit_duration_ms,
         name=name,
         json_field_paths=json_field_paths,
+        path_filter=path_filter,
         downloader_threads_count=downloader_threads_count,
         debug_data=debug_data,
         _stacklevel=5,

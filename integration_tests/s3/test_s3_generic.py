@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import json
 import os
 import pathlib
 
@@ -305,3 +306,120 @@ def test_s3_full_autodetect(tmp_path: pathlib.Path, s3_path: str):
         model_output_path, usecols=["key", "value"], index_col=["key"]
     ).sort_index()
     assert result.equals(expected)
+
+
+def run_csv_reader_with_path_filter(
+    root_path: str, output_path: pathlib.Path, path_filter: str, expected_keys: set[int]
+):
+    class InputSchema(pw.Schema):
+        key: int
+        value: str
+
+    G.clear()
+    table = pw.io.s3.read(
+        root_path,
+        format="csv",
+        mode="static",
+        path_filter=path_filter,
+        schema=InputSchema,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    keys = set()
+    with open(output_path, "r") as f:
+        for row in f.readlines():
+            row_parsed = json.loads(row)
+            keys.add(row_parsed["key"])
+    assert keys == expected_keys
+
+
+def test_s3_objects_filter(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path_csv = f"{s3_path}/input.csv"
+    input_s3_path_json = f"{s3_path}/input.json"
+    input_s3_path_dsv = f"{s3_path}/input.dsv"
+
+    input_contents_csv = "key,value\n1,Hello\n2,World"
+    input_contents_json = json.dumps({"key": 3, "value": "Bonjour"})
+    input_contents_dsv = "key,value\n4,Another\n5,Test"
+
+    output_path = tmp_path / "output.jsonl"
+    put_aws_object(input_s3_path_csv, input_contents_csv)
+    put_aws_object(input_s3_path_json, input_contents_json)
+    put_aws_object(input_s3_path_dsv, input_contents_dsv)
+
+    table = pw.io.s3.read(
+        f"s3://aws-integrationtest/{s3_path}",
+        format="plaintext_by_object",
+        mode="static",
+        path_filter="*.json",
+        with_metadata=True,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    n_rows = 0
+    with open(output_path, "r") as f:
+        for row in f.readlines():
+            n_rows += 1
+            row_parsed = json.loads(row)
+            assert row_parsed["_metadata"]["path"].endswith(".json")
+    assert n_rows == 1
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}", output_path, "*.csv", {1, 2}
+    )
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}", output_path, "*.?sv", {1, 2, 4, 5}
+    )
+
+
+def test_s3_objects_filter_complex_path(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path_csv = f"{s3_path}/one/two/three/input.csv"
+    input_s3_path_json = f"{s3_path}/one/three/input.csv"
+    input_s3_path_dsv = f"{s3_path}/one/two/five/input.csv"
+
+    input_contents_csv = "key,value\n1,Hello\n2,World"
+    input_contents_json = "key,value\n3,Bonjour"
+    input_contents_dsv = "key,value\n4,Another\n5,Test"
+    output_path = tmp_path / "output.jsonl"
+
+    put_aws_object(input_s3_path_csv, input_contents_csv)
+    put_aws_object(input_s3_path_json, input_contents_json)
+    put_aws_object(input_s3_path_dsv, input_contents_dsv)
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}",
+        output_path,
+        "*/one/*/*/*.csv",
+        {1, 2, 4, 5},
+    )
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}",
+        output_path,
+        "*/one/*/three/*.csv",
+        {1, 2},
+    )
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}",
+        output_path,
+        "*/one/two/*/*.csv",
+        {1, 2, 4, 5},
+    )
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}",
+        output_path,
+        "*/one/*.csv",
+        {1, 2, 3, 4, 5},
+    )
+
+    run_csv_reader_with_path_filter(
+        f"s3://aws-integrationtest/{s3_path}",
+        output_path,
+        "*/five/*.csv",
+        {4, 5},
+    )
