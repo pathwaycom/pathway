@@ -256,7 +256,10 @@ impl PosixLikeReader {
                     return Ok(Some(result));
                 }
                 None => {
-                    if self.streaming_mode.is_polling_enabled() || !self.had_queue_refresh {
+                    if self.streaming_mode.is_polling_enabled()
+                        || !self.had_queue_refresh
+                        || self.scanner.has_pending_actions()
+                    {
                         self.had_queue_refresh = true;
                         let new_actions = self.scanner.next_scanner_actions(
                             are_deletions_enabled,

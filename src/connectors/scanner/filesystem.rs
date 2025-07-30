@@ -57,6 +57,10 @@ impl PosixLikeScanner for FilesystemScanner {
         Ok(result)
     }
 
+    fn has_pending_actions(&self) -> bool {
+        false // FS scanner doesn't provide the change actions in chunks
+    }
+
     fn short_description(&self) -> String {
         format!("FileSystem({})", self.path)
     }

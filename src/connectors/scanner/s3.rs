@@ -45,6 +45,8 @@ impl S3DownloadedObject {
 }
 
 type S3DownloadResult = Result<S3DownloadedObject, ReadError>;
+const MAX_OBJECTS_IN_BULK_DOWNLOAD: usize = 20_000;
+const MAX_BYTES_IN_BULK_DOWNLOAD: u64 = 500_000_000;
 
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
@@ -68,6 +70,7 @@ pub struct S3Scanner {
     bucket: S3Bucket,
     objects_prefix: String,
     object_pattern: GlobPattern,
+    pending_modification_download_tasks: Vec<FileLikeMetadata>,
     pending_modifications: HashMap<String, Vec<u8>>,
     downloader_pool: ThreadPool,
 }
@@ -113,34 +116,41 @@ impl PosixLikeScanner for S3Scanner {
         are_deletions_enabled: bool,
         cached_object_storage: &CachedObjectStorage,
     ) -> Result<Vec<QueuedAction>, ReadError> {
-        let object_lists: Vec<S3ListBucketResult> = execute_with_retries(
-            || self.bucket.list(self.objects_prefix.to_string(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
         let mut result = Vec::new();
-        let mut seen_object_keys = HashSet::new();
-        let mut pending_modification_download_tasks = Vec::new();
-        for list in object_lists {
-            for object in &list.contents {
-                if !self.object_pattern.matches(&object.key) {
-                    continue;
-                }
-                seen_object_keys.insert(object.key.clone());
-                let actual_metadata = FileLikeMetadata::from_s3_object(object);
-                let object_key = object.key.as_bytes();
-                if let Some(stored_metadata) = cached_object_storage.stored_metadata(object_key) {
-                    let is_updated = stored_metadata.is_changed(&actual_metadata);
-                    if is_updated && are_deletions_enabled {
-                        pending_modification_download_tasks.push(actual_metadata);
+        if self.pending_modification_download_tasks.is_empty() {
+            let mut seen_object_keys = HashSet::new();
+            self.build_pending_download_tasks(
+                are_deletions_enabled,
+                cached_object_storage,
+                &mut seen_object_keys,
+            )?;
+            info!(
+                "New pending download tasks have been built: {}",
+                self.pending_modification_download_tasks.len()
+            );
+            if are_deletions_enabled {
+                for (object_path, _) in cached_object_storage.get_iter() {
+                    let object_path =
+                        from_utf8(object_path).expect("S3 paths must be UTF8-compatible");
+                    if !seen_object_keys.contains(object_path) {
+                        result.push(QueuedAction::Delete(object_path.as_bytes().into()));
                     }
-                } else {
-                    pending_modification_download_tasks.push(actual_metadata);
                 }
             }
         }
-        let pending_modification_objects = self.download_bulk(&pending_modification_download_tasks);
+
+        let mut bulk_for_download = Vec::new();
+        let mut total_bulk_size = 0;
+        while let Some(pending_task) = self.pending_modification_download_tasks.pop_if(|task| {
+            (bulk_for_download.len() < MAX_OBJECTS_IN_BULK_DOWNLOAD
+                && total_bulk_size + task.size <= MAX_BYTES_IN_BULK_DOWNLOAD)
+                || bulk_for_download.is_empty()
+        }) {
+            total_bulk_size += pending_task.size;
+            bulk_for_download.push(pending_task);
+        }
+
+        let pending_modification_objects = self.download_bulk(&bulk_for_download);
         for object in pending_modification_objects {
             match object {
                 Ok(object) => {
@@ -165,15 +175,11 @@ impl PosixLikeScanner for S3Scanner {
                 }
             }
         }
-        if are_deletions_enabled {
-            for (object_path, _) in cached_object_storage.get_iter() {
-                let object_path = from_utf8(object_path).expect("S3 paths must be UTF8-compatible");
-                if !seen_object_keys.contains(object_path) {
-                    result.push(QueuedAction::Delete(object_path.as_bytes().into()));
-                }
-            }
-        }
         Ok(result)
+    }
+
+    fn has_pending_actions(&self) -> bool {
+        !self.pending_modification_download_tasks.is_empty()
     }
 
     fn short_description(&self) -> String {
@@ -215,6 +221,7 @@ impl S3Scanner {
                 .build()
                 .expect("Failed to create downloader pool"),
             pending_modifications: HashMap::new(),
+            pending_modification_download_tasks: Vec::new(),
         })
     }
 
@@ -263,7 +270,11 @@ impl S3Scanner {
         if new_objects.is_empty() {
             return Vec::with_capacity(0);
         }
-        info!("Downloading a bulk of {} objects", new_objects.len());
+        info!(
+            "Downloading a bulk of {} objects. {} are still in the queue.",
+            new_objects.len(),
+            self.pending_modification_download_tasks.len()
+        );
         let downloading_started_at = SystemTime::now();
         let new_objects_downloaded: Vec<S3DownloadResult> = self.downloader_pool.install(|| {
             new_objects
@@ -276,5 +287,41 @@ impl S3Scanner {
         });
         info!("Downloading done in {:?}", downloading_started_at.elapsed());
         new_objects_downloaded
+    }
+
+    fn build_pending_download_tasks(
+        &mut self,
+        are_deletions_enabled: bool,
+        cached_object_storage: &CachedObjectStorage,
+        seen_object_keys: &mut HashSet<String>,
+    ) -> Result<(), ReadError> {
+        let object_lists: Vec<S3ListBucketResult> = execute_with_retries(
+            || self.bucket.list(self.objects_prefix.to_string(), None),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )
+        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        for list in object_lists {
+            for object in &list.contents {
+                if !self.object_pattern.matches(&object.key) {
+                    continue;
+                }
+                seen_object_keys.insert(object.key.clone());
+                let actual_metadata = FileLikeMetadata::from_s3_object(object);
+                let object_key = object.key.as_bytes();
+                if let Some(stored_metadata) = cached_object_storage.stored_metadata(object_key) {
+                    let needs_pending_action =
+                        are_deletions_enabled && stored_metadata.is_changed(&actual_metadata);
+                    if needs_pending_action {
+                        self.pending_modification_download_tasks
+                            .push(actual_metadata);
+                    }
+                } else {
+                    self.pending_modification_download_tasks
+                        .push(actual_metadata);
+                }
+            }
+        }
+        Ok(())
     }
 }
