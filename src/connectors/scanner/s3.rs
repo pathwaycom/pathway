@@ -49,6 +49,7 @@ type S3DownloadResult = Result<S3DownloadedObject, ReadError>;
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub enum S3CommandName {
+    ListPage,
     ListObjectsV2,
     GetObject,
     DeleteObject,
@@ -187,26 +188,22 @@ impl S3Scanner {
         objects_prefix: impl Into<String>,
         object_pattern: impl Into<String>,
         downloader_threads_count: usize,
+        is_polling_enabled: bool,
     ) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
         let object_pattern = object_pattern.into();
 
-        let object_lists = execute_with_retries(
-            || bucket.list(objects_prefix.clone(), None),
+        let (object_list, _) = execute_with_retries(
+            || bucket.list_page(objects_prefix.clone(), None, None, None, Some(1)),
             RetryConfig::default(),
             MAX_S3_RETRIES,
         )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
-
-        let mut has_nonempty_list = false;
-        for list in object_lists {
-            if !list.contents.is_empty() {
-                has_nonempty_list = true;
-                break;
+        .map_err(|e| ReadError::S3(S3CommandName::ListPage, e))?;
+        if object_list.contents.is_empty() {
+            if !is_polling_enabled {
+                return Err(ReadError::NoObjectsToRead);
             }
-        }
-        if !has_nonempty_list {
-            return Err(ReadError::NoObjectsToRead);
+            warn!("No objects found under the path prefix {objects_prefix}");
         }
 
         Ok(S3Scanner {

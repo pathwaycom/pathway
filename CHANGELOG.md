@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - Delta table compression logging has been improved: logs now include table names, and verbose messages have been streamlined while preserving details of important processing steps.
+- Improved initialization speed of `pw.io.s3.read` and `pw.io.minio.read`.
 
 ## [0.25.1] - 2025-07-24
 
