@@ -3670,6 +3670,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
+        max_backlog_size: Option<usize>,
     ) -> Result<TableHandle> {
         let effective_persistent_id = effective_persistent_id(
             &mut self.persistence_wrapper,
@@ -3767,6 +3768,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 snapshot_access,
                 self.error_reporter.clone(),
                 group,
+                max_backlog_size,
             )?;
 
             self.pollers.push(state.poller);
@@ -5379,6 +5381,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_properties: Arc<TableProperties>,
         _unique_name: Option<&UniqueName>,
         _synchronization_group: Option<&ConnectorGroupDescriptor>,
+        _max_backlog_size: Option<usize>,
     ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
     }
@@ -6056,6 +6059,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
+        max_backlog_size: Option<usize>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().connector_table(
             reader,
@@ -6065,6 +6069,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_properties,
             unique_name,
             synchronization_group,
+            max_backlog_size,
         )
     }
 

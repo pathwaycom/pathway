@@ -3,7 +3,7 @@
 use super::helpers::create_persistence_manager;
 use super::helpers::get_entries_in_receiver;
 
-use std::sync::mpsc;
+use crossbeam_channel as channel;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -151,7 +151,7 @@ fn test_rewind_for_empty_persistent_storage() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
 
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = channel::unbounded();
     let tracker = create_persistence_manager(test_storage_path, false);
     Connector::rewind_from_disk_snapshot(1, &tracker, &sender, PersistenceMode::Batch)
         .expect("Snapshot rewind failure breaks data integrity");

@@ -1,7 +1,8 @@
 use assert_matches::assert_matches;
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
+use crossbeam_channel::{self as channel, Sender};
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
 use serde_json::json;
 
@@ -18,11 +19,11 @@ use pathway_engine::engine::{
 use pathway_engine::python_api::ValueField;
 
 struct ArrowBatchWriter {
-    sender: mpsc::Sender<ArrowRecordBatch>,
+    sender: Sender<ArrowRecordBatch>,
 }
 
 impl ArrowBatchWriter {
-    fn new(sender: mpsc::Sender<ArrowRecordBatch>) -> Self {
+    fn new(sender: Sender<ArrowRecordBatch>) -> Self {
         Self { sender }
     }
 }
@@ -57,7 +58,7 @@ fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {
         default: None,
         metadata: None,
     };
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = channel::unbounded();
     let batch_writer = ArrowBatchWriter::new(sender);
     let value_fields = vec![value_field];
 

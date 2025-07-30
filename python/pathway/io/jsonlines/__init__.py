@@ -25,6 +25,7 @@ def read(
     with_metadata: bool = False,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
+    max_backlog_size: int | None = None,
     debug_data=None,
     **kwargs,
 ) -> Table:
@@ -68,6 +69,10 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -161,6 +166,7 @@ def read(
         autocommit_duration_ms=autocommit_duration_ms,
         object_pattern=object_pattern,
         with_metadata=with_metadata,
+        max_backlog_size=max_backlog_size,
         _stacklevel=5,
         **kwargs,
     )

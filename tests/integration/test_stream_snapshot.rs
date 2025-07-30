@@ -8,8 +8,9 @@ use pathway_engine::engine::Timestamp;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
+use crossbeam_channel as channel;
 use tempfile::tempdir;
 
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
@@ -62,7 +63,7 @@ fn read_persistent_buffer_full(
     persistence_mode: PersistenceMode,
 ) -> Vec<SnapshotEvent> {
     let tracker = create_persistence_manager(chunks_root, false);
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = channel::unbounded();
     Connector::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, persistence_mode)
         .expect("Snapshot rewind failure breaks data integrity");
     let entries: Vec<Entry> = get_entries_in_receiver(receiver);

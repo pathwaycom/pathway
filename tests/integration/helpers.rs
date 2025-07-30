@@ -2,9 +2,11 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{mpsc, mpsc::Receiver, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use crossbeam_channel::{self as channel, Receiver};
 
 use pathway_engine::engine::error::DynError;
 use pathway_engine::engine::{report_error::ReportError, Error};
@@ -88,7 +90,7 @@ pub fn full_cycle_read(
     }
 
     let main_thread = thread::current();
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = channel::unbounded();
     let mut snapshot_writer = Connector::snapshot_writer(
         reader.as_ref(),
         persistent_id,

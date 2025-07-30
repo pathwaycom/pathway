@@ -2765,6 +2765,7 @@ impl Scope {
             Arc::new(EngineTableProperties::flat(column_properties)),
             unique_name.as_ref(),
             properties.borrow().synchronization_group.borrow().as_ref(),
+            properties.borrow().max_backlog_size,
         )?;
         Table::new(self_, table_handle)
     }
@@ -6393,6 +6394,8 @@ pub struct ConnectorProperties {
     unique_name: Option<UniqueName>,
     #[pyo3(get)]
     synchronization_group: Option<ConnectorGroupDescriptor>,
+    #[pyo3(get)]
+    max_backlog_size: Option<usize>,
 }
 
 #[pymethods]
@@ -6404,6 +6407,7 @@ impl ConnectorProperties {
         column_properties = vec![],
         unique_name = None,
         synchronization_group = None,
+        max_backlog_size = None,
     ))]
     fn new(
         commit_duration_ms: Option<u64>,
@@ -6411,6 +6415,7 @@ impl ConnectorProperties {
         #[pyo3(from_py_with = from_py_iterable)] column_properties: Vec<ColumnProperties>,
         unique_name: Option<String>,
         synchronization_group: Option<ConnectorGroupDescriptor>,
+        max_backlog_size: Option<usize>,
     ) -> Self {
         Self {
             commit_duration_ms,
@@ -6418,6 +6423,7 @@ impl ConnectorProperties {
             column_properties,
             unique_name,
             synchronization_group,
+            max_backlog_size,
         }
     }
 }

@@ -104,8 +104,9 @@ def read(
     json_field_paths: dict[str, str] | None = None,
     path_filter: str | None = None,
     downloader_threads_count: int | None = None,
-    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
+    max_backlog_size: int | None = None,
     debug_data: Any = None,
     _stacklevel: int = 1,
     **kwargs,
@@ -155,9 +156,16 @@ def read(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
+        autocommit_duration_ms: The maximum time between two commits. Every
+            autocommit_duration_ms milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -293,6 +301,7 @@ def read(
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
+        max_backlog_size=max_backlog_size,
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -319,8 +328,9 @@ def read_from_digital_ocean(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
-    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
+    max_backlog_size: int | None = None,
     debug_data: Any = None,
     **kwargs,
 ) -> Table:
@@ -364,9 +374,16 @@ def read_from_digital_ocean(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
+        autocommit_duration_ms: The maximum time between two commits. Every
+            autocommit_duration_ms milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -423,6 +440,7 @@ def read_from_digital_ocean(
     datasource_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs),
+        max_backlog_size=max_backlog_size,
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -449,8 +467,9 @@ def read_from_wasabi(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
-    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
+    max_backlog_size: int | None = None,
     debug_data: Any = None,
     **kwargs,
 ) -> Table:
@@ -493,9 +512,16 @@ def read_from_wasabi(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
+        autocommit_duration_ms: The maximum time between two commits. Every
+            autocommit_duration_ms milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -552,6 +578,7 @@ def read_from_wasabi(
     datasource_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs),
+        max_backlog_size=max_backlog_size,
     )
     return table_from_datasource(
         datasource.GenericDataSource(

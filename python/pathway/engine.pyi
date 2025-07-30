@@ -103,6 +103,7 @@ class ConnectorProperties:
     column_properties: list[ColumnProperties] = []
     unique_name: str | None = None
     synchronization_group: ConnectorGroupDescriptor | None = None
+    max_backlog_size: int | None = None
 
 class Column:
     """A Column holds data and conceptually is a Dict[Universe elems, dt]

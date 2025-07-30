@@ -1,6 +1,7 @@
 // Copyright © 2024 Pathway
 
 use adaptors::InputAdaptor;
+use crossbeam_channel::{self as channel, Sender, TryRecvError};
 use itertools::Itertools;
 use log::{error, info, warn};
 use scopeguard::guard;
@@ -9,7 +10,6 @@ use std::env;
 use std::mem::take;
 use std::ops::ControlFlow;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::Thread;
@@ -18,6 +18,7 @@ use timely::dataflow::operators::probe::Handle;
 
 pub mod adaptors;
 pub mod aws;
+pub mod backlog;
 pub mod data_format;
 pub mod data_lake;
 pub mod data_storage;
@@ -51,11 +52,13 @@ use data_storage::{
 };
 
 pub use adaptors::SessionType;
+use backlog::BacklogTracker;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
 
 const SPECIAL_FIELD_TIME: &str = "time";
 const SPECIAL_FIELD_DIFF: &str = "diff";
+const MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS: usize = 100_000;
 
 /*
     Below is the custom reader stuff.
@@ -105,6 +108,7 @@ pub struct Connector {
     error_logger: Rc<dyn LogError>,
     n_parse_attempts: usize,
     n_parse_errors_in_log: usize,
+    backlog_tracker: BacklogTracker,
 }
 
 #[derive(Debug)]
@@ -215,16 +219,32 @@ impl Connector {
             error_logger,
             n_parse_attempts: 0,
             n_parse_errors_in_log: 0,
+            backlog_tracker: BacklogTracker::new(),
         }
+    }
+
+    /// The optimization method. Used when streaming objects that are
+    /// tied into atomic batches. Each batch must end up in a single
+    /// Pathway minibatch, but the reverse is not necessarily true:
+    /// a single Pathway minibatch can contain several atomically processed batches.
+    ///
+    /// This method enables the optimization of merging batches that were
+    /// read within the same millisecond window, preventing excessive
+    /// forced time advancements.
+    fn has_clock_advanced(&self) -> bool {
+        Timestamp::new_from_current_time() > self.current_timestamp
     }
 
     fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
         let new_timestamp = Timestamp::new_from_current_time();
-        let timestamp_updated = self.current_timestamp <= new_timestamp;
-        if timestamp_updated {
+        let current_minibatch_has_data =
+            self.backlog_tracker.last_timestamp_with_data() == Some(self.current_timestamp);
+
+        if self.current_timestamp < new_timestamp {
             self.current_timestamp = new_timestamp;
-        } else {
-            warn!("The current timestamp is lower than the last one saved");
+        } else if current_minibatch_has_data {
+            warn!("The current timestamp isn't greater than the last one saved, advancing 2ms further manually.");
+            self.current_timestamp.0 += 2;
         }
 
         input_session.advance_to(self.current_timestamp);
@@ -520,7 +540,7 @@ impl Connector {
         mut parser: Box<dyn Parser>,
         mut input_session: Box<dyn InputAdaptor<Timestamp>>,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key + 'static,
-        probe: Handle<Timestamp>,
+        output_probe: Handle<Timestamp>,
         persistent_storage: Option<Arc<Mutex<WorkerPersistentStorage>>>,
         persistent_id: Option<PersistentId>,
         realtime_reader_needed: bool,
@@ -529,11 +549,15 @@ impl Connector {
         snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
         mut group: Option<ConnectorGroupAccessor>,
+        max_backlog_size: Option<usize>,
     ) -> Result<StartedConnectorState, EngineError> {
         assert_eq!(self.num_columns, parser.column_count());
 
         let main_thread = thread::current();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = match max_backlog_size {
+            Some(size) => channel::bounded(size),
+            None => channel::unbounded(),
+        };
 
         let thread_name = format!(
             "pathway:connector-{}-{}",
@@ -599,7 +623,7 @@ impl Connector {
             let iteration_start = SystemTime::now();
             if matches!(persistence_mode, PersistenceMode::SpeedrunReplay)
                 && !backfilling_finished
-                && probe.less_than(input_session.time())
+                && output_probe.less_than(input_session.time())
             {
                 return ControlFlow::Continue(Some(iteration_start));
             }
@@ -629,10 +653,43 @@ impl Connector {
                 }
             }
 
+            self.backlog_tracker.advance_with_probe(&output_probe);
             let mut n_entries_in_batch = 0;
             loop {
+                if let Some(max_backlog_size) = max_backlog_size {
+                    if self.backlog_tracker.backlog_size() >= max_backlog_size && commit_allowed {
+                        // Since the backlog can't be greater than the specified size,
+                        // we need to interrupt the batch.
+                        // The next entries won't advance until the backlog size goes below the limit.
+                        //
+                        // Note that the time may have already been advanced. We check the
+                        // last timestamp with data to see if that's the case.
+                        if self.backlog_tracker.last_timestamp_with_data()
+                            == Some(self.current_timestamp)
+                        {
+                            let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
+                            self.on_parsed_data(
+                                parsed_entries,
+                                None, // no key generation for time advancement
+                                input_session.as_mut(),
+                                &mut values_to_key,
+                                &mut snapshot_writer,
+                                &mut Some(&mut *connector_monitor.borrow_mut()),
+                                session_type,
+                            );
+                        }
+
+                        // We pass the control to timely computations.
+                        return ControlFlow::Continue(next_commit_at);
+                    }
+                }
+
+                // We also don't allow to send large chunks of data to timely at once,
+                // as it hurts the latency, especially when `autocommit_duration_ms` is small.
+                // So once the number of events within a single batch reaches the limit, we
+                // yield to timely to perform the work. That may or may not lead to time advancement.
                 n_entries_in_batch += 1;
-                if n_entries_in_batch == 100_000 {
+                if n_entries_in_batch == MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS {
                     return ControlFlow::Continue(next_commit_at);
                 }
                 match receiver.try_recv() {
@@ -732,7 +789,7 @@ impl Connector {
                     commit_allowed: commit_allowed_external,
                 } => {
                     *commit_allowed = commit_allowed_external;
-                    if *commit_allowed {
+                    if *commit_allowed && self.has_clock_advanced() {
                         let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
                         self.on_parsed_data(
                             parsed_entries,
@@ -881,6 +938,7 @@ impl Connector {
                         continue;
                     }
                     Self::on_insert(key.expect("No key"), values, input_session);
+                    self.backlog_tracker.on_event(&self.current_timestamp);
                 }
                 ParsedEvent::Delete((_, values)) => {
                     if matches!(session_type, SessionType::Native)
@@ -890,6 +948,7 @@ impl Connector {
                         continue;
                     }
                     Self::on_remove(key.expect("No key"), values, input_session);
+                    self.backlog_tracker.on_event(&self.current_timestamp);
                 }
                 ParsedEvent::AdvanceTime => {
                     let time_advanced = self.advance_time(input_session);

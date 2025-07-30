@@ -5001,3 +5001,118 @@ def test_fs_metadata_only(tmp_path, scenario):
             data = json.loads(row)
             assert data.keys() == {"_metadata", "time", "diff"}
             assert data["_metadata"]["path"] in known_input_paths
+
+
+def test_backpressure_management_respects_atomicity(tmp_path):
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    input_path_1 = inputs_path / "input_1.txt"
+    input_path_2 = inputs_path / "input_2.txt"
+    output_path = tmp_path / "output.jsonl"
+    persistent_storage_path = tmp_path / "pstorage"
+
+    write_lines(input_path_1, ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"])
+    write_lines(input_path_2, ["k", "l", "m", "n", "o", "p", "q", "r", "s", "t"])
+    table = pw.io.fs.read(
+        inputs_path,
+        format="plaintext",
+        mode="static",
+        max_backlog_size=7,
+        autocommit_duration_ms=10,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+    )
+    run(persistence_config=persistence_config)
+
+    times = set()
+    n_entries = 0
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            times.add(data["time"])
+            n_entries += 1
+    assert n_entries == 20
+    assert len(times) == 2
+
+
+def test_backpressure_management_list_of_objects(tmp_path):
+    inputs_path = tmp_path / "inputs"
+    output_path = tmp_path / "output.txt"
+    persistent_storage_path = tmp_path / "pstorage"
+    os.mkdir(inputs_path)
+    for index in range(100):
+        input_path = inputs_path / f"{index}.txt"
+        with open(input_path, "w") as f:
+            f.write("a" * index)
+    table = pw.io.fs.read(
+        inputs_path,
+        format="only_metadata",
+        mode="static",
+        autocommit_duration_ms=10,
+        max_backlog_size=2,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+    )
+    run(persistence_config=persistence_config)
+    times = set()
+    n_entries = 0
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            times.add(data["time"])
+            n_entries += 1
+    assert n_entries == 100
+    assert len(times) >= 50
+
+
+def test_backpressure_management_with_rewind(tmp_path):
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    output_path = tmp_path / "output.jsonl"
+    persistent_storage_path = tmp_path / "pstorage"
+
+    def run_test(n_expected_entries: int, n_different_times: int):
+        G.clear()
+        table = pw.io.fs.read(
+            inputs_path,
+            format="plaintext",
+            mode="static",
+            max_backlog_size=7,
+            autocommit_duration_ms=10,
+        )
+        pw.io.jsonlines.write(table, output_path)
+        persistence_config = pw.persistence.Config(
+            pw.persistence.Backend.filesystem(persistent_storage_path),
+        )
+        run(persistence_config=persistence_config)
+
+        times = set()
+        n_entries = 0
+        with open(output_path, "r") as f:
+            for row in f:
+                data = json.loads(row)
+                times.add(data["time"])
+                n_entries += 1
+        assert n_entries == n_expected_entries
+        assert len(times) == n_different_times
+
+    for n_iteration in range(1, 11):
+        input_path = inputs_path / f"{n_iteration}.txt"
+        input_contents = [
+            "a" * n_iteration,
+            "b" * n_iteration,
+            "c" * n_iteration,
+            "d" * n_iteration,
+            "e" * n_iteration,
+            "f" * n_iteration,
+            "g" * n_iteration,
+            "h" * n_iteration,
+            "i" * n_iteration,
+            "j" * n_iteration,
+        ]
+        write_lines(input_path, input_contents)
+        run_test(10, 1)

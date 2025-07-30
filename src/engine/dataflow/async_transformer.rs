@@ -172,6 +172,7 @@ where
         SnapshotAccess::Full,   // default value from connector_table
         graph.error_reporter.clone(),
         None,
+        None,
     )?;
 
     graph.pollers.push(state.poller);

@@ -298,6 +298,7 @@ def read(
     start_from_timestamp_ms: int | None = None,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
+    max_backlog_size: int | None = None,
     debug_data: Any = None,
     _backfilling_thresholds: list[api.BackfillingThreshold] | None = None,
     **kwargs,
@@ -334,12 +335,16 @@ def read(
         start_from_timestamp_ms: If defined, only changes that occurred after the specified
             timestamp will be read. This parameter can only be used for tables with
             append-only behavior.
-        name: A unique name for the connector. If provided, this name will be used in
-            logs and monitoring dashboards. Additionally, if persistence is enabled, it
-            will be used as the name for the snapshot that stores the connector's progress.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
         debug_data: Static data replacing original one when debug mode is active.
 
     Examples:
@@ -422,6 +427,7 @@ def read(
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs),
+        max_backlog_size=max_backlog_size,
     )
     return table_from_datasource(
         datasource.GenericDataSource(

@@ -19,6 +19,7 @@ class DataSourceOptions:
     unsafe_trusted_ids: bool | None = False
     unique_name: str | None = None
     synchronization_group: api.ConnectorGroupDescriptor | None = None
+    max_backlog_size: int | None = None
 
     def set_synchronization_group(self, group: api.ConnectorGroupDescriptor | None):
         if self.synchronization_group is None:
@@ -49,6 +50,7 @@ class DataSource(ABC):
             column_properties=columns,
             unique_name=self.data_source_options.unique_name,
             synchronization_group=self.data_source_options.synchronization_group,
+            max_backlog_size=self.data_source_options.max_backlog_size,
         )
 
     def get_effective_schema(self) -> type[Schema]:

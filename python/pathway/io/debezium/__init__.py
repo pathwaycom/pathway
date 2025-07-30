@@ -23,6 +23,7 @@ def read(
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
+    max_backlog_size: int | None = None,
     **kwargs,
 ) -> Table:
     """
@@ -43,6 +44,10 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
 
     Returns:
         Table: The table read.
@@ -113,6 +118,7 @@ def read(
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs),
+        max_backlog_size=max_backlog_size,
     )
     data_format = api.DataFormat(
         format_type="debezium", debezium_db_type=db_type, **data_format_definition

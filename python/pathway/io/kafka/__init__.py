@@ -42,6 +42,7 @@ def read(
     start_from_timestamp_ms: int | None = None,
     parallel_readers: int | None = None,
     name: str | None = None,
+    max_backlog_size: int | None = None,
     _stacklevel: int = 1,
     **kwargs,
 ) -> Table:
@@ -99,6 +100,10 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
 
     Returns:
         Table: The table read.
@@ -236,6 +241,7 @@ def read(
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
+        max_backlog_size=max_backlog_size,
     )
     return table_from_datasource(
         datasource.GenericDataSource(

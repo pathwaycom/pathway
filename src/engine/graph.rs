@@ -906,6 +906,7 @@ pub trait Graph {
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
+        max_backlog_size: Option<usize>,
     ) -> Result<TableHandle>;
 
     fn output_table(
@@ -1540,6 +1541,7 @@ impl Graph for ScopedGraph {
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
+        max_backlog_size: Option<usize>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.connector_table(
@@ -1550,6 +1552,7 @@ impl Graph for ScopedGraph {
                 table_properties,
                 unique_name,
                 synchronization_group,
+                max_backlog_size,
             )
         })
     }

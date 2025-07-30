@@ -58,6 +58,11 @@ class ConnectorSubject(ABC):
 
     If the subject won't delete records, set the class property ``deletions_enabled``
     to ``False`` as it may help to improve the performance.
+
+    **Note**: If the ``read`` method is called with this subject and ``max_backlog_size``
+    is set, many method calls may block when the number of events waiting to be processed
+    reaches ``max_backlog_size``. They will resume only after the queue size drops below
+    the limit.
     """
 
     _buffer: Queue
@@ -300,6 +305,12 @@ class ConnectorSubject(ABC):
         """
         return False
 
+    def _set_max_backlog_size(self, max_backlog_size: int):
+        assert (
+            not self._started
+        ), "Attempted to set max backlog size, but the connector has already started"
+        self._buffer = Queue(max_backlog_size)
+
     @property
     def _with_metadata(self) -> bool:
         return False
@@ -319,6 +330,7 @@ def _create_python_datasource(
     schema: type[Schema],
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
+    max_backlog_size: int | None = None,
     _stacklevel: int = 1,
     **kwargs,
 ) -> datasource.GenericDataSource:
@@ -328,6 +340,8 @@ def _create_python_datasource(
         format_type="transparent",
         session_type=subject._session_type,
     )
+    if max_backlog_size is not None:
+        subject._set_max_backlog_size(max_backlog_size)
     data_storage = api.DataStorage(
         storage_type="python",
         python_subject=api.PythonSubject(
@@ -342,6 +356,7 @@ def _create_python_datasource(
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
+        max_backlog_size=max_backlog_size,
         unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 1),
     )
     return datasource.GenericDataSource(
@@ -364,6 +379,7 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     debug_data=None,
     name: str | None = None,
+    max_backlog_size: int | None = None,
     _stacklevel: int = 1,
     **kwargs,
 ) -> Table:
@@ -382,6 +398,14 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes. **Note**: The ``next``,
+            ``next_json``, ``next_str``, and ``next_bytes`` methods of ``subject`` will
+            block when the internal queue holding events before they are sent to the
+            processing reaches ``max_backlog_size``. These methods will resume only when
+            the queue size drops below this limit.
 
     Returns:
         Table: The table read.
@@ -450,6 +474,7 @@ def read(
             schema=schema,
             autocommit_duration_ms=autocommit_duration_ms,
             name=name,
+            max_backlog_size=max_backlog_size,
             _stacklevel=_stacklevel + 5,
             **kwargs,
         ),

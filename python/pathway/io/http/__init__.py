@@ -44,6 +44,7 @@ def read(
     autocommit_duration_ms: int = 10000,
     debug_data=None,
     name: str | None = None,
+    max_backlog_size: int | None = None,
 ):
     """Reads a table from an HTTP stream.
 
@@ -78,6 +79,10 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
           logs and monitoring dashboards. Additionally, if persistence is enabled, it
           will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+          in processing at any moment. Reading pauses when the limit is reached and resumes
+          as processing of some entries completes. Useful with large sources that
+          emit an initial burst of data to avoid memory spikes.
 
     Examples:
 
@@ -136,6 +141,7 @@ def read(
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,
         name=name,
+        max_backlog_size=max_backlog_size,
         _stacklevel=5,
     )
 
