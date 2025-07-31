@@ -109,6 +109,10 @@ class TimeBasedTypePreservingUnaryReducer(TypePreservingUnaryReducer):
 
 
 class SumReducer(UnaryReducer):
+    def __init__(self, name: str, strict: bool) -> None:
+        super().__init__(name=name)
+        self.strict = strict
+
     def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
         for allowed_dtype in [dt.FLOAT, dt.ANY_ARRAY]:
             if dt.dtype_issubclass(arg_type, allowed_dtype):
@@ -120,11 +124,15 @@ class SumReducer(UnaryReducer):
 
     def engine_reducer_unary(self, arg_type: dt.DType) -> api.Reducer:
         if arg_type == dt.INT:
+            if self.strict:
+                raise ValueError(
+                    "Setting strict=True in pathway.reducers.sum when the column has type int is not allowed"
+                )
             return api.Reducer.INT_SUM
         elif isinstance(arg_type, dt.Array):
-            return api.Reducer.ARRAY_SUM
+            return api.Reducer.array_sum(self.strict)
         else:
-            return api.Reducer.FLOAT_SUM
+            return api.Reducer.float_sum(self.strict)
 
 
 class SortedTupleWrappingReducer(UnaryReducerWithDefault):
@@ -223,7 +231,6 @@ class StatefulManyReducer(Reducer):
 
 _min = TypePreservingUnaryReducer(name="min", engine_reducer=api.Reducer.MIN)
 _max = TypePreservingUnaryReducer(name="max", engine_reducer=api.Reducer.MAX)
-_sum = SumReducer(name="sum")
 _count = CountReducer(name="count")
 
 
@@ -317,9 +324,22 @@ def max(arg: expr.ColumnExpression) -> expr.ReducerExpression:
     return _apply_unary_reducer(_max, arg)
 
 
-def sum(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+def sum(arg: expr.ColumnExpression, strict: bool = False) -> expr.ReducerExpression:
     """
     Returns the sum of the aggregated values. Can handle int, float, and array values.
+
+    Please note that ints and int arrays use 64-bit representations and as a result can
+    overflow if the sum is too large.
+
+    Parameters:
+        arg: ``ColumnExpression`` to be summed.
+        strict: Applicable when ``float`` or array of type ``float`` is summed. When set
+            to ``False`` (default) each batch updates the sum that is a single float. It is
+            a memory efficient and fast approach but can lead to numerical instability,
+            especially if the values are frequently updated/deleted. If set to ``True``,
+            the sum is calculated from scratch for each batch by summing all values in a given
+            group (also from previous batches). As a result, it is slower. It requires storing
+            all values within a group separately so it has higher memory requirements.
 
     Example:
 
@@ -357,7 +377,7 @@ def sum(arg: expr.ColumnExpression) -> expr.ReducerExpression:
     data_sum
     [12 15 18]
     """
-    return _apply_unary_reducer(_sum, arg)
+    return _apply_unary_reducer(SumReducer(name="sum", strict=strict), arg)
 
 
 def argmin(

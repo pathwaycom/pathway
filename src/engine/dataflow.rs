@@ -29,6 +29,11 @@ use crate::engine::dataflow::operators::time_column::{
     Epsilon, TimeColumnForget, TimeColumnFreeze,
 };
 use crate::engine::dataflow::operators::ExtendedProbeWith;
+use crate::engine::reduce::{
+    AppendOnlyAnyState, AppendOnlyArgMaxState, AppendOnlyArgMinState, AppendOnlyMaxState,
+    AppendOnlyMinState, ArraySumState, ErrorStateWrapper, FloatSumState, IntSumState,
+    SemigroupReducer, SemigroupState,
+};
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
 use crate::persistence::config::PersistenceManagerOuterConfig;
@@ -59,7 +64,7 @@ use arcstr::ArcStr;
 use crossbeam_channel::{bounded, never, select, Receiver, RecvError, Sender};
 use derivative::Derivative;
 use differential_dataflow::collection::concatenate;
-use differential_dataflow::difference::Semigroup;
+use differential_dataflow::difference::{Multiply, Semigroup};
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::upsert::arrange_from_upsert;
@@ -115,9 +120,8 @@ use super::license::License;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
     AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, EarliestReducer,
-    FloatSumReducer, IntSumReducer, LatestReducer, MaxReducer, MinReducer, ReducerImpl,
-    SemigroupReducerImpl, SortedTupleReducer, StatefulCombineFn, StatefulReducer, TupleReducer,
-    UniqueReducer,
+    FloatSumReducer, LatestReducer, MaxReducer, MinReducer, ReducerImpl, SortedTupleReducer,
+    StatefulCombineFn, StatefulReducer, TupleReducer, UniqueReducer,
 };
 use super::report_error::{
     LogError, ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithErrorLogger,
@@ -3163,7 +3167,14 @@ where
     }
 }
 
-impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
+impl<S: MaybeTotalScope, State> DataflowReducer<S> for SemigroupReducer<State>
+where
+    State: SemigroupState,
+    ErrorStateWrapper<State>:
+        ExchangeData + Semigroup + Multiply<isize, Output = ErrorStateWrapper<State>>,
+    Collection<S, Key, ErrorStateWrapper<State>>:
+        Into<PersistableCollection<S>> + From<PersistableCollection<S>>,
+{
     fn reduce(
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
@@ -3172,24 +3183,24 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
         graph: &mut DataflowGraphInner<S>,
     ) -> Result<Values<S>> {
         Ok(values
-            .map_named("IntSumReducer::reduce::init", {
-                let self_ = self.clone();
+            .map_named("SemigroupReducer::reduce::init", {
                 move |(source_key, result_key, values)| {
                     let state = if values.contains(&Value::Error) {
-                        self_.init_error()
+                        ErrorStateWrapper::<State>::init_error()
                     } else {
-                        self_
-                            .init(&source_key, &values[0])
-                            .unwrap_or_else_log(error_logger.as_ref(), || self_.init_error())
+                        ErrorStateWrapper::<State>::init(source_key, values)
+                            .unwrap_or_else_log(error_logger.as_ref(), || {
+                                ErrorStateWrapper::<State>::init_error()
+                            })
                     };
                     (result_key, state)
                 }
             })
             .explode(|(key, state)| once((key, state)))
-            .maybe_persist(graph, "IntSumReducer::reduce")?
+            .maybe_persist(graph, "SemigroupReducer::reduce")?
             .count()
-            .map_named("IntSumReducer::reduce", move |(key, state)| {
-                (key, self.finish(state))
+            .map_named("SemigroupReducer::reduce", move |(key, state)| {
+                (key, state.finish())
             })
             .into())
     }
@@ -3334,7 +3345,11 @@ where
 }
 
 trait CreateDataflowReducer<S: MaybeTotalScope> {
-    fn create_dataflow_reducer(&self, reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>>;
+    fn create_dataflow_reducer(
+        &self,
+        reducer: &Reducer,
+        append_only: bool,
+    ) -> Result<Rc<dyn DataflowReducer<S>>>;
 }
 
 struct NotTotalReducerFactory;
@@ -3343,12 +3358,28 @@ impl<S> CreateDataflowReducer<S> for NotTotalReducerFactory
 where
     S: MaybeTotalScope,
 {
-    fn create_dataflow_reducer(&self, reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>> {
+    fn create_dataflow_reducer(
+        &self,
+        reducer: &Reducer,
+        _append_only: bool,
+    ) -> Result<Rc<dyn DataflowReducer<S>>> {
         let res: Rc<dyn DataflowReducer<S>> = match reducer {
             Reducer::Count => Rc::new(CountReducer),
-            Reducer::FloatSum => Rc::new(FloatSumReducer),
-            Reducer::IntSum => Rc::new(IntSumReducer),
-            Reducer::ArraySum => Rc::new(ArraySumReducer),
+            Reducer::FloatSum { strict } => {
+                if *strict {
+                    Rc::new(FloatSumReducer)
+                } else {
+                    Rc::new(SemigroupReducer::<FloatSumState>::default())
+                }
+            }
+            Reducer::IntSum => Rc::new(SemigroupReducer::<IntSumState>::default()),
+            Reducer::ArraySum { strict } => {
+                if *strict {
+                    Rc::new(ArraySumReducer)
+                } else {
+                    Rc::new(SemigroupReducer::<ArraySumState>::default())
+                }
+            }
             Reducer::Unique => Rc::new(UniqueReducer),
             Reducer::Min => Rc::new(MinReducer),
             Reducer::ArgMin => Rc::new(ArgMinReducer),
@@ -3373,12 +3404,29 @@ impl<S> CreateDataflowReducer<S> for TimestampReducerFactory
 where
     S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
 {
-    fn create_dataflow_reducer(&self, reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>> {
-        let res: Rc<dyn DataflowReducer<S>> = match reducer {
-            Reducer::Stateful { combine_fn } => Rc::new(StatefulReducer::new(combine_fn.clone())),
-            Reducer::Earliest => Rc::new(EarliestReducer),
-            Reducer::Latest => Rc::new(LatestReducer),
-            other => NotTotalReducerFactory.create_dataflow_reducer(other)?,
+    fn create_dataflow_reducer(
+        &self,
+        reducer: &Reducer,
+        append_only: bool,
+    ) -> Result<Rc<dyn DataflowReducer<S>>> {
+        let res: Rc<dyn DataflowReducer<S>> = match (reducer, append_only) {
+            (Reducer::Stateful { combine_fn }, _) => {
+                Rc::new(StatefulReducer::new(combine_fn.clone()))
+            }
+            (Reducer::Earliest, _) => Rc::new(EarliestReducer),
+            (Reducer::Latest, _) => Rc::new(LatestReducer),
+            (Reducer::Min, true) => Rc::new(SemigroupReducer::<AppendOnlyMinState>::default()),
+            (Reducer::Max, true) => Rc::new(SemigroupReducer::<AppendOnlyMaxState>::default()),
+            (Reducer::ArgMin, true) => {
+                Rc::new(SemigroupReducer::<AppendOnlyArgMinState>::default())
+            }
+            (Reducer::ArgMax, true) => {
+                Rc::new(SemigroupReducer::<AppendOnlyArgMaxState>::default())
+            }
+            (Reducer::Any, true) => Rc::new(SemigroupReducer::<AppendOnlyAnyState>::default()),
+            (other, append_only) => {
+                NotTotalReducerFactory.create_dataflow_reducer(other, append_only)?
+            }
         };
 
         Ok(res)
@@ -3408,7 +3456,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .iter()
             .map(|reducer_data| {
                 self.reducer_factory
-                    .create_dataflow_reducer(&reducer_data.reducer)
+                    .create_dataflow_reducer(&reducer_data.reducer, reducer_data.append_only)
             })
             .try_collect()?;
 

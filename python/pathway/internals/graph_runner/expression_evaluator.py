@@ -1233,6 +1233,7 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
                 api.ReducerData(
                     reducer=reducer_data.reducer,
                     skip_errors=self.context.skip_errors,
+                    append_only=expression._is_append_only(),
                     column_paths=inner_paths,
                     trace=column.trace.to_engine(),
                 )

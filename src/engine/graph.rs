@@ -275,6 +275,7 @@ pub struct ExpressionData {
 pub struct ReducerData {
     pub reducer: Reducer,
     pub skip_errors: bool,
+    pub append_only: bool,
     pub column_paths: Vec<ColumnPath>,
     pub trace: Trace,
 }

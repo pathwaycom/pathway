@@ -24,7 +24,10 @@ use crate::engine::dataflow::operators::stateful_reduce::StatefulReduce;
 use crate::engine::dataflow::operators::MapWrapped;
 use crate::engine::dataflow::shard::Shard;
 use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell, Tuple};
-use crate::engine::reduce::IntSumState;
+use crate::engine::reduce::{
+    AppendOnlyAnyState, AppendOnlyArgMaxState, AppendOnlyArgMinState, AppendOnlyMaxState,
+    AppendOnlyMinState, ArraySumState, ErrorStateWrapper, FloatSumState, IntSumState,
+};
 use crate::engine::{Key, Result, Timestamp, Value};
 use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::operator_snapshot::{OperatorSnapshotReader, OperatorSnapshotWriter};
@@ -185,7 +188,14 @@ where
 /// that is aware that `MaybeTotalTimestamp` = `Timestamp`.
 pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyValueIsize(Collection<S, (Key, Value), isize>),
-    KeyIntSumState(Collection<S, Key, IntSumState>),
+    KeyIntSumState(Collection<S, Key, ErrorStateWrapper<IntSumState>>),
+    KeyFloatSumState(Collection<S, Key, ErrorStateWrapper<FloatSumState>>),
+    KeyArraySumState(Collection<S, Key, ErrorStateWrapper<ArraySumState>>),
+    KeyMinState(Collection<S, Key, ErrorStateWrapper<AppendOnlyMinState>>),
+    KeyMaxState(Collection<S, Key, ErrorStateWrapper<AppendOnlyMaxState>>),
+    KeyArgMinState(Collection<S, Key, ErrorStateWrapper<AppendOnlyArgMinState>>),
+    KeyArgMaxState(Collection<S, Key, ErrorStateWrapper<AppendOnlyArgMaxState>>),
+    KeyAnyState(Collection<S, Key, ErrorStateWrapper<AppendOnlyAnyState>>),
     KeyIsize(Collection<S, Key, isize>),
     KeyOptionOrderderFloatIsize(Collection<S, (Key, Option<OrderedFloat<f64>>), isize>),
     KeyOptionValueIsize(Collection<S, (Key, Option<Value>), isize>),
@@ -199,7 +209,6 @@ pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyMaybeUpdateIsize(Collection<S, (Key, MaybeUpdate<Value>), isize>),
     KeyKeyIsize(Collection<S, (Key, Key), isize>),
     KeyKeyValueIsize(Collection<S, (Key, (Key, Value)), isize>),
-    KeyIntSumStateIsize(Collection<S, (Key, IntSumState), isize>),
     KeyIsizeIsize(Collection<S, (Key, isize), isize>),
     KeyKeyValueKeyValueIsize(Collection<S, (Key, (Key, Value), (Key, Value)), isize>),
     KeyVecValueIsize(Collection<S, (Key, Vec<Value>), isize>),
@@ -232,7 +241,46 @@ macro_rules! impl_conversion {
 }
 
 impl_conversion!(PersistableCollection::KeyValueIsize, (Key, Value), isize);
-impl_conversion!(PersistableCollection::KeyIntSumState, Key, IntSumState);
+impl_conversion!(
+    PersistableCollection::KeyIntSumState,
+    Key,
+    ErrorStateWrapper<IntSumState>
+);
+impl_conversion!(
+    PersistableCollection::KeyFloatSumState,
+    Key,
+    ErrorStateWrapper<FloatSumState>
+);
+impl_conversion!(
+    PersistableCollection::KeyArraySumState,
+    Key,
+    ErrorStateWrapper<ArraySumState>
+);
+impl_conversion!(
+    PersistableCollection::KeyMinState,
+    Key,
+    ErrorStateWrapper<AppendOnlyMinState>
+);
+impl_conversion!(
+    PersistableCollection::KeyMaxState,
+    Key,
+    ErrorStateWrapper<AppendOnlyMaxState>
+);
+impl_conversion!(
+    PersistableCollection::KeyArgMinState,
+    Key,
+    ErrorStateWrapper<AppendOnlyArgMinState>
+);
+impl_conversion!(
+    PersistableCollection::KeyArgMaxState,
+    Key,
+    ErrorStateWrapper<AppendOnlyArgMaxState>
+);
+impl_conversion!(
+    PersistableCollection::KeyAnyState,
+    Key,
+    ErrorStateWrapper<AppendOnlyAnyState>
+);
 impl_conversion!(PersistableCollection::KeyIsize, Key, isize);
 impl_conversion!(
     PersistableCollection::KeyOptionOrderderFloatIsize,
@@ -274,11 +322,6 @@ impl_conversion!(PersistableCollection::KeyKeyIsize, (Key, Key), isize);
 impl_conversion!(
     PersistableCollection::KeyKeyValueIsize,
     (Key, (Key, Value)),
-    isize
-);
-impl_conversion!(
-    PersistableCollection::KeyIntSumStateIsize,
-    (Key, IntSumState),
     isize
 );
 impl_conversion!(PersistableCollection::KeyIsizeIsize, (Key, isize), isize);
@@ -385,6 +428,27 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             PersistableCollection::KeyIntSumState(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
+            PersistableCollection::KeyFloatSumState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyArraySumState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyMinState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyMaxState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyArgMinState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyArgMaxState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyAnyState(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
             PersistableCollection::KeyIsize(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
@@ -416,9 +480,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
             PersistableCollection::KeyKeyValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyIntSumStateIsize(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
             PersistableCollection::KeyIsizeIsize(collection) => {
@@ -450,6 +511,27 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             PersistableCollection::KeyIntSumState(collection) => {
                 generic_filter_out_persisted(&collection)
             }
+            PersistableCollection::KeyFloatSumState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyArraySumState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyMinState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyMaxState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyArgMinState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyArgMaxState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyAnyState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
             PersistableCollection::KeyIsize(collection) => {
                 generic_filter_out_persisted(&collection)
             }
@@ -481,9 +563,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
                 generic_filter_out_persisted(&collection)
             }
             PersistableCollection::KeyKeyValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyIntSumStateIsize(collection) => {
                 generic_filter_out_persisted(&collection)
             }
             PersistableCollection::KeyIsizeIsize(collection) => {

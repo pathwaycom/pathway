@@ -7,6 +7,7 @@ import math
 import pathway as pw
 from pathway.tests.utils import (
     T,
+    assert_stream_equality,
     assert_table_equality,
     assert_table_equality_wo_index,
     assert_table_equality_wo_types,
@@ -455,3 +456,120 @@ def test_stateful_many_binary():
             id_from=["pet"],
         ),
     )
+
+
+def test_non_append_only_reducers():
+    t = T(
+        """
+          | instance | value | source | __time__ | __diff__
+        1 |     1    |   2   |    1   |     2    |     1
+        2 |     1    |   3   |    2   |     2    |     1
+        3 |     2    |   3   |    3   |     2    |     1
+        4 |     2    |   1   |    4   |     2    |     1
+        1 |     1    |   2   |    1   |     4    |    -1
+        3 |     2    |   3   |    3   |     4    |    -1
+        5 |     1    |  10   |    5   |     6    |     1
+    """
+    )
+    res = t.groupby(pw.this.instance).reduce(
+        instance=pw.this.instance,
+        min=pw.reducers.min(pw.this.value),
+        source_min=t.ix(pw.reducers.argmin(pw.this.value)).source,
+        max=pw.reducers.max(pw.this.value),
+        source_max=t.ix(pw.reducers.argmax(pw.this.value)).source,
+        any=pw.reducers.any(pw.this.value),
+        sum_i=pw.reducers.sum(pw.this.value),
+        sum_f=pw.reducers.sum(pw.this.value + 0.5),
+    )
+    expected = T(
+        """
+        instance | min | source_min | max | source_max | any | sum_i | sum_f | __time__ | __diff__
+            1    |  2  |      1     |  3  |     2      |  2  |   5   |  6.0  |     2    |     1
+            2    |  1  |      4     |  3  |     3      |  1  |   4   |  5.0  |     2    |     1
+            1    |  2  |      1     |  3  |     2      |  2  |   5   |  6.0  |     4    |    -1
+            1    |  3  |      2     |  3  |     2      |  3  |   3   |  3.5  |     4    |     1
+            2    |  1  |      4     |  3  |     3      |  1  |   4   |  5.0  |     4    |    -1
+            2    |  1  |      4     |  1  |     4      |  1  |   1   |  1.5  |     4    |     1
+            1    |  3  |      2     |  3  |     2      |  3  |   3   |  3.5  |     6    |    -1
+            1    |  3  |      2     | 10  |     5      | 10  |  13   | 14.0  |     6    |     1
+    """,
+        id_from=["instance"],
+    )
+    assert_stream_equality(res, expected)
+
+
+def test_append_only_reducers():
+    t = T(
+        """
+          | instance | value | source
+        1 |     1    |   2   |    1
+        2 |     1    |   3   |    2
+        3 |     2    |   3   |    3
+        4 |     2    |   1   |    4
+    """
+    )
+    assert t.is_append_only
+    res = t.groupby(pw.this.instance).reduce(
+        instance=pw.this.instance,
+        min=pw.reducers.min(pw.this.value),
+        source_min=t.ix(pw.reducers.argmin(pw.this.value)).source,
+        max=pw.reducers.max(pw.this.value),
+        source_max=t.ix(pw.reducers.argmax(pw.this.value)).source,
+        any=pw.reducers.any(pw.this.value),
+        sum_i=pw.reducers.sum(pw.this.value),
+        sum_f=pw.reducers.sum(pw.this.value + 0.2, strict=True),
+    )
+    expected = T(
+        """
+        instance | min | source_min | max | source_max | any | sum_i | sum_f
+            1    |  2  |      1     |  3  |     2      |  2  |   5   |  5.4
+            2    |  1  |      4     |  3  |     3      |  1  |   4   |  4.4
+    """,
+        id_from=["instance"],
+    )
+    assert_table_equality(res, expected)
+
+
+def test_reducers_on_partially_append_only_table():
+    class InputSchema(pw.Schema):
+        instance: int = pw.column_definition(append_only=True)
+        value: int = pw.column_definition(append_only=True)
+        source: int
+
+    t = T(
+        """
+          | instance | value | source | __time__ | __diff__
+        1 |     1    |   2   |    1   |     2    |     1
+        2 |     1    |   3   |    2   |     2    |     1
+        3 |     2    |   3   |    3   |     2    |     1
+        4 |     2    |   1   |    4   |     2    |     1
+        1 |     1    |   2   |    1   |     4    |    -1
+        1 |     1    |   2   |    2   |     4    |     1
+        3 |     2    |   3   |    3   |     4    |    -1
+        3 |     2    |   3   |    5   |     4    |     1
+    """,
+        schema=InputSchema,
+    )
+    assert not t.is_append_only
+    res = t.groupby(pw.this.instance).reduce(
+        instance=pw.this.instance,
+        min=pw.reducers.min(pw.this.value),
+        source_min=t.ix(pw.reducers.argmin(pw.this.value)).source,
+        max=pw.reducers.max(pw.this.value),
+        source_max=t.ix(pw.reducers.argmax(pw.this.value)).source,
+        any=pw.reducers.any(pw.this.value),
+        sum=pw.reducers.sum(pw.this.source),
+    )
+    expected = T(
+        """
+        instance | min | source_min | max | source_max | any | sum | __time__ | __diff__
+            1    |  2  |      1     |  3  |     2      |  2  |   3 |     2    |     1
+            2    |  1  |      4     |  3  |     3      |  1  |   7 |     2    |     1
+            1    |  2  |      1     |  3  |     2      |  2  |   3 |     4    |    -1
+            1    |  2  |      2     |  3  |     2      |  2  |   4 |     4    |     1
+            2    |  1  |      4     |  3  |     3      |  1  |   7 |     4    |    -1
+            2    |  1  |      4     |  3  |     5      |  1  |   9 |     4    |     1
+    """,
+        id_from=["instance"],
+    )
+    assert_stream_equality(res, expected)

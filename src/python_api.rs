@@ -926,14 +926,18 @@ impl PyReducer {
     #[classattr]
     pub const MAX: Reducer = Reducer::Max;
 
-    #[classattr]
-    pub const FLOAT_SUM: Reducer = Reducer::FloatSum;
+    #[staticmethod]
+    fn float_sum(strict: bool) -> Reducer {
+        Reducer::FloatSum { strict }
+    }
 
     #[classattr]
     pub const INT_SUM: Reducer = Reducer::IntSum;
 
-    #[classattr]
-    pub const ARRAY_SUM: Reducer = Reducer::ArraySum;
+    #[staticmethod]
+    fn array_sum(strict: bool) -> Reducer {
+        Reducer::ArraySum { strict }
+    }
 
     #[staticmethod]
     fn sorted_tuple(skip_nones: bool) -> Reducer {
@@ -1010,16 +1014,18 @@ struct PyReducerData(ReducerData);
 #[pymethods]
 impl PyReducerData {
     #[new]
-    #[pyo3(signature = (reducer, skip_errors, column_paths, trace))]
+    #[pyo3(signature = (reducer, skip_errors, append_only, column_paths, trace))]
     fn new(
         reducer: Reducer,
         skip_errors: bool,
+        append_only: bool,
         column_paths: Vec<ColumnPath>,
         trace: Option<EngineTrace>,
     ) -> Self {
         Self(ReducerData {
             reducer,
             skip_errors,
+            append_only,
             column_paths,
             trace: trace.unwrap_or(EngineTrace::Empty),
         })

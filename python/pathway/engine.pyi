@@ -171,8 +171,10 @@ class Reducer:
     MIN: Reducer
     ARG_MAX: Reducer
     MAX: Reducer
-    FLOAT_SUM: Reducer
-    ARRAY_SUM: Reducer
+    @staticmethod
+    def float_sum(strict: bool) -> Reducer: ...
+    @staticmethod
+    def array_sum(strict: bool) -> Reducer: ...
     INT_SUM: Reducer
     @staticmethod
     def sorted_tuple(skip_nones: bool) -> Reducer: ...
@@ -199,6 +201,7 @@ class ExpressionData:
 class ReducerData:
     reducer: Reducer
     skip_errors: bool
+    append_only: bool
     column_paths: list[ColumnPath]
     trace: Trace | None
 

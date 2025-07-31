@@ -3182,11 +3182,20 @@ def test_npsum_reducer_ints():
             {
                 "sum": [
                     np.array([12, 15, 18]),
-                ]
+                ],
+                "sum_strict": [
+                    np.array([12, 15, 18]),
+                ],
             }
         )
     )
-    assert_table_equality_wo_index(t.reduce(sum=pw.reducers.sum(pw.this.data)), result)
+    assert_table_equality_wo_index(
+        t.reduce(
+            sum=pw.reducers.sum(pw.this.data),
+            sum_strict=pw.reducers.sum(pw.this.data, strict=True),
+        ),
+        result,
+    )
 
 
 def test_npsum_reducer_floats():
@@ -3206,11 +3215,20 @@ def test_npsum_reducer_floats():
             {
                 "sum": [
                     np.array([12.3, 15.3, 18.3]),
-                ]
+                ],
+                "sum_strict": [
+                    np.array([12.3, 15.3, 18.3]),
+                ],
             }
         )
     )
-    assert_table_equality_wo_index(t.reduce(sum=pw.reducers.sum(pw.this.data)), result)
+    assert_table_equality_wo_index(
+        t.reduce(
+            sum=pw.reducers.sum(pw.this.data),
+            sum_strict=pw.reducers.sum(pw.this.data, strict=True),
+        ),
+        result,
+    )
 
 
 def test_ndarray_reducer():

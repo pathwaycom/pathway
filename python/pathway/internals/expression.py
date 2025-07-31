@@ -147,6 +147,12 @@ class ColumnExpression(OperatorInput, ABC):
         )
         return helpers.StableSet(expression_dependencies)
 
+    @lru_cache
+    def _is_append_only(self) -> bool:
+        return all(
+            column.properties.append_only for column in self._column_dependencies()
+        )
+
     @property
     def _column_with_expression_cls(self) -> type[ColumnWithExpression]:
         from pathway.internals.column import ColumnWithExpression
