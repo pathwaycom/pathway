@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import threading
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from inspect import Parameter, Signature
@@ -85,8 +86,10 @@ class _McpServerSubject(ServerSubject):
 
 @dataclass
 class McpConfig:
+    """A configuration class for the :py:class:`~pathway.xpacks.llm.mcp_server.McpServer`."""
+
     name: str = "pathway-mcp-server"
-    transport: Literal["streamable-http", "stdio"] = "stdio"
+    transport: Literal["streamable-http", "stdio"] = "streamable-http"
     host: str | None = None
     port: int | None = None
 
@@ -97,6 +100,11 @@ class McpConfig:
                 "Must be one of 'streamable-http' or 'stdio'."
             )
         if self.transport == "stdio":
+            warnings.warn(
+                "The 'stdio' transport is unstable and experimental. "
+                "It may change or be removed in future releases.",
+                stacklevel=2,
+            )
             if self.host is not None or self.port is not None:
                 raise ValueError(
                     "Host and port cannot be set when transport is 'stdio'."
@@ -119,12 +127,26 @@ class McpConfig:
 
 
 class McpServable(ABC):
+    """
+    Abstract base class for objects that can be registered
+    with an :py:class:`~pathway.xpacks.llm.mcp_server.McpServer`.
+
+    Implement this class to define a component compatible
+    with :py:class:`~pathway.xpacks.llm.mcp_server.PathwayMcp`.
+    """
+
     @abstractmethod
     def register_mcp(self, server: McpServer) -> None:
         pass
 
 
 class McpServer(PathwayServer):
+    """
+    A server implementing MCP (Model Context Protocol).
+
+    It is encouraged to use the py:class:`~pathway.xpacks.llm.mcp_server.PathwayMcp` class for easier configuration.
+    """
+
     _fastmcp: Any
     _thread: threading.Thread | None
     _start_mutex: threading.Lock
@@ -145,6 +167,9 @@ class McpServer(PathwayServer):
 
     @classmethod
     def get(cls, config: McpConfig) -> McpServer:
+        """
+        Returns an instance of the MCP server with the given configuration.
+        """
         if config.name not in cls._instances:
             cls._instances[config.name] = cls(config)
         return cls._instances[config.name]
@@ -187,6 +212,9 @@ class McpServer(PathwayServer):
         delete_completed_queries: bool = False,
         cache_strategy: CacheStrategy | None = None,
     ) -> None:
+        """
+        Registers a callable as an MCP tool.
+        """
         subject = _McpServerSubject(
             webserver=self,
             route=name,
@@ -207,7 +235,21 @@ class McpServer(PathwayServer):
 
 @dataclass(frozen=True)
 class PathwayMcp:
-    transport: Literal["streamable-http", "stdio"] = "stdio"
+    """
+    A configuration class that simplifies the definition of MCP servers with compatible servables.
+
+    Args:
+        transport: The transport protocol used by the server.
+            The 'stdio' transport is unstable and experimental. It may change or be removed in future releases.
+            Defaults to "streamable-http".
+        host The hostname or IP address to bind the server to. If None, uses default binding.
+        port: The port number to bind the server to. If None, uses default port.
+        name: The name of the MCP server instance. Defaults to "pathway-mcp-server".
+        serve: A list of :py:class:`~pathway.xpacks.llm.mcp_server.McpServable`
+            objects to register with the MCP server.
+    """
+
+    transport: Literal["streamable-http", "stdio"] = "streamable-http"
     host: str | None = None
     port: int | None = None
     name: str = "pathway-mcp-server"
