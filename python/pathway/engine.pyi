@@ -183,6 +183,7 @@ class Reducer:
     UNIQUE: Reducer
     ANY: Reducer
     COUNT: Reducer
+    COUNT_DISTINCT: Reducer
     @staticmethod
     def stateful_many(combine_many: CombineMany[S]) -> Reducer: ...
     EARLIEST: Reducer

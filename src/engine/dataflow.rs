@@ -31,8 +31,8 @@ use crate::engine::dataflow::operators::time_column::{
 use crate::engine::dataflow::operators::ExtendedProbeWith;
 use crate::engine::reduce::{
     AppendOnlyAnyState, AppendOnlyArgMaxState, AppendOnlyArgMinState, AppendOnlyMaxState,
-    AppendOnlyMinState, ArraySumState, ErrorStateWrapper, FloatSumState, IntSumState,
-    SemigroupReducer, SemigroupState,
+    AppendOnlyMinState, ArraySumState, CountDistinctReducer, ErrorStateWrapper, FloatSumState,
+    IntSumState, SemigroupReducer, SemigroupState,
 };
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
@@ -3141,7 +3141,9 @@ where
                 let self_ = self.clone();
                 move |_key, input, output| {
                     let result = if input.iter().any(|&(state, _)| state.is_none()) {
-                        None // None means that the state for a given key contains Value::Error
+                        // None on the input means that one of the reducer inputs is error.
+                        // Then we should pass error to the output.
+                        Value::Error
                     } else {
                         self_
                             .combine(input.iter().map(|&(state, cnt)| {
@@ -3150,18 +3152,43 @@ where
                                     usize::try_from(cnt).unwrap().try_into().unwrap(),
                                 )
                             }))
-                            .ok_with_logger(error_logger.as_ref())
+                            .unwrap_or_log(error_logger.as_ref(), Value::Error)
                     };
                     output.push((result, DIFF_INSERTION));
                 }
             })
-            .map_named("DataFlowReducer::reduce", move |(key, state)| {
-                let result = if let Some(state) = state {
-                    self.finish(state)
-                } else {
-                    Value::Error
-                };
-                (key, result)
+            .into())
+    }
+}
+
+impl<S: MaybeTotalScope> DataflowReducer<S> for CountDistinctReducer {
+    // The fastest implementation. For each update, only a single arrangement update in distinct
+    // is needed and at most one update in arrangement in count. The latency (difference between
+    // the final result and the end of producing new input) on the benchmark was 2s.
+    // For other variants the latency was much higher:
+    // - A regular DataflowReducer implementation for R: ReducerImpl: 702s
+    // - CountDistinctState with SemigroupReducer: 506s
+    // - A custom implementation using `reduce` and input size: 309s
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        _error_logger: Rc<dyn LogError>,
+        _trace: Trace,
+        graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        Ok(values
+            .map_named("CountDistinctReducer::init", {
+                move |(_source_key, result_key, values)| (result_key, Key::for_values(&values))
+            })
+            .maybe_persist(graph, "DataFlowReducer::reduce")?
+            .distinct()
+            .map_named(
+                "CountDistinctReducer::intermediate",
+                |(result_key, _values_hash)| (result_key),
+            )
+            .count()
+            .map_named("CountDistinctReducer::reduce", |(key, count)| {
+                (key, Value::from(count as i64))
             })
             .into())
     }
@@ -3365,6 +3392,7 @@ where
     ) -> Result<Rc<dyn DataflowReducer<S>>> {
         let res: Rc<dyn DataflowReducer<S>> = match reducer {
             Reducer::Count => Rc::new(CountReducer),
+            Reducer::CountDistinct => Rc::new(CountDistinctReducer),
             Reducer::FloatSum { strict } => {
                 if *strict {
                     Rc::new(FloatSumReducer)

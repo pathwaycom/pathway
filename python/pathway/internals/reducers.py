@@ -163,6 +163,14 @@ class CountReducer(Reducer):
         return api.Reducer.COUNT
 
 
+class CountDistinctReducer(Reducer):
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
+        return dt.INT
+
+    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
+        return api.Reducer.COUNT_DISTINCT
+
+
 class TupleWrappingReducer(Reducer):
     _skip_nones: bool
     _engine_reducer: api.Reducer
@@ -232,6 +240,7 @@ class StatefulManyReducer(Reducer):
 _min = TypePreservingUnaryReducer(name="min", engine_reducer=api.Reducer.MIN)
 _max = TypePreservingUnaryReducer(name="max", engine_reducer=api.Reducer.MAX)
 _count = CountReducer(name="count")
+_count_distinct = CountDistinctReducer(name="count_distinct")
 
 
 def _sorted_tuple(skip_nones: bool):
@@ -780,3 +789,32 @@ def latest(expression: expr.ColumnExpression) -> expr.ColumnExpression:
     2 | 2
     """
     return _apply_unary_reducer(_latest, expression)
+
+
+def count_distinct(*args: expr.ColumnExpression) -> expr.ColumnExpression:
+    """
+    Returns the number of distinct values.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... '''
+    ... )
+    >>> result = t.groupby(t.colA).reduce(
+    ...     group=pw.this.colA, count=pw.reducers.count_distinct(pw.this.colB)
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    group | count
+    valA  | 3
+    valB  | 2
+    """
+    return expr.ReducerExpression(_count_distinct, *args)

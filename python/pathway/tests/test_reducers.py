@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 import pathway as pw
 from pathway.tests.utils import (
     T,
@@ -573,3 +575,59 @@ def test_reducers_on_partially_append_only_table():
         id_from=["instance"],
     )
     assert_stream_equality(res, expected)
+
+
+def test_distinct():
+    t = T(
+        """
+        a | b
+        1 | 2
+        3 | 4
+        3 | 5
+        5 | 5
+        5 | 6
+    """
+    )
+    result = t.groupby().reduce(
+        empty=pw.reducers.count_distinct(),
+        only_a=pw.reducers.count_distinct(pw.this.a),
+        only_b=pw.reducers.count_distinct(pw.this.b),
+        both=pw.reducers.count_distinct(pw.this.a, pw.this.b),
+    )
+    expected = T(
+        """
+        empty | only_a | only_b | both
+          1   |    3   |    4   |   5
+    """
+    )
+    assert_table_equality_wo_index(result, expected)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_float_sum_precision(strict):
+
+    t = T(
+        """
+          a
+        -10.1
+        -10.1
+          1
+          1
+         10.1
+         10.1
+    """
+    )
+    s = t.select(a=pw.this.a**21)
+    r = s.reduce(s=pw.reducers.sum(pw.this.a, strict=strict))
+
+    class ExpectedSchema(pw.Schema):
+        s: float
+
+    expected = T(
+        """
+        s
+        2.0
+    """,
+        schema=ExpectedSchema,
+    )
+    assert_table_equality_wo_index(r, expected)

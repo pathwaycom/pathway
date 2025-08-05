@@ -15,6 +15,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.s3.read` and `pw.io.minio.read` now limit the number and the total size of objects to be predownloaded.
 - **BREAKING** optimized the implementation of `pw.reducers.min`, `pw.reducers.max`, `pw.reducers.argmin`, `pw.reducers.argmax`, `pw.reducers.any` reducers for append-only tables. It is a breaking change for programs using operator persistence. The persisted state will have to be recomputed.
 - **BREAKING** optimized the implementation of `pw.reducers.sum` reducer on `float` and `np.ndarray` columns. It is a breaking change for programs using operator persistence. The persisted state will have to be recomputed.
+- Improved precision of `pw.reducers.sum` on `float` columns by introducing Neumeier summation.
 
 ## [0.25.1] - 2025-07-24
 

@@ -548,6 +548,7 @@ def test_groupby(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int
         b: int
+        c: int
 
     def logic(t_1: pw.Table) -> pw.Table:
         return t_1.groupby(pw.this.a).reduce(
@@ -555,16 +556,17 @@ def test_groupby(tmp_path, mode):
             c=pw.reducers.count(),
             s=pw.reducers.sum(pw.this.b),
             m=pw.reducers.max(pw.this.b),
+            cd=pw.reducers.count_distinct(pw.this.c),
         )
 
     run, input_path = get_one_table_runner(tmp_path, mode, logic, InputSchema)
 
-    run(["a,b", "1,3", "2,4"], {"1,1,3,3,1", "2,1,4,4,1"})
-    run(["a,b", "1,1"], {"1,1,3,3,-1", "1,2,4,3,1"})
-    run(["a,b", "2,5"], {"2,1,4,4,-1", "2,2,9,5,1"})
+    run(["a,b,c", "1,3,3", "2,4,2"], {"1,1,3,3,1,1", "2,1,4,4,1,1"})
+    run(["a,b,c", "1,1,2"], {"1,1,3,3,1,-1", "1,2,4,3,2,1"})
+    run(["a,b,c", "2,5,2"], {"2,1,4,4,1,-1", "2,2,9,5,1,1"})
     os.remove(input_path / "2")
-    run(["a,b"], {"1,1,3,3,1", "1,2,4,3,-1"})
-    run(["a,b", "2,0"], {"2,2,9,5,-1", "2,3,9,5,1"})
+    run(["a,b,c"], {"1,1,3,3,1,1", "1,2,4,3,2,-1"})
+    run(["a,b,c", "2,0,3"], {"2,2,9,5,1,-1", "2,3,9,5,2,1"})
 
 
 @pytest.mark.parametrize(
@@ -572,7 +574,7 @@ def test_groupby(tmp_path, mode):
 )  # can't use api.PersistenceMode.PERSISTING because it is not compatible with stateful_reduce
 @only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_groupby_2(tmp_path, mode):
-    class InputSchema(pw.Schema):
+    class InputSchema(pw.Schema, append_only=True):
         a: int
         b: int = pw.column_definition(primary_key=True)
 
@@ -599,17 +601,19 @@ def test_groupby_2(tmp_path, mode):
             e=pw.reducers.earliest(pw.this.b),
             l=pw.reducers.latest(pw.this.b),
             s=count_max(pw.this.b)[0],
+            mi=pw.reducers.min(pw.this.b),
+            ma=pw.reducers.max(pw.this.b),
         )
 
     run, _ = get_one_table_runner(tmp_path, mode, logic, InputSchema)
 
-    run(["a,b", "1,3", "2,4"], {"1,3,3,1,1", "2,4,4,1,1"})
+    run(["a,b", "1,3", "2,4"], {"1,3,3,1,3,3,1", "2,4,4,1,4,4,1"})
     time.sleep(2)
-    run(["a,b", "1,5", "1,0"], {"1,3,3,1,-1", "1,3,5,2,1"})
+    run(["a,b", "1,5", "1,0"], {"1,3,3,1,3,3,-1", "1,3,5,2,0,5,1"})
     time.sleep(2)
-    run(["a,b", "2,6"], {"2,4,4,1,-1", "2,4,6,2,1"})
+    run(["a,b", "2,6"], {"2,4,4,1,4,4,-1", "2,4,6,2,4,6,1"})
     time.sleep(2)
-    run(["a,b", "2,8"], {"2,4,6,2,-1", "2,4,8,3,1"})
+    run(["a,b", "2,8"], {"2,4,6,2,4,6,-1", "2,4,8,3,4,8,1"})
 
 
 @pytest.mark.parametrize(

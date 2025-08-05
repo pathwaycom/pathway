@@ -956,6 +956,9 @@ impl PyReducer {
     pub const COUNT: Reducer = Reducer::Count;
 
     #[classattr]
+    pub const COUNT_DISTINCT: Reducer = Reducer::CountDistinct;
+
+    #[classattr]
     pub const ANY: Reducer = Reducer::Any;
 
     #[staticmethod]
