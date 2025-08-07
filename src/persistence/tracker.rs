@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::backends::BackendPutFuture as PersistenceBackendFlushFuture;
-use crate::persistence::cached_object_storage::CachedObjectStorage;
+use crate::persistence::cached_object_storage::{
+    CachedObjectStorage, SharedCachedObjectsExternalAccessor,
+};
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
 use crate::persistence::input_snapshot::{ReadInputSnapshot, SnapshotMode};
 use crate::persistence::operator_snapshot::{
@@ -55,6 +57,7 @@ pub struct WorkerPersistentStorage {
     operator_snapshot_mergers: Vec<ConcreteSnapshotMerger>,
     sink_threshold_times: Vec<TotalFrontier<Timestamp>>,
     registered_persistent_ids: HashSet<PersistentId>,
+    cached_object_accessors: Vec<SharedCachedObjectsExternalAccessor>,
 }
 
 pub type SharedWorkerPersistentStorage = Arc<Mutex<WorkerPersistentStorage>>;
@@ -109,14 +112,18 @@ impl WorkerPersistentStorage {
             operator_snapshot_mergers: Vec::new(),
             sink_threshold_times: Vec::new(),
             registered_persistent_ids: HashSet::new(),
+            cached_object_accessors: Vec::new(),
         })
     }
 
     pub fn create_cached_object_storage(
-        &self,
+        &mut self,
         persistent_id: PersistentId,
     ) -> Result<CachedObjectStorage, PersistenceBackendError> {
-        self.config.create_cached_object_storage(persistent_id)
+        let storage = self.config.create_cached_object_storage(persistent_id)?;
+        self.cached_object_accessors
+            .push(storage.get_external_accessor());
+        Ok(storage)
     }
 
     pub fn table_persistence_enabled(&self) -> bool {
@@ -209,6 +216,12 @@ impl WorkerPersistentStorage {
             return LogicalTimeCommitData::new(vec![], self.last_finalized_timestamp());
         }
 
+        for accessor in &self.cached_object_accessors {
+            if let Err(e) = accessor.lock().unwrap().start_forced_state_upload() {
+                error!("Failed to save data in the cached object storage, additional sync may be needed on the rerun: {e}");
+            }
+        }
+
         let mut futures = Vec::new();
         for snapshot_writer in self.snapshot_writers.values() {
             let mut flush_futures = snapshot_writer.lock().unwrap().flush();
@@ -228,6 +241,10 @@ impl WorkerPersistentStorage {
     fn commit_finalized_timestamp(&mut self, commit_data: &LogicalTimeCommitData) {
         self.metadata_storage
             .accept_finalized_timestamp(commit_data.timestamp);
+
+        for accessor in &self.cached_object_accessors {
+            accessor.lock().unwrap().wait_for_state_upload_completion();
+        }
 
         if let Err(e) = self.metadata_storage.save_current_state() {
             error!("Failed to save the current state, the data may duplicate in the re-run: {e}");

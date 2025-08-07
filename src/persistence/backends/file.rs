@@ -71,7 +71,7 @@ impl PersistenceBackend for FilesystemKVStorage {
         Ok(std::fs::read(self.root_path.join(key))?)
     }
 
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
+    fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
 
         let tmp_path = self
@@ -85,7 +85,7 @@ impl PersistenceBackend for FilesystemKVStorage {
         receiver
     }
 
-    fn remove_key(&mut self, key: &str) -> Result<(), Error> {
+    fn remove_key(&self, key: &str) -> Result<(), Error> {
         std::fs::remove_file(self.root_path.join(key))?;
         Ok(())
     }

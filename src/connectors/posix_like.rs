@@ -15,7 +15,7 @@ use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, StorageType,
 };
-use crate::persistence::backends::MemoryKVStorage;
+use crate::persistence::backends::MockKVStorage;
 use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
@@ -69,7 +69,7 @@ impl PosixLikeReader {
             had_queue_refresh: false,
             current_action: None,
             scanner_actions_queue: VecDeque::new(),
-            cached_object_storage: CachedObjectStorage::new(Box::new(MemoryKVStorage::new()))?,
+            cached_object_storage: CachedObjectStorage::new(Box::new(MockKVStorage {})),
         })
     }
 }
@@ -92,7 +92,8 @@ impl Reader for PosixLikeReader {
             return Ok(());
         };
         if let Some(cached_object_version) = cached_object_version {
-            self.cached_object_storage.rewind(cached_object_version)?;
+            self.cached_object_storage
+                .start_from_stable_version(cached_object_version)?;
         }
 
         self.current_action = None;
@@ -128,7 +129,7 @@ impl Reader for PosixLikeReader {
 
     fn initialize_cached_objects_storage(
         &mut self,
-        persistence_manager: &WorkerPersistentStorage,
+        persistence_manager: &mut WorkerPersistentStorage,
         persistent_id: PersistentId,
     ) -> Result<(), ReadError> {
         self.cached_object_storage =

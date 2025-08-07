@@ -12,7 +12,7 @@ use pathway_engine::engine::dataflow::persist::Persist;
 use pathway_engine::engine::dataflow::shard::Shard;
 use pathway_engine::engine::{Timestamp, TotalFrontier};
 use pathway_engine::persistence::backends::{
-    BackendPutFuture, Error as BackendError, MemoryKVStorage, PersistenceBackend,
+    BackendPutFuture, Error as BackendError, FilesystemKVStorage, PersistenceBackend,
 };
 use pathway_engine::persistence::operator_snapshot::{
     ConcreteSnapshotMerger, ConcreteSnapshotReader, ConcreteSnapshotWriter,
@@ -28,6 +28,7 @@ use std::ops::ControlFlow;
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
+use tempfile::tempdir;
 use timely::communication::allocator::Generic;
 use timely::order::TotalOrder;
 use timely::worker::Worker;
@@ -379,8 +380,8 @@ mock! {
     impl PersistenceBackend for Backend {
         fn list_keys(&self) -> Result<Vec<String>, BackendError>;
         fn get_value(&self, key: &str) -> Result<Vec<u8>, BackendError>;
-        fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture;
-        fn remove_key(&mut self, key: &str) -> Result<(), BackendError>;
+        fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture;
+        fn remove_key(&self, key: &str) -> Result<(), BackendError>;
     }
 }
 
@@ -562,8 +563,11 @@ fn metadata_from_timestamp(timestamp: Timestamp) -> Vec<u8> {
 }
 
 #[test]
-fn test_snapshot_merging_1() {
-    let mut metadata_backend = MemoryKVStorage::new();
+fn test_snapshot_merging_1() -> eyre::Result<()> {
+    let test_storage = tempdir()?;
+    let test_storage_path = test_storage.path();
+    let metadata_backend = FilesystemKVStorage::new(test_storage_path)?;
+
     let future = metadata_backend.put_value("1-0-0", metadata_from_timestamp(Timestamp(11)));
     futures::executor::block_on(future).unwrap().unwrap();
     let mut time_querier = FinalizedTimeQuerier::new(Box::new(metadata_backend), 1);
@@ -649,11 +653,15 @@ fn test_snapshot_merging_1() {
         .returning(|_| Ok(()));
     ConcreteSnapshotMerger::maybe_merge::<(i32, i32), i32>(&mut backend, &mut time_querier)
         .unwrap();
+    Ok(())
 }
 
 #[test]
-fn test_snapshot_merging_2() {
-    let mut metadata_backend = MemoryKVStorage::new();
+fn test_snapshot_merging_2() -> eyre::Result<()> {
+    let test_storage = tempdir()?;
+    let test_storage_path = test_storage.path();
+    let metadata_backend = FilesystemKVStorage::new(test_storage_path)?;
+
     let future = metadata_backend.put_value("1-0-0", metadata_from_timestamp(Timestamp(10)));
     futures::executor::block_on(future).unwrap().unwrap();
     let mut time_querier = FinalizedTimeQuerier::new(Box::new(metadata_backend), 1);
@@ -733,6 +741,7 @@ fn test_snapshot_merging_2() {
         .returning(|_| Ok(()));
     ConcreteSnapshotMerger::maybe_merge::<(i32, i32), i32>(&mut backend, &mut time_querier)
         .unwrap();
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -761,14 +770,14 @@ impl PersistenceBackend for KVBackend {
         Ok(self.get_storage()[key].clone())
     }
 
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
+    fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture {
         self.get_storage().insert(key.to_string(), value);
         let (sender, receiver) = oneshot::channel();
         sender.send(Ok(())).unwrap();
         receiver
     }
 
-    fn remove_key(&mut self, key: &str) -> Result<(), BackendError> {
+    fn remove_key(&self, key: &str) -> Result<(), BackendError> {
         self.get_storage().remove(key);
         Ok(())
     }
@@ -776,7 +785,7 @@ impl PersistenceBackend for KVBackend {
 
 #[test]
 fn test_snapshot_writer_with_merger() {
-    let mut metadata_backend = KVBackend::new(); // can't use MemoryKVStorage as the entries have to be available in multiple threads
+    let metadata_backend = KVBackend::new(); // can't use existing KVStorage as the entries have to be available in multiple threads
     let mut time_querier = FinalizedTimeQuerier::new(Box::new(metadata_backend.clone()), 1);
     let mut backend = KVBackend::new();
     let mut writer: ConcreteSnapshotWriter<i64, isize> =

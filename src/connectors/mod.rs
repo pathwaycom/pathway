@@ -467,7 +467,7 @@ impl Connector {
         if let Some(persistent_storage) = persistent_storage {
             if let Some(persistent_id) = persistent_id {
                 reader.initialize_cached_objects_storage(
-                    &persistent_storage.lock().unwrap(),
+                    &mut persistent_storage.lock().unwrap(),
                     persistent_id,
                 )?;
                 if snapshot_access.is_replay_allowed() {

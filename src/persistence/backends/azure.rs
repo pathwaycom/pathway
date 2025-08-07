@@ -150,12 +150,12 @@ impl PersistenceBackend for AzureKVStorage {
         })
     }
 
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
+    fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture {
         self.background_uploader
             .upload_object(key.to_string(), value)
     }
 
-    fn remove_key(&mut self, key: &str) -> Result<(), Error> {
+    fn remove_key(&self, key: &str) -> Result<(), Error> {
         let blob_client = self.create_blob_client(key);
         self.runtime.block_on(async {
             let _ = blob_client.delete().await?;

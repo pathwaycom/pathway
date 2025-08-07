@@ -9,7 +9,7 @@ fn test_simple_kv_operations() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
 
-    let mut storage = FilesystemKVStorage::new(test_storage_path)?;
+    let storage = FilesystemKVStorage::new(test_storage_path)?;
     assert_eq!(storage.list_keys()?, Vec::<String>::new());
 
     futures::executor::block_on(async { storage.put_value("1", b"one".to_vec()).await.unwrap() })

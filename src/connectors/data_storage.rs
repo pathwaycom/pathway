@@ -407,7 +407,7 @@ pub trait Reader {
 
     fn initialize_cached_objects_storage(
         &mut self,
-        _: &WorkerPersistentStorage,
+        _: &mut WorkerPersistentStorage,
         _: PersistentId,
     ) -> Result<(), ReadError> {
         Ok(())

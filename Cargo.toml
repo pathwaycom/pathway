@@ -57,6 +57,7 @@ jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_t
 jmespath = "0.3.0"
 libc = "0.2.172"
 log = { version = "0.4.27", features = ["std"] }
+lz4_flex = "0.11.5"
 mongodb = { version = "3.2.2", features = ["sync"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
 nix = { version = "0.30.1", features = ["fs", "user", "resource"] }

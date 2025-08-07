@@ -233,7 +233,7 @@ impl PersistenceManagerConfig {
             }
             PersistentStorageConfig::Mock(_) => Box::new(MockKVStorage {}),
         };
-        CachedObjectStorage::new(backend)
+        Ok(CachedObjectStorage::new(backend))
     }
 
     pub fn create_metadata_storage(&self) -> Result<MetadataAccessor, PersistenceBackendError> {

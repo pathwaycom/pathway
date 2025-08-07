@@ -81,12 +81,12 @@ impl PersistenceBackend for S3KVStorage {
         Ok(response_data.bytes().to_vec())
     }
 
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
+    fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture {
         self.background_uploader
             .upload_object(self.full_key_path(key), value)
     }
 
-    fn remove_key(&mut self, key: &str) -> Result<(), Error> {
+    fn remove_key(&self, key: &str) -> Result<(), Error> {
         let full_key_path = self.full_key_path(key);
         let _ = execute_with_retries(
             || self.bucket.delete_object(full_key_path.clone()),

@@ -16,17 +16,16 @@ use futures::channel::oneshot;
 use futures::channel::oneshot::Receiver as OneShotReceiver;
 use futures::channel::oneshot::Sender as OneShotSender;
 use glob::PatternError as GlobPatternError;
+use lz4_flex::block::DecompressError;
 use serde_json::Error as JsonParseError;
 
 pub use azure::AzureKVStorage;
 pub use file::FilesystemKVStorage;
-pub use memory::{MemoryKVStorage, MemoryKVStorageError};
 pub use mock::MockKVStorage;
 pub use s3::S3KVStorage;
 
 pub mod azure;
 pub mod file;
-pub mod memory;
 pub mod mock;
 pub mod s3;
 
@@ -40,9 +39,6 @@ pub enum Error {
     S3(#[from] S3Error),
 
     #[error(transparent)]
-    Memory(#[from] MemoryKVStorageError),
-
-    #[error(transparent)]
     Utf8(#[from] Utf8Error),
 
     #[error(transparent)]
@@ -54,8 +50,14 @@ pub enum Error {
     #[error(transparent)]
     Glob(#[from] GlobPatternError),
 
+    #[error(transparent)]
+    Lz4Decompress(#[from] DecompressError),
+
     #[error("no available cached object versions")]
     NoAvailableVersions,
+
+    #[error("object is not present in a cached object storage")]
+    NoCachedObject,
 
     #[error("path must be a valid utf-8 string")]
     PathIsNotUtf8,
@@ -67,7 +69,7 @@ pub enum Error {
 pub type BackendPutFuture = OneShotReceiver<Result<(), Error>>;
 /// The persistence backend can be implemented over a Key-Value
 /// storage that implements the following interface.
-pub trait PersistenceBackend: Send + Debug {
+pub trait PersistenceBackend: Send + Sync + Debug {
     /// List all keys present in the storage.
     fn list_keys(&self) -> Result<Vec<String>, Error>;
 
@@ -75,10 +77,11 @@ pub trait PersistenceBackend: Send + Debug {
     fn get_value(&self, key: &str) -> Result<Vec<u8>, Error>;
 
     /// Set the value corresponding to the `key` to `value`.
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture;
+    /// The values must be written in order they're reported to the method.
+    fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture;
 
     /// Remove the value corresponding to the `key`.
-    fn remove_key(&mut self, key: &str) -> Result<(), Error>;
+    fn remove_key(&self, key: &str) -> Result<(), Error>;
 }
 
 #[derive(Debug)]
@@ -127,7 +130,7 @@ impl BackgroundObjectUploader {
         }
     }
 
-    fn upload_object(&mut self, key: String, value: Vec<u8>) -> BackendPutFuture {
+    fn upload_object(&self, key: String, value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
         self.upload_event_sender
             .send(BackgroundUploaderEvent::UploadObject {

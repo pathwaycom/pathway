@@ -20,7 +20,7 @@ impl PersistenceBackend for MockKVStorage {
         unreachable!()
     }
 
-    fn put_value(&mut self, _key: &str, _value: Vec<u8>) -> BackendPutFuture {
+    fn put_value(&self, _key: &str, _value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
         sender
             .send(Ok(()))
@@ -28,7 +28,7 @@ impl PersistenceBackend for MockKVStorage {
         receiver
     }
 
-    fn remove_key(&mut self, _key: &str) -> Result<(), Error> {
+    fn remove_key(&self, _key: &str) -> Result<(), Error> {
         Ok(())
     }
 }
