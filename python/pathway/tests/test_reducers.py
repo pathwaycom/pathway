@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 
+import numpy as np
 import pytest
 
 import pathway as pw
@@ -601,6 +603,69 @@ def test_distinct():
     """
     )
     assert_table_equality_wo_index(result, expected)
+
+
+def test_distinct_approximate():
+    t = T(
+        """
+        a | b
+        1 | 2
+        3 | 4
+        3 | 5
+        5 | 5
+        5 | 6
+    """
+    )
+    result = t.groupby().reduce(
+        empty=pw.reducers.count_distinct_approximate(),
+        only_a=pw.reducers.count_distinct_approximate(pw.this.a),
+        only_b=pw.reducers.count_distinct_approximate(pw.this.b),
+        both=pw.reducers.count_distinct_approximate(pw.this.a, pw.this.b),
+    )
+    expected = T(
+        """
+        empty | only_a | only_b | both
+          1   |    3   |    4   |   5
+    """
+    )
+    assert_table_equality_wo_index(result, expected)
+
+
+@pytest.mark.parametrize("precision", [4, 8, 12, 16])
+def test_distinct_approximation_quality(precision, tmp_path):
+    input_path = tmp_path / "input.jl"
+
+    class InputSchema(pw.Schema):
+        a: int
+        g: int
+
+    n = 100_000
+    np.random.seed(42)
+    g = np.random.randint(0, 10, size=n)
+    a = np.random.randint(0, n // 10, size=n)
+    with open(input_path, "w") as f:
+        for i in range(n):
+            json.dump({"a": int(a[i]), "g": int(g[i])}, f)
+            f.write("\n")
+    t = pw.io.jsonlines.read(
+        input_path, schema=InputSchema, mode="static", autocommit_duration_ms=100
+    )
+    result = t.groupby(pw.this.g).reduce(
+        cd=pw.reducers.count_distinct(pw.this.a),
+        cda=pw.reducers.count_distinct_approximate(pw.this.a, precision=precision),
+    )
+    result = result.select(err=(pw.this.cd - pw.this.cda).num.abs() / pw.this.cd)
+    result = result.select(err_within_margin=pw.this.err < 1.8 / 2 ** (precision / 2))
+    ok_count = result.reduce(
+        ok=pw.reducers.sum(pw.if_else(pw.this.err_within_margin, 1, 0))
+    )
+    expected = T(
+        """
+             ok
+             10
+    """
+    )
+    assert_table_equality_wo_index(ok_count, expected)
 
 
 @pytest.mark.parametrize("strict", [False, True])

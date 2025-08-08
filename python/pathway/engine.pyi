@@ -185,6 +185,8 @@ class Reducer:
     COUNT: Reducer
     COUNT_DISTINCT: Reducer
     @staticmethod
+    def count_distinct_approximate(precision: int) -> Reducer: ...
+    @staticmethod
     def stateful_many(combine_many: CombineMany[S]) -> Reducer: ...
     EARLIEST: Reducer
     LATEST: Reducer

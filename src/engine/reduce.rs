@@ -27,6 +27,7 @@ fn take_first_value<T>(v: Vec<T>) -> T {
 pub enum Reducer {
     Count,
     CountDistinct,
+    CountDistinctApproximate { precision: usize },
     FloatSum { strict: bool },
     IntSum,
     ArraySum { strict: bool },
@@ -924,6 +925,17 @@ impl ReducerImpl for TupleReducer {
 
 #[derive(Debug, Clone, Copy)]
 pub struct CountDistinctReducer;
+
+#[derive(Debug, Clone, Copy)]
+pub struct CountDistinctApproximateReducer {
+    pub precision: usize,
+}
+
+impl CountDistinctApproximateReducer {
+    pub fn new(precision: usize) -> Self {
+        Self { precision }
+    }
+}
 
 #[derive(Clone)]
 pub struct StatefulReducer {

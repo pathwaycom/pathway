@@ -286,29 +286,29 @@ where
     }
 }
 
-pub trait FlatMapWithDeletionsFirst<S, D, R>
+pub trait FlatMapBatchedWithDeletionsFirst<S, D, R>
 where
     S: MaybeTotalScope,
     R: Monoid + ExchangeData,
 {
-    fn flat_map_named_with_deletions_first<D2: Data>(
+    fn flat_map_batched_named_with_deletions_first<D2: Data>(
         &self,
         name: &str,
-        logic: impl FnMut(Vec<(D, R)>) -> Vec<Option<D2>> + 'static,
+        logic: impl FnMut(Vec<(D, R)>) -> Vec<(D2, R)> + 'static,
     ) -> Collection<S, D2, R>;
 }
 
-impl<S, D, R> FlatMapWithDeletionsFirst<S, D, R> for Collection<S, D, R>
+impl<S, D, R> FlatMapBatchedWithDeletionsFirst<S, D, R> for Collection<S, D, R>
 where
     S: MaybeTotalScope,
     D: ExchangeData + Shard,
     R: Monoid + ExchangeData + Copy,
 {
     #[track_caller]
-    fn flat_map_named_with_deletions_first<D2: Data>(
+    fn flat_map_batched_named_with_deletions_first<D2: Data>(
         &self,
         name: &str,
-        mut logic: impl FnMut(Vec<(D, R)>) -> Vec<Option<D2>> + 'static,
+        mut logic: impl FnMut(Vec<(D, R)>) -> Vec<(D2, R)> + 'static,
     ) -> Collection<S, D2, R> {
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
@@ -320,14 +320,10 @@ where
                         data.swap(&mut vector);
                         for batch in vector.drain(..) {
                             let OutputBatch { time, data } = batch;
-                            let diffs: Vec<_> = data.iter().map(|(_data, diff)| *diff).collect();
                             output.session(&cap.delayed(&time)).give_iterator(
                                 logic(data)
                                     .into_iter()
-                                    .zip_eq(diffs.into_iter())
-                                    .filter_map(|(result, diff)| {
-                                        result.map(|data| (data, time.clone(), diff))
-                                    }),
+                                    .map(|(result, diff)| (result, time.clone(), diff)),
                             );
                         }
                     }

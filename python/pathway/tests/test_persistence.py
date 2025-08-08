@@ -577,6 +577,7 @@ def test_groupby_2(tmp_path, mode):
     class InputSchema(pw.Schema, append_only=True):
         a: int
         b: int = pw.column_definition(primary_key=True)
+        c: int
 
     # ignore below because stateful_many doesn't allow better narrower types in annotation
     @pw.reducers.stateful_many  # type: ignore
@@ -603,17 +604,18 @@ def test_groupby_2(tmp_path, mode):
             s=count_max(pw.this.b)[0],
             mi=pw.reducers.min(pw.this.b),
             ma=pw.reducers.max(pw.this.b),
+            cd=pw.reducers.count_distinct_approximate(pw.this.c),
         )
 
     run, _ = get_one_table_runner(tmp_path, mode, logic, InputSchema)
 
-    run(["a,b", "1,3", "2,4"], {"1,3,3,1,3,3,1", "2,4,4,1,4,4,1"})
+    run(["a,b,c", "1,3,3", "2,4,2"], {"1,3,3,1,3,3,1,1", "2,4,4,1,4,4,1,1"})
     time.sleep(2)
-    run(["a,b", "1,5", "1,0"], {"1,3,3,1,3,3,-1", "1,3,5,2,0,5,1"})
+    run(["a,b,c", "1,5,2", "1,0,2"], {"1,3,3,1,3,3,1,-1", "1,3,5,2,0,5,2,1"})
     time.sleep(2)
-    run(["a,b", "2,6"], {"2,4,4,1,4,4,-1", "2,4,6,2,4,6,1"})
+    run(["a,b,c", "2,6,4"], {"2,4,4,1,4,4,1,-1", "2,4,6,2,4,6,2,1"})
     time.sleep(2)
-    run(["a,b", "2,8"], {"2,4,6,2,4,6,-1", "2,4,8,3,4,8,1"})
+    run(["a,b,c", "2,8,2"], {"2,4,6,2,4,6,2,-1", "2,4,8,3,4,8,2,1"})
 
 
 @pytest.mark.parametrize(

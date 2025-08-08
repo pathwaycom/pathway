@@ -958,6 +958,11 @@ impl PyReducer {
     #[classattr]
     pub const COUNT_DISTINCT: Reducer = Reducer::CountDistinct;
 
+    #[staticmethod]
+    fn count_distinct_approximate(precision: usize) -> Reducer {
+        Reducer::CountDistinctApproximate { precision }
+    }
+
     #[classattr]
     pub const ANY: Reducer = Reducer::Any;
 

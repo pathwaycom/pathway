@@ -142,6 +142,9 @@ pub enum Error {
 
     #[error("input synchronization failed: {0}")]
     InputSynchronization(#[from] InputSynchronizationError),
+
+    #[error("precision for HyperLogLogPlus should be between 4 and 18 but is {0}")]
+    HyperLogLogPlusInvalidPrecision(usize),
 }
 
 const OTHER_WORKER_ERROR_MESSAGES: [&str; 3] = [

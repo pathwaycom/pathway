@@ -171,6 +171,20 @@ class CountDistinctReducer(Reducer):
         return api.Reducer.COUNT_DISTINCT
 
 
+class CountDistinctApproximateReducer(Reducer):
+    precision: int
+
+    def __init__(self, *, name: str, precision: int) -> None:
+        super().__init__(name=name)
+        self.precision = precision
+
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
+        return dt.INT
+
+    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
+        return api.Reducer.count_distinct_approximate(self.precision)
+
+
 class TupleWrappingReducer(Reducer):
     _skip_nones: bool
     _engine_reducer: api.Reducer
@@ -818,3 +832,52 @@ def count_distinct(*args: expr.ColumnExpression) -> expr.ColumnExpression:
     valB  | 2
     """
     return expr.ReducerExpression(_count_distinct, *args)
+
+
+def count_distinct_approximate(
+    *args: expr.ColumnExpression, precision: int = 12
+) -> expr.ColumnExpression:
+    """
+    Returns the approximation of the number of distinct values.
+
+    The reducer uses `HyperLogLog <https://en.wikipedia.org/wiki/HyperLogLog>`_ to
+    estimate the number of distinct values without the need to store the values.
+    It can only be used on append-only Tables.
+
+    This reducer uses less memory than a regular `count_distinct` reducer.
+    Their computational needs are similar though. Currently, both reducers use
+    the same way of persisting the state. A better way of persisting the state
+    is planned for `count_distinct_approximate` reducer.
+
+    Parameters:
+        *args: ``ColumnExpression``s for which the number of distinct values has to be computed.
+        precision: The number of hash bits used for the index part in the algorithm.
+            The algorithm uses ``2^precision`` buckets. Higher precision results in higher memory usage.
+            The `precision` has to be between 4 and 18.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... '''
+    ... )
+    >>> result = t.groupby(t.colA).reduce(
+    ...     group=pw.this.colA, count=pw.reducers.count_distinct_approximate(pw.this.colB)
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    group | count
+    valA  | 3
+    valB  | 2
+    """
+    reducer = CountDistinctApproximateReducer(
+        name="count_distinct_approximate", precision=precision
+    )
+    return expr.ReducerExpression(reducer, *args)

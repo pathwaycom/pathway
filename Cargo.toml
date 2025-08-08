@@ -48,6 +48,7 @@ glob = "0.3.2"
 half = "2.6.0"
 hex = "0.4.3"
 hyper = { version = "0.14", features = ["server"] }
+hyperloglogplus = "0.4.1"
 iceberg = "0.4.0"
 iceberg-catalog-rest = "0.4.0"
 id-arena = "2.2.1"

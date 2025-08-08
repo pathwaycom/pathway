@@ -31,8 +31,8 @@ use crate::engine::dataflow::operators::time_column::{
 use crate::engine::dataflow::operators::ExtendedProbeWith;
 use crate::engine::reduce::{
     AppendOnlyAnyState, AppendOnlyArgMaxState, AppendOnlyArgMinState, AppendOnlyMaxState,
-    AppendOnlyMinState, ArraySumState, CountDistinctReducer, ErrorStateWrapper, FloatSumState,
-    IntSumState, SemigroupReducer, SemigroupState,
+    AppendOnlyMinState, ArraySumState, CountDistinctApproximateReducer, CountDistinctReducer,
+    ErrorStateWrapper, FloatSumState, IntSumState, SemigroupReducer, SemigroupState,
 };
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
@@ -76,6 +76,7 @@ use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpin
 use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::{AsCollection as _, Data};
 use differential_dataflow::{Collection, ExchangeData};
+use hyperloglogplus::{HyperLogLog, HyperLogLogPlus};
 use id_arena::Arena;
 use itertools::{chain, process_results, Itertools};
 use log::{error, info};
@@ -95,7 +96,7 @@ use timely::execute;
 use timely::order::{Product, TotalOrder};
 use timely::progress::timestamp::Refines;
 use timely::progress::Timestamp as TimestampTrait;
-use xxhash_rust::xxh3::Xxh3 as Hasher;
+use xxhash_rust::xxh3::{Xxh3 as Hasher, Xxh3Builder};
 
 use self::async_transformer::async_transformer;
 use self::complex_columns::complex_columns;
@@ -105,7 +106,7 @@ use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
 use self::operators::time_column::TimeColumnBuffer;
-use self::operators::{ArrangeWithTypes, FlatMapWithDeletionsFirst, MapWrapped};
+use self::operators::{ArrangeWithTypes, FlatMapBatchedWithDeletionsFirst, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use self::variable::SafeVariable;
@@ -1613,7 +1614,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             self,
             "expression_table::evaluate_expression",
             move |collection| {
-                collection.flat_map_named_with_deletions_first(
+                collection.flat_map_batched_named_with_deletions_first(
                     "expression_table::evaluate_expression",
                     move |data_with_diffs| {
                         let mut results = vec![None; data_with_diffs.len()];
@@ -1702,9 +1703,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         let mut rows_iter = rows.into_iter();
                         results
                             .into_iter()
-                            .map(|result_i| {
+                            .filter_map(|result_i| {
                                 result_i.map(|result_i| {
-                                    (rows_iter.next().unwrap().key, Value::Tuple(result_i.into()))
+                                    let row = rows_iter.next().unwrap();
+                                    ((row.key, Value::Tuple(result_i.into())), row.diff)
                                 })
                             })
                             .collect()
@@ -3180,7 +3182,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountDistinctReducer {
             .map_named("CountDistinctReducer::init", {
                 move |(_source_key, result_key, values)| (result_key, Key::for_values(&values))
             })
-            .maybe_persist(graph, "DataFlowReducer::reduce")?
+            .maybe_persist(graph, "CountDistinctReducer::reduce")?
             .distinct()
             .map_named(
                 "CountDistinctReducer::intermediate",
@@ -3190,6 +3192,65 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountDistinctReducer {
             .map_named("CountDistinctReducer::reduce", |(key, count)| {
                 (key, Value::from(count as i64))
             })
+            .into())
+    }
+}
+
+impl<S: MaybeTotalScope> DataflowReducer<S> for CountDistinctApproximateReducer {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        _error_logger: Rc<dyn LogError>,
+        _trace: Trace,
+        graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        let mut hllps: HashMap<Key, (i64, HyperLogLogPlus<Key, Xxh3Builder>)> = HashMap::new();
+        let precision = self.precision;
+        let invalid_precision = match u8::try_from(precision) {
+            Ok(precision) => {
+                HyperLogLogPlus::<Key, _>::new(precision, Xxh3Builder::default()).is_err()
+            }
+            Err(_) => true,
+        };
+        if invalid_precision {
+            return Err(Error::HyperLogLogPlusInvalidPrecision(precision));
+        }
+        Ok(values
+            .map_named("CountDistinctApproximate::init", {
+                move |(_source_key, result_key, values)| (result_key, Key::for_values(&values))
+            })
+            .maybe_persist(graph, "CountDistinctApproximate::reduce")?
+            .flat_map_batched_named_with_deletions_first(
+                "CountDistinctApproximate::main",
+                move |mut data_with_diffs| {
+                    data_with_diffs
+                        .sort_unstable_by_key(|((result_key, _value_key), _diff)| *result_key);
+                    let mut output = Vec::new();
+                    for chunk in data_with_diffs.chunk_by(|a, b| a.0 .0 == b.0 .0) {
+                        let result_key = chunk[0].0 .0;
+                        let (count, hllp) = hllps.entry(result_key).or_insert_with(|| {
+                            #[allow(clippy::cast_possible_truncation)]
+                            let hllp =
+                                HyperLogLogPlus::new(precision as u8, Xxh3Builder::default())
+                                    .expect("the precision was checked already");
+                            (0, hllp)
+                        });
+                        for ((_result_key, value_key), diff) in chunk {
+                            assert!(*diff > 0);
+                            hllp.insert_any(value_key);
+                        }
+                        if *count > 0 {
+                            output.push(((result_key, Value::Int(*count)), DIFF_DELETION));
+                        }
+                        #[allow(clippy::cast_possible_truncation)]
+                        let new_count = hllp.count().round() as i64;
+                        assert!(new_count > 0);
+                        output.push(((result_key, Value::Int(new_count)), DIFF_INSERTION));
+                        *count = new_count;
+                    }
+                    output
+                },
+            )
             .into())
     }
 }
@@ -3393,6 +3454,9 @@ where
         let res: Rc<dyn DataflowReducer<S>> = match reducer {
             Reducer::Count => Rc::new(CountReducer),
             Reducer::CountDistinct => Rc::new(CountDistinctReducer),
+            Reducer::CountDistinctApproximate { precision } => {
+                Rc::new(CountDistinctApproximateReducer::new(*precision))
+            }
             Reducer::FloatSum { strict } => {
                 if *strict {
                     Rc::new(FloatSumReducer)
