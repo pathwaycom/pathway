@@ -5,7 +5,8 @@
 # aside: true
 # date: '2023-01-09'
 # thumbnail:
-#   src: '/assets/content/blog/th-mining-hidden-user-pair-activity-with-fuzzy-join.png'
+#   src: '/assets/blog/thumbnails/th-mining-hidden-user-pair-activity-with-fuzzy-join.png'
+#   provider: 's3'
 # tags: ['tutorial', 'data-pipeline']
 # keywords: ['fuzzy join', 'alert', 'cryptocurrency', 'bitcoin', 'BTC', 'ETH', 'Ethereum']
 # layout: 'template'

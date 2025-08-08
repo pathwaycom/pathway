@@ -6,7 +6,8 @@
 # aside: true
 # date: '2023-05-30'
 # thumbnail:
-#   src: '/assets/content/blog/th-shield.png'
+#   src: '/assets/blog/thumbnails/th-shield.png'
+#   provider: "s3"
 # tags: ['tutorial', 'machine-learning']
 # keywords: ['window', 'tumbling', 'alert', 'notebook']
 # layout: 'template'

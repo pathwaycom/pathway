@@ -5,7 +5,8 @@
 # date: '2022-11-03'
 # layout: 'template'
 # thumbnail:
-#   src: '/assets/content/blog/th-bellman-ford.png'
+#   src: '/assets/blog/thumbnails/th-bellman-ford.png'
+#   provider: 's3'
 # tags: ['tutorial', 'machine-learning']
 # author: 'pathway'
 # notebook_export_path: notebooks/tutorials/bellman_ford.ipynb

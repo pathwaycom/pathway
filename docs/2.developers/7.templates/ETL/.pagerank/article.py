@@ -5,7 +5,8 @@
 # aside: true
 # date: '2022-11-07'
 # thumbnail:
-#   src: '/assets/content/blog/th-computing-pagerank.png'
+#   src: '/assets/blog/thumbnails/th-computing-pagerank.png'
+#   provider: 's3'
 # tags: ['tutorial', 'machine-learning']
 # keywords: ['pagerank', 'graph', 'notebook']
 # author: 'pathway'
