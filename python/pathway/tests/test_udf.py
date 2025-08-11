@@ -821,7 +821,7 @@ def test_udf_in_memory_cache_with_limit(sync: str) -> None:
         ),
     ],
 )
-def test_udf_in_memory_cache_multiple_places(sync: bool) -> None:
+def test_udf_in_memory_cache_multiple_places(sync: str) -> None:
     internal_inc = mock.Mock()
 
     if sync == "sync":

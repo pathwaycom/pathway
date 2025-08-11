@@ -2694,6 +2694,11 @@ impl Scope {
         self.graph.process_count()
     }
 
+    #[getter]
+    pub fn event_loop(&self, py: Python<'_>) -> PyObject {
+        self.event_loop.clone_ref(py)
+    }
+
     pub fn empty_table(
         self_: &Bound<Self>,
         properties: ConnectorProperties,

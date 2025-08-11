@@ -67,11 +67,19 @@ class _AsyncConnector(io.python.ConnectorSubject):
     _instances: dict[api.Value, _Instance]
     _time_finished: int | None
     _logger: logging.Logger
+    _own_event_loop: bool
 
-    def __init__(self, transformer: _BaseAsyncTransformer) -> None:
+    def __init__(
+        self,
+        transformer: _BaseAsyncTransformer,
+        _event_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         super().__init__(datasource_name="async-transformer")
         self._transformer = transformer
-        self._event_loop = asyncio.new_event_loop()
+        self._own_event_loop = _event_loop is None
+        if _event_loop is None:
+            _event_loop = asyncio.new_event_loop()
+        self._event_loop = _event_loop
         self._logger = logging.getLogger(__name__)
         self.set_options()
 
@@ -181,7 +189,12 @@ class _AsyncConnector(io.python.ConnectorSubject):
 
             await asyncio.gather(*self._tasks.values())
 
-        self._event_loop.run_until_complete(loop_forever(self._event_loop))
+        if self._own_event_loop:
+            self._event_loop.run_until_complete(loop_forever(self._event_loop))
+        else:
+            asyncio.run_coroutine_threadsafe(
+                loop_forever(self._event_loop), self._event_loop
+            ).result()
 
     def _on_time_end(self, time: int) -> None:
         self._time_finished = time
@@ -314,9 +327,13 @@ class _BaseAsyncTransformer(metaclass=ABCMeta):
     _autocommit_duration_ms: int | None
     _input_table: pw.Table | None
 
-    def __init__(self, autocommit_duration_ms: int | None = 1500) -> None:
+    def __init__(
+        self,
+        autocommit_duration_ms: int | None = 1500,
+        _event_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         assert self.output_schema is not None
-        self._connector = _AsyncConnector(self)
+        self._connector = _AsyncConnector(self, _event_loop)
         self._autocommit_duration_ms = autocommit_duration_ms
         self._input_table = None
 
@@ -408,8 +425,11 @@ class AsyncTransformer(_BaseAsyncTransformer, metaclass=ABCMeta):
         *,
         instance: pw.ColumnExpression | api.Value = pw.this.id,
         autocommit_duration_ms: int | None = 1500,
+        _event_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        super().__init__(autocommit_duration_ms=autocommit_duration_ms)
+        super().__init__(
+            autocommit_duration_ms=autocommit_duration_ms, _event_loop=_event_loop
+        )
 
         # TODO: when AsyncTransformer uses persistence backend for cache
         # just take the settings for persistence config

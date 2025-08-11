@@ -519,7 +519,9 @@ class RowwiseEvaluator(
                     )
                     return dict(result=api.ERROR)
 
-        transformer = Transformer(expression.autocommit_duration_ms)
+        transformer = Transformer(
+            expression.autocommit_duration_ms, _event_loop=self.scope.event_loop
+        )
 
         ordered_output_columns = [
             output_columns[name]
