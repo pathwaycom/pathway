@@ -850,7 +850,7 @@ def count_distinct_approximate(
     is planned for `count_distinct_approximate` reducer.
 
     Parameters:
-        *args: ``ColumnExpression``s for which the number of distinct values has to be computed.
+        *args: ``ColumnExpression`` (or many) for which the number of distinct values has to be computed.
         precision: The number of hash bits used for the index part in the algorithm.
             The algorithm uses ``2^precision`` buckets. Higher precision results in higher memory usage.
             The `precision` has to be between 4 and 18.
