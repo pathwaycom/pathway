@@ -214,7 +214,8 @@ pub fn full_cycle_read(
                 .unwrap()
                 .lock()
                 .unwrap()
-                .update_sink_finalized_time(sink_id, Some(Timestamp(prev_finalized_time.0 + 2)));
+                .update_sink_finalized_time(sink_id, Some(Timestamp(prev_finalized_time.0 + 2)))
+                .unwrap();
         }
     }
 

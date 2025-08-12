@@ -111,7 +111,7 @@ fn test_place_delete_rewind_access() -> eyre::Result<()> {
         .get_external_accessor()
         .lock()
         .unwrap()
-        .wait_for_state_upload_completion();
+        .wait_for_all_uploads()?;
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
     let mut storage = CachedObjectStorage::new(Box::new(backend))?;
@@ -145,7 +145,7 @@ fn test_access_latest_version_rewind_clear() -> eyre::Result<()> {
         .get_external_accessor()
         .lock()
         .unwrap()
-        .wait_for_state_upload_completion();
+        .wait_for_all_uploads()?;
 
     let document_v3 = create_mock_document();
     let metadata_v3 = create_mock_storage_metadata();
@@ -160,7 +160,7 @@ fn test_access_latest_version_rewind_clear() -> eyre::Result<()> {
         .get_external_accessor()
         .lock()
         .unwrap()
-        .wait_for_state_upload_completion();
+        .wait_for_all_uploads()?;
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
     let mut storage = CachedObjectStorage::new(Box::new(backend))?;
@@ -199,7 +199,7 @@ fn test_add_version_after_rewind() -> eyre::Result<()> {
         .get_external_accessor()
         .lock()
         .unwrap()
-        .wait_for_state_upload_completion();
+        .wait_for_all_uploads()?;
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
     let mut storage = CachedObjectStorage::new(Box::new(backend))?;
@@ -242,7 +242,7 @@ fn test_rewind_to_removal_then_update() -> eyre::Result<()> {
         .get_external_accessor()
         .lock()
         .unwrap()
-        .wait_for_state_upload_completion();
+        .wait_for_all_uploads()?;
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
     let mut storage = CachedObjectStorage::new(Box::new(backend))?;

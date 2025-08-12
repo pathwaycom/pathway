@@ -2,7 +2,7 @@
 
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::ExchangeData;
-use log::{error, warn};
+use log::error;
 use std::collections::{HashMap, HashSet};
 use std::mem::take;
 use std::sync::{Arc, Mutex};
@@ -82,22 +82,13 @@ impl LogicalTimeCommitData {
         }
     }
 
-    pub fn prepare(&mut self) -> bool {
-        let mut is_snapshot_saved = true;
+    pub fn prepare(&mut self) -> Result<(), PersistenceBackendError> {
         futures::executor::block_on(async {
-            for mut future in take(&mut self.snapshot_futures) {
-                if !is_snapshot_saved {
-                    future.close();
-                }
-                let flush_result = future.await;
-                if let Err(e) = flush_result {
-                    error!("Failed to flush the snapshot, the data in re-run may duplicate: {e}");
-                    is_snapshot_saved = false;
-                }
+            for future in take(&mut self.snapshot_futures) {
+                future.await.unwrap()?;
             }
-        });
-
-        is_snapshot_saved
+            Ok(())
+        })
     }
 }
 
@@ -172,7 +163,7 @@ impl WorkerPersistentStorage {
         &mut self,
         sink_id: usize,
         reported_timestamp: Option<Timestamp>,
-    ) {
+    ) -> Result<(), PersistenceBackendError> {
         self.sink_threshold_times[sink_id] =
             reported_timestamp.map_or(TotalFrontier::Done, TotalFrontier::At);
         let worker_finalized_timestamp = *self
@@ -190,13 +181,12 @@ impl WorkerPersistentStorage {
         };
         let timestamp_updated = normalized_finalized_timestamp != self.last_finalized_timestamp();
         if timestamp_updated {
-            let mut commit_data = self.accept_finalized_timestamp(normalized_finalized_timestamp);
-            if !commit_data.prepare() {
-                warn!("Failed to prepare commit data, logical time {normalized_finalized_timestamp:?} won't be committed");
-                return;
-            }
-            self.commit_finalized_timestamp(&commit_data);
+            let mut commit_data =
+                self.accept_finalized_timestamp(normalized_finalized_timestamp)?;
+            commit_data.prepare()?;
+            self.commit_finalized_timestamp(&commit_data)?;
         }
+        Ok(())
     }
 
     /// This method is called when the worker has finished the processing of time `timestamp`.
@@ -204,7 +194,7 @@ impl WorkerPersistentStorage {
     fn accept_finalized_timestamp(
         &mut self,
         finalized_timestamp: TotalFrontier<Timestamp>,
-    ) -> LogicalTimeCommitData {
+    ) -> Result<LogicalTimeCommitData, PersistenceBackendError> {
         /*
             Use the timestamp provided, or if it's None use the max timestamp across input sources
         */
@@ -213,13 +203,14 @@ impl WorkerPersistentStorage {
             error!("Time isn't in the increasing order. Got advancement to {finalized_timestamp:?} while last advanced timestamp was {:?}", self.last_finalized_timestamp());
 
             // Empty set of snapshot commit futures and non-changed timestamp
-            return LogicalTimeCommitData::new(vec![], self.last_finalized_timestamp());
+            return Ok(LogicalTimeCommitData::new(
+                vec![],
+                self.last_finalized_timestamp(),
+            ));
         }
 
         for accessor in &self.cached_object_accessors {
-            if let Err(e) = accessor.lock().unwrap().start_forced_state_upload() {
-                error!("Failed to save data in the cached object storage, additional sync may be needed on the rerun: {e}");
-            }
+            accessor.lock().unwrap().start_forced_state_upload()?;
         }
 
         let mut futures = Vec::new();
@@ -235,20 +226,26 @@ impl WorkerPersistentStorage {
             futures.append(&mut flush_futures);
         }
 
-        LogicalTimeCommitData::new(futures, finalized_timestamp)
+        Ok(LogicalTimeCommitData::new(futures, finalized_timestamp))
     }
 
-    fn commit_finalized_timestamp(&mut self, commit_data: &LogicalTimeCommitData) {
+    fn commit_finalized_timestamp(
+        &mut self,
+        commit_data: &LogicalTimeCommitData,
+    ) -> Result<(), PersistenceBackendError> {
         self.metadata_storage
             .accept_finalized_timestamp(commit_data.timestamp);
 
         for accessor in &self.cached_object_accessors {
-            accessor.lock().unwrap().wait_for_state_upload_completion();
+            accessor.lock().unwrap().wait_for_all_uploads()?;
         }
 
         if let Err(e) = self.metadata_storage.save_current_state() {
+            // The data dump isn't corrupt, so we can continue execution.
             error!("Failed to save the current state, the data may duplicate in the re-run: {e}");
         }
+
+        Ok(())
     }
 
     pub fn create_snapshot_readers(

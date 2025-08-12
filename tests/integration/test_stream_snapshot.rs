@@ -188,7 +188,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(1)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(1)))?;
 
     let event1 =
         SnapshotEvent::Insert(Key::random(), vec![Value::Int(1), Value::Float(2.3.into())]);
@@ -211,7 +211,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(2)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(2)))?;
 
     assert_eq!(
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
@@ -265,7 +265,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         tracker
             .lock()
             .unwrap()
-            .update_sink_finalized_time(mock_sink_id, Some(Timestamp(2)));
+            .update_sink_finalized_time(mock_sink_id, Some(Timestamp(2)))?;
 
         assert_eq!(
             read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
@@ -289,7 +289,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         tracker
             .lock()
             .unwrap()
-            .update_sink_finalized_time(mock_sink_id, Some(Timestamp(3)));
+            .update_sink_finalized_time(mock_sink_id, Some(Timestamp(3)))?;
 
         assert_eq!(
             read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
@@ -317,7 +317,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(1)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(1)))?;
 
     let event1 =
         SnapshotEvent::Insert(Key::random(), vec![Value::Int(1), Value::Float(2.3.into())]);
@@ -340,7 +340,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(3)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(3)))?;
 
     assert_eq!(
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::SpeedrunReplay),

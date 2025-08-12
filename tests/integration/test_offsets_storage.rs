@@ -176,7 +176,7 @@ fn test_timestamp_advancement_in_tracker() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(1)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(1)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(1))
@@ -185,7 +185,7 @@ fn test_timestamp_advancement_in_tracker() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(5)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(5)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(5))
@@ -194,7 +194,7 @@ fn test_timestamp_advancement_in_tracker() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(15)));
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(15)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(15))
@@ -231,7 +231,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(sink_id_1, Some(Timestamp(5)));
+        .update_sink_finalized_time(sink_id_1, Some(Timestamp(5)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(0))
@@ -239,7 +239,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(sink_id_1, Some(Timestamp(7)));
+        .update_sink_finalized_time(sink_id_1, Some(Timestamp(7)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(0))
@@ -247,7 +247,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(sink_id_2, Some(Timestamp(4)));
+        .update_sink_finalized_time(sink_id_2, Some(Timestamp(4)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(4))
@@ -255,7 +255,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(sink_id_2, Some(Timestamp(10)));
+        .update_sink_finalized_time(sink_id_2, Some(Timestamp(10)))?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(7))
@@ -263,7 +263,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(sink_id_2, None);
+        .update_sink_finalized_time(sink_id_2, None)?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::At(Timestamp(7))
@@ -276,7 +276,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     tracker
         .lock()
         .unwrap()
-        .update_sink_finalized_time(sink_id_1, None);
+        .update_sink_finalized_time(sink_id_1, None)?;
     assert_eq!(
         tracker.lock().unwrap().last_finalized_timestamp(),
         TotalFrontier::Done
@@ -299,7 +299,7 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
         tracker
             .lock()
             .unwrap()
-            .update_sink_finalized_time(sink_id, Some(Timestamp(100)));
+            .update_sink_finalized_time(sink_id, Some(Timestamp(100)))?;
     }
 
     {
@@ -320,7 +320,7 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
         tracker
             .lock()
             .unwrap()
-            .update_sink_finalized_time(sink_id, None);
+            .update_sink_finalized_time(sink_id, None)?;
     }
     {
         let ms =
@@ -336,7 +336,7 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
         tracker
             .lock()
             .unwrap()
-            .update_sink_finalized_time(sink_id, Some(Timestamp(100)));
+            .update_sink_finalized_time(sink_id, Some(Timestamp(100)))?;
     }
     {
         let ms =

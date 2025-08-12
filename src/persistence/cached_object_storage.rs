@@ -228,10 +228,6 @@ impl CachedObjectsExternalAccessor {
         Ok(())
     }
 
-    pub fn wait_for_state_upload_completion(&mut self) {
-        self.wait_for_all_uploads();
-    }
-
     fn start_upload_with_backend(
         backend: &dyn PersistenceBackend,
         batch: &EventsBatch,
@@ -275,13 +271,14 @@ impl CachedObjectsExternalAccessor {
         }
     }
 
-    pub fn wait_for_all_uploads(&mut self) {
+    pub fn wait_for_all_uploads(&mut self) -> Result<(), PersistenceError> {
         let upload_start = Instant::now();
         futures::executor::block_on(async {
             for upload in take(&mut self.current_uploads) {
-                let _ = upload.wait_for_completion().await;
+                upload.wait_for_completion().await?;
             }
-        });
+            Ok::<_, PersistenceError>(())
+        })?;
 
         let upload_elapsed = upload_start.elapsed();
         if upload_elapsed > Duration::from_secs(1) {
@@ -290,6 +287,8 @@ impl CachedObjectsExternalAccessor {
                 upload_start.elapsed()
             );
         }
+
+        Ok(())
     }
 
     fn shrink_to_version(

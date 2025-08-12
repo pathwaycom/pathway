@@ -4212,7 +4212,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         t: Option<Timestamp>,
         sink_id: Option<usize>,
         worker_persistent_storage: Option<&SharedWorkerPersistentStorage>,
-    ) {
+    ) -> Result<()> {
         if let Some(worker_persistent_storage) = worker_persistent_storage {
             worker_persistent_storage
                 .lock()
@@ -4220,9 +4220,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 .update_sink_finalized_time(
                     sink_id.expect("undefined sink_id while using persistent storage"),
                     t,
-                );
+                )?;
         }
         stats.on_time_committed(t.map(|t| t.0));
+        Ok(())
     }
 
     fn output_table(
@@ -4289,7 +4290,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     t,
                                     sink_id,
                                     worker_persistent_storage.as_ref(),
-                                );
+                                )?;
                                 data_sink.flush(t.is_none()).map_err(DynError::from)?;
                                 if t.is_none() {
                                     break Ok(());
@@ -4358,6 +4359,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
         let error_reporter = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
+        let error_reporter_3 = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
 
         let SubscribeCallbacks {
@@ -4445,7 +4447,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                             .update_sink_finalized_time(
                                 sink_id.expect("undefined sink_id while using persistent storage"),
                                 time_processed,
-                            );
+                            )
+                            .map_err(Error::PersistentStorageError)
+                            .unwrap_with_reporter(&error_reporter_3);
                     }
                 }
                 if let Ok((_, batches)) = event {
