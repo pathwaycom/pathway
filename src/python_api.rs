@@ -5,7 +5,7 @@
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::engine::graph::{
-    ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacks,
+    ErrorLogHandle, ExportedTable, JoinExactlyOnce, OperatorProperties, SubscribeCallbacks,
     SubscribeCallbacksBuilder, SubscribeConfig,
 };
 use crate::engine::license::{Error as LicenseError, License};
@@ -751,7 +751,8 @@ impl From<EngineError> for PyErr {
                     DataError::DivisionByZero => PyZeroDivisionError::type_object(py),
                     DataError::ParseError(_)
                     | DataError::ValueError(_)
-                    | DataError::AppendOnlyViolation(_, _) => PyValueError::type_object(py),
+                    | DataError::AppendOnlyViolation(_, _)
+                    | DataError::RepeatedEntryInBatch => PyValueError::type_object(py),
                     DataError::IndexOutOfBounds => PyIndexError::type_object(py),
                     _ => ENGINE_ERROR_TYPE.bind(py).clone(),
                 },
@@ -3330,7 +3331,9 @@ impl Scope {
         Table::new(self_, result_table_handle)
     }
 
-    #[pyo3(signature = (left_table, right_table, left_column_paths, right_column_paths, *, last_column_is_instance, table_properties, assign_id = false, left_ear = false, right_ear = false))]
+    #[pyo3(signature = (left_table, right_table, left_column_paths, right_column_paths, *,
+        last_column_is_instance, table_properties, assign_id = false, left_ear = false,
+        right_ear = false, left_exactly_once = false, right_exactly_once = false))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
     pub fn join_tables(
@@ -3344,13 +3347,17 @@ impl Scope {
         assign_id: bool,
         left_ear: bool,
         right_ear: bool,
+        left_exactly_once: bool,
+        right_exactly_once: bool,
     ) -> PyResult<Py<Table>> {
         let join_type = JoinType::from_assign_left_right(assign_id, left_ear, right_ear)?;
+        let join_exactly_once = JoinExactlyOnce::new(left_exactly_once, right_exactly_once);
         let table_handle = self_.borrow().graph.join_tables(
             JoinData::new(left_table.handle, left_column_paths),
             JoinData::new(right_table.handle, right_column_paths),
             ShardPolicy::from_last_column_is_instance(last_column_is_instance),
             join_type,
+            join_exactly_once,
             table_properties.0,
         )?;
         Table::new(self_, table_handle)

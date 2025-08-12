@@ -483,6 +483,18 @@ impl JoinType {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct JoinExactlyOnce {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl JoinExactlyOnce {
+    pub fn new(left: bool, right: bool) -> Self {
+        Self { left, right }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IxKeyPolicy {
     FailMissing,
@@ -876,6 +888,7 @@ pub trait Graph {
         right_data: JoinData,
         shard_policy: ShardPolicy,
         join_type: JoinType,
+        join_exactly_once: JoinExactlyOnce,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -1496,6 +1509,7 @@ impl Graph for ScopedGraph {
         right_data: JoinData,
         shard_policy: ShardPolicy,
         join_type: JoinType,
+        join_exactly_once: JoinExactlyOnce,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1504,6 +1518,7 @@ impl Graph for ScopedGraph {
                 right_data,
                 shard_policy,
                 join_type,
+                join_exactly_once,
                 table_properties,
             )
         })

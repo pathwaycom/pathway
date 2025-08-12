@@ -9,6 +9,8 @@ use timely::dataflow::Scope;
 use timely::order::{Product, TotalOrder};
 use timely::progress::Timestamp;
 
+use crate::engine::dataflow::time::{MaybeEpsilon, OriginalOrRetraction};
+
 pub trait MaybeTotalTimestamp: Timestamp + Lattice {
     type IsTotal: MaybeTotalSwitch<Self>;
 }
@@ -104,7 +106,7 @@ where
 }
 
 pub trait MaybeTotalScope: Scope<Timestamp = Self::MaybeTotalTimestamp> {
-    type MaybeTotalTimestamp: MaybeTotalTimestamp;
+    type MaybeTotalTimestamp: MaybeTotalTimestamp + MaybeEpsilon + OriginalOrRetraction;
 
     type IsTotal: MaybeTotalSwitch<Self::MaybeTotalTimestamp>;
 }
@@ -112,7 +114,7 @@ pub trait MaybeTotalScope: Scope<Timestamp = Self::MaybeTotalTimestamp> {
 impl<S> MaybeTotalScope for S
 where
     S: Scope,
-    S::Timestamp: MaybeTotalTimestamp,
+    S::Timestamp: MaybeTotalTimestamp + MaybeEpsilon + OriginalOrRetraction,
 {
     type MaybeTotalTimestamp = S::Timestamp;
 

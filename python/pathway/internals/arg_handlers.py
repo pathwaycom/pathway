@@ -161,6 +161,12 @@ def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
                     "The interval argument of a join should be of a type pathway.temporal.Interval."
                 )
 
+        if "left_exactly_once" in kwargs:
+            processed_kwargs["left_exactly_once"] = kwargs.pop("left_exactly_once")
+
+        if "right_exactly_once" in kwargs:
+            processed_kwargs["right_exactly_once"] = kwargs.pop("right_exactly_once")
+
         if kwargs:
             raise ValueError(
                 "Join received extra kwargs.\n"

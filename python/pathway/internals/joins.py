@@ -140,6 +140,8 @@ class Joinable(TableLike, DesugaringContext):
         how: JoinMode = JoinMode.INNER,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> JoinResult:
         """Join self with other using the given join expression.
 
@@ -152,6 +154,12 @@ class Joinable(TableLike, DesugaringContext):
               correspond to inner, left, right and outer join respectively.
             left_instance/right_instance: optional arguments describing partitioning of the data into
               separate instances
+            left_exactly_once: if you can guarantee that each row on the left side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
+            right_exactly_once: if you can guarantee that each row on the right side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -187,6 +195,8 @@ class Joinable(TableLike, DesugaringContext):
             id=id,
             left_instance=left_instance,
             right_instance=right_instance,
+            left_exactly_once=left_exactly_once,
+            right_exactly_once=right_exactly_once,
         )
 
     @trace_user_frame
@@ -199,6 +209,8 @@ class Joinable(TableLike, DesugaringContext):
         id: expr.ColumnReference | None = None,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> JoinResult:
         """Inner-joins two tables or join results.
 
@@ -209,6 +221,12 @@ class Joinable(TableLike, DesugaringContext):
             id: optional argument for id of result, can be only self.id or other.id
             left_instance/right_instance: optional arguments describing partitioning of the data
                 into separate instances
+            left_exactly_once: if you can guarantee that each row on the left side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
+            right_exactly_once: if you can guarantee that each row on the right side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -244,6 +262,8 @@ class Joinable(TableLike, DesugaringContext):
             id=id,
             left_instance=left_instance,
             right_instance=right_instance,
+            left_exactly_once=left_exactly_once,
+            right_exactly_once=right_exactly_once,
         )
 
     @trace_user_frame
@@ -256,6 +276,8 @@ class Joinable(TableLike, DesugaringContext):
         id: expr.ColumnReference | None = None,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> JoinResult:
         """
         Left-joins two tables or join results.
@@ -266,6 +288,12 @@ class Joinable(TableLike, DesugaringContext):
             id: optional id column of the result
             left_instance/right_instance: optional arguments describing partitioning of the data into
               separate instances
+            left_exactly_once: if you can guarantee that each row on the left side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
+            right_exactly_once: if you can guarantee that each row on the right side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
 
         Remarks:
         args cannot contain id column from either of tables, \
@@ -321,6 +349,8 @@ class Joinable(TableLike, DesugaringContext):
             id=id,
             left_instance=left_instance,
             right_instance=right_instance,
+            left_exactly_once=left_exactly_once,
+            right_exactly_once=right_exactly_once,
         )
 
     @trace_user_frame
@@ -333,6 +363,8 @@ class Joinable(TableLike, DesugaringContext):
         id: expr.ColumnReference | None = None,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> JoinResult:
         """
         Outer-joins two tables or join results.
@@ -343,6 +375,12 @@ class Joinable(TableLike, DesugaringContext):
             id: optional id column of the result
             left_instance/right_instance: optional arguments describing partitioning of the data into separate
               instances
+            left_exactly_once: if you can guarantee that each row on the left side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
+            right_exactly_once: if you can guarantee that each row on the right side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
 
         Remarks: args cannot contain id column from either of tables, \
         as the result table has id column with auto-generated ids; \
@@ -401,6 +439,8 @@ class Joinable(TableLike, DesugaringContext):
             id=id,
             left_instance=left_instance,
             right_instance=right_instance,
+            left_exactly_once=left_exactly_once,
+            right_exactly_once=right_exactly_once,
         )
 
     @trace_user_frame
@@ -413,6 +453,8 @@ class Joinable(TableLike, DesugaringContext):
         id: expr.ColumnReference | None = None,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> JoinResult:
         """Outer-joins two tables or join results.
 
@@ -421,6 +463,12 @@ class Joinable(TableLike, DesugaringContext):
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
             instance: optional argument describing partitioning of the data into separate instances
+            left_exactly_once: if you can guarantee that each row on the left side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
+            right_exactly_once: if you can guarantee that each row on the right side of the join will be
+              joined at most once, then you can set this parameter to ``True``. Then each row after
+              getting a match is removed from the join state. As a result, less memory is needed.
 
         Remarks: args cannot contain id column from either of tables, \
             as the result table has id column with auto-generated ids; \
@@ -478,6 +526,8 @@ class Joinable(TableLike, DesugaringContext):
             id=id,
             left_instance=left_instance,
             right_instance=right_instance,
+            left_exactly_once=left_exactly_once,
+            right_exactly_once=right_exactly_once,
         )
 
     @property
@@ -942,6 +992,8 @@ class JoinResult(Joinable, OperatorInput):
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
         exact_match: bool = False,  # if True do not optionalize output columns even if other than inner join is used
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> JoinResult:
         if left == right:
             raise ValueError(
@@ -1016,11 +1068,13 @@ class JoinResult(Joinable, OperatorInput):
                 left_table,
                 right_context_table,
                 left_context_table,
-                last_column_is_instance,
-                id_column is not None,
-                mode in [JoinMode.RIGHT, JoinMode.OUTER],
-                mode in [JoinMode.LEFT, JoinMode.OUTER],
-                exact_match,
+                last_column_is_instance=last_column_is_instance,
+                assign_id=id_column is not None,
+                left_ear=mode in [JoinMode.RIGHT, JoinMode.OUTER],
+                right_ear=mode in [JoinMode.LEFT, JoinMode.OUTER],
+                exact_match=exact_match,
+                left_exactly_once=left_exactly_once,
+                right_exactly_once=right_exactly_once,
             )
         else:
             context = clmn.JoinContext(
@@ -1029,11 +1083,13 @@ class JoinResult(Joinable, OperatorInput):
                 right_table,
                 left_context_table,
                 right_context_table,
-                last_column_is_instance,
-                id_column is not None,
-                mode in [JoinMode.LEFT, JoinMode.OUTER],
-                mode in [JoinMode.RIGHT, JoinMode.OUTER],
-                exact_match,
+                last_column_is_instance=last_column_is_instance,
+                assign_id=id_column is not None,
+                left_ear=mode in [JoinMode.LEFT, JoinMode.OUTER],
+                right_ear=mode in [JoinMode.RIGHT, JoinMode.OUTER],
+                exact_match=exact_match,
+                left_exactly_once=left_exactly_once,
+                right_exactly_once=right_exactly_once,
             )
         inner_table, columns_mapping = JoinResult._prepare_inner_table_with_mapping(
             context,
@@ -1110,6 +1166,8 @@ def join(
     how: JoinMode = JoinMode.INNER,
     left_instance: expr.ColumnReference | None = None,
     right_instance: expr.ColumnReference | None = None,
+    left_exactly_once: bool = False,
+    right_exactly_once: bool = False,
 ) -> JoinResult:
     """Join self with other using the given join expression.
 
@@ -1123,6 +1181,12 @@ def join(
             correspond to inner, left, right and outer join respectively.
         left_instance/right_instance: optional arguments describing partitioning of the data into
             separate instances
+        left_exactly_once: if you can guarantee that each row on the left side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
+        right_exactly_once: if you can guarantee that each row on the right side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
 
     Returns:
         JoinResult: an object on which `.select()` may be called to extract relevant
@@ -1157,6 +1221,8 @@ def join(
         how=how,
         left_instance=left_instance,
         right_instance=right_instance,
+        left_exactly_once=left_exactly_once,
+        right_exactly_once=right_exactly_once,
     )
 
 
@@ -1167,6 +1233,8 @@ def join_inner(
     id: expr.ColumnReference | None = None,
     left_instance: expr.ColumnReference | None = None,
     right_instance: expr.ColumnReference | None = None,
+    left_exactly_once: bool = False,
+    right_exactly_once: bool = False,
 ) -> JoinResult:
     """Inner-joins two tables or join results.
 
@@ -1176,7 +1244,14 @@ def join_inner(
         on:  a list of column expressions. Each must have == as the top level operation
             and be of the form LHS: ColumnReference == RHS: ColumnReference.
         id: optional argument for id of result, can be only self.id or other.id
-        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+            separate instances
+        left_exactly_once: if you can guarantee that each row on the left side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
+        right_exactly_once: if you can guarantee that each row on the right side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
 
     Returns:
         JoinResult: an object on which `.select()` may be called to extract relevant
@@ -1205,7 +1280,13 @@ def join_inner(
     9   | Bob        | L
     """
     return left.join_inner(
-        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+        right,
+        *on,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
+        left_exactly_once=left_exactly_once,
+        right_exactly_once=right_exactly_once,
     )
 
 
@@ -1216,6 +1297,8 @@ def join_left(
     id: expr.ColumnReference | None = None,
     left_instance: expr.ColumnReference | None = None,
     right_instance: expr.ColumnReference | None = None,
+    left_exactly_once: bool = False,
+    right_exactly_once: bool = False,
 ) -> JoinResult:
     """
     Left-joins two tables or join results.
@@ -1227,6 +1310,12 @@ def join_left(
         id: optional id column of the result
         left_instance/right_instance: optional arguments describing partitioning of the data into
             separate instances
+        left_exactly_once: if you can guarantee that each row on the left side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
+        right_exactly_once: if you can guarantee that each row on the right side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
 
     Remarks:
     args cannot contain id column from either of tables, \
@@ -1275,7 +1364,13 @@ def join_left(
     13 |      |
     """
     return left.join_left(
-        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+        right,
+        *on,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
+        left_exactly_once=left_exactly_once,
+        right_exactly_once=right_exactly_once,
     )
 
 
@@ -1286,6 +1381,8 @@ def join_right(
     id: expr.ColumnReference | None = None,
     left_instance: expr.ColumnReference | None = None,
     right_instance: expr.ColumnReference | None = None,
+    left_exactly_once: bool = False,
+    right_exactly_once: bool = False,
 ) -> JoinResult:
     """
     Outer-joins two tables or join results.
@@ -1297,6 +1394,12 @@ def join_right(
         id: optional id column of the result
         left_instance/right_instance: optional arguments describing partitioning of the data into separate
             instances
+        left_exactly_once: if you can guarantee that each row on the left side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
+        right_exactly_once: if you can guarantee that each row on the right side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
 
     Remarks: args cannot contain id column from either of tables, \
     as the result table has id column with auto-generated ids; \
@@ -1348,7 +1451,13 @@ def join_right(
 
     """
     return left.join_right(
-        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+        right,
+        *on,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
+        left_exactly_once=left_exactly_once,
+        right_exactly_once=right_exactly_once,
     )
 
 
@@ -1359,6 +1468,8 @@ def join_outer(
     id: expr.ColumnReference | None = None,
     left_instance: expr.ColumnReference | None = None,
     right_instance: expr.ColumnReference | None = None,
+    left_exactly_once: bool = False,
+    right_exactly_once: bool = False,
 ) -> JoinResult:
     """Outer-joins two tables or join results.
 
@@ -1367,7 +1478,14 @@ def join_outer(
         other:  the right side of the join, ``Table`` or ``JoinResult``.
         *on: Columns to join, syntax `self.col1 == other.col2`
         id: optional id column of the result
-        instance: optional argument describing partitioning of the data into separate instances
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate
+            instances
+        left_exactly_once: if you can guarantee that each row on the left side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
+        right_exactly_once: if you can guarantee that each row on the right side of the join will be
+            joined at most once, then you can set this parameter to ``True``. Then each row after
+            getting a match is removed from the join state. As a result, less memory is needed.
 
     Remarks: args cannot contain id column from either of tables, \
         as the result table has id column with auto-generated ids; \
@@ -1418,5 +1536,11 @@ def join_outer(
     13 |      |
     """
     return left.join_outer(
-        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+        right,
+        *on,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
+        left_exactly_once=left_exactly_once,
+        right_exactly_once=right_exactly_once,
     )

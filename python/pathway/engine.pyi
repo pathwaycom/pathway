@@ -657,6 +657,8 @@ class Scope:
         assign_id: bool = False,
         left_ear: bool = False,
         right_ear: bool = False,
+        left_exactly_once: bool = False,
+        right_exactly_once: bool = False,
     ) -> Table: ...
     def use_external_index_as_of_now(
         self,

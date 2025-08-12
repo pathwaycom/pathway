@@ -145,6 +145,9 @@ pub enum Error {
 
     #[error("precision for HyperLogLogPlus should be between 4 and 18 but is {0}")]
     HyperLogLogPlusInvalidPrecision(usize),
+
+    #[error("exactly once join is not supported in iteration")]
+    ExactlyOnceJoinNotSupportedInIteration,
 }
 
 const OTHER_WORKER_ERROR_MESSAGES: [&str; 3] = [
@@ -345,6 +348,9 @@ pub enum DataError {
 
     #[error("Expected table to be append-only, but got diff={1} for key: {0}.")]
     AppendOnlyViolation(Key, isize),
+
+    #[error("Repeated entry in a batch.")]
+    RepeatedEntryInBatch,
 
     #[error(transparent)]
     Other(DynError),

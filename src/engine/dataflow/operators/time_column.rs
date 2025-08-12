@@ -5,9 +5,10 @@ use super::{ArrangeWithTypes, ArrangeWithTypesSharded};
 use crate::engine::dataflow::maybe_total::MaybeTotalScope;
 use crate::engine::dataflow::operators::utils::{key_val_total_weight, CursorStorageWrapper};
 use crate::engine::dataflow::operators::MapWrapped;
+use crate::engine::dataflow::time::{Epsilon, OriginalOrRetraction};
 use crate::engine::dataflow::{ArrangedBySelf, Shard};
 use crate::engine::error::Result;
-use crate::engine::{OriginalOrRetraction, Timestamp};
+use crate::engine::Timestamp;
 use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
@@ -48,22 +49,6 @@ where
 {
     fn shard(&self) -> u64 {
         1 // currently there is no support for sharding by instance, we need to centralize buffer to keep column time consistent for all entries in one instance
-    }
-}
-
-pub trait Epsilon: TimestampTrait {
-    fn epsilon() -> Self::Summary;
-}
-
-impl Epsilon for i32 {
-    fn epsilon() -> i32 {
-        1
-    }
-}
-
-impl Epsilon for u64 {
-    fn epsilon() -> u64 {
-        1
     }
 }
 
@@ -558,7 +543,7 @@ pub trait TimeColumnForget<
     ) -> Result<Collection<G, (K, V), R>>
     where
         G: MaybeTotalScope,
-        G::Timestamp: MaxTimestamp,
+        G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
         IE: Fn(&V) -> I + 'static;

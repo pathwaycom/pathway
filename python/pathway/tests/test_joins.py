@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import pytest
@@ -10,9 +11,11 @@ import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     T,
+    assert_stream_equality_wo_index,
     assert_table_equality,
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
+    run_all,
 )
 
 
@@ -1545,3 +1548,103 @@ def test_use_other_column_after_left_join_preserving_universe():
     """
     )
     assert_table_equality(res, expected)
+
+
+@pytest.mark.parametrize("left_exactly_once", [True, False])
+@pytest.mark.parametrize("right_exactly_once", [True, False])
+def test_inner_join_exactly_once(left_exactly_once: bool, right_exactly_once: bool):
+    t1 = T(
+        """
+                | a  | b  | __time__
+              1 | 1  | 10 |     2
+              2 | 2  | 20 |     4
+              3 | 3  | 30 |     6
+              4 | 1  | 40 |     8
+            """
+    )
+
+    t2 = T(
+        """
+                | a  | c   | __time__
+              1 | 2  | 200 |     2
+              2 | 3  | 300 |     2
+              3 | 1  | 100 |     4
+              4 | 2  | 400 |     6
+            """
+    )
+
+    if left_exactly_once and right_exactly_once:
+        expected = T(
+            """
+                a | b  |   c | __time__
+                1 | 10 | 100 |     4
+                2 | 20 | 200 |     4
+                3 | 30 | 300 |     6
+                """
+        )
+    elif left_exactly_once:
+        expected = T(
+            """
+                a | b  |   c | __time__
+                1 | 10 | 100 |     4
+                2 | 20 | 200 |     4
+                3 | 30 | 300 |     6
+                1 | 40 | 100 |     8
+                """
+        )
+    elif right_exactly_once:
+        expected = T(
+            """
+                a | b  |   c | __time__
+                1 | 10 | 100 |     4
+                2 | 20 | 200 |     4
+                3 | 30 | 300 |     6
+                2 | 20 | 400 |     6
+                """
+        )
+    else:
+        expected = T(
+            """
+                a | b  |   c | __time__
+                1 | 10 | 100 |     4
+                2 | 20 | 200 |     4
+                3 | 30 | 300 |     6
+                2 | 20 | 400 |     6
+                1 | 40 | 100 |     8
+                """
+        )
+
+    res = t1.join(
+        t2,
+        t1.a == t2.a,
+        left_exactly_once=left_exactly_once,
+        right_exactly_once=right_exactly_once,
+    ).select(t1.a, t1.b, t2.c)
+    assert_stream_equality_wo_index(res, expected)
+
+
+def test_inner_join_exactly_once_with_repeats():
+    t1 = T(
+        """
+                | a  | b  | __time__
+              2 | 2  | 20 |     4
+            """
+    )
+
+    t2 = T(
+        """
+                | a  | c   | __time__
+              1 | 2  | 200 |     2
+              2 | 2  | 500 |     2
+            """
+    )
+
+    t1.join(
+        t2,
+        t1.a == t2.a,
+        left_exactly_once=True,
+        right_exactly_once=True,
+    ).select(t1.a, t1.b, t2.c)
+
+    with pytest.raises(ValueError, match=re.escape("Repeated entry in a batch.")):
+        run_all()

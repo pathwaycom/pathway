@@ -55,10 +55,10 @@ use crate::connectors::adaptors::InputAdaptor;
 use crate::connectors::data_format::Parser;
 use crate::connectors::data_storage::ReaderBuilder;
 use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
+use crate::engine::dataflow::time::{NextRetractionTime, OriginalOrRetraction};
 use crate::engine::graph::{SubscribeCallbacks, SubscribeConfig};
 use crate::engine::{
-    ColumnPath, Error, Key, OriginalOrRetraction, Result, TableHandle, TableProperties, Timestamp,
-    Value,
+    ColumnPath, Error, Key, Result, TableHandle, TableProperties, Timestamp, Value,
 };
 
 use super::maybe_total::MaybeTotalScope;

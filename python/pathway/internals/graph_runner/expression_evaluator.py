@@ -1181,6 +1181,8 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             assign_id=self.context.assign_id,
             left_ear=self.context.left_ear,
             right_ear=self.context.right_ear,
+            left_exactly_once=self.context.left_exactly_once,
+            right_exactly_once=self.context.right_exactly_once,
         )
         self.state.set_table(join_storage, output_engine_table)
 

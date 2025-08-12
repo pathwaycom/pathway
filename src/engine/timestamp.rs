@@ -12,8 +12,10 @@ use timely::PartialOrder;
 
 use super::dataflow::maybe_total::MaybeTotalTimestamp;
 use super::dataflow::maybe_total::Total;
-use super::dataflow::operators::time_column::Epsilon;
 use super::dataflow::operators::time_column::MaxTimestamp;
+use crate::engine::dataflow::time::{
+    Epsilon, MaybeEpsilon, NextRetractionTime, OriginalOrRetraction,
+};
 use crate::timestamp::current_unix_timestamp_ms;
 
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -80,6 +82,12 @@ impl Refines<()> for Timestamp {
 impl Epsilon for Timestamp {
     fn epsilon() -> Self::Summary {
         Summary(1)
+    }
+}
+
+impl MaybeEpsilon for Timestamp {
+    fn maybe_epsilon() -> Option<Self::Summary> {
+        Some(Self::epsilon())
     }
 }
 
@@ -150,20 +158,13 @@ mod python_conversions {
     }
 }
 
-pub trait OriginalOrRetraction {
-    fn is_original(&self) -> bool;
-    fn is_retraction(&self) -> bool {
-        !self.is_original()
-    }
-    #[must_use]
-    fn next_retraction_time(&self) -> Self;
-}
-
 impl OriginalOrRetraction for Timestamp {
     fn is_original(&self) -> bool {
         self.0 % 2 == 0
     }
+}
 
+impl NextRetractionTime for Timestamp {
     fn next_retraction_time(&self) -> Self {
         Self(self.0 + 1)
     }

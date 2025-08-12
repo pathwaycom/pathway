@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `path_filter` parameter in `pw.io.s3.read` and `pw.io.minio.read` functions. It enables post-filtering of object paths using a wildcard pattern (`*`, `?`), allowing exclusion of paths that pass the main `path` filter but do not match `path_filter`.
 - Input connectors now support backpressure control via `max_backlog_size`, allowing to limit the number of read events in processing per connector. This is useful when the data source emits a large initial burst followed by smaller, incremental updates.
 - `pw.reducers.count_distinct` and `pw.reducers.count_distinct_approximate` to count the number of distinct elements in a table. The `pw.reducers.count_distinct_approximate` allows you to save memory by decreasing the accuracy. It is possible to control this tradeoff by using the `precision` parameter.
+- `pw.Table.join` (and its variants) now has two additional parameters - `left_exactly_once` and `right_exactly_once`. If the elements from a side of a join should be joined exactly once, `*_exactly_once` parameter of the side can be set to `True`. Then after getting a match an entry will be removed from the join state and the memory consumption will be reduced.
 
 ### Changed
 - Delta table compression logging has been improved: logs now include table names, and verbose messages have been streamlined while preserving details of important processing steps.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from functools import cached_property
 from itertools import chain
 from types import EllipsisType
@@ -963,11 +963,14 @@ class JoinContext(Context, column_properties_evaluator=cp.JoinPropsEvaluator):
     right_table: pw.Table
     on_left: ContextTable
     on_right: ContextTable
+    _: KW_ONLY
     last_column_is_instance: bool
     assign_id: bool
     left_ear: bool
     right_ear: bool
     exact_match: bool
+    left_exactly_once: bool
+    right_exactly_once: bool
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return (self.left_table._id_column, self.right_table._id_column)

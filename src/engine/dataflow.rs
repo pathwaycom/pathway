@@ -12,6 +12,7 @@ pub mod monitoring;
 pub mod operators;
 pub mod persist;
 pub mod shard;
+pub mod time;
 mod variable;
 
 use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
@@ -25,10 +26,9 @@ use crate::connectors::{Connector, PersistenceMode, SessionType, SnapshotAccess}
 use crate::engine::dataflow::monitoring::{OperatorProbe, Prober, ProberStats};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
-use crate::engine::dataflow::operators::time_column::{
-    Epsilon, TimeColumnForget, TimeColumnFreeze,
-};
+use crate::engine::dataflow::operators::time_column::{TimeColumnForget, TimeColumnFreeze};
 use crate::engine::dataflow::operators::ExtendedProbeWith;
+use crate::engine::graph::JoinExactlyOnce;
 use crate::engine::reduce::{
     AppendOnlyAnyState, AppendOnlyArgMaxState, AppendOnlyArgMinState, AppendOnlyMaxState,
     AppendOnlyMinState, ArraySumState, CountDistinctApproximateReducer, CountDistinctReducer,
@@ -65,10 +65,12 @@ use crossbeam_channel::{bounded, never, select, Receiver, RecvError, Sender};
 use derivative::Derivative;
 use differential_dataflow::collection::concatenate;
 use differential_dataflow::difference::{Multiply, Semigroup};
+use differential_dataflow::hashable::Hashable;
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::upsert::arrange_from_upsert;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
+use differential_dataflow::operators::iterate::Variable;
 use differential_dataflow::operators::reduce::{Reduce, ReduceCore};
 use differential_dataflow::operators::JoinCore;
 use differential_dataflow::trace::implementations::ord::OrdValBatch;
@@ -109,6 +111,7 @@ use self::operators::time_column::TimeColumnBuffer;
 use self::operators::{ArrangeWithTypes, FlatMapBatchedWithDeletionsFirst, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
+use self::time::{Epsilon, MaybeEpsilon, OriginalOrRetraction};
 use self::variable::SafeVariable;
 use super::error::{register_custom_panic_hook, DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
@@ -132,8 +135,8 @@ use super::telemetry::maybe_run_telemetry_thread;
 use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
     Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinData, JoinType, Key,
-    LegacyTable, OriginalOrRetraction, Reducer, ReducerData, Result, ShardPolicy, TableHandle,
-    TableProperties, Timestamp, UniverseHandle, Value,
+    LegacyTable, Reducer, ReducerData, Result, ShardPolicy, TableHandle, TableProperties,
+    Timestamp, UniverseHandle, Value,
 };
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
@@ -907,6 +910,38 @@ trait FilterOutPending {
 impl<S: MaybeTotalScope> FilterOutPending for Collection<S, (Key, Tuple)> {
     fn filter_out_pending(&self) -> Self {
         self.filter(move |(_key, values)| !values.as_value_slice().contains(&Value::Pending))
+    }
+}
+
+trait FilterOutForgetting {
+    fn filter_out_forgetting(&self) -> Self;
+}
+
+impl<S: MaybeTotalScope, D: Data> FilterOutForgetting for Collection<S, D> {
+    fn filter_out_forgetting(&self) -> Self {
+        self.inner
+            .filter(|(_data, time, _diff)| time.is_original())
+            .as_collection()
+    }
+}
+
+trait AssertDistinctBatch {
+    fn assert_distinct_batch(&self, error_logger: Box<dyn LogError>, trace: Arc<Trace>) -> Self;
+}
+
+impl<S: MaybeTotalScope, D: ExchangeData + Hashable> AssertDistinctBatch for Collection<S, D> {
+    fn assert_distinct_batch(&self, error_logger: Box<dyn LogError>, trace: Arc<Trace>) -> Self {
+        // distinct within a batch
+        self.consolidate()
+            .inner
+            .map(move |(data, time, diff)| {
+                if diff != 1 {
+                    error_logger
+                        .log_error_with_trace(DataError::RepeatedEntryInBatch.into(), &trace);
+                }
+                (data, time, DIFF_INSERTION)
+            })
+            .as_collection()
     }
 }
 
@@ -2659,6 +2694,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         right_data: JoinData,
         shard_policy: ShardPolicy,
         join_type: JoinType,
+        join_exactly_once: JoinExactlyOnce,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         fn extract_join_key(
@@ -2690,67 +2726,77 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
         }
 
+        fn prepare_join_side<S: MaybeTotalScope>(
+            graph: &mut DataflowGraphInner<S>,
+            side_data: JoinData,
+            shard_policy: ShardPolicy,
+            exactly_once: bool,
+            output_table_properties: Arc<TableProperties>,
+        ) -> Result<(
+            Collection<S, (Option<Key>, (Key, Value))>,
+            Option<Variable<S, (Key, (Key, Value)), isize>>,
+            ArrangedByKey<S, Key, (Key, Value)>,
+        )> {
+            let table = graph
+                .tables
+                .get(side_data.table_handle)
+                .ok_or(Error::InvalidTableHandle)?;
+            let error_reporter = graph.error_reporter.clone();
+            let mut error_logger_1 = graph.create_error_logger()?;
+            let error_logger_2 = graph.create_error_logger()?;
+            let output_table_properties_2 = output_table_properties.clone();
+
+            let side_with_join_key =
+                table
+                    .values()
+                    .map_named("join::extract_keys", move |(key, values)| {
+                        let join_key = extract_join_key(
+                            &key,
+                            &values,
+                            &side_data.column_paths,
+                            shard_policy,
+                            &error_reporter,
+                            error_logger_1.as_mut(),
+                            &output_table_properties.trace(),
+                        );
+                        (join_key, (key, values))
+                    });
+            let join_side =
+                side_with_join_key.flat_map(|(join_key, key_values)| Some((join_key?, key_values)));
+            let (join_side_updated, retractions) = if exactly_once {
+                let epsilon = S::MaybeTotalTimestamp::maybe_epsilon()
+                    .ok_or(Error::ExactlyOnceJoinNotSupportedInIteration)?;
+                let retractions = Variable::new(&mut join_side.scope(), epsilon);
+                let retractions_prepared = retractions
+                    .assert_distinct_batch(error_logger_2, output_table_properties_2.trace())
+                    .negate();
+                (join_side.concat(&retractions_prepared), Some(retractions))
+            } else {
+                (join_side, None)
+            };
+            let join_side_arranged: ArrangedByKey<S, Key, (Key, Value)> =
+                join_side_updated.maybe_persist(graph, "join")?.arrange();
+            Ok((side_with_join_key, retractions, join_side_arranged))
+        }
+
         if left_data.column_paths.len() != right_data.column_paths.len() {
             return Err(Error::DifferentJoinConditionLengths);
         }
 
-        let left_table = self
-            .tables
-            .get(left_data.table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-
-        let error_reporter_left = self.error_reporter.clone();
-        let error_reporter_right = self.error_reporter.clone();
-
-        let mut error_logger_left = self.create_error_logger()?;
-        let mut error_logger_right = self.create_error_logger()?;
-
-        let table_properties_left = table_properties.clone();
-        let table_properties_right = table_properties.clone();
-
-        let left_with_join_key =
-            left_table
-                .values()
-                .map_named("join::extract_keys", move |(key, values)| {
-                    let join_key = extract_join_key(
-                        &key,
-                        &values,
-                        &left_data.column_paths,
-                        shard_policy,
-                        &error_reporter_left,
-                        error_logger_left.as_mut(),
-                        &table_properties_left.trace(),
-                    );
-                    (join_key, (key, values))
-                });
-        let join_left = left_with_join_key
-            .flat_map(|(join_key, left_key_values)| Some((join_key?, left_key_values)));
-        let join_left_arranged: ArrangedByKey<S, Key, (Key, Value)> =
-            join_left.maybe_persist(self, "join")?.arrange();
-
-        let right_table = self
-            .tables
-            .get(right_data.table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-        let right_with_join_key =
-            right_table
-                .values()
-                .map_named("join::extract_keys", move |(key, values)| {
-                    let join_key = extract_join_key(
-                        &key,
-                        &values,
-                        &right_data.column_paths,
-                        shard_policy,
-                        &error_reporter_right,
-                        error_logger_right.as_mut(),
-                        &table_properties_right.trace(),
-                    );
-                    (join_key, (key, values))
-                });
-        let join_right = right_with_join_key
-            .flat_map(|(join_key, right_key_values)| Some((join_key?, right_key_values)));
-        let join_right_arranged: ArrangedByKey<S, Key, (Key, Value)> =
-            join_right.maybe_persist(self, "join")?.arrange();
+        let (left_with_join_key, left_retractions, join_left_arranged) = prepare_join_side(
+            self,
+            left_data,
+            shard_policy,
+            join_exactly_once.left,
+            table_properties.clone(),
+        )?;
+        let (right_with_join_key, right_retractions, join_right_arranged) = prepare_join_side(
+            self,
+            right_data,
+            shard_policy,
+            join_exactly_once.right,
+            table_properties.clone(),
+        )?;
 
         let join_left_right = join_left_arranged
             .join_core(&join_right_arranged, |join_key, left_key, right_key| {
@@ -2766,25 +2812,55 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     .with_shard_of(join_key)
             },
         };
-        let result_left_right = join_left_right
-            .filter_out_persisted(&mut self.persistence_wrapper)?
-            .map_named(
-                "join::result_left_right",
-                move |(join_key, (left_key, left_values), (right_key, right_values))| {
-                    (
-                        join_left_right_to_result_fn(join_key, left_key, right_key),
-                        Value::from(
-                            [
-                                Value::Pointer(left_key),
-                                left_values,
-                                Value::Pointer(right_key),
-                                right_values,
-                            ]
-                            .as_slice(),
-                        ),
-                    )
-                },
-            );
+        let join_left_right_without_persisted =
+            join_left_right.filter_out_persisted(&mut self.persistence_wrapper)?;
+        let join_left_right_without_retractions =
+            if left_retractions.is_some() || right_retractions.is_some() {
+                let without_retractions = join_left_right_without_persisted
+                    .filter_out_forgetting()
+                    .consolidate();
+                without_retractions
+                    .inner
+                    .inspect(|(_data, _time, diff)| assert!(*diff > 0));
+
+                if let Some(left_retractions) = left_retractions {
+                    let left_side = without_retractions.map_named(
+                        "join:exactly_once_left",
+                        |(join_key, left_key_data, _right_key_data)| (join_key, left_key_data),
+                    );
+                    left_retractions.set(&left_side);
+                }
+
+                if let Some(right_retractions) = right_retractions {
+                    let right_side = without_retractions.map_named(
+                        "join:exactly_once_right",
+                        |(join_key, _left_key_data, right_key_data)| (join_key, right_key_data),
+                    );
+                    right_retractions.set(&right_side);
+                }
+
+                without_retractions
+            } else {
+                join_left_right_without_persisted
+            };
+
+        let result_left_right = join_left_right_without_retractions.map_named(
+            "join::result_left_right",
+            move |(join_key, (left_key, left_values), (right_key, right_values))| {
+                (
+                    join_left_right_to_result_fn(join_key, left_key, right_key),
+                    Value::from(
+                        [
+                            Value::Pointer(left_key),
+                            left_values,
+                            Value::Pointer(right_key),
+                            right_values,
+                        ]
+                        .as_slice(),
+                    ),
+                )
+            },
+        );
 
         let mut left_outer = || -> Result<_> {
             Ok(left_with_join_key.concat(
@@ -4066,11 +4142,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .tables
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-        let new_table = table
-            .values()
-            .inner
-            .filter(|(_data, time, _diff)| time.is_original())
-            .as_collection();
+        let new_table = table.values().filter_out_forgetting();
         Ok(self
             .tables
             .alloc(Table::from_collection(new_table).with_properties(table_properties)))
@@ -5477,6 +5549,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         right_data: JoinData,
         shard_policy: ShardPolicy,
         join_type: JoinType,
+        join_exactly_once: JoinExactlyOnce,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().join_tables(
@@ -5484,6 +5557,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             right_data,
             shard_policy,
             join_type,
+            join_exactly_once,
             table_properties,
         )
     }
@@ -6153,6 +6227,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         right_data: JoinData,
         shard_policy: ShardPolicy,
         join_type: JoinType,
+        join_exactly_once: JoinExactlyOnce,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().join_tables(
@@ -6160,6 +6235,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             right_data,
             shard_policy,
             join_type,
+            join_exactly_once,
             table_properties,
         )
     }
