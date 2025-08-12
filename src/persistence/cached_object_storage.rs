@@ -10,6 +10,7 @@ use futures::channel::oneshot::Receiver as OneShotReceiver;
 use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
@@ -19,6 +20,7 @@ use crate::persistence::backends::{Error as PersistenceError, PersistenceBackend
 pub type CachedObjectsBatchId = u64;
 pub type CachedObjectVersion = u64;
 pub type Uri = Vec<u8>;
+pub type UriRef<'a> = &'a [u8];
 pub type SharedCachedObjectsExternalAccessor = Arc<Mutex<CachedObjectsExternalAccessor>>;
 
 const BLOB_EXTENSION: &str = ".blob";
@@ -406,19 +408,14 @@ impl CachedObjectsExternalAccessor {
         backend: &dyn PersistenceBackend,
         batch_id: CachedObjectsBatchId,
         segments: &[BlobSegment],
-        object_snapshot: &Mutex<&mut dyn ObjectsSnapshot>,
+        object_snapshot: &Mutex<&mut SqliteObjectsSnapshot>,
     ) -> Result<(), PersistenceError> {
         let key = Self::cached_objects_path(batch_id);
         let compressed_blobs = backend.get_value(&key)?;
 
         let mut object_snapshot = object_snapshot.lock().unwrap();
         let blobs = decompress_size_prepended(compressed_blobs.as_slice())?;
-        for segment in segments {
-            let object_slice = &blobs
-                [segment.object_blob_start..segment.object_blob_start + segment.object_blob_len];
-            object_snapshot.insert(segment.uri.clone(), object_slice.to_vec())?;
-        }
-
+        object_snapshot.insert_segments(segments, &blobs)?;
         Ok(())
     }
 
@@ -431,117 +428,126 @@ impl CachedObjectsExternalAccessor {
     }
 }
 
-pub trait ObjectsSnapshot: Send {
-    fn insert(&mut self, uri: Uri, value: Vec<u8>) -> Result<(), PersistenceError>;
-
-    fn remove(&mut self, uri: Uri) -> Result<(), PersistenceError>;
-
-    fn get(&self, uri: Uri) -> Result<Vec<u8>, PersistenceError>;
-}
-
-#[derive(Debug, Default)]
-pub struct MemoryObjectsSnapshot {
-    snapshot: HashMap<Uri, Vec<u8>>,
-}
-
-impl MemoryObjectsSnapshot {
-    pub fn new() -> Self {
-        Self {
-            snapshot: HashMap::new(),
-        }
-    }
-}
-
-impl ObjectsSnapshot for MemoryObjectsSnapshot {
-    fn insert(&mut self, uri: Uri, contents: Vec<u8>) -> Result<(), PersistenceError> {
-        self.snapshot.insert(uri, contents);
-        Ok(())
-    }
-
-    fn remove(&mut self, uri: Uri) -> Result<(), PersistenceError> {
-        self.snapshot.remove(&uri);
-        Ok(())
-    }
-
-    fn get(&self, uri: Uri) -> Result<Vec<u8>, PersistenceError> {
-        self.snapshot
-            .get(&uri)
-            .cloned()
-            .ok_or(PersistenceError::NoCachedObject)
-    }
-}
+const SQLITE_CREATE_CACHE_SQL: &str =
+    "CREATE TABLE IF NOT EXISTS objects (uri BLOB PRIMARY KEY, contents BLOB NOT NULL);";
+const SQLITE_UPSERT_SQL: &str = "INSERT OR REPLACE INTO objects (uri, contents) VALUES (?1, ?2)";
+const SQLITE_DELETE_SQL: &str = "DELETE FROM objects WHERE uri = ?1";
+const SQLITE_GET_SQL: &str = "SELECT contents FROM objects WHERE uri = ?1";
+const SQLITE_INSERT_SQL: &str = "INSERT INTO objects (uri, contents) VALUES (?1, ?2)";
 
 #[derive(Debug)]
-pub struct FilesystemObjectsSnapshot {
-    tempdir: TempDir,
-    uri_to_seq_id: HashMap<Uri, usize>,
-    seq_id: usize,
+pub struct SqliteObjectsSnapshot {
+    _tempdir: TempDir, // The tempdir is deleted on `drop`, so we keep it
+    conn: Connection,
 }
 
-impl FilesystemObjectsSnapshot {
-    pub fn new() -> Self {
-        Self {
-            tempdir: tempfile::TempDir::new().expect("failed to create tempdir"),
-            seq_id: 0,
-            uri_to_seq_id: HashMap::new(),
-        }
+impl SqliteObjectsSnapshot {
+    pub fn new() -> Result<Self, PersistenceError> {
+        let tempdir = tempfile::TempDir::new()?;
+        let db_path = tempdir.path().join("snapshot.sqlite3");
+        let conn = Connection::open(db_path)?;
+
+        // The recovery benchmark, using ~750,000 objects with a total
+        // size of 11 GB, initially took about 3m20s. By tweaking
+        // the database with certain PRAGMA settings, this time can be
+        // reduced to ~30s, which is on par with a
+        // "single key = single file" object approach, but is much more
+        // efficient in terms of inode usage: here we use only O(1) inodes.
+        //
+        // https://www.sqlite.org/pragma.html#pragma_journal_mode
+        // The database does not maintain a rollback journal, which
+        // reduces the number of disk writes. As a consequence,
+        // rollbacks are not possible. But we don't use them anyway.
+        conn.pragma_update(None, "journal_mode", "OFF")?;
+
+        // https://www.sqlite.org/pragma.html#pragma_synchronous
+        // The synchronous setting controls whether SQLite asks the
+        // operating system to flush data to stable storage (`fsync`) at
+        // critical moments.
+        //
+        // With `synchronous = OFF (0)`, SQLite continues as soon as it
+        // has handed data off to the OS. If the SQLite process crashes,
+        // that data will generally be preserved by the OS; however, the
+        // database can be corrupted if the operating system crashes or
+        // the machine loses power before the OS has actually written
+        // the buffers to the disk surface. Commits can be orders of
+        // magnitude faster with `OFF`, which is acceptable for an
+        // ephemeral cache.
+        conn.pragma_update(None, "synchronous", "OFF")?;
+
+        // https://www.sqlite.org/pragma.html#pragma_temp_store
+        // Temporary structures are stored in memory. They are
+        // relatively small, and this still improves performance.
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+
+        // https://www.sqlite.org/pragma.html#pragma_locking_mode
+        // The database is taken into exclusive locking mode, so locks are
+        // not checked on every operation, avoiding that overhead.
+        conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+
+        conn.execute(SQLITE_CREATE_CACHE_SQL, [])?;
+        Ok(Self {
+            _tempdir: tempdir,
+            conn,
+        })
     }
-}
 
-impl Default for FilesystemObjectsSnapshot {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ObjectsSnapshot for FilesystemObjectsSnapshot {
-    fn insert(&mut self, uri: Uri, contents: Vec<u8>) -> Result<(), PersistenceError> {
-        let seq_id = self.uri_to_seq_id.entry(uri).or_insert_with(|| {
-            self.seq_id += 1;
-            self.seq_id
-        });
-        let path = self.tempdir.path().join(seq_id.to_string());
-        std::fs::write(path, &contents)?;
+    fn insert(&mut self, uri: UriRef, contents: &[u8]) -> Result<(), PersistenceError> {
+        self.conn
+            .execute(SQLITE_UPSERT_SQL, params![uri, contents])?;
         Ok(())
     }
 
-    fn remove(&mut self, uri: Uri) -> Result<(), PersistenceError> {
-        let seq_id = self
-            .uri_to_seq_id
-            .remove(&uri)
-            .ok_or(PersistenceError::NoCachedObject)?;
-        let path = self.tempdir.path().join(seq_id.to_string());
-        Ok(std::fs::remove_file(path)?)
+    fn insert_segments(&mut self, segments: &[BlobSegment], blobs: &[u8]) -> rusqlite::Result<()> {
+        let sqlite_tx = self.conn.unchecked_transaction()?;
+        {
+            let mut sqlite_stmt = sqlite_tx.prepare_cached(SQLITE_INSERT_SQL)?;
+            for segment in segments {
+                let object_slice = &blobs[segment.object_blob_start
+                    ..segment.object_blob_start + segment.object_blob_len];
+                sqlite_stmt.execute(rusqlite::params![segment.uri, object_slice])?;
+            }
+        }
+        sqlite_tx.commit()?;
+        Ok(())
     }
 
-    fn get(&self, uri: Uri) -> Result<Vec<u8>, PersistenceError> {
-        let seq_id = self
-            .uri_to_seq_id
-            .get(&uri)
-            .ok_or(PersistenceError::NoCachedObject)?;
-        let path = self.tempdir.path().join(seq_id.to_string());
-        Ok(std::fs::read(path)?)
+    fn remove(&mut self, uri: UriRef) -> Result<(), PersistenceError> {
+        let affected = self.conn.execute(SQLITE_DELETE_SQL, params![uri])?;
+        if affected == 0 {
+            return Err(PersistenceError::NoCachedObject);
+        }
+        Ok(())
+    }
+
+    fn get(&self, uri: UriRef) -> Result<Vec<u8>, PersistenceError> {
+        let result: Option<Vec<u8>> = self
+            .conn
+            .query_row(SQLITE_GET_SQL, params![uri], |row| row.get(0))
+            .optional()?;
+
+        result.ok_or(PersistenceError::NoCachedObject)
     }
 }
 
 pub struct CachedObjectStorage {
     external_accessor: Arc<Mutex<CachedObjectsExternalAccessor>>,
     metadata_snapshot: HashMap<Uri, FileLikeMetadata>,
-    objects_snapshot: Box<dyn ObjectsSnapshot>,
+    objects_snapshot: SqliteObjectsSnapshot,
     current_version: CachedObjectVersion,
 }
 
 impl CachedObjectStorage {
-    pub fn new(backend: Box<dyn PersistenceBackend>) -> Self {
-        Self {
+    pub fn new(backend: Box<dyn PersistenceBackend>) -> Result<Self, PersistenceError> {
+        Ok(Self {
             external_accessor: Arc::new(Mutex::new(CachedObjectsExternalAccessor::new(
                 backend,
                 EMPTY_STORAGE_BATCH_ID + 1,
             ))),
             metadata_snapshot: HashMap::new(),
-            objects_snapshot: Box::new(FilesystemObjectsSnapshot::new()),
+            objects_snapshot: SqliteObjectsSnapshot::new()?,
             current_version: EMPTY_STORAGE_VERSION + 1,
-        }
+        })
     }
 
     pub fn clear(&mut self) -> Result<(), PersistenceError> {
@@ -641,8 +647,8 @@ impl CachedObjectStorage {
 
     pub fn place_object(
         &mut self,
-        uri: &[u8],
-        contents: Vec<u8>,
+        uri: UriRef,
+        contents: &[u8],
         metadata: FileLikeMetadata,
     ) -> Result<(), PersistenceError> {
         let version = self.next_available_version();
@@ -650,22 +656,22 @@ impl CachedObjectStorage {
             version,
             uri.to_vec(),
             metadata,
-            contents.clone(),
+            contents.to_owned(),
         )?;
         self.apply_metadata_event(event, contents)
     }
 
-    pub fn remove_object(&mut self, uri: &[u8]) -> Result<(), PersistenceError> {
+    pub fn remove_object(&mut self, uri: UriRef) -> Result<(), PersistenceError> {
         let version = self.next_available_version();
         let event = self
             .external_accessor
             .lock()
             .unwrap()
             .remove_object(version, uri.to_vec())?;
-        self.apply_metadata_event(event, Vec::with_capacity(0))
+        self.apply_metadata_event(event, &[])
     }
 
-    pub fn contains_object(&self, uri: &[u8]) -> bool {
+    pub fn contains_object(&self, uri: UriRef) -> bool {
         self.metadata_snapshot.contains_key(uri)
     }
 
@@ -673,12 +679,12 @@ impl CachedObjectStorage {
         self.metadata_snapshot.iter()
     }
 
-    pub fn stored_metadata(&self, uri: &[u8]) -> Option<&FileLikeMetadata> {
+    pub fn stored_metadata(&self, uri: UriRef) -> Option<&FileLikeMetadata> {
         self.metadata_snapshot.get(uri)
     }
 
-    pub fn get_object(&self, uri: &[u8]) -> Result<Vec<u8>, PersistenceError> {
-        self.objects_snapshot.get(uri.to_vec())
+    pub fn get_object(&self, uri: UriRef) -> Result<Vec<u8>, PersistenceError> {
+        self.objects_snapshot.get(uri)
     }
 
     pub fn actual_version(&self) -> CachedObjectVersion {
@@ -737,7 +743,7 @@ impl CachedObjectStorage {
             backend.as_ref(),
             segments_for_download,
             downloaded_blobs,
-            &Mutex::new(self.objects_snapshot.as_mut()),
+            &Mutex::new(&mut self.objects_snapshot),
         )?;
 
         Self::remove_obsolete_batches(&workers, backend.as_ref(), obsolete_batch_ids.as_slice())?;
@@ -750,7 +756,7 @@ impl CachedObjectStorage {
         backend: &dyn PersistenceBackend,
         mut segments_for_download: HashMap<CachedObjectsBatchId, Vec<BlobSegment>>,
         downloaded_blobs: HashMap<CachedObjectsBatchId, Vec<u8>>,
-        object_snapshot: &Mutex<&mut dyn ObjectsSnapshot>,
+        object_snapshot: &Mutex<&mut SqliteObjectsSnapshot>,
     ) -> Result<(), PersistenceError> {
         for (batch_id, blobs) in downloaded_blobs {
             let Some(segments) = segments_for_download.remove(&batch_id) else {
@@ -758,11 +764,7 @@ impl CachedObjectStorage {
                 continue;
             };
             let mut object_snapshot = object_snapshot.lock().unwrap();
-            for segment in segments {
-                let object_slice = &blobs[segment.object_blob_start
-                    ..segment.object_blob_start + segment.object_blob_len];
-                object_snapshot.insert(segment.uri.clone(), object_slice.to_vec())?;
-            }
+            object_snapshot.insert_segments(&segments, &blobs)?;
         }
 
         let objects_snapshot_results: Vec<_> = download_workers.install(|| {
@@ -810,18 +812,19 @@ impl CachedObjectStorage {
     fn apply_metadata_event(
         &mut self,
         event: MetadataEvent,
-        contents: Vec<u8>,
+        contents: &[u8],
     ) -> Result<(), PersistenceError> {
         match event.type_ {
             EventType::Update(metadata) => {
-                self.metadata_snapshot.insert(event.uri.clone(), metadata);
-                self.objects_snapshot.insert(event.uri, contents)
+                self.objects_snapshot.insert(&event.uri, contents)?;
+                self.metadata_snapshot.insert(event.uri, metadata);
             }
             EventType::Delete => {
+                self.objects_snapshot.remove(&event.uri)?;
                 self.metadata_snapshot.remove(&event.uri);
-                self.objects_snapshot.remove(event.uri)
             }
         }
+        Ok(())
     }
 
     fn next_available_version(&mut self) -> u64 {

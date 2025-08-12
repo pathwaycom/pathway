@@ -64,12 +64,12 @@ fn test_place_access() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
 
     let document = create_mock_document();
     let metadata = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document.clone(), metadata.clone())?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document, &metadata)?;
+    storage.place_object(b"a", &document, metadata.clone())?;
+    check_storage_has_object(&storage, b"a", &document, &metadata)?;
 
     Ok(())
 }
@@ -79,13 +79,13 @@ fn test_place_delete_access() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
 
     let document = create_mock_document();
     let metadata = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document.clone(), metadata.clone())?;
-    storage.remove_object("a".as_bytes())?;
-    check_storage_doesnt_have_object(&storage, "a".as_bytes())?;
+    storage.place_object(b"a", &document, metadata.clone())?;
+    storage.remove_object(b"a")?;
+    check_storage_doesnt_have_object(&storage, b"a")?;
 
     Ok(())
 }
@@ -95,13 +95,13 @@ fn test_place_delete_rewind_access() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
 
     let document = create_mock_document();
     let metadata = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document.clone(), metadata.clone())?;
+    storage.place_object(b"a", &document, metadata.clone())?;
     let rewind_version = storage.actual_version();
-    storage.remove_object("a".as_bytes())?;
+    storage.remove_object(b"a")?;
     storage
         .get_external_accessor()
         .lock()
@@ -114,9 +114,9 @@ fn test_place_delete_rewind_access() -> eyre::Result<()> {
         .wait_for_state_upload_completion();
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
     storage.start_from_stable_version(rewind_version)?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document, &metadata)?;
+    check_storage_has_object(&storage, b"a", &document, &metadata)?;
 
     Ok(())
 }
@@ -126,16 +126,16 @@ fn test_access_latest_version_rewind_clear() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
 
     let document_v1 = create_mock_document();
     let metadata_v1 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v1.clone(), metadata_v1.clone())?;
+    storage.place_object(b"a", &document_v1, metadata_v1.clone())?;
     let rewind_version = storage.actual_version();
 
     let document_v2 = create_mock_document();
     let metadata_v2 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v2.clone(), metadata_v2.clone())?;
+    storage.place_object(b"a", &document_v2, metadata_v2.clone())?;
     storage
         .get_external_accessor()
         .lock()
@@ -149,8 +149,8 @@ fn test_access_latest_version_rewind_clear() -> eyre::Result<()> {
 
     let document_v3 = create_mock_document();
     let metadata_v3 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v3.clone(), metadata_v3.clone())?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document_v3, &metadata_v3)?;
+    storage.place_object(b"a", &document_v3, metadata_v3.clone())?;
+    check_storage_has_object(&storage, b"a", &document_v3, &metadata_v3)?;
     storage
         .get_external_accessor()
         .lock()
@@ -163,14 +163,14 @@ fn test_access_latest_version_rewind_clear() -> eyre::Result<()> {
         .wait_for_state_upload_completion();
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
     storage.start_from_stable_version(rewind_version)?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document_v1, &metadata_v1)?;
+    check_storage_has_object(&storage, b"a", &document_v1, &metadata_v1)?;
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
     storage.clear()?;
-    check_storage_doesnt_have_object(&storage, "a".as_bytes())?;
+    check_storage_doesnt_have_object(&storage, b"a")?;
 
     Ok(())
 }
@@ -180,16 +180,16 @@ fn test_add_version_after_rewind() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
 
     let document_v1 = create_mock_document();
     let metadata_v1 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v1.clone(), metadata_v1.clone())?;
+    storage.place_object(b"a", &document_v1, metadata_v1.clone())?;
     let rewind_version = storage.actual_version();
 
     let document_v2 = create_mock_document();
     let metadata_v2 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v2.clone(), metadata_v2.clone())?;
+    storage.place_object(b"a", &document_v2, metadata_v2.clone())?;
     storage
         .get_external_accessor()
         .lock()
@@ -202,15 +202,15 @@ fn test_add_version_after_rewind() -> eyre::Result<()> {
         .wait_for_state_upload_completion();
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
     storage.start_from_stable_version(rewind_version)?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document_v1, &metadata_v1)?;
+    check_storage_has_object(&storage, b"a", &document_v1, &metadata_v1)?;
     assert_eq!(storage.actual_version(), rewind_version);
 
     let document_v3 = create_mock_document();
     let metadata_v3 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v3.clone(), metadata_v3.clone())?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document_v3, &metadata_v3)?;
+    storage.place_object(b"a", &document_v3, metadata_v3.clone())?;
+    check_storage_has_object(&storage, b"a", &document_v3, &metadata_v3)?;
 
     Ok(())
 }
@@ -220,19 +220,19 @@ fn test_rewind_to_removal_then_update() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
 
     let document_v1 = create_mock_document();
     let metadata_v1 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v1.clone(), metadata_v1.clone())?;
+    storage.place_object(b"a", &document_v1, metadata_v1.clone())?;
 
-    storage.remove_object("a".as_bytes())?;
+    storage.remove_object(b"a")?;
     let rewind_version = storage.actual_version();
 
     let document_v2 = create_mock_document();
     let metadata_v2 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v2.clone(), metadata_v2.clone())?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document_v2, &metadata_v2)?;
+    storage.place_object(b"a", &document_v2, metadata_v2.clone())?;
+    check_storage_has_object(&storage, b"a", &document_v2, &metadata_v2)?;
     storage
         .get_external_accessor()
         .lock()
@@ -245,14 +245,14 @@ fn test_rewind_to_removal_then_update() -> eyre::Result<()> {
         .wait_for_state_upload_completion();
 
     let backend = FilesystemKVStorage::new(test_storage_path)?;
-    let mut storage = CachedObjectStorage::new(Box::new(backend));
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
     storage.start_from_stable_version(rewind_version)?;
-    check_storage_doesnt_have_object(&storage, "a".as_bytes())?;
+    check_storage_doesnt_have_object(&storage, b"a")?;
 
     let document_v3 = create_mock_document();
     let metadata_v3 = create_mock_storage_metadata();
-    storage.place_object("a".as_bytes(), document_v3.clone(), metadata_v3.clone())?;
-    check_storage_has_object(&storage, "a".as_bytes(), &document_v3, &metadata_v3)?;
+    storage.place_object(b"a", &document_v3, metadata_v3.clone())?;
+    check_storage_has_object(&storage, b"a", &document_v3, &metadata_v3)?;
 
     Ok(())
 }

@@ -69,7 +69,7 @@ impl PosixLikeReader {
             had_queue_refresh: false,
             current_action: None,
             scanner_actions_queue: VecDeque::new(),
-            cached_object_storage: CachedObjectStorage::new(Box::new(MockKVStorage {})),
+            cached_object_storage: CachedObjectStorage::new(Box::new(MockKVStorage {}))?,
         })
     }
 }
@@ -226,7 +226,7 @@ impl PosixLikeReader {
                     };
                     self.cached_object_storage.place_object(
                         path.as_ref(),
-                        contents_for_caching,
+                        &contents_for_caching,
                         metadata.clone(),
                     )?;
                     let reader = Box::new(Cursor::new(cached_object_contents));

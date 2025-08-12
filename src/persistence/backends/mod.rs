@@ -17,6 +17,7 @@ use futures::channel::oneshot::Receiver as OneShotReceiver;
 use futures::channel::oneshot::Sender as OneShotSender;
 use glob::PatternError as GlobPatternError;
 use lz4_flex::block::DecompressError;
+use rusqlite::Error as SqliteError;
 use serde_json::Error as JsonParseError;
 
 pub use azure::AzureKVStorage;
@@ -52,6 +53,9 @@ pub enum Error {
 
     #[error(transparent)]
     Lz4Decompress(#[from] DecompressError),
+
+    #[error(transparent)]
+    SQLite(#[from] SqliteError),
 
     #[error("no available cached object versions")]
     NoAvailableVersions,
