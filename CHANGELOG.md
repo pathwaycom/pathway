@@ -18,6 +18,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING** optimized the implementation of `pw.reducers.min`, `pw.reducers.max`, `pw.reducers.argmin`, `pw.reducers.argmax`, `pw.reducers.any` reducers for append-only tables. It is a breaking change for programs using operator persistence. The persisted state will have to be recomputed.
 - **BREAKING** optimized the implementation of `pw.reducers.sum` reducer on `float` and `np.ndarray` columns. It is a breaking change for programs using operator persistence. The persisted state will have to be recomputed.
 - **BREAKING** the implementation of data persistence has been optimized for the case of many small objects in filesystem and S3 connectors. It is a breaking change for programs using data persistence. The persisted state will have to be recomputed.
+- **BREAKING** the data snapshot logic in persistence has been optimized for the case of big input snapshots. It is a breaking change for programs using data persistence. The persisted state will have to be recomputed.
 - Improved precision of `pw.reducers.sum` on `float` columns by introducing Neumeier summation.
 
 ## [0.25.1] - 2025-07-24

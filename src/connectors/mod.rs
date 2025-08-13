@@ -270,15 +270,7 @@ impl Connector {
         for mut snapshot_reader in snapshot_readers {
             let mut entries_read = 0;
             loop {
-                let entry_read = match snapshot_reader.read() {
-                    Ok(entry_read) => entry_read,
-                    Err(e) => {
-                        error!(
-                            "Error encountered while reading snapshot to rewind old inputs: {e}"
-                        );
-                        break;
-                    }
-                };
+                let entry_read = snapshot_reader.read()?;
                 match entry_read {
                     SnapshotEvent::Finished => {
                         info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
@@ -316,13 +308,7 @@ impl Connector {
         for mut snapshot_reader in snapshot_readers {
             let mut entries_read = 0;
             loop {
-                let entry_read = match snapshot_reader.read() {
-                    Ok(entry_read) => entry_read,
-                    Err(e) => {
-                        error!("Error encountered while re-reading snapshot to reconstruct the frontier: {e}");
-                        break;
-                    }
-                };
+                let entry_read = snapshot_reader.read()?;
                 if matches!(entry_read, SnapshotEvent::Finished) {
                     break;
                 }

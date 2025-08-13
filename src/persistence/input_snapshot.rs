@@ -1,8 +1,9 @@
-use log::{error, info};
+use log::{error, info, warn};
 use std::io::{BufReader, Cursor, ErrorKind as IoErrorKind, Read, Seek, SeekFrom};
 use std::mem::take;
 
 use bincode::{deserialize_from, serialize, ErrorKind as BincodeError};
+use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Key, Timestamp, TotalFrontier, Value};
@@ -11,15 +12,24 @@ use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::Error;
 
 const MAX_ENTRIES_PER_CHUNK: usize = 100_000;
-const MAX_CHUNK_LENGTH: usize = 10_000_000;
+const MIN_CHUNK_LENGTH: usize = 262_144;
+const MAX_CHUNK_LENGTH: usize = 100_000_000;
 
 type ChunkId = u64;
 
-fn get_chunk_ids_with_backend(backend: &dyn PersistenceBackend) -> Result<Vec<ChunkId>, Error> {
-    let mut chunk_ids = Vec::new();
+fn get_chunk_ids_with_backend(
+    backend: &dyn PersistenceBackend,
+    max_allowed_id: Option<ChunkId>,
+) -> Result<Vec<ChunkId>, Error> {
     let chunk_keys = backend.list_keys()?;
+    let mut chunk_ids = Vec::with_capacity(chunk_keys.len());
     for chunk_key in chunk_keys {
         if let Ok(chunk_id) = chunk_key.parse() {
+            if let Some(max_allowed_id) = max_allowed_id {
+                if chunk_id > max_allowed_id {
+                    continue;
+                }
+            }
             chunk_ids.push(chunk_id);
         } else {
             error!("Unparsable chunk id: {chunk_key}");
@@ -68,6 +78,8 @@ pub struct InputSnapshotReader {
     threshold_time: TotalFrontier<Timestamp>,
     truncate_at_end: bool,
 
+    obsolete_chunks: Vec<ChunkId>,
+    current_chunk_has_data: bool,
     reader: Option<BufReader<Cursor<Vec<u8>>>>,
     last_frontier: OffsetAntichain,
     chunk_ids: Vec<ChunkId>,
@@ -78,25 +90,38 @@ pub struct InputSnapshotReader {
 impl ReadInputSnapshot for InputSnapshotReader {
     fn read(&mut self) -> Result<Event, Error> {
         let event = self.next_event()?;
-        if matches!(event, Event::Finished) {
-            return Ok(event);
-        }
+        let mut is_finished = if matches!(event, Event::Finished) {
+            info!(
+                "Reached the end of the snapshot. Exiting the rewind after reading {} entries",
+                self.entries_read
+            );
+            true
+        } else {
+            false
+        };
+
         if let Event::AdvanceTime(new_time, ref frontier) = event {
-            let read_finished = TotalFrontier::At(new_time) >= self.threshold_time;
             self.last_frontier = frontier.clone();
-            if read_finished {
-                if self.truncate_at_end {
-                    if let Err(e) = self.truncate() {
-                        error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                        return Err(e);
-                    }
-                }
+            if TotalFrontier::At(new_time) >= self.threshold_time {
+                is_finished = true;
                 info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {} entries", self.entries_read);
-                return Ok(Event::Finished);
+                if self.truncate_at_end {
+                    // It makes sense to truncate only if something remains after the current point.
+                    self.truncate()?;
+                }
             }
         }
-        self.entries_read += 1;
-        Ok(event)
+
+        if is_finished {
+            // Obsolete chunks can be removed anytime
+            if self.truncate_at_end {
+                self.remove_obsolete_chunks()?;
+            }
+            Ok(Event::Finished)
+        } else {
+            self.entries_read += 1;
+            Ok(event)
+        }
     }
 
     fn last_frontier(&self) -> &OffsetAntichain {
@@ -110,7 +135,7 @@ impl InputSnapshotReader {
         threshold_time: TotalFrontier<Timestamp>,
         truncate_at_end: bool,
     ) -> Result<Self, Error> {
-        let mut chunk_ids = get_chunk_ids_with_backend(backend.as_ref())?;
+        let mut chunk_ids = get_chunk_ids_with_backend(backend.as_ref(), None)?;
         chunk_ids.sort_unstable();
         Ok(Self {
             backend,
@@ -121,6 +146,8 @@ impl InputSnapshotReader {
             chunk_ids,
             next_chunk_idx: 0,
             entries_read: 0,
+            obsolete_chunks: Vec::new(),
+            current_chunk_has_data: false,
         })
     }
 
@@ -133,9 +160,11 @@ impl InputSnapshotReader {
             let mut stable_part = vec![0_u8; stable_position.try_into().unwrap()];
             reader.seek(SeekFrom::Start(0))?;
             reader.read_exact(stable_part.as_mut_slice())?;
+
+            let stable_part_compressed = compress_prepend_size(&stable_part);
             futures::executor::block_on(async {
                 self.backend
-                    .put_value(&current_chunk_key, stable_part)
+                    .put_value(&current_chunk_key, stable_part_compressed)
                     .await
                     .expect("unexpected future cancelling")
             })?;
@@ -143,7 +172,15 @@ impl InputSnapshotReader {
 
         for unreachable_part in &self.chunk_ids[self.next_chunk_idx..] {
             info!("Truncate: Remove {unreachable_part:?}");
-            self.backend.remove_key(&format!("{unreachable_part}"))?;
+            self.backend.remove_key(&unreachable_part.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn remove_obsolete_chunks(&self) -> Result<(), Error> {
+        for chunk_id in &self.obsolete_chunks {
+            info!("Removing an obsolete chunk: {chunk_id}");
+            self.backend.remove_key(&chunk_id.to_string())?;
         }
         Ok(())
     }
@@ -152,13 +189,23 @@ impl InputSnapshotReader {
         loop {
             if let Some(reader) = &mut self.reader {
                 match deserialize_from(reader) {
-                    Ok(entry) => return Ok(entry),
+                    Ok(entry) => {
+                        let is_data = matches!(entry, Event::Insert(_, _) | Event::Delete(_, _));
+                        self.current_chunk_has_data |= is_data;
+                        return Ok(entry);
+                    }
                     Err(e) => match *e {
                         BincodeError::Io(e) => {
                             if !matches!(e.kind(), IoErrorKind::UnexpectedEof) {
                                 return Err(Error::Io(e));
                             }
+                            let current_chunk_is_last = self.next_chunk_idx >= self.chunk_ids.len();
+                            if !self.current_chunk_has_data && !current_chunk_is_last {
+                                self.obsolete_chunks
+                                    .push(self.chunk_ids[self.next_chunk_idx - 1]);
+                            }
                             self.reader = None;
+                            self.current_chunk_has_data = false;
                             continue;
                         }
                         _ => return Err(Error::Bincode(*e)),
@@ -168,13 +215,35 @@ impl InputSnapshotReader {
             if self.next_chunk_idx >= self.chunk_ids.len() {
                 break;
             }
-            let next_chunk_key = format!("{}", self.chunk_ids[self.next_chunk_idx]);
+            let next_chunk_id = self.chunk_ids[self.next_chunk_idx];
+            let next_chunk_key = next_chunk_id.to_string();
             info!(
                 "Snapshot reader proceeds to the chunk {next_chunk_key} after {} snapshot entries",
                 self.entries_read
             );
-            let contents = self.backend.get_value(&next_chunk_key)?;
-            let cursor = Cursor::new(contents);
+
+            let contents = match self.backend.get_value(&next_chunk_key) {
+                Ok(contents) => contents,
+                Err(e) => {
+                    warn!("Failed to read a snapshot chunk. Probably it was removed as an obsolete by other worker. Block: {next_chunk_key}. Error: {e}");
+                    let last_chunk_id =
+                        self.chunk_ids.last().expect("At least one chunk ID exists");
+
+                    self.chunk_ids =
+                        get_chunk_ids_with_backend(self.backend.as_ref(), Some(*last_chunk_id))?;
+                    self.chunk_ids.sort_unstable();
+
+                    self.next_chunk_idx = match self.chunk_ids.binary_search(&next_chunk_id) {
+                        Ok(_) => return Err(e), // The chunk remains, so it wasn't a deletion by other worker
+                        Err(index) => index,
+                    };
+
+                    continue;
+                }
+            };
+
+            let decompressed = decompress_size_prepended(&contents)?;
+            let cursor = Cursor::new(decompressed);
             self.reader = Some(BufReader::new(cursor));
             self.next_chunk_idx += 1;
         }
@@ -225,7 +294,7 @@ pub struct InputSnapshotWriter {
 
 impl InputSnapshotWriter {
     pub fn new(backend: Box<dyn PersistenceBackend>, mode: SnapshotMode) -> Result<Self, Error> {
-        let chunk_keys = get_chunk_ids_with_backend(backend.as_ref())?;
+        let chunk_keys = get_chunk_ids_with_backend(backend.as_ref(), None)?;
         Ok(Self {
             backend,
             mode,
@@ -269,15 +338,24 @@ impl InputSnapshotWriter {
     }
 
     fn save_current_chunk(&mut self) -> BackendPutFuture {
+        let chunk_name = self.next_chunk_id.to_string();
+
+        let compressed = compress_prepend_size(&self.current_chunk);
         info!(
-            "Persisting a chunk of {} entries ({} bytes)",
+            "Persisting a chunk of {} entries ({} -> {} bytes)",
             self.current_chunk_entries,
-            self.current_chunk.len()
+            self.current_chunk.len(),
+            compressed.len(),
         );
-        let chunk_name = format!("{}", self.next_chunk_id);
-        self.next_chunk_id += 1;
-        self.current_chunk_entries = 0;
-        self.backend
-            .put_value(&chunk_name, take(&mut self.current_chunk))
+
+        let is_small_chunk = compressed.len() <= MIN_CHUNK_LENGTH;
+        if is_small_chunk {
+            self.backend.put_value(&chunk_name, compressed)
+        } else {
+            self.next_chunk_id += 1;
+            self.current_chunk_entries = 0;
+            self.current_chunk.clear();
+            self.backend.put_value(&chunk_name, compressed)
+        }
     }
 }
