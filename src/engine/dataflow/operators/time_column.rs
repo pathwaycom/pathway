@@ -374,7 +374,7 @@ where
                                 let last_arrangement_key = last_arrangement_keys.get(instance);
                                 if already_released_time.is_some()
                                     && already_released_time.unwrap() >= &key.time
-                                    && Some(key) < last_arrangement_key
+                                    && Some(key) <= last_arrangement_key
                                 // only emit those entries that won't be emitted while iterating over the arrangement below
                                 {
                                     output.session(&capability.delayed(&time)).give((

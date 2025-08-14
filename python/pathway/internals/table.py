@@ -42,6 +42,7 @@ from pathway.internals.universe_solver import UniverseSolver
 if TYPE_CHECKING:
     from pathway.internals.datasink import DataSink
     from pathway.internals.interactive import LiveTable
+    from pathway.stdlib.temporal.utils import IntervalType
 
 
 TSchema = TypeVar("TSchema", bound=Schema)
@@ -666,6 +667,68 @@ id_type=<class 'pathway.engine.Pointer'>>
 
     @trace_user_frame
     @desugar
+    def forget(
+        self, time_column: expr.ColumnExpression, threshold: IntervalType
+    ) -> Table[TSchema]:
+        """Remove old entries when they start to satisfy ``time_column <= max(time_column) - threshold``.
+
+        This operator is useful for removing old entries from the stateful operators
+        downstream (like joins, groupbys etc.). It stores the entries and when the
+        current time (defined as max over all ``time_column`` values so far) reaches
+        their time plus ``threshold``, a deletion of entries is emitted.
+
+        Args:
+            time_column: ``ColumnExpression`` that specifies the event time.
+            threshold: value used to determine which entries are old enough to be removed.
+                Should match the type of the ``time_column`` (``int -> int``,
+                ``float -> float``, ``datetime -> timedelta``).
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t = pw.debug.table_from_markdown(
+        ...     '''
+        ...     t | v | __time__
+        ...     1 | 1 |     2
+        ...     2 | 1 |     2
+        ...     4 | 2 |     4
+        ...     3 | 3 |     6
+        ... '''
+        ... )
+        >>> t_with_forgetting = t.forget(pw.this.t, 3)
+        >>> s = pw.debug.table_from_markdown(
+        ...     '''
+        ...   v | a |  __time__
+        ...   1 | 1 |      2
+        ...   2 | 2 |      4
+        ...   1 | 3 |      8
+        ... '''
+        ... )
+        >>> res = t_with_forgetting.join(s, pw.left.v == pw.right.v).select(
+        ...     pw.left.t, pw.left.v, pw.right.a
+        ... )
+        >>> pw.debug.compute_and_print_update_stream(res)
+                    | t | v | a | __time__ | __diff__
+        ^YYYD8ZW... | 1 | 1 | 1 | 2        | 1
+        ^YYY47FZ... | 2 | 1 | 1 | 2        | 1
+        ^Z3QTSKY... | 4 | 2 | 2 | 4        | 1
+        ^YYYD8ZW... | 1 | 1 | 1 | 6        | -1
+        ^YYY822X... | 2 | 1 | 3 | 8        | 1
+
+        The entry ``t=1,v=1`` is forgotten at the processing time 6. It gets removed from the
+        join. When at the processing time 8, there's a new entry with the join key equal to 1,
+        it only gets joined with ``t=2,v=1`` entry because the other entry was already removed.
+
+        The removal of ``t=1,v=1`` entry resulted in the retraction of all its results from a join
+        (only ``t=1,v=1,a=1`` in this case). If you would like to filter out retractions,
+        you can do ``to_stream().filter(pw.this.is_upsert)`` on the result of a join.
+        """
+        return self._forget(
+            time_column + threshold, time_column, mark_forgetting_records=False
+        )
+
+    @trace_user_frame
+    @desugar
     @check_arg_types
     @contextualized_operator
     def _forget(
@@ -674,7 +737,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         time_column: expr.ColumnExpression,
         mark_forgetting_records: bool,
         instance_column: expr.ColumnExpression | None = None,
-    ) -> Table:
+    ) -> Table[TSchema]:
         if instance_column is None:
             instance_column = expr.ColumnConstExpression(None)
         context = clmn.ForgetContext(
@@ -711,6 +774,53 @@ id_type=<class 'pathway.engine.Pointer'>>
 
     @trace_user_frame
     @desugar
+    def ignore_late(
+        self, time_column: expr.ColumnExpression, threshold: IntervalType
+    ) -> Table[TSchema]:
+        """Filter out entries that satisfy ``time_column <= max(time_column) - threshold``.
+
+        In contrast to ``forget``, this operator doesn't store the entries. It just checks
+        if the entries match the condition and, if they do, allows them to pass. The only
+        value stored by this operator is the current time (defined as max over all
+        ``time_column`` values so far).
+
+        Please note that if the table is non-append-only and there's a difference in
+        processing time between an insertion and a deletion for some key, the insertion
+        may pass through but the deletion may be filtered out. It'll happen if the max
+        value in ``time_column`` advanced between the insertion and deletion and the insertion
+        didn't satisfy the filtering-out criterion but the deletion did.
+
+        Args:
+            time_column: ``ColumnExpression`` that specifies the event time.
+            threshold: value used to determine which entries should be filtered out.
+                Should match the type of the ``time_column`` (``int -> int``,
+                ``float -> float``, ``datetime -> timedelta``).
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t = pw.debug.table_from_markdown(
+        ...     '''
+        ...     t | v | __time__
+        ...     1 | 1 |     2
+        ...     2 | 2 |     4
+        ...     5 | 3 |     6
+        ...     2 | 4 |     8
+        ...     7 | 5 |    10
+        ... '''
+        ... )
+        >>> res = t.ignore_late(pw.this.t, 3)
+        >>> pw.debug.compute_and_print_update_stream(res)
+                    | t | v | __time__ | __diff__
+        ^X1MXHYY... | 1 | 1 | 2        | 1
+        ^YYY4HAB... | 2 | 2 | 4        | 1
+        ^Z3QWT29... | 5 | 3 | 6        | 1
+        ^3HN31E1... | 7 | 5 | 10       | 1
+        """
+        return self._freeze(time_column + threshold, time_column)
+
+    @trace_user_frame
+    @desugar
     @check_arg_types
     @contextualized_operator
     def _freeze(
@@ -718,7 +828,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
         instance_column: expr.ColumnExpression | None = None,
-    ) -> Table:
+    ) -> Table[TSchema]:
         # FIXME: freeze can be incorrect if the input is not append-only
         # we may produce insertion but never produce deletion
         if instance_column is None:
@@ -730,6 +840,53 @@ id_type=<class 'pathway.engine.Pointer'>>
             self._eval(instance_column),
         )
         return self._table_with_context(context)
+
+    @trace_user_frame
+    @desugar
+    def buffer(
+        self, time_column: expr.ColumnExpression, threshold: IntervalType
+    ) -> Table[TSchema]:
+        """Buffers the values until the condition ``time_column <= max(time_column) - threshold`` is met.
+
+        This is a stateful operator. It stores the entries if their
+        ``time_column > max(time_column) - threshold``. Otherwise the entries can pass immediately.
+        Once the current time (defined as max over all ``time_column`` values so far) advances and
+        some of the stored entries start to satisfy the condition, they are sent for further processing.
+
+        Args:
+            time_column: ``ColumnExpression`` that specifies the event time.
+            threshold: value used to determine which entries are old enough to be sent for further processing.
+                Should match the type of the ``time_column`` (``int -> int``,
+                ``float -> float``, ``datetime -> timedelta``).
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t = pw.debug.table_from_markdown(
+        ...     '''
+        ...     t | v | __time__
+        ...     1 | 1 |     2
+        ...     2 | 2 |     4
+        ...     5 | 3 |     6
+        ...     2 | 4 |     8
+        ...     7 | 5 |    10
+        ... '''
+        ... )
+        >>> res = t.buffer(pw.this.t, 3)
+        >>> pw.debug.compute_and_print_update_stream(res)
+                    | t | v | __time__             | __diff__
+        ^X1MXHYY... | 1 | 1 | 6                    | 1
+        ^YYY4HAB... | 2 | 2 | 6                    | 1
+        ^3CZ78B4... | 2 | 4 | 8                    | 1
+        ^Z3QWT29... | 5 | 3 | 18446744073709551614 | 1
+        ^3HN31E1... | 7 | 5 | 18446744073709551614 | 1
+
+        The values of processing time for rows with event time 5, 7 are equal
+        to 18446744073709551614 because there's no more input and they are released
+        only at the end of the processing. 18446744073709551614 is the maximum
+        possible time.
+        """
+        return self._buffer(time_column + threshold, time_column)
 
     @trace_user_frame
     @desugar
