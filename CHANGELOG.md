@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.26.0]
+
 ### Added
 - `path_filter` parameter in `pw.io.s3.read` and `pw.io.minio.read` functions. It enables post-filtering of object paths using a wildcard pattern (`*`, `?`), allowing exclusion of paths that pass the main `path` filter but do not match `path_filter`.
 - Input connectors now support backpressure control via `max_backlog_size`, allowing to limit the number of read events in processing per connector. This is useful when the data source emits a large initial burst followed by smaller, incremental updates.
