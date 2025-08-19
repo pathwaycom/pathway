@@ -54,7 +54,7 @@ sql = [
     "sqlglot == 10.6.1", # the new versions are incompatible with the current pw.sql Implementation
 ]
 xpack-llm = [
-    "openai ~= 1.60",
+    "openai >=1.60, <=1.99.9",
     "litellm ~= 1.44",
     "cohere ~= 5.1",
     "tiktoken >= 0.5",
