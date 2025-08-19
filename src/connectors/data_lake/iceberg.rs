@@ -6,12 +6,13 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use deltalake::arrow::record_batch::RecordBatch as ArrowRecordBatch;
+use deltalake::datafusion::parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use deltalake::parquet::file::properties::WriterProperties;
 use futures::{stream, StreamExt, TryStreamExt};
 use iceberg::scan::{FileScanTask, FileScanTaskStream};
 use iceberg::spec::{
-    ListType as IcebergListType, NestedField, NestedField as IcebergNestedField,
-    PrimitiveType as IcebergPrimitiveType, Schema as IcebergSchema, Type as IcebergType,
+    ListType as IcebergListType, NestedField, PrimitiveType as IcebergPrimitiveType,
+    Schema as IcebergSchema, Type as IcebergType,
 };
 use iceberg::table::Table as IcebergTable;
 use iceberg::transaction::Transaction;
@@ -32,6 +33,7 @@ use super::{
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::NDARRAY_SINGLE_ELEMENT_FIELD_NAME;
 use crate::connectors::data_lake::buffering::PayloadType;
+use crate::connectors::data_lake::MetadataPerColumn;
 use crate::connectors::data_storage::ConnectorMode;
 use crate::connectors::metadata::IcebergMetadata;
 use crate::connectors::{
@@ -105,12 +107,27 @@ impl IcebergDBParams {
 pub struct IcebergTableParams {
     name: String,
     schema: IcebergSchema,
+    metadata_per_column: MetadataPerColumn,
 }
 
 impl IcebergTableParams {
     pub fn new(name: String, fields: &[ValueField]) -> Result<Self, WriteError> {
         let schema = Self::build_schema(fields)?;
-        Ok(Self { name, schema })
+        let mut metadata_per_column = MetadataPerColumn::new();
+        for field in schema.as_struct().fields() {
+            let mut metadata = HashMap::with_capacity(1);
+            metadata.insert(PARQUET_FIELD_ID_META_KEY.to_string(), field.id.to_string());
+            metadata_per_column.insert(field.name.clone(), metadata);
+        }
+        Ok(Self {
+            name,
+            schema,
+            metadata_per_column,
+        })
+    }
+
+    pub fn metadata_per_column(&self) -> MetadataPerColumn {
+        self.metadata_per_column.clone()
     }
 
     pub fn ensure_table(
@@ -189,7 +206,7 @@ impl IcebergTableParams {
             Type::List(element_type) => {
                 let element_type_is_optional = element_type.is_optional();
                 let nested_element_type = Self::iceberg_type(element_type.unoptionalize())?;
-                let nested_type = IcebergNestedField::new(
+                let nested_type = NestedField::new(
                     0,
                     NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
                     nested_element_type,
@@ -199,7 +216,7 @@ impl IcebergTableParams {
                 IcebergType::List(array_type)
             }
             Type::Any | Type::Array(_, _) | Type::Tuple(_) | Type::Future(_) => {
-                return Err(WriteError::UnsupportedType(type_.clone()))
+                return Err(WriteError::UnsupportedType(type_.clone()));
             }
         };
         Ok(iceberg_type)
@@ -212,6 +229,7 @@ pub struct IcebergBatchWriter {
     catalog: RestCatalog,
     table: IcebergTable,
     table_ident: TableIdent,
+    metadata_per_column: MetadataPerColumn,
 }
 
 impl IcebergBatchWriter {
@@ -234,6 +252,7 @@ impl IcebergBatchWriter {
             catalog,
             table,
             table_ident: TableIdent::new(namespace.name().clone(), table_params.name.clone()),
+            metadata_per_column: table_params.metadata_per_column(),
         })
     }
 
@@ -251,6 +270,7 @@ impl IcebergBatchWriter {
             None,
             iceberg::spec::DataFileFormat::Parquet,
         );
+        let partition_spec_id = table.metadata().default_partition_spec_id();
         let parquet_writer_builder = ParquetWriterBuilder::new(
             WriterProperties::default(),
             table.metadata().current_schema().clone(),
@@ -258,7 +278,11 @@ impl IcebergBatchWriter {
             location_generator.clone(),
             file_name_generator.clone(),
         );
-        Ok(DataFileWriterBuilder::new(parquet_writer_builder, None))
+        Ok(DataFileWriterBuilder::new(
+            parquet_writer_builder,
+            None,
+            partition_spec_id,
+        ))
     }
 }
 
@@ -302,6 +326,10 @@ impl LakeBatchWriter for IcebergBatchWriter {
             self.table_ident.namespace.to_url_string(),
             self.table_ident.name
         )
+    }
+
+    fn metadata_per_column(&self) -> &MetadataPerColumn {
+        &self.metadata_per_column
     }
 }
 
@@ -473,7 +501,8 @@ impl IcebergReader {
         let reader_builder = table.reader_builder();
         let entries: Vec<_> = reader_builder
             .build()
-            .read(iceberg_task_stream)?
+            .read(iceberg_task_stream)
+            .await?
             .try_collect()
             .await?;
         let mut result = Vec::new();

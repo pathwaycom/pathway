@@ -38,7 +38,7 @@ chrono = { version = "0.4.39", features = ["std", "clock"], default-features = f
 chrono-tz = "0.10.3"
 crossbeam-channel = "0.5.15"
 csv = "1.3.1"
-deltalake = { version = "0.24.0", features = ["datafusion", "s3"] }
+deltalake = { version = "0.26.2", features = ["datafusion", "s3"] }
 derivative = "2.2.0"
 differential-dataflow = { path = "./external/differential-dataflow" }
 ed25519-dalek = { version = "2.1.1", features = ["serde", "pkcs8"] }
@@ -49,8 +49,8 @@ half = "2.6.0"
 hex = "0.4.3"
 hyper = { version = "0.14", features = ["server"] }
 hyperloglogplus = "0.4.1"
-iceberg = "0.4.0"
-iceberg-catalog-rest = "0.4.0"
+iceberg = "0.5.1"
+iceberg-catalog-rest = "0.5.1"
 id-arena = "2.2.1"
 indexmap = "2.9.0"
 itertools = "0.14.0"
