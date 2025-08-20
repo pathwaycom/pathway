@@ -22,6 +22,7 @@ from pathway.internals.udfs.caches import (
 from pathway.internals.udfs.executors import (
     AutoExecutor,
     Executor,
+    FullyAsyncExecutor,
     SyncExecutor,
     async_executor,
     async_options,
@@ -153,10 +154,8 @@ class UDF(abc.ABC):
         self.propagate_none = propagate_none
         self.executor = self._prepare_executor(executor)
         self.cache_strategy = cache_strategy
-        if not isinstance(self.executor, SyncExecutor) and max_batch_size is not None:
-            raise ValueError(
-                "Batching is currently supported only for synchronous UDFs."
-            )
+        if isinstance(self.executor, FullyAsyncExecutor) and max_batch_size is not None:
+            raise ValueError("Batching is not supported for fully asynchronous UDFs.")
         self.max_batch_size = max_batch_size
         self.func = self._wrap_function()
 

@@ -1469,16 +1469,28 @@ def test_fully_async_udf_first_result_after_deletion_and_next_insertion():
 
 
 @xfail_on_multiple_threads  # batches can be split between workers
-def test_batch_udf():
+@pytest.mark.parametrize("sync", [True, False])
+def test_batch_udf(sync: bool):
 
-    @pw.udf(max_batch_size=16)
-    def foo(a: list[int], b: list[int]) -> list[int]:
+    def inner(a: list[int], b: list[int]) -> list[int]:
         assert len(a) == 3
         assert len(b) == 3
         c = []
         for a_i, b_i in zip(a, b):
             c.append(a_i + b_i)
         return c
+
+    if sync:
+
+        @pw.udf(max_batch_size=16)
+        def foo(a: list[int], b: list[int]) -> list[int]:
+            return inner(a, b)
+
+    else:
+
+        @pw.udf(max_batch_size=16)
+        async def foo(a: list[int], b: list[int]) -> list[int]:
+            return inner(a, b)
 
     input = pw.debug.table_from_markdown(
         """
@@ -1503,17 +1515,29 @@ def test_batch_udf():
 
 @xfail_on_multiple_threads  # batches can be split between workers
 @pytest.mark.parametrize("max_batch_size", [1, 2, 3])
-def test_batch_udf_batching_correct(max_batch_size):
+@pytest.mark.parametrize("sync", [True, False])
+def test_batch_udf_batching_correct(max_batch_size: int, sync: bool):
 
     lengths = []
 
-    @pw.udf(max_batch_size=max_batch_size)
-    def foo(a: list[int], b: list[int]) -> list[int]:
+    def inner(a: list[int], b: list[int]) -> list[int]:
         lengths.append(len(a))
         c = []
         for a_i, b_i in zip(a, b, strict=True):
             c.append(a_i + b_i)
         return c
+
+    if sync:
+
+        @pw.udf(max_batch_size=max_batch_size)
+        def foo(a: list[int], b: list[int]) -> list[int]:
+            return inner(a, b)
+
+    else:
+
+        @pw.udf(max_batch_size=max_batch_size)
+        async def foo(a: list[int], b: list[int]) -> list[int]:
+            return inner(a, b)
 
     input = pw.debug.table_from_markdown(
         """
@@ -1547,11 +1571,19 @@ def test_batch_udf_batching_correct(max_batch_size):
         assert lengths == [1, 1, 1, 1, 1]
 
 
-def test_batch_udf_numpy():
+@pytest.mark.parametrize("sync", [True, False])
+def test_batch_udf_numpy(sync: bool):
+    if sync:
 
-    @pw.udf(max_batch_size=16, return_type=int)
-    def foo(a: list[int], b: list[int]):
-        return np.array(a) + np.array(b)
+        @pw.udf(max_batch_size=16, return_type=int)
+        def foo(a: list[int], b: list[int]):
+            return np.array(a) + np.array(b)
+
+    else:
+
+        @pw.udf(max_batch_size=16, return_type=int)
+        async def foo(a: list[int], b: list[int]):
+            return np.array(a) + np.array(b)
 
     input = pw.debug.table_from_markdown(
         """
@@ -1575,13 +1607,25 @@ def test_batch_udf_numpy():
 
 
 @xfail_on_multiple_threads
-def test_batch_udf_incorrect_rows_returned():
+@pytest.mark.parametrize("sync", [True, False])
+def test_batch_udf_incorrect_rows_returned(sync: bool):
 
-    @pw.udf(max_batch_size=16, return_type=int)
-    def foo(a: list[int], b: list[int]):
+    def inner(a: list[int], b: list[int]):
         c = [a_i + b_i for a_i, b_i in zip(a, b, strict=True)]
         c.pop()
         return c
+
+    if sync:
+
+        @pw.udf(max_batch_size=16, return_type=int)
+        def foo(a: list[int], b: list[int]):
+            return inner(a, b)
+
+    else:
+
+        @pw.udf(max_batch_size=16, return_type=int)
+        async def foo(a: list[int], b: list[int]):
+            return inner(a, b)
 
     input = pw.debug.table_from_markdown(
         """
@@ -1602,12 +1646,22 @@ def test_batch_udf_incorrect_rows_returned():
         run_all()
 
 
-def test_error_in_batch_udf():
+@pytest.mark.parametrize("sync", [True, False])
+def test_error_in_batch_udf(sync: bool):
 
-    @pw.udf(max_batch_size=16, return_type=int)
-    def foo(a: list[int], b: list[int]):
-        c = [a_i // b_i for a_i, b_i in zip(a, b, strict=True)]
-        return c
+    if sync:
+
+        @pw.udf(max_batch_size=16, return_type=int)
+        def foo(a: list[int], b: list[int]):
+            c = [a_i // b_i for a_i, b_i in zip(a, b, strict=True)]
+            return c
+
+    else:
+
+        @pw.udf(max_batch_size=16, return_type=int)
+        async def foo(a: list[int], b: list[int]):
+            c = [a_i // b_i for a_i, b_i in zip(a, b, strict=True)]
+            return c
 
     input = pw.debug.table_from_markdown(
         """
@@ -1623,10 +1677,19 @@ def test_error_in_batch_udf():
         run_all()
 
 
-def test_batch_udf_annotation_has_to_be_list():
-    @pw.udf(max_batch_size=16)
-    def foo(a: list[int], b: list[int]) -> int:
-        return sum(a)
+@pytest.mark.parametrize("sync", [True, False])
+def test_batch_udf_annotation_has_to_be_list(sync: bool):
+    if sync:
+
+        @pw.udf(max_batch_size=16)
+        def foo(a: list[int], b: list[int]) -> int:
+            return sum(a)
+
+    else:
+
+        @pw.udf(max_batch_size=16)
+        async def foo(a: list[int], b: list[int]) -> int:
+            return sum(a)
 
     input = pw.debug.table_from_markdown(
         """
@@ -1647,9 +1710,86 @@ def test_batch_udf_annotation_has_to_be_list():
 def test_batch_async_udf_not_supported():
     with pytest.raises(
         ValueError,
-        match=re.escape("Batching is currently supported only for synchronous UDFs."),
+        match=re.escape("Batching is not supported for fully asynchronous UDFs."),
     ):
 
-        @pw.udf(max_batch_size=16)
+        @pw.udf(max_batch_size=16, executor=pw.udfs.fully_async_executor())
         async def foo(a: list[int], b: list[int]) -> list[int]:
             return [a_i + b_i for a_i, b_i in zip(a, b)]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="test requires asyncio.Barrier")
+def test_batch_async_is_async():
+    barrier = asyncio.Barrier(3)  # type: ignore[attr-defined]
+    # mypy complains because of versions lower than 3.11
+
+    @pw.udf(max_batch_size=1)
+    async def inc(a: list[int]) -> list[int]:
+        await barrier.wait()
+        return [a[0] + 3]
+
+    input = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        """
+    )
+
+    result = input.select(ret=inc(pw.this.a))
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            ret
+            4
+            5
+            6
+            """,
+        ),
+    )
+
+
+@pytest.mark.parametrize("sync", [True, False])
+def test_propagate_none_batch(sync: bool):
+
+    if sync:
+
+        @pw.udf(propagate_none=True, max_batch_size=2, return_type=int)
+        def foo(a: list[int], b: list[int]):
+            return np.array(a) + np.array(b)
+
+    else:
+
+        @pw.udf(propagate_none=True, max_batch_size=2, return_type=int)
+        async def foo(a: list[int], b: list[int]):
+            return np.array(a) + np.array(b)
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 4
+          | 5
+        3 |
+        4 | 7
+        5 | 8
+        """
+    )
+
+    result = input.select(ret=foo(pw.this.a, pw.this.b))
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            ret
+            5
+            None
+            None
+            11
+            13
+            """,
+        ),
+    )

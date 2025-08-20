@@ -468,6 +468,7 @@ class RowwiseEvaluator(
             *(self.eval_expression(arg, eval_state=eval_state) for arg in args),
             propagate_none=expression._propagate_none,
             dtype=expression._dtype.to_engine(),
+            max_batch_size=expression._max_batch_size,
         )
 
     def eval_fully_async_apply(

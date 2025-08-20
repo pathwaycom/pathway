@@ -72,6 +72,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::File;
+use std::future::Future;
 use std::io::{BufWriter, Read};
 use std::mem::take;
 use std::os::unix::prelude::*;
@@ -1248,60 +1249,55 @@ macro_rules! binary_expr {
 }
 
 fn batch_apply(
-    py: Python<'_>,
     input: &[&[Value]],
     n_args: usize,
-    function: &Py<PyAny>,
-    dtype: &Type,
+    logic: &impl Fn(Vec<Vec<Vec<Value>>>) -> Vec<DynResult<Vec<DynResult<Value>>>>,
     propagate_none: bool,
     max_batch_size: usize,
 ) -> Vec<DynResult<Value>> {
-    input
+    let (data, masks): (Vec<_>, Vec<_>) = input
         .chunks(max_batch_size)
-        .flat_map(|inputs| {
+        .map(|inputs| {
             let mut mask = vec![false; inputs.len()];
             let mut data = Vec::with_capacity(n_args);
+            let mut not_none_count = 0;
             data.resize_with(n_args, || Vec::with_capacity(inputs.len()));
             for (i, input_i) in inputs.iter().enumerate() {
                 if propagate_none && input_i.iter().any(|a| matches!(a, Value::None)) {
                     mask[i] = true;
                 } else {
+                    not_none_count += 1;
                     for (j, input_ij) in input_i.iter().enumerate() {
                         data[j].push(input_ij.clone());
                     }
                 }
             }
-            let args = PyTuple::new(py, data);
-            let results = args.and_then(|args| {
-                function
-                    .call1(py, args)
-                    .and_then(|results| results.extract::<Vec<Bound<PyAny>>>(py))
-            });
+            (data, (mask, not_none_count))
+        })
+        .unzip();
+    logic(data)
+        .into_iter()
+        .zip_eq(masks)
+        .flat_map(|(results, (mask, not_none_count))| {
             let batch_result: Vec<DynResult<Value>> = match results {
                 Ok(results) => {
-                    if results.len() == inputs.len() {
+                    if results.len() == not_none_count {
                         results
-                            .into_iter()
-                            .map(|result| Ok(extract_value(&result, dtype)?))
-                            .collect()
                     } else {
                         let msg =
                             format!("The number of rows produced by a UDF ({})", results.len())
-                                + &format!(
-                                    " is different than the number of rows on its input ({}).",
-                                    inputs.len()
-                                );
-                        inputs
-                            .iter()
+                                + " is different than the number of rows on its input"
+                                + &format!(" ({not_none_count}).");
+                        mask.iter()
                             .map(|_i| Err(PyValueError::new_err(msg.clone()).into()))
                             .collect()
                     }
                 }
                 Err(e) => {
                     let msg = "Error in batch UDF.";
-                    [Err(e.into())]
+                    [Err(e)]
                         .into_iter()
-                        .chain((1..inputs.len()).map(|_| Err(PyValueError::new_err(msg).into())))
+                        .chain((1..not_none_count).map(|_| Err(PyValueError::new_err(msg).into())))
                         .collect()
                 }
             };
@@ -1321,6 +1317,20 @@ fn batch_apply(
             }
         })
         .collect()
+}
+
+fn start_async_task(
+    event_loop: &Py<PyAny>,
+    function: &Py<PyAny>,
+    args: Bound<'_, PyTuple>,
+) -> PyResult<impl Future<Output = PyResult<PyObject>> + Send> {
+    let py = args.py();
+    let event_loop = event_loop.clone_ref(py);
+    let awaitable = function.call1(py, args)?;
+    let awaitable = awaitable.into_bound(py);
+    let locals =
+        pyo3_async_runtimes::TaskLocals::new(event_loop.into_bound(py)).copy_context(py)?;
+    pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)
 }
 
 #[pymethods]
@@ -1354,18 +1364,28 @@ impl PyExpression {
             .collect_vec();
         let n_args = args.len();
         let expression = if let Some(max_batch_size) = max_batch_size {
-            let func = Box::new(move |input: &[&[Value]]| {
-                Python::with_gil(|py| -> Vec<DynResult<Value>> {
-                    batch_apply(
-                        py,
-                        input,
-                        n_args,
-                        &function,
-                        &dtype,
-                        propagate_none,
-                        max_batch_size,
-                    )
+            let logic = move |batches: Vec<Vec<Vec<Value>>>| {
+                Python::with_gil(|py| {
+                    batches
+                        .into_iter()
+                        .map(|batch| {
+                            if !batch.is_empty() && batch[0].is_empty() {
+                                // if the batch has size 0, possible if propagate_none=true
+                                return Ok(Vec::new());
+                            }
+                            let args = PyTuple::new(py, batch)?;
+                            let results = function.call1(py, args)?;
+                            Ok(results
+                                .extract::<Vec<Bound<PyAny>>>(py)?
+                                .into_iter()
+                                .map(|result| Ok(extract_value(&result, &dtype)?))
+                                .collect())
+                        })
+                        .collect()
                 })
+            };
+            let func = Box::new(move |input: &[&[Value]]| {
+                batch_apply(input, n_args, &logic, propagate_none, max_batch_size)
             });
             AnyExpression::Apply(func, args.into())
         } else {
@@ -1391,13 +1411,14 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (scope, function, *args, dtype, propagate_none=false))]
+    #[pyo3(signature = (scope, function, *args, dtype, propagate_none=false, max_batch_size=None))]
     fn async_apply(
         scope: &Bound<Scope>,
         function: Py<PyAny>,
         args: Vec<PyRef<PyExpression>>,
         dtype: Type,
         propagate_none: bool,
+        max_batch_size: Option<usize>,
     ) -> Self {
         let args = args
             .into_iter()
@@ -1406,47 +1427,87 @@ impl PyExpression {
         let dtype = Arc::new(dtype);
         let py = scope.py();
         let event_loop = scope.borrow().event_loop.clone_ref(py);
-        let logic = move |input_i: &[Value]| {
-            let pass_none = propagate_none && input_i.iter().any(|a| matches!(a, Value::None));
-            let future = if pass_none {
-                // Conditional future because the final result has to be returned from the same async block.
-                // Thanks to that only a single future type is returned and there's no need to Box the closure.
-                None
-            } else {
-                Some(Python::with_gil(|py| {
-                    let event_loop = event_loop.clone_ref(py);
-                    let args = PyTuple::new(py, input_i)?;
-                    let awaitable = function.call1(py, args)?;
-                    let awaitable = awaitable.into_bound(py);
-                    let locals = pyo3_async_runtimes::TaskLocals::new(event_loop.into_bound(py))
-                        .copy_context(py)?;
-                    pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)
-                }))
-            };
-
-            let dtype = dtype.clone();
-            Box::pin(async {
-                if let Some(future) = future {
-                    let result = future?.await?;
-                    Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
+        let expression = if let Some(max_batch_size) = max_batch_size {
+            let n_args = args.len();
+            let logic = move |input: Vec<Vec<Value>>| {
+                let future = if !input.is_empty() && input[0].is_empty() {
+                    None
                 } else {
-                    Ok(Value::None)
-                }
-            })
+                    Some(Python::with_gil(|py| {
+                        start_async_task(&event_loop, &function, PyTuple::new(py, input)?)
+                    }))
+                };
+                let dtype = dtype.clone();
+                Box::pin(async {
+                    if let Some(future) = future {
+                        let results = future?.await?;
+                        Python::with_gil(|py| {
+                            Ok(results
+                                .extract::<Vec<Bound<PyAny>>>(py)?
+                                .into_iter()
+                                .map(move |result| Ok(extract_value(&result, &dtype)?))
+                                .collect())
+                        })
+                    } else {
+                        Ok(Vec::new())
+                    }
+                })
+            };
+            let multi_batch_logic = Box::new(move |input: Vec<Vec<Vec<Value>>>| {
+                let futures: FuturesOrdered<_> = input.into_iter().map(&logic).collect();
+                let mut result = Vec::with_capacity(futures.len());
+                futures::executor::block_on(futures.for_each(|item| {
+                    result.push(item);
+                    future::ready(())
+                }));
+                result
+            });
+            let func = Box::new(move |input: &[&[Value]]| {
+                batch_apply(
+                    input,
+                    n_args,
+                    &multi_batch_logic,
+                    propagate_none,
+                    max_batch_size,
+                )
+            });
+            Expression::Any(AnyExpression::Apply(func, args.into()))
+        } else {
+            let logic = move |input_i: &[Value]| {
+                let pass_none = propagate_none && input_i.iter().any(|a| matches!(a, Value::None));
+                let future = if pass_none {
+                    // Conditional future because the final result has to be returned from the same async block.
+                    // Thanks to that only a single future type is returned and there's no need to Box the closure.
+                    None
+                } else {
+                    Some(Python::with_gil(|py| {
+                        start_async_task(&event_loop, &function, PyTuple::new(py, input_i)?)
+                    }))
+                };
+
+                let dtype = dtype.clone();
+                Box::pin(async {
+                    if let Some(future) = future {
+                        let result = future?.await?;
+                        Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
+                    } else {
+                        Ok(Value::None)
+                    }
+                })
+            };
+            let func = Box::new(move |input: &[&[Value]]| {
+                let futures: FuturesOrdered<_> =
+                    input.iter().map(|input_i| logic(input_i)).collect();
+                let mut result = Vec::with_capacity(futures.len());
+                futures::executor::block_on(futures.for_each(|item| {
+                    result.push(item);
+                    future::ready(())
+                }));
+                result
+            });
+            Expression::Any(AnyExpression::Apply(func, args.into()))
         };
-        let func = Box::new(move |input: &[&[Value]]| {
-            let futures: FuturesOrdered<_> = input.iter().map(|input_i| logic(input_i)).collect();
-            let mut result = Vec::with_capacity(futures.len());
-            futures::executor::block_on(futures.for_each(|item| {
-                result.push(item);
-                future::ready(())
-            }));
-            result
-        });
-        Self::new(
-            Arc::new(Expression::Any(AnyExpression::Apply(func, args.into()))),
-            true,
-        )
+        Self::new(Arc::new(expression), true)
     }
 
     #[staticmethod]

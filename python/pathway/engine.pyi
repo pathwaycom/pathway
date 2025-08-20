@@ -255,6 +255,7 @@ class Expression:
         *args: Expression,
         dtype: PathwayType,
         propagate_none: bool = False,
+        max_batch_size: int | None = None,
     ) -> Expression: ...
     @staticmethod
     def is_none(expr: Expression) -> Expression: ...
