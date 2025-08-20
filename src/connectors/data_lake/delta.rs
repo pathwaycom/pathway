@@ -446,6 +446,40 @@ impl DeltaBatchWriter {
         .unwrap();
         result
     }
+
+    async fn maybe_optimize_table(&mut self) -> Result<(), WriteError> {
+        // Saving the name for logs before the mutable borrow
+        let connector_name = self.name();
+        if let Some(optimizer_rule) = self.optimizer_rule.as_mut() {
+            let cutoff_to_apply = optimizer_rule.cutoff_value_to_apply();
+            if let Some(cutoff_to_apply) = cutoff_to_apply {
+                let filters_to_apply =
+                    optimizer_rule.optimizer_filters_for_cutoff_value(&cutoff_to_apply);
+                let (optimized_table, metrics) =
+                    OptimizeBuilder::new(self.table.log_store(), self.table.snapshot()?.clone())
+                        .with_filters(&filters_to_apply)
+                        .await?;
+                info!("Table {connector_name}: has been optimized. Metrics: {metrics:?}");
+
+                let (_vacuumed_table, metrics) = VacuumBuilder::new(
+                    optimized_table.log_store(),
+                    optimized_table.snapshot()?.clone(),
+                )
+                .with_retention_period(optimizer_rule.retention_period)
+                .with_enforce_retention_duration(false)
+                .with_dry_run(false)
+                .await?;
+
+                info!(
+                    "Table {connector_name}: outdated Parquet blocks have been removed. {}",
+                    Self::format_vacuum_metrics(metrics)
+                );
+                optimizer_rule.on_cutoff_value_optimized(cutoff_to_apply);
+                self.table.update().await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl LakeBatchWriter for DeltaBatchWriter {
@@ -471,39 +505,9 @@ impl LakeBatchWriter for DeltaBatchWriter {
             }
             self.table.update().await?;
 
-            // Saving the name for logs before the mutable borrow
-            let connector_name = self.name();
-            if let Some(optimizer_rule) = self.optimizer_rule.as_mut() {
-                let cutoff_to_apply = optimizer_rule.cutoff_value_to_apply();
-                if let Some(cutoff_to_apply) = cutoff_to_apply {
-                    let filters_to_apply =
-                        optimizer_rule.optimizer_filters_for_cutoff_value(&cutoff_to_apply);
-                    let (optimized_table, metrics) = OptimizeBuilder::new(
-                        self.table.log_store(),
-                        self.table.snapshot()?.clone(),
-                    )
-                    .with_filters(&filters_to_apply)
-                    .await?;
-                    info!("Table {connector_name}: has been optimized. Metrics: {metrics:?}");
-
-                    let (_vacuumed_table, metrics) = VacuumBuilder::new(
-                        optimized_table.log_store(),
-                        optimized_table.snapshot()?.clone(),
-                    )
-                    .with_retention_period(optimizer_rule.retention_period)
-                    .with_enforce_retention_duration(false)
-                    .with_dry_run(false)
-                    .await?;
-
-                    info!(
-                        "Table {connector_name}: outdated Parquet blocks have been removed. {}",
-                        Self::format_vacuum_metrics(metrics)
-                    );
-                    optimizer_rule.on_cutoff_value_optimized(cutoff_to_apply);
-                    self.table.update().await?;
-                }
+            if let Err(e) = self.maybe_optimize_table().await {
+                warn!("Failed to optimize table {}: {e}", self.name());
             }
-
             Ok::<(), WriteError>(())
         })
     }

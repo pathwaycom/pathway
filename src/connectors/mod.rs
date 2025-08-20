@@ -3,7 +3,7 @@
 use adaptors::InputAdaptor;
 use crossbeam_channel::{self as channel, Sender, TryRecvError};
 use itertools::Itertools;
-use log::{error, info, warn};
+use log::{debug, error, info};
 use scopeguard::guard;
 use std::cell::RefCell;
 use std::env;
@@ -243,7 +243,7 @@ impl Connector {
         if self.current_timestamp < new_timestamp {
             self.current_timestamp = new_timestamp;
         } else if current_minibatch_has_data {
-            warn!("The current timestamp isn't greater than the last one saved, advancing 2ms further manually.");
+            debug!("The current timestamp isn't greater than the last one saved, advancing 2ms further manually.");
             self.current_timestamp.0 += 2;
         }
 
