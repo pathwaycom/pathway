@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Awaitable, Iterable
 
 from pathway.internals import api
 from pathway.internals.expression import ColumnReference
@@ -55,7 +55,9 @@ class GenericDataSink(DataSink):
 
 @dataclass(frozen=True, kw_only=True)
 class CallbackDataSink(DataSink):
-    on_change: Callable[[api.Pointer, list[api.Value], int, int], None]
+    on_change: Callable[
+        [api.Pointer, list[api.Value], int, int], None | Awaitable[None]
+    ]
     on_time_end: Callable[[int], None]
     on_end: Callable[[], None]
     skip_persisted_batch: bool

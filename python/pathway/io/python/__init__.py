@@ -538,7 +538,24 @@ class InteractiveCsvPlayer(ConnectorSubject):
         self.int_slider.disabled = True
 
 
-class ConnectorObserver(ABC):
+class _BaseConnectorObserver:
+    def on_time_end(self, time: int) -> None:
+        """
+        Called when a processing time is closed.
+
+        Args:
+            time: The finished processing time.
+        """
+        pass
+
+    def on_end(self) -> None:
+        """
+        Called when the stream of changes ends.
+        """
+        pass
+
+
+class ConnectorObserver(_BaseConnectorObserver, ABC):
     """An abstract class for creating custom Python writers.
     At least `on_change` method must be implemented.
     Use with :py:func:`~pathway.io.python.write`.
@@ -564,27 +581,39 @@ class ConnectorObserver(ABC):
         """
         ...
 
-    def on_time_end(self, time: int) -> None:
+
+class AsyncConnectorObserver(_BaseConnectorObserver, ABC):
+    """An abstract class for creating custom Python async writers.
+    At least `on_change` method must be implemented.
+    Use with :py:func:`~pathway.io.python.write`.
+    """
+
+    @abstractmethod
+    async def on_change(
+        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
+    ) -> None:
         """
-        Called when a processing time is closed.
+        Called on every change in the table. It is called on table entries in order of increasing processing
+        time. For entries with the same processing time (the same batch) the method can be called in any
+        order. The function must accept:
 
         Args:
-            time: The finished processing time.
+            key: the key of the changed row;
+            row: the changed row as a dict mapping from the field name to the value;
+            time: the processing time of the modification, also can be referred as minibatch ID of the change;
+            is_addition: boolean value, equals to true if the row is inserted into the
+                table, false otherwise. Please note that update is basically two operations: the
+                deletion of the old value and the insertion of a new value, which happen within a single
+                batch;
         """
-        pass
-
-    def on_end(self) -> None:
-        """
-        Called when the stream of changes ends.
-        """
-        pass
+        ...
 
 
 @check_arg_types
 @trace_user_frame
 def write(
     table: Table,
-    observer: ConnectorObserver,
+    observer: ConnectorObserver | AsyncConnectorObserver,
     *,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,

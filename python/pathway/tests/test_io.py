@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import asyncio
 import base64
 import copy
 import datetime
@@ -688,6 +689,67 @@ def test_python_write_on_change_only():
     on_change.assert_called_once_with(
         key=mock.ANY, row={"data": "foo"}, time=mock.ANY, is_addition=True
     )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="test requires asyncio.Barrier")
+def test_python_write_async():
+    batches = [set([1, 2, 3]), set([4, 5, 6])]
+    barrier = asyncio.Barrier(3)  # type: ignore[attr-defined]
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            for batch in batches:
+                for value in batch:
+                    self.next(value=value)
+                self.commit()
+
+    class Observer(pw.io.python.AsyncConnectorObserver):
+        data: set[int] = set()
+        batch_index = 0
+
+        async def on_change(self, key, row, time, is_addition):
+            async with asyncio.timeout(10):  # type: ignore[attr-defined]
+                await barrier.wait()
+            self.data.add(row["value"])
+
+        def on_time_end(self, time):
+            assert self.data == batches[self.batch_index]
+            self.data.clear()
+            self.batch_index += 1
+            barrier.reset()
+
+        def on_end(self):
+            assert len(self.data) == 0, f"Expected 0 items, got {len(self.data)}"
+
+    class Schema(pw.Schema):
+        value: int
+
+    observer = Observer()
+    input = pw.io.python.read(
+        TestSubject(), schema=Schema, autocommit_duration_ms=10000
+    )
+
+    pw.io.python.write(input, observer)
+
+    run_all()
+
+    assert observer.batch_index == len(batches), "Expected all batches to be processed"
+
+
+def test_python_write_async_sort_by_error():
+    input = pw.Table.empty(index=int)
+
+    class Observer(pw.io.python.AsyncConnectorObserver):
+        async def on_change(self, key, row, time, is_addition):
+            pass
+
+    pw.io.python.write(input, Observer(), sort_by=[input.index])
+
+    with pytest.raises(
+        ValueError,
+        match="Using sort_by with async observer is not supported",
+    ):
+        run_all()
 
 
 def test_fs_plaintext(tmp_path: pathlib.Path):

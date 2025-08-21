@@ -3545,7 +3545,19 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
-        let callbacks = build_subscribe_callback(on_change, on_time_end, on_end);
+
+        let event_loop = if is_async_function(py, on_change.clone_ref(py))? {
+            if sort_by_indices.is_some() {
+                return Err(PyValueError::new_err(
+                    "Using sort_by with async observer is not supported",
+                ));
+            }
+            Some(self_.borrow().event_loop(py))
+        } else {
+            None
+        };
+        let callbacks = build_subscribe_callback(on_change, on_time_end, on_end, event_loop);
+
         self_.borrow().graph.subscribe_table(
             table.handle,
             column_paths,
@@ -3661,7 +3673,7 @@ impl Scope {
     ) -> PyResult<Py<Table>> {
         let py = self_.py();
 
-        let callbacks = build_subscribe_callback(on_change, on_time_end, on_end);
+        let callbacks = build_subscribe_callback(on_change, on_time_end, on_end, None);
         let connector_index = *self_.borrow().total_connectors.get(py).borrow();
         *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
@@ -3752,15 +3764,34 @@ fn build_subscribe_callback(
     on_change: Py<PyAny>,
     on_time_end: Py<PyAny>,
     on_end: Py<PyAny>,
+    event_loop: Option<Py<PyAny>>,
 ) -> SubscribeCallbacks {
-    SubscribeCallbacksBuilder::new()
-        .wrapper(BatchWrapper::WithGil)
-        .on_data(Box::new(move |key, values, time, diff| {
-            Python::with_gil(|py| {
-                on_change.call1(py, (key, PyTuple::new(py, values)?, time, diff))?;
+    let builder = SubscribeCallbacksBuilder::new();
+
+    let builder = if let Some(event_loop) = event_loop {
+        builder.on_data_async(Box::new(move |key, values, time, diff| {
+            let future = Python::with_gil(|py| {
+                let args = (key, PyTuple::new(py, values)?, time, diff).into_pyobject(py)?;
+                start_async_task(&event_loop, &on_change, args)
+            });
+
+            Box::pin(async {
+                future?.await?;
                 Ok(())
             })
         }))
+    } else {
+        builder
+            .wrapper(BatchWrapper::WithGil)
+            .on_data(Box::new(move |key, values, time, diff| {
+                Python::with_gil(|py| {
+                    on_change.call1(py, (key, PyTuple::new(py, values)?, time, diff))?;
+                    Ok(())
+                })
+            }))
+    };
+
+    builder
         .on_time_end(Box::new(move |new_time| {
             Python::with_gil(|py| {
                 on_time_end.call1(py, (new_time,))?;
@@ -3774,6 +3805,14 @@ fn build_subscribe_callback(
             })
         }))
         .build()
+}
+
+fn is_async_function(py: Python<'_>, func: Py<PyAny>) -> PyResult<bool> {
+    let inspect = py.import("inspect")?;
+    inspect
+        .getattr("iscoroutinefunction")?
+        .call1((func,))?
+        .extract()
 }
 
 type CapturedTableData = Arc<Mutex<Vec<DataRow>>>;

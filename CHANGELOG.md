@@ -11,6 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.Table.ignore_late` to filter out old (in terms of event time) entries.
 - Rows batching for async UDFs. It can be enabled with `max_batch_size` parameter.
 
+### Changed
+- `pw.io.subscribe` and `pw.io.python.write` now work with async callbacks.
+
 ## [0.26.0]
 
 ### Added

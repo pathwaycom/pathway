@@ -7,6 +7,7 @@ from typing import Iterable
 from pathway.internals.expression import ColumnReference
 from pathway.internals.table_subscription import (
     OnChangeCallback,
+    OnChangeCallbackAsync,
     OnFinishCallback,
     OnTimeEndCallback,
     subscribe as internal_subscribe,
@@ -15,7 +16,7 @@ from pathway.internals.table_subscription import (
 
 def subscribe(
     table,
-    on_change: OnChangeCallback,
+    on_change: OnChangeCallback | OnChangeCallbackAsync,
     on_end: OnFinishCallback = lambda: None,
     on_time_end: OnTimeEndCallback = lambda time: None,
     *,
@@ -39,6 +40,7 @@ def subscribe(
         sort_by: If specified, the output will be sorted in ascending order based on the
             values of the given columns within each minibatch. When multiple columns are provided,
             the corresponding value tuples will be compared lexicographically.
+            Incompatible with async callbacks.
     Returns:
         None
 

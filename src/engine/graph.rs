@@ -6,6 +6,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use id_arena::ArenaBehavior;
 use itertools::Itertools;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -516,10 +517,13 @@ impl IxKeyPolicy {
 pub type OnDataFn = Box<dyn FnMut(Key, &[Value], Timestamp, isize) -> DynResult<()>>;
 pub type OnTimeEndFn = Box<dyn FnMut(Timestamp) -> DynResult<()>>;
 pub type OnEndFn = Box<dyn FnMut() -> DynResult<()>>;
+pub type OnDataAsyncFn =
+    Box<dyn Fn(Key, &[Value], Timestamp, isize) -> BoxFuture<'static, DynResult<()>>>;
 
 pub struct SubscribeCallbacks {
     pub wrapper: BatchWrapper,
     pub on_data: Option<OnDataFn>,
+    pub on_data_async: Option<OnDataAsyncFn>,
     pub on_time_end: Option<OnTimeEndFn>,
     pub on_end: Option<OnEndFn>,
     pub on_frontier: Option<OnTimeEndFn>,
@@ -535,6 +539,7 @@ impl SubscribeCallbacksBuilder {
             inner: SubscribeCallbacks {
                 wrapper: BatchWrapper::None,
                 on_data: None,
+                on_data_async: None,
                 on_time_end: None,
                 on_end: None,
                 on_frontier: None,
@@ -555,7 +560,21 @@ impl SubscribeCallbacksBuilder {
 
     #[must_use]
     pub fn on_data(mut self, on_data: OnDataFn) -> Self {
+        assert!(
+            self.inner.on_data_async.is_none(),
+            "Cannot set both on_data and on_data_async callbacks"
+        );
         self.inner.on_data = Some(on_data);
+        self
+    }
+
+    #[must_use]
+    pub fn on_data_async(mut self, on_data_async: OnDataAsyncFn) -> Self {
+        assert!(
+            self.inner.on_data.is_none(),
+            "Cannot set both on_data and on_data_async callbacks"
+        );
+        self.inner.on_data_async = Some(on_data_async);
         self
     }
 

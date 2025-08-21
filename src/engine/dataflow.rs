@@ -141,6 +141,7 @@ use super::{
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
 };
+use futures::future::join_all;
 
 pub use self::config::Config;
 
@@ -4367,6 +4368,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             mut on_data,
             mut on_time_end,
             mut on_end,
+            mut on_data_async,
             mut on_frontier,
         } = callbacks;
         let wrapper_2 = wrapper.clone();
@@ -4408,6 +4410,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     on_data(*key, values, batch.time, *diff)?;
                                 }
                             }
+                        } else if let Some(on_data_async) = on_data_async.as_mut() {
+                            futures::executor::block_on(join_all(batch.data.iter().map(
+                                |((key, values), diff)| {
+                                    on_data_async(*key, values, batch.time, *diff)
+                                },
+                            )));
                         }
 
                         if let Some(on_time_end) = on_time_end.as_mut() {
