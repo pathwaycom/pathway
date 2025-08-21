@@ -6,8 +6,10 @@ use rand::Rng;
 use tempfile::{tempdir, tempfile};
 
 use pathway_engine::connectors::metadata::FileLikeMetadata;
-use pathway_engine::persistence::backends::FilesystemKVStorage;
-use pathway_engine::persistence::cached_object_storage::CachedObjectStorage;
+use pathway_engine::persistence::backends::{FilesystemKVStorage, PersistenceBackend};
+use pathway_engine::persistence::cached_object_storage::{
+    CachedObjectStorage, CachedObjectsExternalAccessor, METADATA_EXTENSION,
+};
 
 fn create_mock_document() -> Vec<u8> {
     let id: u128 = rand::rng().random();
@@ -253,6 +255,92 @@ fn test_rewind_to_removal_then_update() -> eyre::Result<()> {
     let metadata_v3 = create_mock_storage_metadata();
     storage.place_object(b"a", &document_v3, metadata_v3.clone())?;
     check_storage_has_object(&storage, b"a", &document_v3, &metadata_v3)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_compression() -> eyre::Result<()> {
+    let test_storage = tempdir()?;
+    let test_storage_path = test_storage.path();
+    let metadata_v1 = create_mock_storage_metadata();
+    let metadata_v2 = create_mock_storage_metadata();
+
+    // Run 1
+    let rewind_version = {
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
+        let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+        let document_v1 = b"a";
+        storage.place_object(b"a", document_v1, metadata_v1.clone())?;
+
+        let document_v2 = b"aaaa";
+        storage.place_object(b"b", document_v2, metadata_v2.clone())?;
+        storage
+            .get_external_accessor()
+            .lock()
+            .unwrap()
+            .start_forced_state_upload()?;
+        storage
+            .get_external_accessor()
+            .lock()
+            .unwrap()
+            .wait_for_all_uploads()?;
+        storage.actual_version()
+    };
+
+    // Run 2
+    let rewind_version_2 = {
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
+        let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+        storage.start_from_stable_version(rewind_version)?;
+
+        storage.remove_object(b"b")?;
+        storage
+            .get_external_accessor()
+            .lock()
+            .unwrap()
+            .start_forced_state_upload()?;
+        storage
+            .get_external_accessor()
+            .lock()
+            .unwrap()
+            .wait_for_all_uploads()?;
+
+        storage.actual_version()
+    };
+
+    // Run 3. We expect compression to delete the first batch and create a smaller one.
+    {
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
+        let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+        storage.start_from_stable_version(rewind_version_2)?;
+    };
+
+    {
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
+        let keys = backend.list_keys()?;
+        let mut total_blobs_length = 0;
+        for key in keys {
+            if !key.ends_with(METADATA_EXTENSION) {
+                continue;
+            }
+            let number_part = key.split('.').next().unwrap();
+            let batch_id: u64 = number_part.parse().unwrap();
+            let blobs =
+                CachedObjectsExternalAccessor::download_blobs_with_backend(&backend, batch_id)?;
+            total_blobs_length += blobs.len();
+        }
+        assert_eq!(total_blobs_length, 1);
+    }
+
+    // Run 4. Check that the objects state is correct.
+    {
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
+        let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+        storage.start_from_stable_version(rewind_version_2)?;
+        check_storage_has_object(&storage, b"a", b"a", &metadata_v1)?;
+        check_storage_doesnt_have_object(&storage, b"b")?;
+    };
 
     Ok(())
 }

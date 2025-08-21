@@ -23,8 +23,9 @@ pub type Uri = Vec<u8>;
 pub type UriRef<'a> = &'a [u8];
 pub type SharedCachedObjectsExternalAccessor = Arc<Mutex<CachedObjectsExternalAccessor>>;
 
-const BLOB_EXTENSION: &str = ".blob";
-const METADATA_EXTENSION: &str = ".metadata";
+pub const BLOB_EXTENSION: &str = ".blob";
+pub const METADATA_EXTENSION: &str = ".metadata";
+
 const EMPTY_STORAGE_VERSION: CachedObjectVersion = 0;
 const EMPTY_STORAGE_BATCH_ID: CachedObjectsBatchId = 0;
 const BLOB_READER_POOL_SIZE: usize = 8;
@@ -57,6 +58,7 @@ enum EventType {
 #[derive(Debug)]
 struct BlobSegment {
     uri: Uri,
+    version: CachedObjectVersion,
     object_blob_start: usize,
     object_blob_len: usize,
 }
@@ -72,31 +74,29 @@ struct MetadataEvent {
 }
 
 impl MetadataEvent {
-    pub fn new(
-        uri: Uri,
-        version: CachedObjectVersion,
-        type_: EventType,
-        batch_id: CachedObjectsBatchId,
-        object_blob_start: usize,
-        object_blob_len: usize,
-    ) -> Self {
-        Self {
-            uri,
-            version,
-            type_,
-            batch_id,
-            object_blob_start,
-            object_blob_len,
-        }
-    }
-
     pub fn as_blob_segment(&self) -> BlobSegment {
+        assert!(matches!(self.type_, EventType::Update(_)));
         BlobSegment {
             uri: self.uri.clone(),
+            version: self.version,
             object_blob_start: self.object_blob_start,
             object_blob_len: self.object_blob_len,
         }
     }
+
+    pub fn as_tombstone(&self) -> TombstoneEvent {
+        assert!(matches!(self.type_, EventType::Delete));
+        TombstoneEvent {
+            uri: self.uri.clone(),
+            version: self.version,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TombstoneEvent {
+    uri: Uri,
+    version: CachedObjectVersion,
 }
 
 #[derive(Debug)]
@@ -123,10 +123,17 @@ impl CurrentUpload {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EventsBatch {
     batch_id: CachedObjectsBatchId,
     events: Vec<MetadataEvent>,
+
+    #[serde(default = "default_true")]
+    is_sorted: bool,
 }
 
 impl EventsBatch {
@@ -134,6 +141,7 @@ impl EventsBatch {
         Self {
             batch_id,
             events: Vec::new(),
+            is_sorted: true,
         }
     }
 
@@ -145,6 +153,11 @@ impl EventsBatch {
             );
         }
         self.events.push(event);
+    }
+
+    fn add_event_unchecked(&mut self, event: MetadataEvent) {
+        self.events.push(event);
+        self.is_sorted = false;
     }
 
     fn shrink_to_version(&mut self, version: CachedObjectVersion) {
@@ -193,6 +206,188 @@ impl EventsBatch {
             Some((lowest_version, highest_version))
         }
     }
+
+    fn is_large_batch(&self) -> bool {
+        let too_many_events = self.events.len() >= LARGE_BATCH_EVENTS_COUNT;
+        let too_lengthy_blobs = self
+            .events
+            .last()
+            .map_or(0, |e| e.object_blob_start + e.object_blob_len)
+            >= LARGE_BATCH_BLOB_LENGTH;
+        too_many_events || too_lengthy_blobs
+    }
+
+    fn serialize(&mut self) -> Result<Vec<u8>, PersistenceError> {
+        if !self.is_sorted {
+            self.events.sort_by_key(|event| event.version);
+            self.is_sorted = true;
+        }
+        bincode::serialize(self).map_err(|err| PersistenceError::Bincode(*err))
+    }
+
+    fn start_new_batch(&mut self) {
+        self.batch_id += 1;
+        self.events.clear();
+        self.is_sorted = true;
+    }
+}
+
+struct RepackWithDependencies<'a> {
+    repack: &'a mut BatchRepackProcessor,
+    metadata_snapshot: &'a HashMap<Uri, FileLikeMetadata>,
+}
+
+pub struct BatchRepackProcessor {
+    tombstones_by_batch: HashMap<CachedObjectsBatchId, Vec<TombstoneEvent>>,
+    current_batch: EventsBatch,
+    current_blobs: Vec<u8>,
+    current_uploads: Vec<CurrentUpload>,
+    batches_for_removal: Vec<CachedObjectsBatchId>,
+}
+
+impl BatchRepackProcessor {
+    fn new(
+        next_available_batch_id: CachedObjectsBatchId,
+        tombstones_by_batch: HashMap<CachedObjectsBatchId, Vec<TombstoneEvent>>,
+    ) -> Self {
+        Self {
+            tombstones_by_batch,
+            current_batch: EventsBatch::new(next_available_batch_id),
+            current_blobs: Vec::new(),
+            current_uploads: Vec::new(),
+            batches_for_removal: Vec::new(),
+        }
+    }
+
+    fn add_tombstones_to_compressed_batch(
+        &mut self,
+        original_batch_id: CachedObjectsBatchId,
+        backend: &dyn PersistenceBackend,
+    ) -> Result<(), PersistenceError> {
+        if let Some(tombstones) = self.tombstones_by_batch.remove(&original_batch_id) {
+            for tombstone in tombstones {
+                let metadata_event = MetadataEvent {
+                    uri: tombstone.uri,
+                    version: tombstone.version,
+                    type_: EventType::Delete,
+                    batch_id: self.current_batch.batch_id,
+                    object_blob_start: self.current_blobs.len(),
+                    object_blob_len: 0,
+                };
+                self.current_batch.add_event_unchecked(metadata_event);
+                self.maybe_upload_repacking_result(backend)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn add_segments_to_compressed_batch(
+        &mut self,
+        segments: &[BlobSegment],
+        blobs: &[u8],
+        backend: &dyn PersistenceBackend,
+        metadata_snapshot: &HashMap<Uri, FileLikeMetadata>,
+    ) -> Result<(), PersistenceError> {
+        for segment in segments {
+            let full_metadata = metadata_snapshot
+                .get(&segment.uri)
+                .expect("inconsistent metadata snapshot")
+                .clone();
+            let metadata_event = MetadataEvent {
+                uri: segment.uri.clone(),
+                version: segment.version,
+                type_: EventType::Update(full_metadata),
+                batch_id: self.current_batch.batch_id,
+                object_blob_start: self.current_blobs.len(),
+                object_blob_len: segment.object_blob_len,
+            };
+            self.current_batch.add_event_unchecked(metadata_event);
+            if segment.object_blob_len > 0 {
+                self.current_blobs.extend_from_slice(
+                    &blobs[segment.object_blob_start
+                        ..segment.object_blob_start + segment.object_blob_len],
+                );
+            }
+            self.maybe_upload_repacking_result(backend)?;
+        }
+        Ok(())
+    }
+
+    fn maybe_repack_batch(
+        &mut self,
+        original_batch_id: CachedObjectsBatchId,
+        segments: &[BlobSegment],
+        blobs: &[u8],
+        backend: &dyn PersistenceBackend,
+        metadata_snapshot: &HashMap<Uri, FileLikeMetadata>,
+    ) -> Result<(), PersistenceError> {
+        let total_useful_length: usize = segments.iter().map(|s| s.object_blob_len).sum::<usize>();
+
+        if total_useful_length >= blobs.len() / 2 {
+            // The batch isn't yet fragmented enough.
+            return Ok(());
+        }
+
+        info!("Batch {original_batch_id} useful length reduced: {} -> {total_useful_length}. It is subject for compression.", blobs.len());
+        self.add_tombstones_to_compressed_batch(original_batch_id, backend)?;
+        self.add_segments_to_compressed_batch(segments, blobs, backend, metadata_snapshot)?;
+        self.batches_for_removal.push(original_batch_id);
+        Ok(())
+    }
+
+    fn maybe_upload_repacking_result(
+        &mut self,
+        backend: &dyn PersistenceBackend,
+    ) -> Result<(), PersistenceError> {
+        if !self.current_batch.is_large_batch() {
+            return Ok(());
+        }
+        self.upload_repacking_result(backend)
+    }
+
+    fn upload_repacking_result(
+        &mut self,
+        backend: &dyn PersistenceBackend,
+    ) -> Result<(), PersistenceError> {
+        if self.current_batch.events.is_empty() {
+            return Ok(());
+        }
+        let upload = CachedObjectsExternalAccessor::start_upload_with_backend(
+            backend,
+            &mut self.current_batch,
+            &self.current_blobs,
+        )?;
+        self.current_uploads.push(upload);
+
+        self.current_batch.start_new_batch();
+        self.current_blobs.clear();
+
+        Ok(())
+    }
+
+    fn complete_compression(
+        &mut self,
+        backend: &dyn PersistenceBackend,
+    ) -> Result<(), PersistenceError> {
+        futures::executor::block_on(async {
+            for upload in take(&mut self.current_uploads) {
+                upload.wait_for_completion().await?;
+            }
+            Ok::<_, PersistenceError>(())
+        })?;
+
+        // If the compression is successful, delete the optimized batches.
+        // Note that even if it's not done, these batches will be deleted by the
+        // next run as obsolete: the last events from them advance.
+        for batch_id in &self.batches_for_removal {
+            let metadata_key = CachedObjectsExternalAccessor::metadata_batch_path(*batch_id);
+            backend.remove_key(&metadata_key)?;
+            let blobs_key = CachedObjectsExternalAccessor::cached_objects_path(*batch_id);
+            backend.remove_key(&blobs_key)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -219,7 +414,7 @@ impl CachedObjectsExternalAccessor {
         if self.has_changes {
             let current_upload = Self::start_upload_with_backend(
                 self.backend.as_ref(),
-                &self.current_batch,
+                &mut self.current_batch,
                 &self.current_blobs,
             )?;
             self.current_uploads.push(current_upload);
@@ -230,7 +425,7 @@ impl CachedObjectsExternalAccessor {
 
     fn start_upload_with_backend(
         backend: &dyn PersistenceBackend,
-        batch: &EventsBatch,
+        batch: &mut EventsBatch,
         blobs: &[u8],
     ) -> Result<CurrentUpload, PersistenceError> {
         let metadata_key = Self::metadata_batch_path(batch.batch_id);
@@ -246,9 +441,7 @@ impl CachedObjectsExternalAccessor {
             compress_started_at.elapsed()
         );
 
-        let serialized_entry =
-            bincode::serialize(batch).map_err(|err| PersistenceError::Bincode(*err))?;
-
+        let serialized_entry = batch.serialize()?;
         let blob_future = backend.put_value(&cached_objects_key, compressed);
         let metadata_future = backend.put_value(&metadata_key, serialized_entry);
 
@@ -265,8 +458,7 @@ impl CachedObjectsExternalAccessor {
         let is_small_batch = self.current_batch.events.len() <= SMALL_BATCH_EVENTS_COUNT
             && self.current_blobs.len() <= SMALL_BATCH_BLOB_LENGTH;
         if !is_small_batch {
-            self.current_batch.batch_id += 1;
-            self.current_batch.events.clear();
+            self.current_batch.start_new_batch();
             self.current_blobs.clear();
         }
     }
@@ -309,7 +501,7 @@ impl CachedObjectsExternalAccessor {
         let mut blobs = self.download_blobs(batch.batch_id)?;
         blobs.truncate(last_blob_finish);
 
-        let upload = Self::start_upload_with_backend(self.backend.as_ref(), &batch, &blobs)?;
+        let upload = Self::start_upload_with_backend(self.backend.as_ref(), &mut batch, &blobs)?;
         futures::executor::block_on(async { upload.wait_for_completion().await })?;
 
         Ok((batch, blobs))
@@ -330,14 +522,14 @@ impl CachedObjectsExternalAccessor {
         metadata: FileLikeMetadata,
         contents: Vec<u8>,
     ) -> Result<MetadataEvent, PersistenceError> {
-        let event = MetadataEvent::new(
+        let event = MetadataEvent {
             uri,
             version,
-            EventType::Update(metadata),
-            self.current_batch.batch_id,
-            self.current_blobs.len(),
-            contents.len(),
-        );
+            type_: EventType::Update(metadata),
+            batch_id: self.current_batch.batch_id,
+            object_blob_start: self.current_blobs.len(),
+            object_blob_len: contents.len(),
+        };
         self.add_event(event.clone(), contents)?;
         Ok(event)
     }
@@ -347,14 +539,14 @@ impl CachedObjectsExternalAccessor {
         version: CachedObjectVersion,
         uri: Uri,
     ) -> Result<MetadataEvent, PersistenceError> {
-        let event = MetadataEvent::new(
+        let event = MetadataEvent {
             uri,
             version,
-            EventType::Delete,
-            self.current_batch.batch_id,
-            self.current_blobs.len(),
-            0,
-        );
+            type_: EventType::Delete,
+            batch_id: self.current_batch.batch_id,
+            object_blob_start: self.current_blobs.len(),
+            object_blob_len: 0,
+        };
         self.add_event(event.clone(), Vec::with_capacity(0))?;
         Ok(event)
     }
@@ -368,12 +560,10 @@ impl CachedObjectsExternalAccessor {
         self.current_blobs.append(&mut blob);
         self.has_changes = true;
 
-        let is_large_batch = self.current_batch.events.len() >= LARGE_BATCH_EVENTS_COUNT
-            || self.current_blobs.len() >= LARGE_BATCH_BLOB_LENGTH;
-        if is_large_batch {
+        if self.current_batch.is_large_batch() {
             let current_upload = Self::start_upload_with_backend(
                 self.backend.as_ref(),
-                &self.current_batch,
+                &mut self.current_batch,
                 &self.current_blobs,
             )?;
             self.current_uploads.push(current_upload);
@@ -393,7 +583,7 @@ impl CachedObjectsExternalAccessor {
         backend.remove_key(&cached_objects_key)
     }
 
-    fn download_blobs_with_backend(
+    pub fn download_blobs_with_backend(
         backend: &dyn PersistenceBackend,
         batch_id: CachedObjectsBatchId,
     ) -> Result<Vec<u8>, PersistenceError> {
@@ -408,6 +598,7 @@ impl CachedObjectsExternalAccessor {
         batch_id: CachedObjectsBatchId,
         segments: &[BlobSegment],
         object_snapshot: &Mutex<&mut SqliteObjectsSnapshot>,
+        repack_with_dependencies: &Mutex<RepackWithDependencies>,
     ) -> Result<(), PersistenceError> {
         let key = Self::cached_objects_path(batch_id);
         let compressed_blobs = backend.get_value(&key)?;
@@ -415,6 +606,15 @@ impl CachedObjectsExternalAccessor {
         let mut object_snapshot = object_snapshot.lock().unwrap();
         let blobs = decompress_size_prepended(compressed_blobs.as_slice())?;
         object_snapshot.insert_segments(segments, &blobs)?;
+        drop(object_snapshot);
+
+        let mut repack_guard = repack_with_dependencies.lock().unwrap();
+        let RepackWithDependencies {
+            repack,
+            metadata_snapshot,
+        } = &mut *repack_guard;
+        repack.maybe_repack_batch(batch_id, segments, &blobs, backend, metadata_snapshot)?;
+
         Ok(())
     }
 
@@ -572,21 +772,12 @@ impl CachedObjectStorage {
         let mut keys = external_accessor.backend.list_keys()?;
         keys.sort();
 
-        let mut global_highest_version = EMPTY_STORAGE_VERSION;
         let mut current_batch_id = EMPTY_STORAGE_BATCH_ID + 1;
         let mut downloaded_blobs = HashMap::with_capacity(1);
-        let mut latest_event_by_uri = HashMap::new();
+        let mut latest_event_by_uri: HashMap<Vec<u8>, MetadataEvent> = HashMap::new();
         let mut existing_batch_ids = HashSet::new();
 
         for key in keys {
-            if global_highest_version >= target_version {
-                // The target_version has already been reached,
-                // therefore the block is either obsolete or goes beyond
-                // the requested version.
-                info!("Global highest version {global_highest_version} is already higher than the target version {target_version}: removing the block '{key}'");
-                external_accessor.backend.remove_key(&key)?;
-                continue;
-            }
             if !key.ends_with(METADATA_EXTENSION) {
                 continue;
             }
@@ -594,6 +785,7 @@ impl CachedObjectStorage {
             let object = external_accessor.backend.get_value(&key)?;
             let mut batch: EventsBatch =
                 bincode::deserialize(&object).map_err(|err| PersistenceError::Bincode(*err))?;
+            assert!(batch.is_sorted);
 
             // The object can be removed in one of the following cases:
             // 1. All versions in the batch come after the target version
@@ -629,19 +821,30 @@ impl CachedObjectStorage {
                 }
             }
 
-            global_highest_version = max(global_highest_version, highest_version);
             current_batch_id = max(current_batch_id, batch.batch_id + 1);
             existing_batch_ids.insert(batch.batch_id);
             for event in batch.events {
-                latest_event_by_uri.insert(event.uri.clone(), event);
+                if let Some(old) = latest_event_by_uri.get_mut(&event.uri) {
+                    if (event.version, event.batch_id) > (old.version, old.batch_id) {
+                        *old = event;
+                    }
+                } else {
+                    latest_event_by_uri.insert(event.uri.clone(), event);
+                }
             }
         }
 
         self.current_version = target_version + 1;
-        external_accessor.current_batch = EventsBatch::new(current_batch_id);
+        external_accessor.current_batch =
+            EventsBatch::new(current_batch_id + existing_batch_ids.len() as u64); // Overbook some of the batches for the compression job
 
         drop(external_accessor); // Release the mutex, not to pass mutable reference in the method that mutates the state
-        self.build_snapshots(latest_event_by_uri, downloaded_blobs, &existing_batch_ids)
+        self.build_snapshots(
+            latest_event_by_uri,
+            downloaded_blobs,
+            &existing_batch_ids,
+            current_batch_id,
+        )
     }
 
     pub fn place_object(
@@ -696,40 +899,66 @@ impl CachedObjectStorage {
 
     // Below are helper methods
 
-    fn build_snapshots(
+    fn build_metadata_snapshot(
         &mut self,
         latest_event_by_uri: HashMap<Uri, MetadataEvent>,
-        downloaded_blobs: HashMap<CachedObjectsBatchId, Vec<u8>>,
-        existing_batch_ids: &HashSet<CachedObjectsBatchId>,
-    ) -> Result<(), PersistenceError> {
-        let mut segments_for_download = HashMap::new();
-        let mut actual_batch_ids = HashSet::new();
+        segments_for_download: &mut HashMap<CachedObjectsBatchId, Vec<BlobSegment>>,
+        tombstone_events_by_batch: &mut HashMap<CachedObjectsBatchId, Vec<TombstoneEvent>>,
+        actual_batch_ids: &mut HashSet<CachedObjectsBatchId>,
+    ) {
         for (_, event) in latest_event_by_uri {
             actual_batch_ids.insert(event.batch_id);
 
-            let blob_segment = event.as_blob_segment();
-            let EventType::Update(metadata) = event.type_ else {
-                continue;
-            };
+            match event.type_ {
+                EventType::Update(ref metadata) => {
+                    let blob_segment = event.as_blob_segment();
+                    segments_for_download
+                        .entry(event.batch_id)
+                        .or_default()
+                        .push(blob_segment);
 
-            segments_for_download
-                .entry(event.batch_id)
-                .or_insert_with(Vec::new)
-                .push(blob_segment);
-
-            self.metadata_snapshot.insert(event.uri, metadata);
+                    self.metadata_snapshot.insert(event.uri, metadata.clone());
+                }
+                EventType::Delete => {
+                    let tombstone = event.as_tombstone();
+                    tombstone_events_by_batch
+                        .entry(event.batch_id)
+                        .or_default()
+                        .push(tombstone);
+                }
+            }
         }
         info!(
             "The metadata snapshot contains {} objects. There are {} batch blobs to download.",
             self.metadata_snapshot.len(),
             segments_for_download.len(),
         );
+    }
 
+    fn build_snapshots(
+        &mut self,
+        latest_event_by_uri: HashMap<Uri, MetadataEvent>,
+        downloaded_blobs: HashMap<CachedObjectsBatchId, Vec<u8>>,
+        existing_batch_ids: &HashSet<CachedObjectsBatchId>,
+        current_batch_id: CachedObjectsBatchId,
+    ) -> Result<(), PersistenceError> {
+        // Create metadata snapshot
+        let mut segments_for_download = HashMap::new();
+        let mut tombstone_events_by_batch = HashMap::new();
+        let mut actual_batch_ids = HashSet::new();
+        self.build_metadata_snapshot(
+            latest_event_by_uri,
+            &mut segments_for_download,
+            &mut tombstone_events_by_batch,
+            &mut actual_batch_ids,
+        );
         let obsolete_batch_ids: Vec<_> = existing_batch_ids.difference(&actual_batch_ids).collect();
+        let batches_with_data: HashSet<CachedObjectsBatchId> =
+            segments_for_download.keys().copied().collect();
+        let batches_with_tombstones_only = actual_batch_ids.difference(&batches_with_data);
 
-        let mut external_accessor = self.external_accessor.lock().unwrap();
-        let backend = &mut external_accessor.backend;
-
+        // Building objects snapshot involves downloading binary objects
+        // This is parallelized via thread pool, which is created here.
         let max_parallel_access_requests =
             max(segments_for_download.len(), obsolete_batch_ids.len());
         let workers = ThreadPoolBuilder::new()
@@ -737,14 +966,49 @@ impl CachedObjectStorage {
             .build()
             .expect("Failed to create downloader pool");
 
+        // Helpers for snapshot building. We access the shareable backend for downloads,
+        // and create repack processor that does the defragmentation.
+        let mut external_accessor = self.external_accessor.lock().unwrap();
+        let backend = &mut external_accessor.backend;
+        let mut repack = BatchRepackProcessor::new(current_batch_id, tombstone_events_by_batch);
+
+        // Create batch snapshot, while keeping track on the fragmentation of each batch
+        // This is done within a single method, so that we don't have to keep the batch
+        // contents in memory, nor we need to download them again.
+        //
+        // Once a batch is downloaded and uncompressed, we extract the parts that create
+        // the objects snapshot, and send the actual events to the repack processor if
+        // needed.
+        let repack_with_dependencies = RepackWithDependencies {
+            repack: &mut repack,
+            metadata_snapshot: &self.metadata_snapshot,
+        };
         Self::build_objects_snapshot(
             &workers,
             backend.as_ref(),
             segments_for_download,
             downloaded_blobs,
             &Mutex::new(&mut self.objects_snapshot),
+            &Mutex::new(repack_with_dependencies),
         )?;
 
+        // Compress the batches that contain only tombstone events, and therefore not a part of segments.
+        for batch_id in batches_with_tombstones_only {
+            repack.maybe_repack_batch(
+                *batch_id,
+                &[],
+                &[],
+                backend.as_ref(),
+                &self.metadata_snapshot,
+            )?;
+        }
+
+        // Finish of the procedure.The objects snapshot is built, the fragmented batches are rebuilt.
+        // Wait for the rebuild to to be done, also delete batches that don't have any useful information.
+        repack.upload_repacking_result(backend.as_ref())?;
+        if let Err(e) = repack.complete_compression(backend.as_ref()) {
+            warn!("Failed to compress fragmented blocks: {e}");
+        }
         Self::remove_obsolete_batches(&workers, backend.as_ref(), obsolete_batch_ids.as_slice())?;
 
         Ok(())
@@ -756,14 +1020,31 @@ impl CachedObjectStorage {
         mut segments_for_download: HashMap<CachedObjectsBatchId, Vec<BlobSegment>>,
         downloaded_blobs: HashMap<CachedObjectsBatchId, Vec<u8>>,
         object_snapshot: &Mutex<&mut SqliteObjectsSnapshot>,
+        repack_with_dependencies: &Mutex<RepackWithDependencies>,
     ) -> Result<(), PersistenceError> {
         for (batch_id, blobs) in downloaded_blobs {
             let Some(segments) = segments_for_download.remove(&batch_id) else {
                 warn!("There is a predownloaded batch that is not needed for objects recovery: {batch_id}");
                 continue;
             };
-            let mut object_snapshot = object_snapshot.lock().unwrap();
-            object_snapshot.insert_segments(&segments, &blobs)?;
+            {
+                let mut object_snapshot = object_snapshot.lock().unwrap();
+                object_snapshot.insert_segments(&segments, &blobs)?;
+            }
+            {
+                let mut repack_guard = repack_with_dependencies.lock().unwrap();
+                let RepackWithDependencies {
+                    repack,
+                    metadata_snapshot,
+                } = &mut *repack_guard;
+                repack.maybe_repack_batch(
+                    batch_id,
+                    &segments,
+                    &blobs,
+                    backend,
+                    metadata_snapshot,
+                )?;
+            }
         }
 
         let objects_snapshot_results: Vec<_> = download_workers.install(|| {
@@ -775,6 +1056,7 @@ impl CachedObjectStorage {
                         *batch_id,
                         batch_segments.as_slice(),
                         object_snapshot,
+                        repack_with_dependencies,
                     )
                 })
                 .collect()
