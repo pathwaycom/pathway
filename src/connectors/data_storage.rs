@@ -1318,7 +1318,8 @@ impl PsqlWriter {
         let columns: Vec<String> = schema
             .iter()
             .map(|(name, dtype)| {
-                Self::postgres_data_type(dtype).map(|dtype_str| format!("{name} {dtype_str}"))
+                Self::postgres_data_type(dtype, false)
+                    .map(|dtype_str| format!("{name} {dtype_str}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1331,7 +1332,7 @@ impl PsqlWriter {
 
         transaction.execute(
             &format!(
-                "CREATE TABLE IF NOT EXISTS {} ({}, time BIGINT, diff BIGINT{})",
+                "CREATE TABLE IF NOT EXISTS {} ({}, time BIGINT NOT NULL, diff SMALLINT NOT NULL{})",
                 table_name,
                 columns.join(", "),
                 primary_key
@@ -1351,32 +1352,33 @@ impl PsqlWriter {
         Ok(())
     }
 
-    fn postgres_data_type(type_: &Type) -> Result<String, WriteError> {
+    fn postgres_data_type(type_: &Type, is_nested: bool) -> Result<String, WriteError> {
+        let not_null_suffix = if is_nested { "" } else { " NOT NULL" };
         Ok(match type_ {
-            Type::Bool => "BOOLEAN".to_string(),
-            Type::Int | Type::Duration => "BIGINT".to_string(),
-            Type::Float => "DOUBLE PRECISION".to_string(),
-            Type::Pointer | Type::String => "TEXT".to_string(),
-            Type::Bytes | Type::PyObjectWrapper => "BYTEA".to_string(),
-            Type::Json => "JSONB".to_string(),
-            Type::DateTimeNaive => "TIMESTAMP".to_string(),
-            Type::DateTimeUtc => "TIMESTAMPTZ".to_string(),
+            Type::Bool => format!("BOOLEAN{not_null_suffix}"),
+            Type::Int | Type::Duration => format!("BIGINT{not_null_suffix}"),
+            Type::Float => format!("DOUBLE PRECISION{not_null_suffix}"),
+            Type::Pointer | Type::String => format!("TEXT{not_null_suffix}"),
+            Type::Bytes | Type::PyObjectWrapper => format!("BYTEA{not_null_suffix}"),
+            Type::Json => format!("JSONB{not_null_suffix}"),
+            Type::DateTimeNaive => format!("TIMESTAMP{not_null_suffix}"),
+            Type::DateTimeUtc => format!("TIMESTAMPTZ{not_null_suffix}"),
             Type::Optional(wrapped) | Type::List(wrapped) => {
                 if let Type::Any = **wrapped {
                     return Err(WriteError::UnsupportedType(type_.clone()));
                 }
 
-                let wrapped = Self::postgres_data_type(wrapped)?;
+                let wrapped = Self::postgres_data_type(wrapped, true)?;
                 if let Type::Optional(_) = type_ {
                     return Ok(wrapped);
                 }
-                format!("{wrapped}[]")
+                format!("{wrapped}[]{not_null_suffix}")
             }
             Type::Tuple(fields) => {
                 let mut iter = fields.iter();
                 if !fields.is_empty() && iter.all(|field| field == &fields[0]) {
-                    let first = Self::postgres_data_type(&fields[0])?;
-                    return Ok(format!("{first}[]"));
+                    let first = Self::postgres_data_type(&fields[0], true)?;
+                    return Ok(format!("{first}[]{not_null_suffix}"));
                 }
                 return Err(WriteError::UnsupportedType(type_.clone()));
             }

@@ -1,5 +1,6 @@
 import time
 import uuid
+from dataclasses import dataclass
 
 import boto3
 import psycopg2
@@ -56,6 +57,12 @@ KAFKA_SETTINGS = {
 DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
 
+@dataclass(frozen=True)
+class ColumnProperties:
+    type_name: str
+    is_nullable: bool
+
+
 class WireProtocolSupporterContext:
 
     def __init__(
@@ -70,6 +77,29 @@ class WireProtocolSupporterContext:
         )
         self.connection.autocommit = True
         self.cursor = self.connection.cursor()
+
+    def get_table_schema(
+        self, table_name: str, schema: str = "public"
+    ) -> dict[str, ColumnProperties]:
+        query = """
+            SELECT
+                column_name,
+                data_type,
+                is_nullable
+            FROM information_schema.columns
+            WHERE table_name = %s AND table_schema = %s
+            ORDER BY ordinal_position;
+        """
+        self.cursor.execute(query, (table_name, schema))
+        rows = self.cursor.fetchall()
+
+        schema_props = {}
+        for column_name, type_name, is_nullable in rows:
+            assert is_nullable in ("YES", "NO")
+            schema_props[column_name] = ColumnProperties(
+                type_name.lower(), is_nullable == "YES"
+            )
+        return schema_props
 
     def insert_row(
         self, table_name: str, values: dict[str, int | bool | str | float]

@@ -13,6 +13,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.io.subscribe` and `pw.io.python.write` now work with async callbacks.
+- The `diff` column in tables automatically created by `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` in `replace` and `create_if_not_exists` initialization modes now uses the `smallint` type.
+
+### Fixed
+- `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now respect the type optionality defined in the Pathway table schema when creating a new PostgreSQL table. This applies to the `replace` and `create_if_not_exists` initialization modes.
 
 ## [0.26.0]
 

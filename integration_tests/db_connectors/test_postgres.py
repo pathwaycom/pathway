@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-from utils import PGVECTOR_SETTINGS, POSTGRES_SETTINGS
+from utils import PGVECTOR_SETTINGS, POSTGRES_SETTINGS, ColumnProperties
 
 import pathway as pw
 from pathway.internals import api
@@ -228,21 +228,41 @@ class SimpleObject:
         return self.a == other.a
 
 
+@pytest.mark.parametrize("init_mode", ["create_if_not_exists", "replace"])
 @pytest.mark.parametrize("write_method", [pw.io.postgres.write, write_snapshot(["a"])])
-def test_init_create_if_not_exists(write_method, postgres):
+@pytest.mark.parametrize("are_types_optional", [False, True])
+def test_different_types_schema_and_serialization(
+    init_mode, write_method, are_types_optional, postgres
+):
     table_name = postgres.random_table_name()
 
-    class InputSchema(pw.Schema):
-        a: str
-        b: float
-        c: bool
-        d: list[int]
-        e: tuple[int, int, int]
-        f: pw.Json
-        g: str
-        h: str
-        i: pw.PyObjectWrapper[SimpleObject]
-        j: pw.Duration
+    if are_types_optional:
+
+        class InputSchema(pw.Schema):
+            a: str | None
+            b: float | None
+            c: bool | None
+            d: list[int] | None
+            e: tuple[int, int, int] | None
+            f: pw.Json | None
+            g: str
+            h: str
+            i: pw.PyObjectWrapper[SimpleObject] | None
+            j: pw.Duration | None
+
+    else:
+
+        class InputSchema(pw.Schema):  # type:ignore
+            a: str
+            b: float
+            c: bool
+            d: list[int]
+            e: tuple[int, int, int]
+            f: pw.Json
+            g: str
+            h: str
+            i: pw.PyObjectWrapper[SimpleObject]
+            j: pw.Duration
 
     rows = [
         {
@@ -266,12 +286,17 @@ def test_init_create_if_not_exists(write_method, postgres):
         g=pw.this.g.dt.strptime("%Y-%m-%dT%H:%M:%S", contains_timezone=False),
         h=pw.this.h.dt.strptime("%Y-%m-%dT%H:%M:%S%z", contains_timezone=True),
     )
+    if are_types_optional:
+        table = table.update_types(
+            g=pw.DateTimeNaive | None,
+            h=pw.DateTimeUtc | None,
+        )
 
     write_method(
         table,
         postgres_settings=POSTGRES_SETTINGS,
         table_name=table_name,
-        init_mode="create_if_not_exists",
+        init_mode=init_mode,
     )
     run()
 
@@ -298,6 +323,27 @@ def test_init_create_if_not_exists(write_method, postgres):
             "j": pd.Timedelta("4 days 2 seconds 123 us").value // 1_000,
         }
     ]
+    external_schema = postgres.get_table_schema(table_name)
+    assert external_schema["a"].type_name == "text"
+    assert external_schema["b"].type_name == "double precision"
+    assert external_schema["c"].type_name == "boolean"
+    assert external_schema["d"].type_name == "array"
+    assert external_schema["e"].type_name == "array"
+    assert external_schema["f"].type_name == "jsonb"
+    assert external_schema["g"].type_name == "timestamp without time zone"
+    assert external_schema["h"].type_name == "timestamp with time zone"
+    assert external_schema["i"].type_name == "bytea"
+    assert external_schema["j"].type_name == "bigint"
+    for column_name, column_props in external_schema.items():
+        if column_name in ("time", "diff"):
+            assert not column_props.is_nullable
+            continue
+        if column_name == "a":
+            is_primary_key = write_method is not pw.io.postgres.write
+            if is_primary_key:
+                assert not column_props.is_nullable
+                continue
+        assert column_props.is_nullable == are_types_optional, column_name
 
 
 @pytest.mark.parametrize("write_method", [pw.io.postgres.write, write_snapshot(["i"])])
@@ -350,8 +396,21 @@ def test_init_replace(write_method, postgres):
         run()
 
     result = postgres.get_table_contents(table_name, InputSchema.column_names(), "i")
-
     assert result == [{"i": 2, "data": 2}]
+
+    external_schema = postgres.get_table_schema(table_name)
+    assert external_schema["i"] == ColumnProperties(
+        type_name="bigint", is_nullable=False
+    )
+    assert external_schema["data"] == ColumnProperties(
+        type_name="bigint", is_nullable=False
+    )
+    assert external_schema["diff"] == ColumnProperties(
+        type_name="smallint", is_nullable=False
+    )
+    assert external_schema["time"] == ColumnProperties(
+        type_name="bigint", is_nullable=False
+    )
 
 
 def test_psql_json_datetimes(postgres):
