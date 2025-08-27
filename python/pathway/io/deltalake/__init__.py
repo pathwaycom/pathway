@@ -40,6 +40,8 @@ _SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 _DELTA_LOG_REL_PATH = "_delta_log"
 _LAST_CHECKPOINT_BLOCK_NAME = "_last_checkpoint"
 _CHECKPOINT_EXTENSION = ".checkpoint.parquet"
+_TLOG_EXTENSION = ".json"
+_NO_OP_TLOG_ENTRY = '{"commitInfo":{}}'
 
 
 def _engine_s3_connection_settings(
@@ -51,6 +53,40 @@ def _engine_s3_connection_settings(
         s3_connection_settings.authorize()
         return s3_connection_settings.settings
     return None
+
+
+class _TableVersionRepairProcessor:
+
+    def __init__(self, table_path: str | PathLike):
+        self.table_path = table_path
+
+    def _ensure_versions_are_consecutive(self):
+        tlog_path = os.path.join(self.table_path, _DELTA_LOG_REL_PATH)
+        if not os.path.exists(tlog_path):
+            # The storage isn't yet created
+            return
+        tlog_file_list = os.listdir(tlog_path)
+        tlog_file_list.sort()
+        prev_version = None
+        for file in tlog_file_list:
+            if not file.endswith(_TLOG_EXTENSION):
+                continue
+            try:
+                version = int(file[: -len(_TLOG_EXTENSION)])
+            except Exception:
+                logging.warning(f"Failed to parse version from a TLOG file: {file}")
+                continue
+            if prev_version is not None:
+                self._create_no_op_version_in_between(prev_version, version)
+            prev_version = version
+
+    def _create_no_op_version_in_between(self, prev_version: int, current_version: int):
+        tlog_path = os.path.join(self.table_path, _DELTA_LOG_REL_PATH)
+        for version in range(prev_version + 1, current_version):
+            version_tlog_filename = f"{version:020d}{_TLOG_EXTENSION}"
+            version_tlog_path = os.path.join(tlog_path, version_tlog_filename)
+            with open(version_tlog_path, "w") as f:
+                f.write(_NO_OP_TLOG_ENTRY)
 
 
 class TableOptimizer:
@@ -68,16 +104,11 @@ class TableOptimizer:
     This approach is necessary to prevent conflicts that could occur from simultaneous
     writes to the Delta log.
 
-    When ``optimize_transaction_log`` is enabled, a background process will identify
-    and remove parts of the transaction log that no longer reference existing data files.
-    This helps reduce the number of Delta log files, which can grow quickly with
-    small batches or over long periods.
-
     If ``remove_old_checkpoints`` is enabled, the background process will also make
     sure that only the most recent checkpoint file is kept.
 
-    Please note that both ``optimize_transaction_log`` and ``remove_old_checkpoints``
-    are currently experimental features and work only when the backend uses a filesystem.
+    Please note that ``remove_old_checkpoints`` is currently an experimental feature and
+    it works only when the backend uses a filesystem.
 
     Args:
         tracked_column: The partition column for the observed table.
@@ -90,9 +121,6 @@ class TableOptimizer:
             is triggered. If a compression attempt fails, it will be retried immediately
             without waiting.
         retention_period: Retention period for the ``VACUUM`` operation.
-        optimize_transaction_log: If ``True``, Pathway will clean the Delta transaction
-            log by removing entries that reference Parquet files already deleted by
-            ``VACUUM``.
         remove_old_checkpoints: If ``True``, Pathway will keep only the most recent
             checkpoint file to reduce storage usage.
 
@@ -114,15 +142,14 @@ class TableOptimizer:
 
     This optimizer object needs to be passed to the ``pw.io.deltalake.write`` function.
 
-    Note: Background cleanup of old Delta log entries will not run automatically in
-    this setup. To enable it, you can turn it on explicitly:
+    Note: Background cleanup of old snapshots will not run automatically in this setup.
+    To enable it, you can turn it on explicitly:
 
     >>> optimizer = pw.io.deltalake.TableOptimizer(  # doctest: +SKIP
     ...     tracked_column=table.day_utc,
     ...     time_format="%Y-%m-%d",
     ...     quick_access_window=datetime.timedelta(days=7),
     ...     compression_frequency=datetime.timedelta(days=1),
-    ...     optimize_transaction_log=True,
     ...     remove_old_checkpoints=True,
     ... )
     """
@@ -134,7 +161,6 @@ class TableOptimizer:
         quick_access_window: datetime.timedelta,
         compression_frequency: datetime.timedelta,
         retention_period: datetime.timedelta = datetime.timedelta(0),
-        optimize_transaction_log: bool = False,
         remove_old_checkpoints: bool = False,
     ):
         self.compression_frequency = compression_frequency
@@ -148,20 +174,18 @@ class TableOptimizer:
         self.tracked_column = tracked_column
         self.is_active = False
         self.lock = threading.Lock()
-        self.optimize_transaction_log = optimize_transaction_log
         self.remove_old_checkpoints = remove_old_checkpoints
         self.optimizer_thread: threading.Thread | None = None
         self.table_path: str | None = None
 
     def _start_compression(self, table_path: str):
-        is_background_thread_needed = (
-            self.optimize_transaction_log or self.remove_old_checkpoints
-        )
-        if not is_background_thread_needed:
+        self.table_path = table_path
+        repair_processor = _TableVersionRepairProcessor(table_path)
+        repair_processor._ensure_versions_are_consecutive()
+        if not self.remove_old_checkpoints:
             return
 
         self.is_active = True
-        self.table_path = table_path
         cycle_duration = self.compression_frequency.total_seconds()
 
         def target():
@@ -201,8 +225,6 @@ class TableOptimizer:
                 logging.info(f"The Delta table {self.table_path} is not ready yet")
                 return False
             tlog_file_list.sort()
-            if self.optimize_transaction_log:
-                self._remove_obsolete_versions(tlog_file_list)
             if self.remove_old_checkpoints:
                 self._remove_old_checkpoints(tlog_file_list)
         else:
@@ -301,6 +323,7 @@ def read(
     max_backlog_size: int | None = None,
     debug_data: Any = None,
     _backfilling_thresholds: list[api.BackfillingThreshold] | None = None,
+    _ensure_consecutive_versions: bool = False,
     **kwargs,
 ) -> Table:
     """
@@ -399,6 +422,10 @@ def read(
     prepared_connection_settings = _prepare_s3_connection_settings(
         s3_connection_settings
     )
+
+    if _ensure_consecutive_versions:
+        processor = _TableVersionRepairProcessor(uri)
+        processor._ensure_versions_are_consecutive()
 
     uri = fspath(uri)
     data_storage = api.DataStorage(

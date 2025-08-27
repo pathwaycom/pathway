@@ -4880,8 +4880,7 @@ def test_wrong_delta_optimizer_rule(tmp_path):
         )
 
 
-@pytest.mark.parametrize("optimize_transaction_log", [False, True])
-def test_delta_optimizer_rule(tmp_path, optimize_transaction_log):
+def test_delta_optimizer_rule(tmp_path):
     input_path = tmp_path / "input.jsonl"
     output_path = tmp_path / "output_lake"
 
@@ -4908,7 +4907,6 @@ def test_delta_optimizer_rule(tmp_path, optimize_transaction_log):
                 time_format="%Y-%m-%d",
                 quick_access_window=datetime.timedelta(days=7),
                 compression_frequency=datetime.timedelta(hours=1),
-                optimize_transaction_log=optimize_transaction_log,
                 remove_old_checkpoints=True,
             ),
         )
@@ -4955,22 +4953,14 @@ def test_delta_optimizer_rule(tmp_path, optimize_transaction_log):
     for item in raw_history:
         operations_history.append(item["operation"])
 
-    if optimize_transaction_log:
-        expected_operations_history = [
-            "OPTIMIZE",
-            "WRITE",
-            "CREATE TABLE",
-        ]
-    else:
-        expected_operations_history = [
-            "VACUUM END",
-            "VACUUM START",
-            "OPTIMIZE",
-            "WRITE",
-            "WRITE",
-            "CREATE TABLE",
-        ]
-
+    expected_operations_history = [
+        "VACUUM END",
+        "VACUUM START",
+        "OPTIMIZE",
+        "WRITE",
+        "WRITE",
+        "CREATE TABLE",
+    ]
     assert operations_history == expected_operations_history
 
 
