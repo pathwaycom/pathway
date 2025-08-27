@@ -180,8 +180,8 @@ jobs:
         run: |
           mkdir -p wheels
             
-      - uses: actions/download-artifact@v4
-        with:
+      - uses: actions/download-artifact@v5
+        with:Ŕ
           name: pathway-x86-x64
           path: ./wheels/
 
@@ -220,13 +220,13 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         if: ${{ matrix.os == 'selfhosted-macOS' }}
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         with:
           name:  pathway-arch64
@@ -288,22 +288,22 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: pathway-x86-x64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: pathway-arch64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: CHANGELOG.md
           path: .
@@ -408,7 +408,7 @@ jobs:
     steps:
       - name: Post to a Slack channel
         id: slack
-        uses: slackapi/slack-github-action@v2.1.1
+        uses: slackapi/slack-github-action@v2.1.0
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: webhook-trigger
