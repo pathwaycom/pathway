@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.26.1] - 2025-08-28
+
 ### Added
 - `pw.Table.forget` to remove old (in terms of event time) entries from the pipeline.
 - `pw.Table.buffer`, a stateful buffering operator that delays entries until `time_column <= max(time_column) - threshold` condition is met.
@@ -19,7 +21,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now respect the type optionality defined in the Pathway table schema when creating a new PostgreSQL table. This applies to the `replace` and `create_if_not_exists` initialization modes.
 
-## [0.26.0]
+## [0.26.0] - 2025-08-14
 
 ### Added
 - `path_filter` parameter in `pw.io.s3.read` and `pw.io.minio.read` functions. It enables post-filtering of object paths using a wildcard pattern (`*`, `?`), allowing exclusion of paths that pass the main `path` filter but do not match `path_filter`.
