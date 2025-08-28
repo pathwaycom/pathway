@@ -57,7 +57,7 @@ jobs:
         uses: actions/setup-python@v5
 
       - name: Git checkout
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v5
 
       - name: License files
         run: |
@@ -220,13 +220,13 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         if: ${{ matrix.os == 'selfhosted-macOS' }}
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         with:
           name:  pathway-arch64
@@ -288,22 +288,22 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         with:
           name: pathway-x86-x64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         with:
           name: pathway-arch64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         with:
           name: CHANGELOG.md
           path: .
