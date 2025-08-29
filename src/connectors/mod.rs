@@ -19,6 +19,7 @@ use timely::dataflow::operators::probe::Handle;
 pub mod adaptors;
 pub mod aws;
 pub mod backlog;
+pub mod utils;
 pub mod data_format;
 pub mod data_lake;
 pub mod data_storage;

@@ -1,4 +1,5 @@
 use log::error;
+use crate::connectors::utils::from_str_safe;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -137,7 +138,7 @@ pub fn parquet_value_into_pathway_value(
         (ParquetValue::Double(f), Type::Float | Type::Any) => Some(Value::Float((*f).into())),
         (ParquetValue::Str(s), Type::String | Type::Any) => Some(Value::String(s.into())),
         (ParquetValue::Str(s), Type::Pointer) => parse_pathway_pointer(s).ok(),
-        (ParquetValue::Str(s), Type::Json) => serde_json::from_str::<serde_json::Value>(s)
+        (ParquetValue::Str(s), Type::Json) => from_str_safe::<serde_json::Value>(s)
             .ok()
             .map(Value::from),
         (ParquetValue::TimestampMicros(us), Type::DateTimeNaive | Type::Any) => Some(Value::from(
@@ -540,7 +541,7 @@ fn convert_arrow_string_array<OffsetType: OffsetSizeTrait>(
         .map(|v| match v {
             Some(v) => match expected_type {
                 Type::String | Type::Any => Ok(Value::String(v.into())),
-                Type::Json => serde_json::from_str::<serde_json::Value>(v)
+                Type::Json => from_str_safe::<serde_json::Value>(v)
                     .map(Value::from)
                     .map_err(|_| {
                         Box::new(conversion_error(
