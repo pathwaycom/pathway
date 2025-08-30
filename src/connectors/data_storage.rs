@@ -1,3 +1,4 @@
+use crate::connectors::utils::from_str_safe;
 // Copyright © 2024 Pathway
 
 use base64::Engine;
@@ -1807,7 +1808,7 @@ impl SqliteReader {
             (Type::Json, SqliteValue::Text(val)) => from_utf8(val)
                 .ok()
                 .and_then(|parsed_string| {
-                    serde_json::from_str::<serde_json::Value>(parsed_string).ok()
+                    from_str_safe::<serde_json::Value>(parsed_string).ok()
                 })
                 .map(Value::from),
             (Type::Bytes | Type::Any, SqliteValue::Blob(val)) => Some(Value::Bytes(val.into())),

@@ -38,7 +38,11 @@ use schema_registry_converter::error::SRCError as SchemaRepositoryError;
 use schema_registry_converter::schema_registry_common::SubjectNameStrategy as RegistrySubjectNameStrategy;
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
+"""use crate::connectors::utils::from_str_safe;
 use serde_json::{Map as JsonMap, Value as JsonValue};
+
+
+""
 
 use super::data_storage::{ConversionError, SpecialEvent};
 
@@ -586,7 +590,7 @@ fn parse_str_with_type(raw_value: &str, type_: &Type) -> Result<Value, DynError>
         Type::Int => Ok(Value::Int(raw_value.parse()?)),
         Type::Float => Ok(Value::Float(raw_value.parse()?)),
         Type::Json => {
-            let json: JsonValue = serde_json::from_str(raw_value)?;
+            let json: JsonValue = from_str_safe(raw_value)?;
             Ok(Value::from(json))
         }
         Type::PyObjectWrapper => {
@@ -616,7 +620,7 @@ fn parse_str_with_type(raw_value: &str, type_: &Type) -> Result<Value, DynError>
             Ok(Value::Bytes(bytes.into()))
         }
         Type::Array(_, _) | Type::List(_) | Type::Tuple(_) => {
-            let json: JsonValue = serde_json::from_str(raw_value)?;
+            let json: JsonValue = from_str_safe(raw_value)?;
             let value =
                 parse_value_from_json(&json, type_).ok_or(ParseError::MalformedComplexField)?;
             Ok(value)
@@ -1442,7 +1446,7 @@ impl DebeziumMessageParser {
         // in case of MongoDB, the message is always string
         let prepared_value: JsonValue = {
             if let JsonValue::String(serialized_json) = &value {
-                let Ok(prepared_value) = serde_json::from_str::<JsonValue>(serialized_json) else {
+                let Ok(prepared_value) = from_str_safe::<JsonValue>(serialized_json) else {
                     return Err(ParseError::FailedToParseJson(serialized_json.to_string()));
                 };
                 prepared_value
@@ -1567,7 +1571,7 @@ impl Parser for DebeziumMessageParser {
             }
         };
 
-        let Ok(value_change) = serde_json::from_str(&raw_value_change) else {
+        let Ok(value_change) = from_str_safe(&raw_value_change) else {
             return Err(ParseError::FailedToParseJson(raw_value_change).into());
         };
 
@@ -1582,7 +1586,7 @@ impl Parser for DebeziumMessageParser {
             }
         };
 
-        let Ok(change_key) = serde_json::from_str::<JsonValue>(&raw_key_change) else {
+        let Ok(change_key) = from_str_safe::<JsonValue>(&raw_key_change) else {
             return Err(ParseError::FailedToParseJson(raw_key_change).into());
         };
 
@@ -1721,7 +1725,7 @@ impl Parser for JsonLinesParser {
             match prepare_plaintext_string(raw_bytes)?.as_str() {
                 "" => return Ok(vec![]),
                 COMMIT_LITERAL => return Ok(vec![ParsedEventWithErrors::AdvanceTime]),
-                line => serde_json::from_str(line)?,
+                line => from_str_safe(line)?,
             }
         };
 

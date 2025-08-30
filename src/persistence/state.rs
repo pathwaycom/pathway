@@ -41,6 +41,16 @@ pub struct MetadataAccessor {
     next_key_to_use: String,
 }
 
+fn from_str_safe<'a, T>(s: &'a str) -> serde_json::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(s);
+    deserializer.disable_recursion_limit();
+    let mut deserializer = serde_stacker::Deserializer::new(&mut deserializer);
+    T::deserialize(&mut deserializer).map_err(|e| e.into_inner())
+}
+
 impl StoredMetadata {
     pub fn new(total_workers: usize) -> Self {
         Self {
@@ -51,7 +61,7 @@ impl StoredMetadata {
 
     pub fn parse(bytes: &[u8], default_total_workers: usize) -> Result<Self, Error> {
         let data = std::str::from_utf8(bytes)?;
-        let mut result = serde_json::from_str::<StoredMetadata>(data.trim_end())
+        let mut result = from_str_safe::<StoredMetadata>(data.trim_end())
             .map_err(|e| Error::IncorrectMetadataFormat(data.to_string(), e))?;
 
         // The block comes from an older version and has no number of workers specified.

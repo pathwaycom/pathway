@@ -228,11 +228,21 @@ fn value_from_pandas_timedelta(ob: &Bound<PyAny>) -> PyResult<Value> {
     Ok(Value::Duration(Duration::new(duration)))
 }
 
+fn from_str_safe<'a, T>(s: &'a str) -> serde_json::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(s);
+    deserializer.disable_recursion_limit();
+    let mut deserializer = serde_stacker::Deserializer::new(&mut deserializer);
+    T::deserialize(&mut deserializer).map_err(|e| e.into_inner())
+}
+
 fn value_json_from_py_any(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let json_str = get_convert_python_module(py).call_method1(intern!(py, "_json_dumps"), (ob,))?;
     let json_str = json_str.downcast::<PyString>()?.to_str()?;
-    let json: JsonValue = serde_json::from_str(json_str)
+    let json: JsonValue = from_str_safe(json_str)
         .map_err(|e| PyValueError::new_err(format!("malformed json: {e}")))?;
     Ok(Value::from(json))
 }

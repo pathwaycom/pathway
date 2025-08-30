@@ -57,7 +57,7 @@ fn test_type_formatting(type_: Type, values: &[Value]) -> eyre::Result<()> {
             }
             (&Type::Json, Value::Json(_)) => {
                 let raw_str = document.get_str(TEST_FIELD).unwrap();
-                let parsed_json: serde_json::Value = serde_json::from_str(raw_str).unwrap();
+                let parsed_json: serde_json::Value = from_str_safe(raw_str).unwrap();
                 assert_eq!(Value::from(parsed_json), value.clone());
             }
             (&Type::Tuple(_), Value::Tuple(t)) => {
@@ -208,6 +208,16 @@ fn test_format_float_array() -> eyre::Result<()> {
     let test_array: ArrayD<f64> = arr1(&[1.0_f64, 2.0_f64, 3.0_f64]).into_dyn();
     let test_value = Value::from(test_array);
     test_type_formatting(Type::Array(None, Arc::new(Type::Float)), &[test_value])
+}
+
+fn from_str_safe<'a, T>(s: &'a str) -> serde_json::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(s);
+    deserializer.disable_recursion_limit();
+    let mut deserializer = serde_stacker::Deserializer::new(&mut deserializer);
+    T::deserialize(&mut deserializer).map_err(|e| e.into_inner())
 }
 
 #[test]
