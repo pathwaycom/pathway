@@ -68,6 +68,7 @@ def test_gdrive_symlink(object_size_limit, with_metadata, tmp_path, credentials_
     assert rows_count == 1
 
 
+@pytest.mark.parametrize("format", ["binary", "only_metadata"])
 @pytest.mark.parametrize("with_metadata", [False, True])
 @pytest.mark.parametrize(
     "name_pattern",
@@ -83,7 +84,7 @@ def test_gdrive_symlink(object_size_limit, with_metadata, tmp_path, credentials_
     ],
 )
 def test_name_pattern_single_filter(
-    with_metadata, name_pattern, tmp_path, credentials_dir
+    format, with_metadata, name_pattern, tmp_path, credentials_dir
 ):
     object_size_limit = None
 
@@ -95,6 +96,7 @@ def test_name_pattern_single_filter(
     files_table = pw.io.gdrive.read(
         FOLDER_WITH_TYPES,
         mode="static",
+        format=format,
         service_user_credentials_file=str(credentials_dir / "credentials.json"),
         object_size_limit=object_size_limit,
         with_metadata=with_metadata,
@@ -108,8 +110,14 @@ def test_name_pattern_single_filter(
     with open(tmp_path / "output.jsonl", "r") as f:
         for raw_row in f:
             row = json.loads(raw_row)
+            if format == "binary":
+                assert "data" in row
+            elif format == "only_metadata":
+                assert "data" not in row
+            else:
+                raise ValueError(f"unknown format: {format}")
 
-            if with_metadata:
+            if with_metadata or format == "only_metadata":
                 metadata = row["_metadata"]
                 assert metadata["status"] == pw.io.gdrive.STATUS_DOWNLOADED
             rows_count += 1

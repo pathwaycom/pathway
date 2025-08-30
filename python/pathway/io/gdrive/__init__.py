@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import time
+import uuid
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -263,6 +264,7 @@ class _GDriveSubject(ConnectorSubject):
     _root: str
     _refresh_interval: int
     _mode: str
+    _only_metadata: bool
     _append_metadata: bool
     _object_size_limit: int | None
     _file_name_pattern: list | str | None
@@ -274,6 +276,7 @@ class _GDriveSubject(ConnectorSubject):
         root: str,
         refresh_interval: int,
         mode: str,
+        only_metadata: bool,
         with_metadata: bool,
         object_size_limit: int | None,
         file_name_pattern: list | str | None,
@@ -283,6 +286,7 @@ class _GDriveSubject(ConnectorSubject):
         self._refresh_interval = refresh_interval
         self._root = root
         self._mode = mode
+        self._only_metadata = only_metadata
         self._append_metadata = with_metadata
         self._object_size_limit = object_size_limit
         self._file_name_pattern = file_name_pattern
@@ -319,7 +323,11 @@ class _GDriveSubject(ConnectorSubject):
                 for file in tree.removed_files(prev):
                     self.remove(file)
                 for file in tree.new_and_changed_files(prev):
-                    payload = client.download(file)
+                    payload = (
+                        uuid.uuid4().bytes  # Trigger a change inside UpsertSession
+                        if self._only_metadata
+                        else client.download(file)
+                    )
                     if payload is not None:
                         self.upsert(file, payload)
 
@@ -341,6 +349,7 @@ def read(
     object_id: str,
     *,
     mode: Literal["streaming", "static"] = "streaming",
+    format: Literal["binary", "only_metadata"] = "binary",
     object_size_limit: int | None = None,
     refresh_interval: int = 30,
     service_user_credentials_file: str,
@@ -352,28 +361,40 @@ def read(
 ) -> pw.Table:
     """Reads a table from a Google Drive directory or file.
 
-    It will return a table with single column `data` containing each file in a binary format.
+    Returns a table containing a binary column ``data`` with the binary contents
+    of objects in the specified directory, as well as a dict ``_metadata`` that
+    contains metadata corresponding to each object. Metadata is reported only if
+    the ``with_metadata`` flag is set, or if the ``"only_metadata"`` format is chosen.
+
+    Note that if you only need to monitor changes in the given directory, you can
+    use the ``"only_metadata"`` format, in which case the table will contain only
+    metadata, and no time or resources will be spent downloading the objects.
 
     Args:
-        object_id: id of a directory or file. Directories will be scanned recursively.
-        mode: denotes how the engine polls the new data from the source. Currently "streaming"
-            and "static" are supported. If set to "streaming", it will check for updates, deletions
-            and new files every `refresh_interval` seconds. "static" mode will only consider
+        object_id: ``id`` of a directory or file. Directories will be scanned recursively.
+        mode: denotes how the engine polls the new data from the source. Currently ``"streaming"``
+            and ``"static"`` are supported. If set to ``"streaming"``, it will check for updates, deletions
+            and new files every ``refresh_interval`` seconds. ``"static"`` mode will only consider
             the available data and ingest all of it in one commit.
-            The default value is "streaming".
+            The default value is ``"streaming"``.
+        format: the format of the resulting table. Can be either ``"binary"``, which
+            corresponds to a table with a ``data`` column containing the object's contents,
+            or ``"only_metadata"``, which corresponds to a table that has only the ``_metadata``
+            column with the objects' metadata, without downloading the objects themselves.
         object_size_limit: Maximum size (in bytes) of a file that will be processed by
-            this connector or `None` if no filtering by size should be made;
-        refresh_interval: time in seconds between scans. Applicable if mode is set to 'streaming'.
+            this connector or ``None`` if no filtering by size should be made;
+        refresh_interval: time in seconds between scans. Applicable if mode is set to ``"streaming"``.
         service_user_credentials_file: Google API service user json file. Please follow the instructions
             provided in the `developer's user guide
             <https://pathway.com/developers/user-guide/connect/connectors/gdrive-connector/#setting-up-google-drive>`_
             to obtain them.
-        with_metadata: when set to True, the connector will add an additional column named
-            `_metadata` to the table. This column will contain file metadata,
-            such as: `id`, `name`, `mimeType`, `parents`, `modifiedTime`, `thumbnailLink`, `lastModifyingUser`.
+        with_metadata: when set to ``True``, the connector will add an additional column named
+            ``_metadata`` to the table. This column will contain file metadata,
+            such as: ``id``, ``name``, ``mimeType``, ``parents``, ``modifiedTime``,
+            ``thumbnailLink``, ``lastModifyingUser``.
         file_name_pattern: glob pattern (or list of patterns) to be used to filter files based on their names.
-            Defaults to `None` which doesn't filter anything. Doesn't apply to folder names.
-            For example, `*.pdf` will only return files that has `.pdf` extension.
+            Defaults to ``None`` which doesn't filter anything. Doesn't apply to folder names.
+            For example, ``*.pdf`` will only return files that has ``.pdf`` extension.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -403,17 +424,19 @@ def read(
             service_user_credentials_file
         )
 
+    only_provide_metadata = format == "only_metadata"
     subject = _GDriveSubject(
         credentials_factory=credentials_factory,
         root=object_id,
         refresh_interval=refresh_interval,
         mode=mode,
-        with_metadata=with_metadata,
+        only_metadata=only_provide_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
         object_size_limit=object_size_limit,
         file_name_pattern=file_name_pattern,
     )
 
-    return pw.io.python.read(
+    table = pw.io.python.read(
         subject,
         format="binary",
         name=name,
@@ -421,3 +444,7 @@ def read(
         _stacklevel=4,
         **kwargs,
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+
+    return table

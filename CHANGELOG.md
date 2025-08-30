@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.gdrive.read` now supports the `"only_metadata"` format. When this format is used, the table will contain only metadata updates for the tracked directory, without reading object contents.
+
 ## [0.26.1] - 2025-08-28
 
 ### Added
