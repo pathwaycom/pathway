@@ -16,6 +16,9 @@ LONG_TEXT = "B" * 50_000
 )
 @pytest.mark.parametrize("strategy", ["start", "end"])
 def test_openai_embedder(text: str, model: str, strategy: str):
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str), rows=[(text,)]
+    )
     if model is None:
         embedder = embedders.OpenAIEmbedder(
             truncation_keep_strategy=strategy,
@@ -28,11 +31,13 @@ def test_openai_embedder(text: str, model: str, strategy: str):
             retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy(),
         )
 
-    sync_embedder = _coerce_sync(embedder.func)
+    table = table.select(embedding=embedder(pw.this.text))
 
-    embedding = sync_embedder(text)
+    result = pw.debug.table_to_pandas(table).to_dict("records")
 
-    assert len(embedding) > 1500
+    assert len(result) == 1
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) > 1500
 
 
 @pytest.mark.parametrize("model", ["text-embedding-ada-002", "text-embedding-3-small"])
@@ -45,9 +50,73 @@ def test_openai_embedder_fails_no_truncation(model: str):
     sync_embedder = _coerce_sync(embedder.func)
 
     with pytest.raises(Exception) as exc:
-        sync_embedder(LONG_TEXT)
+        sync_embedder([LONG_TEXT])
 
     assert "maximum context length" in str(exc)
+
+
+def test_openai_embedder_with_common_parameter():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str), rows=[("aaa",), ("bbb",)]
+    )
+
+    embedder = embedders.OpenAIEmbedder(model="text-embedding-3-small")
+
+    table = table.select(embedding=embedder(pw.this.text, dimensions=700))
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 2
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) == 700
+    assert isinstance(result[1]["embedding"][0], float)
+    assert len(result[1]["embedding"]) == 700
+
+
+def test_openai_embedder_with_different_parameter():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str, dimensions=int),
+        rows=[("aaa", 300), ("bbb", 800)],
+    )
+
+    embedder = embedders.OpenAIEmbedder(model="text-embedding-3-small")
+
+    table = table.select(
+        text=pw.this.text,
+        embedding=embedder(pw.this.text, dimensions=pw.this.dimensions),
+    )
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 2
+    assert isinstance(result[0]["embedding"][0], float)
+    assert isinstance(result[1]["embedding"][0], float)
+    if result[0]["text"] == "aaa":
+        assert len(result[0]["embedding"]) == 300
+    else:
+        assert len(result[1]["embedding"]) == 300
+    if result[0]["text"] == "bbb":
+        assert len(result[0]["embedding"]) == 800
+    else:
+        assert len(result[1]["embedding"]) == 800
+
+
+def test_openai_embedder_input_as_kwarg():
+    table = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(text=str), rows=[("foo",)]
+    )
+    embedder = embedders.OpenAIEmbedder(
+        model="text-embedding-3-small",
+        retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy(),
+    )
+
+    table = table.select(embedding=embedder(input=pw.this.text))
+
+    result = pw.debug.table_to_pandas(table).to_dict("records")
+
+    assert len(result) == 1
+    assert isinstance(result[0]["embedding"][0], float)
+    assert len(result[0]["embedding"]) > 1500
 
 
 def test_sentence_transformer_embedder():
