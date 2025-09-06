@@ -245,7 +245,7 @@ fn deserialize_signed_license(public_key: &str, license: &str) -> DynResult<serd
         .replace('\n', "");
 
     let license_data = String::from_utf8(BASE64_STANDARD.decode(cleaned_license)?)?;
-    let license_file: LicenseFile = serde_json::from_str(&license_data)?;
+    let license_file: LicenseFile = from_str_safe(&license_data)?;
 
     // assert license crypto algorithm
     if license_file.alg != LICENSE_ALGORITHM {
@@ -266,7 +266,7 @@ fn deserialize_signed_license(public_key: &str, license: &str) -> DynResult<serd
         .map_err(|_| "license file is invalid")?;
 
     let payload = String::from_utf8(BASE64_STANDARD.decode(license_file.enc)?)?;
-    let license_content: serde_json::Value = serde_json::from_str(&payload)?;
+    let license_content: serde_json::Value = from_str_safe(&payload)?;
 
     Ok(license_content)
 }
@@ -341,6 +341,16 @@ fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
     );
 
     Ok(result)
+}
+
+fn from_str_safe<'a, T>(s: &'a str) -> serde_json::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(s);
+    deserializer.disable_recursion_limit();
+    let mut deserializer = serde_stacker::Deserializer::new(&mut deserializer);
+    T::deserialize(&mut deserializer).map_err(|e| e.into_inner())
 }
 
 #[cached]

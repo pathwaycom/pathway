@@ -189,7 +189,7 @@ impl Visitor<'_> for JsonVisitor {
     where
         E: serde::de::Error,
     {
-        match serde_json::from_str(v) {
+        match from_str_safe(v) {
             Ok(json) => Ok(Handle::new(json)),
             Err(err) => Err(serde::de::Error::custom(err)),
         }
@@ -765,6 +765,16 @@ pub enum PointerParseError {
 
     #[error("the decoded array has a length different from 16")]
     IncorrectLength,
+}
+
+fn from_str_safe<'a, T>(s: &'a str) -> serde_json::Result<T>
+where
+    T: serde::de::Deserialize<'a>,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(s);
+    deserializer.disable_recursion_limit();
+    let mut deserializer = serde_stacker::Deserializer::new(&mut deserializer);
+    T::deserialize(&mut deserializer).map_err(|e| e.into_inner())
 }
 
 pub fn parse_pathway_pointer(serialized: &str) -> Result<Value, PointerParseError> {
