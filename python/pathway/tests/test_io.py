@@ -50,6 +50,7 @@ from pathway.tests.utils import (
     wait_result_with_checker,
     write_csv,
     write_lines,
+    xfail_on_python_3_10,
 )
 from pathway.third_party.airbyte_serverless.sources import (
     DockerAirbyteSource,
@@ -3617,6 +3618,7 @@ def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
 
 
 @needs_multiprocessing_fork
+@xfail_on_python_3_10
 def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
     output_path = tmp_path_with_airbyte_config / "table.jsonl"
     pstorage_path = tmp_path_with_airbyte_config / "PStorage"

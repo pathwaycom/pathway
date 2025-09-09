@@ -43,6 +43,10 @@ xfail_on_multiple_threads = pytest.mark.xfail(
     os.getenv("PATHWAY_THREADS", "1") != "1", reason="multiple threads"
 )
 
+xfail_on_python_3_10 = pytest.mark.xfail(
+    sys.version_info[:2] == (3, 10), reason="dependencies broken in python 3.10"
+)
+
 only_standard_build = pytest.mark.xfail(
     pw.__version__.endswith("+enterprise"),
     reason="only works on standard build",
