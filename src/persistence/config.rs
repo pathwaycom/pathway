@@ -4,7 +4,7 @@
 
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::ExchangeData;
-use log::{error, info};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::path::{Path, PathBuf};
@@ -178,6 +178,8 @@ impl ReadersQueryPurpose {
 }
 
 impl PersistenceManagerConfig {
+    const MIN_SNAPSHOT_MERGING_FREQUENCY: Duration = Duration::from_secs(30 * 60);
+
     pub fn new(
         outer_config: PersistenceManagerOuterConfig,
         worker_id: usize,
@@ -490,6 +492,19 @@ impl PersistenceManagerConfig {
         Ok(assigned_paths)
     }
 
+    fn adjusted_snapshot_merging_interval(&self) -> Duration {
+        let is_local_backend = matches!(self.backend, PersistentStorageConfig::Filesystem(_));
+        if is_local_backend || self.snapshot_interval >= Self::MIN_SNAPSHOT_MERGING_FREQUENCY {
+            self.snapshot_interval
+        } else {
+            warn!(
+                "The frequency of operator snapshot compression has been reduced to {:?} to avoid backend quota exhaustion",
+                Self::MIN_SNAPSHOT_MERGING_FREQUENCY,
+            );
+            Self::MIN_SNAPSHOT_MERGING_FREQUENCY
+        }
+    }
+
     fn create_operator_snapshot_merger<D, R>(
         &mut self,
         persistent_id: PersistentId,
@@ -502,9 +517,10 @@ impl PersistenceManagerConfig {
         let merger_backend = self.get_writer_backend(persistent_id)?;
         let metadata_backend = self.backend.create()?;
         let time_querier = FinalizedTimeQuerier::new(metadata_backend, self.total_workers);
+        let adjusted_merging_interval = self.adjusted_snapshot_merging_interval();
         let merger = ConcreteSnapshotMerger::new::<D, R>(
             merger_backend,
-            self.snapshot_interval,
+            adjusted_merging_interval,
             time_querier,
             receiver,
         );

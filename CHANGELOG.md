@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.gdrive.read` now supports the `"only_metadata"` format. When this format is used, the table will contain only metadata updates for the tracked directory, without reading object contents.
 
+### Changed
+- The frequency of background operator snapshot compression in data persistence is limited to the greater of the user-defined `snapshot_interval` or 30 minutes when S3 or Azure is used as the backend, in order to avoid frequent calls to potentially expensive operations.
+
 ## [0.26.1] - 2025-08-28
 
 ### Added
