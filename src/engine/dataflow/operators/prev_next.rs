@@ -791,9 +791,10 @@ where
     let mut result_trace = None;
     let stream = {
         let result_trace = &mut result_trace;
-        input_arrangement
-            .stream
-            .unary(Pipeline, "sorter", move |_capability, operator_info| {
+        input_arrangement.stream.unary_frontier(
+            Pipeline,
+            "sorter",
+            move |_capability, operator_info| {
                 let mut input_buffer = Vec::new();
 
                 let empty: differential_dataflow::trace::implementations::spine_fueled::Spine<
@@ -868,20 +869,18 @@ where
                             output.session(&capability).give(res_batch.clone());
                             output_writer.insert(res_batch, Some(time));
                             output_writer.seal(upper_limit.clone());
-
-                            input_arrangement
-                                .trace
-                                .set_logical_compaction(upper_limit.borrow());
-                            output_reader.set_logical_compaction(upper_limit.borrow());
-
-                            input_arrangement
-                                .trace
-                                .set_physical_compaction(upper_limit.borrow());
-                            output_reader.set_physical_compaction(upper_limit.borrow());
                         }
                     });
+
+                    let frontier = input.frontier.frontier();
+                    input_arrangement.trace.set_logical_compaction(frontier);
+                    output_reader.set_logical_compaction(frontier);
+
+                    input_arrangement.trace.set_physical_compaction(frontier);
+                    output_reader.set_physical_compaction(frontier);
                 }
-            })
+            },
+        )
     };
 
     Arranged {

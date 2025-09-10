@@ -16,7 +16,7 @@ use differential_dataflow::operators::iterate::Variable;
 use differential_dataflow::trace::cursor::Cursor;
 use differential_dataflow::trace::implementations::ord::OrdValBatch;
 use differential_dataflow::trace::implementations::spine_fueled::Spine;
-use differential_dataflow::trace::{BatchReader, TraceReader};
+use differential_dataflow::trace::TraceReader;
 use differential_dataflow::{AsCollection, Collection, Data, Diff, ExchangeData, Hashable};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ord;
@@ -31,8 +31,6 @@ use timely::dataflow::operators::generic::OutputHandle;
 use timely::dataflow::operators::{Capability, Inspect, Operator};
 use timely::dataflow::scopes::{Scope, ScopeParent};
 use timely::progress::frontier::AntichainRef;
-use timely::progress::Antichain;
-use timely::progress::Timestamp as TimestampTrait;
 type KeyValArr<G, K, V, R> =
     Arranged<G, TraceAgent<Spine<Rc<OrdValBatch<K, V, <G as ScopeParent>::Timestamp, R>>>>>;
 
@@ -337,12 +335,6 @@ where
                 move |input, output| {
                     input.for_each(|capability, batches| {
                         batches.swap(&mut input_buffer);
-
-                        let mut upper_limit = Antichain::from_elem(G::Timestamp::minimum());
-                        for batch in &input_buffer {
-                            upper_limit.advance_by(AntichainRef::new(&[batch.upper().clone()]));
-                        }
-
                         let grouped = batch_by_time(&input_buffer, |key, val, time, diff| {
                             (key.clone(), val.clone(), time.clone(), diff.clone())
                         });
@@ -457,20 +449,14 @@ where
                                     .merge(future_release_threshold_column_times);
                             }
                             previousuly_updated_instances = updated_instances;
-
-                            if !upper_limit.is_empty() {
-                                input_arrangement
-                                    .trace
-                                    .set_logical_compaction(upper_limit.borrow());
-                                input_arrangement
-                                    .trace
-                                    .set_physical_compaction(upper_limit.borrow());
-                            }
                         }
                     });
 
                     let frontier = input.frontier.frontier();
-                    if !frontier.less_equal(&G::Timestamp::get_max_timestamp()) {
+                    if frontier.less_equal(&G::Timestamp::get_max_timestamp()) {
+                        input_arrangement.trace.set_logical_compaction(frontier);
+                        input_arrangement.trace.set_physical_compaction(frontier);
+                    } else {
                         if flush_on_end && maybe_cap.is_some() {
                             let (mut cursor, storage) = input_arrangement.trace.cursor();
                             let mut input_wrapper = CursorStorageWrapper {
