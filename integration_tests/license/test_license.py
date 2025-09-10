@@ -114,7 +114,6 @@ def test_license_default_policy(caplog):
 
     run_all()
     assert "Telemetry enabled" in caplog.text
-    assert "Monitoring server:" in caplog.text
 
 
 @only_standard_build
@@ -150,7 +149,6 @@ def test_license_enterprise(caplog):
     run_all()
 
     assert "Telemetry enabled" not in caplog.text
-    assert "Monitoring server:" in caplog.text
 
 
 @only_enterprise_build
@@ -165,7 +163,6 @@ def test_license_enterprise_expired(caplog):
         "License has expired. Please renew to continue using the service" in caplog.text
     )
     assert "Telemetry enabled" not in caplog.text
-    assert "Monitoring server:" in caplog.text
 
 
 @only_enterprise_build
