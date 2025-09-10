@@ -36,6 +36,11 @@ def read(
     files within this folder: they will be processed by ascending order of
     the modification time.
 
+    The maximum supported depth of nested JSON structures is ``127`` levels.
+    JSON documents with a depth of ``128`` or more are considered malformed and
+    will fail to parse with a ``"recursion limit exceeded"`` error text.
+    Documents with a smaller depth parse as expected.
+
     Args:
         path: Path to the file or to the folder with files or
             `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the

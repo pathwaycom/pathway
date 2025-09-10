@@ -1,17 +1,33 @@
 // Copyright © 2024 Pathway
 
 use super::helpers::{
-    assert_error_shown, new_filesystem_reader, read_data_from_reader, ErrorPlacement,
+    assert_error_shown, assert_error_shown_for_reader_context, new_filesystem_reader,
+    read_data_from_reader, ErrorPlacement,
 };
 
 use std::collections::HashMap;
-
 use std::sync::Arc;
 
-use pathway_engine::connectors::data_format::{InnerSchemaField, JsonLinesParser, ParsedEvent};
-use pathway_engine::connectors::data_storage::{ConnectorMode, ReadMethod};
+use pathway_engine::connectors::data_format::{
+    InnerSchemaField, JsonLinesParser, ParsedEvent, Parser,
+};
+use pathway_engine::connectors::data_storage::{
+    ConnectorMode, DataEventType, ReadMethod, ReaderContext,
+};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Type, Value};
+
+fn generate_deeply_nested_json(depth: usize) -> String {
+    let mut raw_nested_json = String::with_capacity(depth * 8);
+    for _ in 0..depth {
+        raw_nested_json.push_str("{\"a\":");
+    }
+    raw_nested_json.push('0');
+    for _ in 0..depth {
+        raw_nested_json.push('}');
+    }
+    raw_nested_json
+}
 
 #[test]
 fn test_jsonlines_ok() -> eyre::Result<()> {
@@ -608,6 +624,38 @@ fn test_jsonlines_timestamp() -> eyre::Result<()> {
         )),
     ];
     assert_eq!(entries, expected_values);
+
+    Ok(())
+}
+
+#[test]
+fn test_nested_levels_limit() -> eyre::Result<()> {
+    let schema = [("a".to_string(), InnerSchemaField::new(Type::Int, None))];
+    let mut parser = Box::new(JsonLinesParser::new(
+        None,
+        vec!["a".to_string()],
+        HashMap::new(),
+        true,
+        schema.into(),
+        SessionType::Native,
+        None,
+    )?);
+
+    let raw_json = generate_deeply_nested_json(127);
+    let input_context =
+        ReaderContext::from_raw_bytes(DataEventType::Insert, raw_json.as_bytes().to_vec());
+    let parsed = parser.parse(&input_context);
+    assert!(parsed.is_ok());
+
+    let raw_json = generate_deeply_nested_json(128);
+    let input_context =
+        ReaderContext::from_raw_bytes(DataEventType::Insert, raw_json.as_bytes().to_vec());
+    assert_error_shown_for_reader_context(
+        &input_context,
+        parser,
+        "recursion limit exceeded at line 1 column 636",
+        ErrorPlacement::Message,
+    );
 
     Ok(())
 }
