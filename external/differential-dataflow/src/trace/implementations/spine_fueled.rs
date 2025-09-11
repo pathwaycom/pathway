@@ -69,6 +69,7 @@
 //! have paid back any "debt" to higher layers by continuing to provide fuel as updates arrive.
 
 
+use std::collections::VecDeque;
 use std::fmt::Debug;
 
 use ::logging::Logger;
@@ -82,6 +83,11 @@ use ::timely::dataflow::operators::generic::OperatorInfo;
 use ::timely::progress::{Antichain, frontier::AntichainRef};
 use ::timely::order::PartialOrder;
 
+/// Batch introduction is expected to run regularly.
+/// If the batch queue size reaches the threshold, it indicates
+/// a serious issue in the operator implementation.
+const MAX_PENDING_QUEUE_SIZE: usize = 100_000;
+
 /// An append-only collection of update tuples.
 ///
 /// A spine maintains a small number of immutable collections of update tuples, merging the collections when
@@ -93,7 +99,7 @@ pub struct Spine<B: Batch> where B::Time: Lattice+Ord, B::R: Semigroup {
     pub(crate) logical_frontier: Antichain<B::Time>,   // Times after which the trace must accumulate correctly.
     pub(crate) physical_frontier: Antichain<B::Time>,  // Times after which the trace must be able to subset its inputs.
     pub(crate) merging: Vec<MergeState<B>>,            // Several possibly shared collections of updates.
-    pub(crate) pending: Vec<B>,                        // Batches at times in advance of `frontier`.
+    pub(crate) pending: VecDeque<B>,                   // Batches at times in advance of `frontier`.
     upper: Antichain<B::Time>,
     effort: usize,
     activator: Option<timely::scheduling::activate::Activator>,
@@ -306,7 +312,12 @@ where
         self.upper.clone_from(batch.upper());
 
         // TODO: Consolidate or discard empty batches.
-        self.pending.push(batch);
+        self.pending.push_back(batch);
+        debug_assert!(
+            self.pending.len() < MAX_PENDING_QUEUE_SIZE,
+            "The pending event queue is too long",
+        );
+
         self.consider_merges();
     }
 
@@ -439,7 +450,7 @@ where
             logical_frontier: Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
             physical_frontier: Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
             merging: Vec::new(),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             upper: Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
             effort,
             activator,
@@ -454,13 +465,12 @@ where
     fn consider_merges(&mut self) {
 
         // TODO: Consider merging pending batches before introducing them.
-        // TODO: We could use a `VecDeque` here to draw from the front and append to the back.
         while self.pending.len() > 0 && PartialOrder::less_equal(self.pending[0].upper(), &self.physical_frontier)
             //   self.physical_frontier.iter().all(|t1| self.pending[0].upper().iter().any(|t2| t2.less_equal(t1)))
         {
             // Batch can be taken in optimized insertion.
             // Otherwise it is inserted normally at the end of the method.
-            let mut batch = Some(self.pending.remove(0));
+            let mut batch = self.pending.pop_front();
 
             // If `batch` and the most recently inserted batch are both empty, we can just fuse them.
             // We can also replace a structurally empty batch with this empty batch, preserving the

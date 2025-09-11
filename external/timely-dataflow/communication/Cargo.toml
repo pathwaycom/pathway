@@ -25,4 +25,4 @@ abomonation = "0.7"
 abomonation_derive = "0.5"
 timely_bytes = { path = "../bytes", version = "0.12" }
 timely_logging = { path = "../logging", version = "0.12" }
-crossbeam-channel = "0.5.0"
+crossbeam-channel = "0.5.15"
