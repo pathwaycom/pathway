@@ -41,6 +41,24 @@ pub struct Config {
 }
 
 impl Config {
+    /// Force additional compaction work for arrangements created in the pipeline.
+    /// By default, differential-dataflow only compacts when explicitly scheduled.
+    /// Some pipelines, however, produce arrangements that are never scheduled for
+    /// compaction on their own. This can lead to >50% retained memory in backfill
+    /// runs at the end of the cold start phase.
+    ///
+    /// The "effort" is measured in differential-dataflow–specific work units,
+    /// where one unit represents a single comparison or element copy in the
+    /// merge-sort procedure. Each unit has O(1) cost. We use a logarithmic
+    /// number of units (relative to the maximum collection size), as a reasonable
+    /// trade-off between limiting overhead during normal processing and ensuring
+    /// fast compaction after backfilling.
+    ///
+    /// Refer to external/differential-dataflow/src/operators/arrange/arrangement.rs:567
+    /// to see how the regular compaction is applied.
+    const IDLE_MERGE_EFFORT_SETTING: &str = "differential/idle_merge_effort";
+    const BASE_IDLE_MERGE_EFFORT: isize = 64;
+
     pub fn workers(&self) -> usize {
         self.workers
     }
@@ -61,7 +79,7 @@ impl Config {
     }
 
     pub fn to_timely_config(&self) -> TimelyConfig {
-        match &self.processes {
+        let mut result = match &self.processes {
             Processes::Single => {
                 if self.threads > 1 {
                     TimelyConfig::process(self.threads)
@@ -82,7 +100,12 @@ impl Config {
                     worker: WorkerConfig::default(),
                 }
             }
-        }
+        };
+        result.worker.set(
+            Self::IDLE_MERGE_EFFORT_SETTING.to_string(),
+            Self::BASE_IDLE_MERGE_EFFORT,
+        );
+        result
     }
 
     pub fn from_env() -> Result<Self, Error> {

@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - A bug leading to potentially unbounded memory consumption that could occur in `Table.forget` and `Table.sort` operators during multi-worker runs has been fixed.
+- Improved memory efficiency during cold starts by compacting intermediary structures and reducing retained memory after backfilling.
 
 ### Changed
 - The frequency of background operator snapshot compression in data persistence is limited to the greater of the user-defined `snapshot_interval` or 30 minutes when S3 or Azure is used as the backend, in order to avoid frequent calls to potentially expensive operations.
