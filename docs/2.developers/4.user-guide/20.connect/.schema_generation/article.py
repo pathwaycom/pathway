@@ -17,7 +17,7 @@
 
 # In Pathway, Schemas are used to define the structure of a Table, that is, names and types
 # of columns. To learn the basics of Schemas in Pathway, and how you can create them by writing
-# a class definition in Python, read our [user guide](/developers/user-guide/connect/schema/).
+# a class definition in Python, read our [user guide](/developers/user-guide/connect/schema).
 # In this tutorial, you will learn alternative ways to create Schemas, either by providing a dictionary of column definitions or sample input data in CSV format.
 
 # To run the examples in this tutorial, you can download the needed files by uncommenting and executing the following code:

@@ -243,4 +243,4 @@ pw.debug.compute_and_print(result_with)
 #
 # ## Conclusion
 # Pathway provides a powerful API to ease the transition of SQL data transformations and pipelines into Pathway.
-# However, Pathway and SQL serve different purposes. To benefit from all the possibilities Pathway has to offer we strongly encourage you to use the Python syntax directly, as much as you can. Most of the time, this syntax is at least as easy to follow as SQL - see for example our [join](/developers/user-guide/data-transformation/join-manual/) and [groupby](/developers/user-guide/data-transformation/groupby-reduce-manual/) manu[a]ls.
+# However, Pathway and SQL serve different purposes. To benefit from all the possibilities Pathway has to offer we strongly encourage you to use the Python syntax directly, as much as you can. Most of the time, this syntax is at least as easy to follow as SQL - see for example our [join](/developers/user-guide/data-transformation/join-manual) and [groupby](/developers/user-guide/data-transformation/groupby-reduce-manual) manu[a]ls.

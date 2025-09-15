@@ -19,7 +19,7 @@ The following embedding wrappers are available through the Pathway xpack:
 - [`GeminiEmbedder`](#gemeniembedder) - Embed text with any of Google's available embedding models
 
 ## OpenAIEmbedder
-The default model for [`OpenAIEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.OpenAIEmbedder) is `text-embedding-3-small`.
+The default model for [`OpenAIEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders#pathway.xpacks.llm.embedders.OpenAIEmbedder) is `text-embedding-3-small`.
 
 ::if{path="/llm-xpack/"}
 ```python
@@ -54,7 +54,7 @@ embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
 ::
 
 ## LiteLLMEmbedder
-The model for [`LiteLLMEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.LiteLLMEmbedder) has to be specified during initialization. No default is provided.
+The model for [`LiteLLMEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders#pathway.xpacks.llm.embedders.LiteLLMEmbedder) has to be specified during initialization. No default is provided.
 
 ::if{path="/llm-xpack/"}
 ```python
@@ -81,7 +81,7 @@ embedder: !pw.xpacks.llm.embedders.LiteLLMEmbedder
 ::
 
 ## SentenceTransformerEmbedder
-This [`SentenceTransformerEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.SentenceTransformerEmbedder) embedder allows you to use the models from the Hugging Face Sentence Transformer models.
+This [`SentenceTransformerEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders#pathway.xpacks.llm.embedders.SentenceTransformerEmbedder) embedder allows you to use the models from the Hugging Face Sentence Transformer models.
 
 The model is specified during initialization. Here is a list of [`available models`](https://www.sbert.net/docs/sentence_transformer/pretrained_models.html).
 
@@ -110,7 +110,7 @@ embedder: !pw.xpacks.llm.embedders.SentenceTransformerEmbedder
 ::
 
 ## GeminiEmbedder
-[`GeminiEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.GeminiEmbedder) is the embedder for Google's Gemini Embedding Services. Available models can be found [`here`](https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding).
+[`GeminiEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders#pathway.xpacks.llm.embedders.GeminiEmbedder) is the embedder for Google's Gemini Embedding Services. Available models can be found [`here`](https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding).
 
 ::if{path="/llm-xpack/"}
 ```python

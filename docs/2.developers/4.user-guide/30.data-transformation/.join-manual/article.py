@@ -223,7 +223,7 @@ pw.debug.compute_and_print(forbidden_breakfast_no_duplicates)
 
 # That simple application of groupby-reduce combination essentially selects a
 # unique set of pairs (name, dish) from our table. More on the reduce-groupby operations
-# can be found in the reduce-groupby [manual](/developers/user-guide/data-transformation/groupby-reduce-manual/).
+# can be found in the reduce-groupby [manual](/developers/user-guide/data-transformation/groupby-reduce-manual).
 
 # ### Expressions for unmatched rows
 # Because [`join_left`](/developers/api-docs/pathway-table#pathway.Table.join_left) operation returns rows from the left table, even if there is no

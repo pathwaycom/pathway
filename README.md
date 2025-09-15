@@ -71,7 +71,7 @@ With its unified engine for batch and streaming and its full Python compatibilit
 
 - [Showcase: Real-time ETL.](https://pathway.com/developers/templates/kafka-etl)
 - [Showcase: Event-driven pipelines with alerting.](https://pathway.com/developers/templates/realtime-log-monitoring)
-- [Showcase: Realtime analytics.](https://pathway.com/developers/templates/linear_regression_with_kafka/)
+- [Showcase: Realtime analytics.](https://pathway.com/developers/templates/linear_regression_with_kafka)
 - [Docs: Switch from batch to streaming.](https://pathway.com/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
 
 
@@ -83,7 +83,7 @@ Pathway provides dedicated LLM tooling to build live LLM and RAG pipelines. Wrap
 Don't hesitate to try one of our runnable examples featuring LLM tooling.
 You can find such examples [here](https://pathway.com/developers/user-guide/llm-xpack/llm-examples).
 
-  - [Template: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/templates/unstructured-to-structured/)
+  - [Template: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/templates/unstructured-to-structured)
   - [Template: Private RAG with Ollama and Mistral AI](https://pathway.com/developers/templates/private-rag-ollama-mistral)
   - [Template: Adaptive RAG](https://pathway.com/developers/templates/adaptive-rag)
   - [Template: Multimodal RAG with gpt-4o](https://pathway.com/developers/templates/multimodal-rag)

@@ -31,7 +31,7 @@
 # %% [markdown]
 # # Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway
 #
-# <b> 💡 This notebook is one part of a [full-length tutorial](/developers/user-guide/deployment/from-jupyter-to-deploy/) depicting a production-grade data science scenario from data exploration to interactive dashboarding and containerized deploy.</b>
+# <b> 💡 This notebook is one part of a [full-length tutorial](/developers/user-guide/deployment/from-jupyter-to-deploy) depicting a production-grade data science scenario from data exploration to interactive dashboarding and containerized deploy.</b>
 #
 # ## Jupyter notebooks & streaming data
 # Jupyter notebooks are a great tool for working with data. They give you a friendly interactive interface in which you can process data comfortably and visualise it in intuitive, human-readable ways.
@@ -58,7 +58,7 @@
 #
 # First, import the necessary libraries:
 #
-# - [`pathway`](/developers/user-guide/introduction/welcome/) for data processing,
+# - [`pathway`](/developers/user-guide/introduction/welcome) for data processing,
 # - `datetime` for date manipulation,
 # - `panel` and `bokeh` for dashboarding.
 
@@ -81,7 +81,7 @@ import pathway as pw
 # %% [markdown]
 # ## Data source setup
 #
-# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/deployment/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda/).
+# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/deployment/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda).
 #
 # The `input_rate` parameter controls how fast the data is replayed.
 #
@@ -115,7 +115,7 @@ data = data.with_columns(t=data.t.dt.utc_from_timestamp(unit="ms"))
 # \sigma(X) = \sqrt{\operatorname E\left[(X - \operatorname E[X])^2\right]} = \sqrt{\operatorname E\left[X^2\right] - (\operatorname E[X])^2},
 # $$
 #
-# which is easily expressible using [Pathway reducers](/developers/api-docs/reducers/): we first compute the total $\mathrm{volume}$, $\mathrm{price}$, and $\mathrm{price}^2$. We then postprocess them to obtain the mean ($\mathrm{vwap}$), standard deviation ($\mathrm{vwstd}$), and Bollinger Bands places at $\mathrm{vwap} \pm 2\cdot \mathrm{vwstd}$.
+# which is easily expressible using [Pathway reducers](/developers/api-docs/reducers): we first compute the total $\mathrm{volume}$, $\mathrm{price}$, and $\mathrm{price}^2$. We then postprocess them to obtain the mean ($\mathrm{vwap}$), standard deviation ($\mathrm{vwstd}$), and Bollinger Bands places at $\mathrm{vwap} \pm 2\cdot \mathrm{vwstd}$.
 #
 # <b>Or in simpler terms: the code block below takes your incoming data stream and calculates important statistics in real-time. These statistics are continually updated as the data comes in so that you can identify critical moments as they happen.</b>
 
@@ -288,17 +288,17 @@ pw.run()
 #
 # Congratulations! You have succesfully built a live data streaming pipeline with useful data visualisations and real-time alerts, right from a Jupyter notebook 😄
 #
-# This is just a taste of what is possible. If you're interested in diving deeper and building a production-grade data science pipeline all the way from data exploration to deployment, you may want to check out the full-length [From Jupyter to Deploy](/developers/user-guide/deployment/from-jupyter-to-deploy/) tutorial.
+# This is just a taste of what is possible. If you're interested in diving deeper and building a production-grade data science pipeline all the way from data exploration to deployment, you may want to check out the full-length [From Jupyter to Deploy](/developers/user-guide/deployment/from-jupyter-to-deploy) tutorial.
 #
 # ## What else can you do with Pathway?
 #
-# * Perform machine learning in real time. e.g. [ real-time
-# Classification](/developers/templates/etl/lsh_chapter1/) , [real-time fuzzy joins](/developers/templates/etl/fuzzy_join_chapter2/)
+# * Perform machine learning in real time. e.g. [real-time
+# Classification](/developers/templates/etl/lsh_chapter1) , [real-time fuzzy joins](/developers/templates/etl/fuzzy_join_chapter2)
 #
 # * Transform unstructured data to structured data using [live LLM pipelines](https://github.com/pathwaycom/llm-app)
 #
 # * Making [joins](/developers/user-guide/temporal-data/interval-join) simple with timeseries data
 #
-# And so much more... Read more about what we can do in the [developer docs](/developers/user-guide/introduction/welcome/).
+# And so much more... Read more about what we can do in the [developer docs](/developers/user-guide/introduction/welcome).
 #
 # We would love to have you try out [Pathway on GitHub](https://github.com/pathwaycom/pathway).

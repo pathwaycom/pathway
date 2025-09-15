@@ -26,7 +26,7 @@
 #
 # ## Upsampling: Working with Messy Real-World Data
 # This tutorial builds on the [Gaussian Filtering](/developers/templates/etl/gaussian_filtering_python) tutorial which explains how you can smooth out a messy, out-of-order data stream.
-# While digital signal processing systems assume neatly ordered signals arriving at a regular and precise sampling rate, this is rarely the case in [real-world applications](/blog/iot-data-analytics/).
+# While digital signal processing systems assume neatly ordered signals arriving at a regular and precise sampling rate, this is rarely the case in [real-world applications](/blog/iot-data-analytics).
 # Irregular and out-of-order data streams are a common occurrence in the real world of data processing.
 # Data streams may be sampled at irregular intervals, leading to variations in the time between samples. The resulting data is noisy and contains gaps.
 #

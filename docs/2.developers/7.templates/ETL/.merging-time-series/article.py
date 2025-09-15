@@ -243,7 +243,7 @@ t2_timestamp = format_table(t2)
 # To ensure that the data is being processed correctly, you can define a function `preview_table` to preview the data.
 # ⚠️ It's important to note that **this function should not be used in a production environment** since it relies on `pw.debug.compute_and_print` and static data.
 # Its primary purpose is to check that the data is being processed correctly and to help with the development and testing phase of the data processing pipeline.
-# You should use [Pathway's output connectors](/developers/user-guide/connect/pathway-connectors/) to access the data in streaming mode.
+# You should use [Pathway's output connectors](/developers/user-guide/connect/pathway-connectors) to access the data in streaming mode.
 #
 # In this case, you can filter all the entries with a timestamp higher than a given value to only display a small portion of the dataset.
 
@@ -444,7 +444,7 @@ preview_table(average_speed_table)
 # %% [markdown]
 # You have now the speed for all the timestamps.
 #
-# Although initially designed for static GPS traces, this configuration can easily be adapted for a [streaming setup](/developers/user-guide/introduction/streaming-and-static-modes/) by modifying the [connectors](/developers/user-guide/connect/pathway-connectors/). In streaming mode, all calculations will be automatically refreshed whenever a new GPS position is received.
+# Although initially designed for static GPS traces, this configuration can easily be adapted for a [streaming setup](/developers/user-guide/introduction/streaming-and-static-modes) by modifying the [connectors](/developers/user-guide/connect/pathway-connectors). In streaming mode, all calculations will be automatically refreshed whenever a new GPS position is received.
 
 # %% [markdown]
 # ## Conclusions

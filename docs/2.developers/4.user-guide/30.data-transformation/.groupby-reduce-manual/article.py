@@ -10,7 +10,7 @@
 # Together, the [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby) and [`reduce`](/developers/api-docs/pathway-table#pathway.Table.reduce) operations can be used
 # to **aggregate data across the rows of the table**. In this guide,
 # we expand upon a simple demonstration from the
-# [First-steps Guide](/developers/user-guide/data-transformation/table-operations/)
+# [First-steps Guide](/developers/user-guide/data-transformation/table-operations)
 # and:
 # * explain syntax of [groupby](#groupby-syntax) and [reduce](#reduce-syntax)
 # * explain [two kinds of columns we get from groupby](#groupby-reduce-column-constrains)
@@ -19,7 +19,7 @@
 
 # ## Prerequisites
 # The assumption is that we are familiar with some basic operations
-# explained in the [First-steps Guide](/developers/user-guide/data-transformation/table-operations/).
+# explained in the [First-steps Guide](/developers/user-guide/data-transformation/table-operations).
 # As usual, we begin with importing Pathway.
 
 import pathway as pw
@@ -185,7 +185,7 @@ pw.debug.compute_and_print(
 # -
 
 # More examples of joins (including another example of a join over a foreign key)
-# can be found in the join manual ([full article](/developers/user-guide/data-transformation/join-manual/), [foreign key example](/developers/user-guide/data-transformation/join-manual#joins-on-a-foreign-key)).
+# can be found in the join manual ([full article](/developers/user-guide/data-transformation/join-manual), [foreign key example](/developers/user-guide/data-transformation/join-manual#joins-on-a-foreign-key)).
 #
 
 # ## More Examples
@@ -295,4 +295,4 @@ pw.debug.compute_and_print(
     )
 )
 
-# You can read more about [joins](/developers/user-guide/data-transformation/join-manual/), [*.ix](/developers/api-docs/pathway#property-ix) and [ID-s](/developers/user-guide/data-transformation/table-operations#manipulating-the-table) in other places.
+# You can read more about [joins](/developers/user-guide/data-transformation/join-manual), [*.ix](/developers/api-docs/pathway#property-ix) and [ID-s](/developers/user-guide/data-transformation/table-operations#manipulating-the-table) in other places.

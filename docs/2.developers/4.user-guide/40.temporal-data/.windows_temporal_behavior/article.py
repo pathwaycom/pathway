@@ -11,7 +11,7 @@
 
 # In this article you will learn how to use windows effectively, by specifying their temporal behaviors.
 
-# Temporal behaviors in Pathway are crucial for bounding memory consumption, maintaining proper tradeoff between latency and efficiency, or adjusting windows for your needs. To read more about behaviors and the motivation behind them read our [guide](/developers/user-guide/temporal-data/behaviors/). This article goes into detail on how to define the behavior using `common_behavior` and `exactly_once_behavior` and what impact they have on the result of [windows](/developers/user-guide/temporal-data/windows-manual).
+# Temporal behaviors in Pathway are crucial for bounding memory consumption, maintaining proper tradeoff between latency and efficiency, or adjusting windows for your needs. To read more about behaviors and the motivation behind them read our [guide](/developers/user-guide/temporal-data/behaviors). This article goes into detail on how to define the behavior using `common_behavior` and `exactly_once_behavior` and what impact they have on the result of [windows](/developers/user-guide/temporal-data/windows-manual).
 
 # The examples in this article use the sliding windows, but you can also use behaviors with tumbling windows.
 
@@ -80,7 +80,7 @@ pw.debug.compute_and_print_update_stream(result)
 
 # ## Common Behavior
 
-# The general way to define temporal behaviors in Pathway is by using `pw.temporal.common_behavior`. It allows you to set `delay`, `cutoff` and `keep_results` parameters. The `delay` and `cutoff` parameters represent time duration and their type should be compatible with the time column passed to `windowby`. This means that if your time column has type `int` or `float` then `delay` and `cutoff` should also have type, respectively, int or float. If instead, the time column has type [`DatetimeUtc`](/developers/api-docs/pathway#pathway.DateTimeUtc) or [`DatetimeNaive`](/developers/api-docs/pathway#pathway.DateTimeNaive), then `delay` and `cutoff` should have type [`Duration`](/developers/api-docs/pathway#pathway.Duration). To understand the motivation of these parameters read our [guide on behaviors](/developers/user-guide/temporal-data/behaviors/).
+# The general way to define temporal behaviors in Pathway is by using `pw.temporal.common_behavior`. It allows you to set `delay`, `cutoff` and `keep_results` parameters. The `delay` and `cutoff` parameters represent time duration and their type should be compatible with the time column passed to `windowby`. This means that if your time column has type `int` or `float` then `delay` and `cutoff` should also have type, respectively, int or float. If instead, the time column has type [`DatetimeUtc`](/developers/api-docs/pathway#pathway.DateTimeUtc) or [`DatetimeNaive`](/developers/api-docs/pathway#pathway.DateTimeNaive), then `delay` and `cutoff` should have type [`Duration`](/developers/api-docs/pathway#pathway.Duration). To understand the motivation of these parameters read our [guide on behaviors](/developers/user-guide/temporal-data/behaviors).
 
 # ### Delay
 

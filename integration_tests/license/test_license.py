@@ -80,7 +80,7 @@ def test_entitlement_requires_scale_license(caplog):
             f'one of the features you used ["{entitlement.upper()}"] '
             "requires upgrading your Pathway license.\n"
             "For more information and to obtain your license key, "
-            "visit: https://pathway.com/get-license/"
+            "visit: https://pathway.com/get-license"
         )
         with pytest.raises(RuntimeError, match=re.escape(expected_message)):
             _check_entitlements(entitlement)

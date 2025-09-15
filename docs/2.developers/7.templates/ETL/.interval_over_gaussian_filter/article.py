@@ -17,7 +17,7 @@
 #
 # In this tutorial, you will learn how to perform signal processing on out-of-order signal data. Specifically, you will apply a Gaussian filter on a signal data stream with irregular sampling.
 # This is an important skill to master because most real-world signal processing scenarios do not follow the regular and precise timing assumptions on which many standard signal processing systems are built.
-# Read our blog on [the challenges of real-time signal processing](/blog/signal-processing/) for more context.
+# Read our blog on [the challenges of real-time signal processing](/blog/signal-processing) for more context.
 #
 # The tutorial will walk you through the following 3 steps:
 # 1. Preprocess the noisy data using interval joins;
@@ -267,7 +267,7 @@ time_series_filtered = points_within_50.select(
 #
 # Let's plot the results.
 # Let's first output the data in Pandas and then plot the timeseries.
-# In practice you'd use a [output connector](/developers/user-guide/connect/pathway-connectors/) to output the results to Kafka or Postgres.
+# In practice you'd use a [output connector](/developers/user-guide/connect/pathway-connectors) to output the results to Kafka or Postgres.
 
 time_series_filtered_pd = pw.debug.table_to_pandas(time_series_filtered)
 time_series_filtered_pd = time_series_filtered_pd.sort_values(by=["x"])
@@ -495,4 +495,4 @@ set_params_plot()
 # Pathway provides all you need to tackle the challenges of real-world digital signal processing on data streams.
 # Now that you understand the differences between idealized signal processing and data stream processing, I'm sure you can leverage Pathway's capabilities to process, filter, and analyze data efficiently, even when dealing with imperfect sampling rates and data imperfections.
 #
-# If you want to learn more about DSP in Pathway, try our [tutorial](/developers/templates/etl/upsampling/) about manipulating different data sources by *upsampling* a data source to match the sampling rate of given data source.
+# If you want to learn more about DSP in Pathway, try our [tutorial](/developers/templates/etl/upsampling) about manipulating different data sources by *upsampling* a data source to match the sampling rate of given data source.

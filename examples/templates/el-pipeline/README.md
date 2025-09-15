@@ -50,7 +50,7 @@ output: !pw.io.csv.write
 
 ### Pathway Connectors
 Pathway supports a wide range of connectors for various data sources and sinks.
-Refer to the [Pathway documentation](https://pathway.com/developers/user-guide/connect/pathway-connectors/) for a complete list of connectors.
+Refer to the [Pathway documentation](https://pathway.com/developers/user-guide/connect/pathway-connectors) for a complete list of connectors.
 
 ### Schema
 Define schemas to structure your data. Use `pw.schema_from_types` to specify column types:

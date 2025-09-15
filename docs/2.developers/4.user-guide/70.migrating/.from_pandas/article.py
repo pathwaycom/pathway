@@ -218,7 +218,7 @@ pw.io.csv.write(t, "sum_output_stream.csv")
 # 2. **remove** existing data
 # 3. **update** existing data, which is actually a combination of operation (2) and (1).
 
-# In our case, we will mostly be dealing with **updates** to the existing `sum` value. Read our guide on [input and output streams](/developers/user-guide/connect/pathway-connectors/) to learn more.
+# In our case, we will mostly be dealing with **updates** to the existing `sum` value. Read our guide on [input and output streams](/developers/user-guide/connect/pathway-connectors) to learn more.
 #
 # The output of this project is a CSV file `output_stream.csv` in which all the operations are recorded:
 

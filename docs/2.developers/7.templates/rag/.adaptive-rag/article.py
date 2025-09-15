@@ -37,7 +37,7 @@
 
 # ## Introduction
 #
-# Retrieval Augmented Generation (RAG) allows Large Language Models (LLMs) to answer questions based on knowledge not present in the original training set. At [Pathway](https://pathway.com) we use RAG to build [document intelligence solutions](/solutions/rag-pipelines) that answer questions based on private document collections, such as a repository of legal contracts. We are constantly working on improving the accuracy and explainability of our models while keeping the costs low. In this blog post, we share a trick that helped us reach those goals.
+# Retrieval Augmented Generation (RAG) allows Large Language Models (LLMs) to answer questions based on knowledge not present in the original training set. At [Pathway](https://pathway.com) we use RAG to build [document intelligence solutions](/solutions) that answer questions based on private document collections, such as a repository of legal contracts. We are constantly working on improving the accuracy and explainability of our models while keeping the costs low. In this blog post, we share a trick that helped us reach those goals.
 #
 # A typical RAG Question Answering procedure works in two steps. First the question is analyzed and a number of relevant documents are retrieved from a database, typically using a similarity search inside a vector space created by a neural embedding model. Second, retrieved documents are pasted, along with the original question, into a prompt which is sent to the LLM. Thus, the LLM answers the question within a relevant context.
 #
@@ -171,7 +171,7 @@
 
 # ## Trying it out
 #
-# We provide an implementation of the Adaptive RAG in the [Pathway](/developers/user-guide/introduction/welcome) data processing framework. Pathway is your one-stop-shop for building realtime data processing pipelines, from simple ETL to synchronizing and indexing document collections into knowledge bases. The Pathway [LLM Xpack](/developers/user-guide/llm-xpack/overview/) is a set of pipeline components that are useful in working with LLMs: [auto-updating vector stores](/developers/user-guide/llm-xpack/docs-indexing/), [RAGs](/solutions/rag-pipelines)  and [many more LLM examples](https://github.com/pathwaycom/llm-app).
+# We provide an implementation of the Adaptive RAG in the [Pathway](/developers/user-guide/introduction/welcome) data processing framework. Pathway is your one-stop-shop for building realtime data processing pipelines, from simple ETL to synchronizing and indexing document collections into knowledge bases. The Pathway [LLM Xpack](/developers/user-guide/llm-xpack/overview) is a set of pipeline components that are useful in working with LLMs: [auto-updating vector stores](/developers/user-guide/llm-xpack/docs-indexing), [RAGs](/solutions)  and [many more LLM examples](https://github.com/pathwaycom/llm-app).
 # If you are interested in how Adaptive RAG is implemented inside Pathway, you can [dive into the internals directly here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/question_answering.py#L37).
 
 # As a prerequisite to run the code, install necessary packages and download sample data which will be used.

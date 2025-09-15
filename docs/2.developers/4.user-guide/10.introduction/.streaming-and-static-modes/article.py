@@ -222,4 +222,4 @@ pw.debug.compute_and_print(T3)
 # While Pathway is made for the streaming mode, the static mode can be used to test and debug your pipeline.
 # The implementation should be the same in both modes. Only the way data is input and output differs.
 #
-# The different ways to access the data both in streaming and static mode is explained in more details in our [guide to connectors](/developers/user-guide/connect/pathway-connectors/).
+# The different ways to access the data both in streaming and static mode is explained in more details in our [guide to connectors](/developers/user-guide/connect/pathway-connectors).

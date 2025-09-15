@@ -98,7 +98,7 @@ def write(
     """Write a table to a given index in ElasticSearch.
 
     The rows of the table are serialized into JSON. Type conversions are the same as in
-    the `JSON output connector </developers/api-docs/pathway-io/jsonlines/>`_.
+    the `JSON output connector </developers/api-docs/pathway-io/jsonlines>`_.
 
     Note that two additional fields are included in the generated JSON: ``time``, which
     indicates the time of the Pathway minibatch, and ``diff``, which can be either
