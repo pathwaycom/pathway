@@ -73,6 +73,7 @@ class PathwayConfig:
     monitoring_server: str | None = _env_field(
         "PATHWAY_MONITORING_SERVER", default_if_empty=True
     )
+    detailed_metrics_dir: str | None = _env_field("PATHWAY_DETAILED_METRICS_DIR")
     terminate_on_error: bool = _env_bool_field(
         "PATHWAY_TERMINATE_ON_ERROR", default="true"
     )
@@ -157,7 +158,9 @@ def set_license_key(key: str | None) -> None:
     get_pathway_config().license_key = key
 
 
-def set_monitoring_config(*, server_endpoint: str | None) -> None:
+def set_monitoring_config(
+    *, server_endpoint: str | None = None, detailed_metrics_dir: str | None = None
+) -> None:
     """Sets the monitoring server endpoint.
     Requires a valid Pathway Scale license key.
 
@@ -167,6 +170,7 @@ def set_monitoring_config(*, server_endpoint: str | None) -> None:
             The endpoint should be
             `OTLP <https://opentelemetry.io/docs/specs/otlp/>`_ compatible
             and support gRPC protocol.
+        detailed_metrics_dir: Directory path to export detailed metrics as SQLite database.
 
     Returns:
         None
@@ -177,7 +181,9 @@ def set_monitoring_config(*, server_endpoint: str | None) -> None:
     >>> pw.set_license_key("YOUR_LICENSE_KEY")
     >>> pw.set_monitoring_config(server_endpoint="https://example.com:4317")
     """
-    get_pathway_config().monitoring_server = server_endpoint
+    config = get_pathway_config()
+    config.monitoring_server = server_endpoint
+    config.detailed_metrics_dir = detailed_metrics_dir
 
 
 __all__ = [

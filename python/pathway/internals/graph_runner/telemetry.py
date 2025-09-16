@@ -17,10 +17,13 @@ By default, both telemetry and monitoring are turned OFF.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from contextlib import contextmanager
+from dataclasses import asdict
 from functools import cached_property
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -40,6 +43,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from pathway.internals import api
+from pathway.internals.operator import Operator
+from pathway.internals.parse_graph import ParseGraph
 from pathway.internals.trace import trace_user_frame
 
 propagator = TraceContextTextMapPropagator()
@@ -75,18 +80,32 @@ class Telemetry:
     @trace_user_frame
     def create(
         cls,
+        *,
         run_id: str,
+        graph: ParseGraph,
         license_key: str | None = None,
         monitoring_server: str | None = None,
+        detailed_metrics_dir: str | None = None,
         metrics_reader_interval_secs: int | None = None,
     ) -> Telemetry:
         config = api.TelemetryConfig.create(
             run_id=run_id,
             license_key=license_key,
             monitoring_server=monitoring_server,
+            detailed_metrics_dir=detailed_metrics_dir,
             metrics_reader_interval_secs=metrics_reader_interval_secs,
+            graph=_serialize_graph(graph),
         )
         return cls(config)
+
+    def engine_telemetry_config(
+        self,
+        trace_parent: str | None,
+    ) -> api.TelemetryConfig:
+        if trace_parent is None:
+            return self.config
+        else:
+            return self.config.with_trace_parent(trace_parent)
 
     @contextmanager
     def with_logging_handler(self):
@@ -140,3 +159,72 @@ XPACKS = {
 
 def get_imported_xpacks() -> list[str]:
     return sorted(XPACKS.intersection(sys.modules.keys()))
+
+
+def _serialize_graph(graph: ParseGraph) -> str:
+    stack: list[Operator] = list(graph.global_scope.output_nodes)
+    visited: set[Operator] = set(stack)
+    edges_set = set()
+
+    while stack:
+        node = stack.pop()
+        for dependency in node.input_operators():
+            if dependency in graph.global_scope._nodes:
+                edges_set.add((dependency, node))
+                if dependency not in visited:
+                    visited.add(dependency)
+                    stack.append(dependency)
+
+    nodes = []
+    edges = []
+    groups: dict[str, Any] = {}
+
+    for node in visited:
+        if node.trace.user_frame is None:
+            continue
+
+        user_frame = asdict(node.trace.user_frame)
+        parent = f"{node.trace.user_frame.filename}:{node.trace.user_frame.line_number}"
+        grandparent = node.trace.user_frame.function
+
+        if grandparent not in groups:
+            groups[grandparent] = {
+                "id": f"g_{len(groups)}",
+                "level": 2,
+                **user_frame,
+            }
+
+        if parent not in groups:
+            groups[parent] = {
+                "id": f"g_{len(groups)}",
+                "level": 1,
+                "parent": groups[grandparent]["id"],
+                **user_frame,
+            }
+
+        nodes.append(
+            {
+                "id": str(node.id),
+                "parent": groups[parent]["id"],
+                "grand_parent": groups[grandparent]["id"],
+                "operator_type": node.operator_type(),
+                "level": 0,
+                **user_frame,
+            }
+        )
+
+    for source, target in edges_set:
+        edges.append(
+            {
+                "source": str(source.id),
+                "target": str(target.id),
+            }
+        )
+
+    result = {
+        "nodes": nodes,
+        "edges": edges,
+        "groups": list(groups.values()),
+    }
+
+    return json.dumps(result)

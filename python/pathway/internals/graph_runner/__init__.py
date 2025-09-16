@@ -139,12 +139,16 @@ class GraphRunner:
         self._graph.mark_all_operators_as_used()
         run_id = self._get_run_id()
         pathway_config = get_pathway_config()
+
         otel = telemetry.Telemetry.create(
             run_id=run_id,
             license_key=self.license_key,
             monitoring_server=pathway_config.monitoring_server,
+            detailed_metrics_dir=pathway_config.detailed_metrics_dir,
             metrics_reader_interval_secs=pathway_config.metrics_reader_interval_secs,
+            graph=self._graph,
         )
+
         with otel.tracer.start_as_current_span("graph_runner.run"):
             trace_context, trace_parent = telemetry.get_current_context()
 
@@ -210,11 +214,8 @@ class GraphRunner:
                         monitoring_level=monitoring_level,
                         with_http_server=self.with_http_server,
                         persistence_config=persistence_engine_config,
+                        telemetry_config=otel.engine_telemetry_config(trace_parent),
                         license_key=self.license_key,
-                        monitoring_server=pathway_config.monitoring_server,
-                        trace_parent=trace_parent,
-                        metrics_reader_interval_secs=pathway_config.metrics_reader_interval_secs,
-                        run_id=run_id,
                         terminate_on_error=self.terminate_on_error,
                         max_expression_batch_size=self.max_expression_batch_size,
                     )

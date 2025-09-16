@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.gdrive.read` now supports the `"only_metadata"` format. When this format is used, the table will contain only metadata updates for the tracked directory, without reading object contents.
+- Detailed metrics can now be exported to SQLite. Enable this feature using the environment variable `PATHWAY_DETAILED_METRICS_DIR` or via `pw.set_monitoring_config()`.
 
 ### Fixed
 - A bug leading to potentially unbounded memory consumption that could occur in `Table.forget` and `Table.sort` operators during multi-worker runs has been fixed.

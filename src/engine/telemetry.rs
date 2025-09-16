@@ -1,4 +1,4 @@
-use opentelemetry::InstrumentationScope;
+use opentelemetry::{trace::noop::NoopTracerProvider, InstrumentationScope};
 use std::{
     sync::Arc,
     thread::{Builder, JoinHandle},
@@ -9,13 +9,14 @@ use super::{error::DynError, license::License, Graph, Result};
 use crate::{engine::dataflow::monitoring::ProberStats, env::parse_env_var};
 use arc_swap::ArcSwapOption;
 use itertools::Itertools;
-use log::{debug, info};
+use log::{debug, error, info};
 use nix::sys::{
     resource::{getrusage, UsageWho},
     time::TimeValLike,
 };
 use opentelemetry::{
     global,
+    metrics::Gauge,
     metrics::{Meter, MeterProvider},
     KeyValue,
 };
@@ -43,20 +44,28 @@ const PROCESS_CPU_USER_TIME: &str = "process.cpu.utime";
 const PROCESS_CPU_SYSTEM_TIME: &str = "process.cpu.stime";
 const INPUT_LATENCY: &str = "latency.input";
 const OUTPUT_LATENCY: &str = "latency.output";
+const OPERATOR_LATENCY: &str = "operator.latency";
+const OPERATOR_INSERTIONS: &str = "operator.insertions";
+const OPERATOR_DELETIONS: &str = "operator.deletions";
 
 const ROOT_TRACE_ID: &str = "root.trace.id";
 const RUN_ID: &str = "run.id";
 const LICENSE_KEY: &str = "license.key";
+const WORKER_ID: &str = "worker.id";
 
 const LOCAL_DEV_NAMESPACE: &str = "local-dev";
 
+mod exporter;
+use self::exporter::SqliteExporter;
+
 struct Telemetry {
     pub config: Box<TelemetryEnabled>,
+    pub worker_id: usize,
 }
 
 impl Telemetry {
-    fn new(config: Box<TelemetryEnabled>) -> Self {
-        Telemetry { config }
+    fn new(config: Box<TelemetryEnabled>, worker_id: usize) -> Self {
+        Telemetry { config, worker_id }
     }
 
     fn resource(&self) -> Resource {
@@ -71,6 +80,7 @@ impl Telemetry {
                 KeyValue::new(ROOT_TRACE_ID, root_trace_id.to_string()),
                 KeyValue::new(RUN_ID, self.config.run_id.clone()),
                 KeyValue::new(LICENSE_KEY, self.config.license_key.clone()),
+                KeyValue::new(WORKER_ID, self.worker_id.to_string()),
             ])
             .build()
     }
@@ -130,18 +140,41 @@ impl Telemetry {
         Some(meter_provider)
     }
 
-    fn init(&self) -> TelemetryGuard {
+    fn init_detailed_meter_provider(&self) -> Option<SdkMeterProvider> {
+        let output_directory = self.config.detailed_metrics_dir.as_ref()?;
+
+        let mut provider_builder = SdkMeterProvider::builder().with_resource(self.resource());
+
+        let exporter = SqliteExporter::new(
+            &self.config.run_id,
+            output_directory,
+            self.config.graph.as_ref(),
+            self.worker_id,
+        )
+        .unwrap();
+        let reader = PeriodicReader::builder(exporter)
+            .with_interval(self.config.periodic_reader_interval)
+            .build();
+
+        provider_builder = provider_builder.with_reader(reader);
+
+        let meter_provider = provider_builder.build();
+        Some(meter_provider)
+    }
+
+    fn init(&self) -> TelemetryObserver {
+        // Since NoopMeterProvider is no longer public, we store the initial instance to restore it on drop.
         let noop_meter_provider = MeterProviderWrapper(global::meter_provider());
-        let noop_tracer_provider = SdkTracerProvider::builder().build();
 
         let meter_provider = self.init_meter_provider();
+        let detailed_meter_provider = self.init_detailed_meter_provider();
         let tracer_provider = self.init_tracer_provider();
 
-        TelemetryGuard {
+        TelemetryObserver {
             meter_provider,
+            detailed_meter_provider,
             tracer_provider,
             noop_meter_provider,
-            noop_tracer_provider,
         }
     }
 }
@@ -157,26 +190,87 @@ impl MeterProvider for MeterProviderWrapper {
 
 #[must_use]
 #[allow(clippy::struct_field_names)]
-struct TelemetryGuard {
+struct TelemetryObserver {
     meter_provider: Option<SdkMeterProvider>,
+    detailed_meter_provider: Option<SdkMeterProvider>,
     tracer_provider: Option<SdkTracerProvider>,
     noop_meter_provider: MeterProviderWrapper,
-    noop_tracer_provider: SdkTracerProvider,
 }
 
-impl Drop for TelemetryGuard {
+impl TelemetryObserver {
+    async fn observe_stats(
+        self,
+        stats: Arc<ArcSwapOption<ProberStats>>,
+        interval: Duration,
+        mut shutdown: mpsc::Receiver<()>,
+    ) {
+        let mut interval = tokio::time::interval(interval);
+        let mut sys: System = System::new();
+        let pid = get_current_pid().expect("Failed to get current PID");
+
+        let global_gauges = self
+            .meter_provider
+            .as_ref()
+            .map(|provider| provider.meter("pathway-stats"))
+            .map(|m| Gauges::new(&m));
+        let mut detailed_gauges = self
+            .detailed_meter_provider
+            .as_ref()
+            .map(|provider| provider.meter("pathway-detailed-stats"))
+            .map(|m| Gauges::new(&m));
+
+        loop {
+            tokio::select! {
+                _ = shutdown.recv() => {
+                    break;
+                }
+                _ = interval.tick() => {
+                    if global_gauges.is_some() || detailed_gauges.is_some() {
+                        match SystemMetrics::new(&mut sys, pid) {
+                            Ok(system_metrics) => {
+                                if let Some(g) = global_gauges.as_ref() {
+                                    g.record_system_metrics(&system_metrics);
+                                }
+                                if let Some(g) = detailed_gauges.as_ref() {
+                                    g.record_system_metrics(&system_metrics);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to collect system metrics for pid {pid}: {e}");
+                            }
+                        }
+                    }
+
+                    if let Some(current_stats) = stats.load().as_ref() {
+                        if let Some(g) = global_gauges.as_ref() { g.record_global_metrics(current_stats); }
+                        if let Some(g) = detailed_gauges.as_mut() {
+                            g.record_global_metrics(current_stats);
+                            g.record_detailed_metrics(current_stats);
+                        }
+                    }
+                }
+
+            }
+        }
+    }
+}
+
+impl Drop for TelemetryObserver {
     fn drop(&mut self) {
         if let Some(provider) = self.meter_provider.take() {
             provider.force_flush().unwrap_or(());
             provider.shutdown().unwrap_or(());
         }
-        global::set_meter_provider(self.noop_meter_provider.clone());
-
+        if let Some(provider) = self.detailed_meter_provider.take() {
+            provider.force_flush().unwrap_or(());
+            provider.shutdown().unwrap_or(());
+        }
         if let Some(provider) = self.tracer_provider.take() {
             provider.force_flush().unwrap_or(());
             provider.shutdown().unwrap_or(());
         }
-        global::set_tracer_provider(self.noop_tracer_provider.clone());
+        global::set_meter_provider(self.noop_meter_provider.clone());
+        global::set_tracer_provider(NoopTracerProvider::new());
     }
 }
 
@@ -202,6 +296,7 @@ fn deduplicate(input: Vec<Option<String>>) -> Vec<String> {
 pub struct TelemetryEnabled {
     pub telemetry_server: Option<String>,
     pub monitoring_server: Option<String>,
+    pub detailed_metrics_dir: Option<String>,
     pub logging_servers: Vec<String>,
     pub tracing_servers: Vec<String>,
     pub metrics_servers: Vec<String>,
@@ -213,6 +308,7 @@ pub struct TelemetryEnabled {
     pub trace_parent: Option<String>,
     pub license_key: String,
     pub periodic_reader_interval: Duration,
+    pub graph: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -226,12 +322,20 @@ impl Config {
         license: &License,
         run_id: Option<String>,
         monitoring_server: Option<String>,
+        detailed_metrics_dir: Option<String>,
         trace_parent: Option<String>,
         periodic_reader_interval: Option<u64>,
+        graph: Option<String>,
     ) -> Result<Self> {
         let run_id = run_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
         if monitoring_server.is_some() {
+            license
+                .check_entitlements(["monitoring"])
+                .map_err(DynError::from)?;
+        }
+
+        if detailed_metrics_dir.is_some() {
             license
                 .check_entitlements(["monitoring"])
                 .map_err(DynError::from)?;
@@ -243,17 +347,21 @@ impl Config {
             None
         };
 
-        if monitoring_server.is_none() && telemetry_server.is_none() {
+        if monitoring_server.is_none()
+            && telemetry_server.is_none()
+            && detailed_metrics_dir.is_none()
+        {
             return Ok(Config::Disabled);
         }
 
-        let periodic_reader_interval = if let Some(interval) = periodic_reader_interval {
-            license
-                .check_entitlements(["monitoring-internal"])
-                .map_err(DynError::from)?;
-            Duration::from_secs(interval)
-        } else {
-            PERIODIC_READER_INTERVAL
+        let periodic_reader_interval = match periodic_reader_interval {
+            Some(interval) if interval != PERIODIC_READER_INTERVAL.as_secs() => {
+                license
+                    .check_entitlements(["monitoring-internal"])
+                    .map_err(DynError::from)?;
+                Duration::from_secs(interval)
+            }
+            _ => PERIODIC_READER_INTERVAL,
         };
 
         match license {
@@ -262,20 +370,25 @@ impl Config {
                 run_id,
                 telemetry_server,
                 monitoring_server,
+                detailed_metrics_dir,
                 trace_parent,
                 license,
                 periodic_reader_interval,
+                graph,
             ),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_enabled(
         run_id: String,
         telemetry_server: Option<String>,
         monitoring_server: Option<String>,
+        detailed_metrics_dir: Option<String>,
         trace_parent: Option<String>,
         license: &License,
         periodic_reader_interval: Duration,
+        graph: Option<String>,
     ) -> Result<Self> {
         let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
             .map_err(DynError::from)?
@@ -292,6 +405,7 @@ impl Config {
         Ok(Config::Enabled(Box::new(TelemetryEnabled {
             telemetry_server: telemetry_server.clone(),
             monitoring_server: monitoring_server.clone(),
+            detailed_metrics_dir,
             logging_servers: deduplicate(vec![monitoring_server.clone()]),
             tracing_servers: deduplicate(vec![telemetry_server.clone(), monitoring_server.clone()]),
             metrics_servers: deduplicate(vec![telemetry_server, monitoring_server]),
@@ -303,6 +417,7 @@ impl Config {
             trace_parent,
             license_key: license.shortcut(),
             periodic_reader_interval,
+            graph,
         })))
     }
 }
@@ -324,6 +439,125 @@ impl Runner {
     }
 }
 
+struct SystemMetrics {
+    memory_usage: Option<u64>,
+    cpu_user_time: i64,
+    cpu_system_time: i64,
+}
+
+impl SystemMetrics {
+    fn new(sys: &mut System, pid: Pid) -> Result<SystemMetrics> {
+        Self::refresh_process_specifics(pid, sys);
+
+        let usage = getrusage(UsageWho::RUSAGE_SELF)
+            .map_err(|e| DynError::from(format!("Failed to call getrusage: {e}")))?;
+
+        Ok(Self {
+            memory_usage: sys.process(pid).map(sysinfo::Process::memory),
+            cpu_user_time: usage.user_time().num_seconds() as i64,
+            cpu_system_time: usage.system_time().num_seconds() as i64,
+        })
+    }
+
+    fn refresh_process_specifics(pid: Pid, sys: &mut System) {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+        );
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cpu(),
+        );
+    }
+}
+
+struct Gauges {
+    process_memory_usage: Gauge<u64>,
+    process_cpu_user_time: Gauge<i64>,
+    process_cpu_system_time: Gauge<i64>,
+    input_latency: Gauge<u64>,
+    output_latency: Gauge<u64>,
+    operator_latencies: Gauge<u64>,
+    operator_insertions: Gauge<i64>,
+    operator_deletions: Gauge<i64>,
+}
+
+impl Gauges {
+    fn new(meter: &Meter) -> Self {
+        Self {
+            process_memory_usage: meter
+                .u64_gauge(PROCESS_MEMORY_USAGE)
+                .with_unit("byte")
+                .build(),
+            process_cpu_user_time: meter
+                .i64_gauge(PROCESS_CPU_USER_TIME)
+                .with_unit("s")
+                .build(),
+            process_cpu_system_time: meter
+                .i64_gauge(PROCESS_CPU_SYSTEM_TIME)
+                .with_unit("s")
+                .build(),
+            input_latency: meter.u64_gauge(INPUT_LATENCY).with_unit("ms").build(),
+            output_latency: meter.u64_gauge(OUTPUT_LATENCY).with_unit("ms").build(),
+            operator_latencies: meter.u64_gauge(OPERATOR_LATENCY).with_unit("ms").build(),
+            operator_insertions: meter
+                .i64_gauge(OPERATOR_INSERTIONS)
+                .with_unit("count")
+                .build(),
+            operator_deletions: meter
+                .i64_gauge(OPERATOR_DELETIONS)
+                .with_unit("count")
+                .build(),
+        }
+    }
+
+    fn record_system_metrics(&self, metrics: &SystemMetrics) {
+        if let Some(process_memory_usage) = metrics.memory_usage {
+            self.process_memory_usage.record(process_memory_usage, &[]);
+        }
+        self.process_cpu_user_time
+            .record(metrics.cpu_user_time, &[]);
+        self.process_cpu_system_time
+            .record(metrics.cpu_system_time, &[]);
+    }
+
+    fn record_global_metrics(&self, stats: &Arc<ProberStats>) {
+        let system_time_now = SystemTime::now();
+        if let Some(latency) = stats.input_stats.latency(system_time_now) {
+            self.input_latency.record(latency, &[]);
+        }
+        if let Some(latency) = stats.output_stats.latency(system_time_now) {
+            self.output_latency.record(latency, &[]);
+        }
+    }
+
+    fn record_detailed_metrics(&mut self, stats: &Arc<ProberStats>) {
+        let system_time_now = SystemTime::now();
+        for (operator_id, operator_stats) in &stats.operators_stats {
+            if let Some(latency) = operator_stats.latency(system_time_now) {
+                let attributes = [KeyValue::new(
+                    "operator.id",
+                    i64::try_from(*operator_id).expect("operator_id does not fit in i64"),
+                )];
+                self.operator_latencies.record(latency, &attributes);
+            }
+        }
+        for (operator_id, row_counts) in &stats.row_counts {
+            let attributes = [KeyValue::new(
+                "operator.id",
+                i64::try_from(*operator_id).expect("operator_id does not fit in i64"),
+            )];
+            self.operator_insertions
+                .record(row_counts.get_insertions() as i64, &attributes);
+            self.operator_deletions
+                .record(row_counts.get_deletions() as i64, &attributes);
+        }
+    }
+}
+
 fn start_telemetry_thread(
     telemetry: Telemetry,
     start_sender: mpsc::Sender<mpsc::Sender<()>>,
@@ -338,106 +572,19 @@ fn start_telemetry_thread(
                 .build()
                 .unwrap()
                 .block_on(async {
-                    let (tx, mut rx) = mpsc::channel::<()>(1);
-                    let _telemetry_guard = telemetry.init();
-                    register_stats_metrics(&stats);
-                    register_sys_metrics();
+                    let (tx, rx) = mpsc::channel::<()>(1);
+                    let telemetry_observer = telemetry.init();
+
+                    let interval = telemetry.config.periodic_reader_interval;
+                    let observer_handle =
+                        tokio::spawn(telemetry_observer.observe_stats(stats, interval, rx));
+
                     start_sender.send(tx).await.expect("should not fail");
-                    rx.recv().await;
+                    let _ = observer_handle.await;
                 });
         })
         .expect("telemetry thread creation failed");
     handle
-}
-
-fn register_stats_metrics(stats: &Arc<ArcSwapOption<ProberStats>>) {
-    let meter = global::meter("pathway-stats");
-
-    let input_stats = stats.clone();
-    meter
-        .u64_observable_gauge(INPUT_LATENCY)
-        .with_unit("ms")
-        .with_callback(move |observer| {
-            let now = SystemTime::now();
-            if let Some(ref stats) = *input_stats.load() {
-                if let Some(latency) = stats.input_stats.latency(now) {
-                    observer.observe(latency, &[]);
-                }
-            }
-        })
-        .build();
-
-    let output_stats = stats.clone();
-    meter
-        .u64_observable_gauge(OUTPUT_LATENCY)
-        .with_unit("ms")
-        .with_callback(move |observer| {
-            let now = SystemTime::now();
-            if let Some(ref stats) = *output_stats.load() {
-                if let Some(latency) = stats.output_stats.latency(now) {
-                    observer.observe(latency, &[]);
-                }
-            }
-        })
-        .build();
-}
-
-fn cpu_refresh(pid: Pid, sys: &mut System) {
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing().with_cpu(),
-    );
-    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing().with_cpu(),
-    );
-}
-
-fn register_sys_metrics() {
-    let meter = global::meter("pathway-sys");
-
-    let pid = get_current_pid().expect("Failed to get current PID");
-
-    meter
-        .u64_observable_gauge(PROCESS_MEMORY_USAGE)
-        .with_unit("byte")
-        .with_callback(move |observer| {
-            let mut sys: System = System::new();
-            sys.refresh_processes_specifics(
-                ProcessesToUpdate::Some(&[pid]),
-                true,
-                ProcessRefreshKind::nothing().with_memory(),
-            );
-            if let Some(process) = sys.process(pid) {
-                observer.observe(process.memory(), &[]);
-            }
-        })
-        .build();
-
-    meter
-        .i64_observable_gauge(PROCESS_CPU_USER_TIME)
-        .with_unit("s")
-        .with_callback(move |observer| {
-            let mut sys: System = System::new();
-            cpu_refresh(pid, &mut sys);
-            let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
-            observer.observe(usage.user_time().num_seconds(), &[]);
-        })
-        .build();
-
-    meter
-        .i64_observable_gauge(PROCESS_CPU_SYSTEM_TIME)
-        .with_unit("s")
-        .with_callback(move |observer| {
-            let mut sys: System = System::new();
-            cpu_refresh(pid, &mut sys);
-            let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
-            observer.observe(usage.system_time().num_seconds(), &[]);
-        })
-        .build();
 }
 
 impl Drop for Runner {
@@ -451,24 +598,31 @@ impl Drop for Runner {
     }
 }
 
-pub fn maybe_run_telemetry_thread(graph: &dyn Graph, config: Config) -> Option<Runner> {
+pub fn maybe_run_telemetry_thread(
+    graph: &dyn Graph,
+    config: Config,
+    worker_id: usize,
+) -> Option<Runner> {
     match config {
         Config::Enabled(config) => {
             if config.telemetry_server.is_some() {
                 info!("Telemetry enabled");
             }
-            if let Some(monitoring_server) = config.monitoring_server.clone() {
+            if let Some(ref monitoring_server) = config.monitoring_server {
                 info!("Monitoring server: {monitoring_server}");
             }
+            if let Some(ref dir) = config.detailed_metrics_dir {
+                info!("Detailed metrics directory: {dir}");
+            }
 
-            let telemetry = Telemetry::new(config.clone());
+            let telemetry = Telemetry::new(config.clone(), worker_id);
             let stats_shared = Arc::new(ArcSwapOption::from(None));
             let runner = Runner::run(telemetry, stats_shared.clone());
 
             graph
                 .attach_prober(
                     Box::new(move |prober_stats| stats_shared.store(Some(Arc::new(prober_stats)))),
-                    false,
+                    true,
                     false,
                 )
                 .expect("failed to start telemetry thread");

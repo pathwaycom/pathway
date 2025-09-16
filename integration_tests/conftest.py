@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import pathway as pw
 from pathway.internals import parse_graph
 from pathway.tests.utils import SerializationTestHelper
 
@@ -35,6 +36,8 @@ def s3_path(request: pytest.FixtureRequest, root_s3_path: str) -> str:
 @pytest.fixture(autouse=True)
 def disable_monitoring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PATHWAY_MONITORING_SERVER", raising=False)
+    monkeypatch.delenv("PATHWAY_DETAILED_MONITORING_DIR", raising=False)
+    pw.set_monitoring_config()
 
 
 @pytest.fixture

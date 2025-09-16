@@ -811,11 +811,8 @@ def run_with_new_graph(
     monitoring_level: MonitoringLevel = MonitoringLevel.NONE,
     with_http_server: bool = False,
     persistence_config: PersistenceConfig | None = None,
+    telemetry_config: TelemetryConfig | None = None,
     license_key: str | None = None,
-    monitoring_server: str | None = None,
-    trace_parent: str | None = None,
-    metrics_reader_interval_secs: int | None = None,
-    run_id: str | None = None,
     terminate_on_error: bool = True,
     max_expression_batch_size: int,
 ) -> list[CapturedStream]: ...
@@ -973,6 +970,8 @@ class LocalBinarySnapshotWriter:
     def write(self, events: list[SnapshotEvent]): ...
 
 class TelemetryConfig:
+    monitoring_server: str | None
+    detailed_metrics_dir: str | None
     logging_servers: list[str]
     tracing_servers: list[str]
     metrics_servers: list[str]
@@ -982,14 +981,21 @@ class TelemetryConfig:
     service_instance_id: str | None
     run_id: str
     license_key: str | None
+    metrics_reader_interval_secs: int | None
+    trace_parent: str | None
+    graph: str | None
+
     @staticmethod
     def create(
         *,
         run_id: str,
         license_key: str | None = None,
         monitoring_server: str | None = None,
+        detailed_metrics_dir: str | None = None,
         metrics_reader_interval_secs: int | None = None,
+        graph: str | None = None,
     ) -> TelemetryConfig: ...
+    def with_trace_parent(self, trace_parent: str | None) -> TelemetryConfig: ...
 
 class ExternalIndexFactory:
     @staticmethod

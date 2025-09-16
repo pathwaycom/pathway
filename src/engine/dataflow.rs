@@ -6528,7 +6528,11 @@ where
                     max_expression_batch_size,
                 )
                 .unwrap_with_reporter(&error_reporter);
-                let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());
+                let telemetry_runner = maybe_run_telemetry_thread(
+                    &graph,
+                    telemetry_config.clone(),
+                    graph.worker_index(),
+                );
                 let res = logic(&graph).unwrap_with_reporter(&error_reporter);
                 let stats_monitor_local = if graph.worker_index() == 0 {
                     let mut stats_monitor = stats_monitor.lock().unwrap();

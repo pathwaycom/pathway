@@ -3872,10 +3872,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
     with_http_server = false,
     persistence_config = None,
     license_key = None,
-    monitoring_server = None,
-    trace_parent = None,
-    metrics_reader_interval_secs = None,
-    run_id = None,
+    telemetry_config = TelemetryConfig::default(),
     terminate_on_error = true,
     max_expression_batch_size = 1024,
 ))]
@@ -3889,10 +3886,7 @@ pub fn run_with_new_graph(
     with_http_server: bool,
     persistence_config: Option<PersistenceConfig>,
     license_key: Option<String>,
-    monitoring_server: Option<String>,
-    trace_parent: Option<String>,
-    metrics_reader_interval_secs: Option<u64>,
-    run_id: Option<String>,
+    telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
 ) -> PyResult<Vec<Vec<DataRow>>> {
@@ -3913,13 +3907,17 @@ pub fn run_with_new_graph(
         }
     };
     let is_persisted = persistence_config.is_some();
+
     let telemetry_config = EngineTelemetryConfig::create(
         &license,
-        run_id,
-        monitoring_server,
-        trace_parent,
-        metrics_reader_interval_secs,
+        Some(telemetry_config.run_id),
+        telemetry_config.monitoring_server,
+        telemetry_config.detailed_metrics_dir,
+        telemetry_config.trace_parent,
+        telemetry_config.metrics_reader_interval_secs,
+        telemetry_config.graph,
     )?;
+
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         let scope_license = license.clone();
         py.allow_threads(|| {
@@ -4577,6 +4575,8 @@ impl PersistenceConfig {
 #[derive(Clone, Debug, Default)]
 #[pyclass(module = "pathway.engine", frozen, get_all)]
 pub struct TelemetryConfig {
+    monitoring_server: Option<String>,
+    detailed_metrics_dir: Option<String>,
     logging_servers: Vec<String>,
     tracing_servers: Vec<String>,
     metrics_servers: Vec<String>,
@@ -4586,6 +4586,9 @@ pub struct TelemetryConfig {
     service_instance_id: Option<String>,
     run_id: String,
     license_key: Option<String>,
+    trace_parent: Option<String>,
+    metrics_reader_interval_secs: Option<u64>,
+    graph: Option<String>,
 }
 
 #[pymethods]
@@ -4596,23 +4599,36 @@ impl TelemetryConfig {
         run_id = None,
         license_key = None,
         monitoring_server = None,
+        detailed_metrics_dir = None,
         metrics_reader_interval_secs = None,
+        graph = None,
     ))]
     fn create(
         run_id: Option<String>,
         license_key: Option<String>,
         monitoring_server: Option<String>,
+        detailed_metrics_dir: Option<String>,
         metrics_reader_interval_secs: Option<u64>,
+        graph: Option<String>,
     ) -> PyResult<TelemetryConfig> {
         let license = License::new(license_key)?;
         let config = EngineTelemetryConfig::create(
             &license,
             run_id,
             monitoring_server,
+            detailed_metrics_dir,
             None,
             metrics_reader_interval_secs,
+            graph,
         )?;
         Ok(config.into())
+    }
+
+    #[pyo3(signature = (trace_parent))]
+    fn with_trace_parent(&self, trace_parent: String) -> Self {
+        let mut new_config = self.clone();
+        new_config.trace_parent = Some(trace_parent);
+        new_config
     }
 }
 
@@ -4620,6 +4636,8 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
     fn from(config: EngineTelemetryConfig) -> Self {
         match config {
             EngineTelemetryConfig::Enabled(config) => Self {
+                monitoring_server: config.monitoring_server,
+                detailed_metrics_dir: config.detailed_metrics_dir,
                 logging_servers: config.logging_servers,
                 tracing_servers: config.tracing_servers,
                 metrics_servers: config.metrics_servers,
@@ -4629,6 +4647,9 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
                 service_instance_id: Some(config.service_instance_id),
                 run_id: config.run_id,
                 license_key: Some(config.license_key),
+                trace_parent: config.trace_parent,
+                metrics_reader_interval_secs: Some(config.periodic_reader_interval.as_secs()),
+                graph: config.graph,
             },
             EngineTelemetryConfig::Disabled => Self::default(),
         }
