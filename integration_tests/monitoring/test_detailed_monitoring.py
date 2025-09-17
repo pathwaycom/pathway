@@ -1,3 +1,4 @@
+import os
 import pathlib
 import re
 
@@ -25,6 +26,7 @@ def test_detailed_monitoring_insufficient_license(tmp_path: pathlib.Path):
 def test_monitoring_license_detailed_metrics_created(
     tmp_path: pathlib.Path, monkeypatch
 ):
+    pw.set_license_key(os.environ.get("PATHWAY_LICENSE_KEY"))
     monkeypatch.setenv("PATHWAY_RUN_ID", "test_run")
 
     metrics_path = tmp_path / "metrics"
