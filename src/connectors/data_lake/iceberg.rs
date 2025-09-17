@@ -43,6 +43,7 @@ use crate::connectors::{
 use crate::engine::Type;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
+use crate::retry::{execute_with_retries, RetryConfig};
 use crate::timestamp::current_unix_timestamp_ms;
 
 #[derive(Clone)]
@@ -223,6 +224,8 @@ impl IcebergTableParams {
     }
 }
 
+const MAX_CATALOG_RETRIES: usize = 5;
+
 #[allow(clippy::module_name_repetitions)]
 pub struct IcebergBatchWriter {
     runtime: TokioRuntime,
@@ -239,12 +242,22 @@ impl IcebergBatchWriter {
     ) -> Result<Self, WriteError> {
         let runtime = create_async_tokio_runtime()?;
         let catalog = db_params.create_catalog();
-        let namespace = db_params.ensure_namespace(&runtime, &catalog)?;
-        let table = table_params.ensure_table(
-            &runtime,
-            &catalog,
-            &namespace,
-            db_params.warehouse.as_ref(),
+        let namespace = execute_with_retries(
+            || db_params.ensure_namespace(&runtime, &catalog),
+            RetryConfig::default(),
+            MAX_CATALOG_RETRIES,
+        )?;
+        let table = execute_with_retries(
+            || {
+                table_params.ensure_table(
+                    &runtime,
+                    &catalog,
+                    &namespace,
+                    db_params.warehouse.as_ref(),
+                )
+            },
+            RetryConfig::default(),
+            MAX_CATALOG_RETRIES,
         )?;
 
         Ok(Self {
