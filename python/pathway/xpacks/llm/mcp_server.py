@@ -73,7 +73,10 @@ class _McpServerSubject(ServerSubject):
     def _process_response(self, response):
         if response is api.ERROR:
             raise RuntimeError
-        return response
+        if isinstance(response, pw.Json):
+            return response.value
+        else:
+            return response
 
     def _verify_payload(self, payload: dict):
         defaults = self._schema.default_values()
