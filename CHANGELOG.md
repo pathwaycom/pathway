@@ -15,6 +15,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - The frequency of background operator snapshot compression in data persistence is limited to the greater of the user-defined `snapshot_interval` or 30 minutes when S3 or Azure is used as the backend, in order to avoid frequent calls to potentially expensive operations.
+- The Google Drive input connector performance has been improved, especially when handling directories with many nested subdirectories.
 
 ## [0.26.1] - 2025-08-28
 

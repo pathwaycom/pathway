@@ -9,8 +9,12 @@ import logging
 import time
 import uuid
 import warnings
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
+from os import PathLike, fspath
+from queue import Queue
 from typing import Any, Literal, NewType
 
 from google.oauth2.service_account import Credentials as ServiceCredentials
@@ -40,6 +44,45 @@ DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
 }
 
 GDriveFile = NewType("GDriveFile", dict)
+
+# To optimize usage of the Google Drive API, we combine listing requests for all files
+# with a specific parent so that a single request retrieves listings for multiple
+# directories at once.
+#
+# I haven't found reliable documentation on the query length limit or on how many
+# conditions can be included in a single request. However, numerous unofficial sources
+# mention that people successfully combine up to several hundred parents, so the chosen
+# value seems reasonable and can be slightly increased if necessary.
+_MAX_ITEMS_PER_LIST_REQUEST = 32
+
+# The Google Drive API doesn't provide functionality to list a directory while including
+# all nested objects, so we have to handle this ourselves. There are two approaches:
+#
+# 1. Traverse the directory using any graph-traversal algorithm, basically making one
+#    API request per small group of nodes. If there are many such groups, this becomes
+#    costly.
+# 2. List all files on the entire drive and then filter out only the needed ones.
+#
+# A reasonable compromise is required. For example, in tests you might select a small
+# directory on a large drive, or conversely process the entire drive. Therefore, we
+# first attempt to traverse the structure without spending many requests, and if that
+# fails, we fall back to listing the entire drive. Note that if the root of the drive
+# is passed, we can skip heuristics and safely list all files directly.
+_MAX_DIRECTORIES_FOR_TRAVERSAL = 32
+
+
+# Determines how objects are scanned. When a file ID is provided, the algorithm is
+# straightforward; otherwise, on the first run, the heuristic described above is used.
+# It is possible to skip running the heuristic in the first step and explicitly specify
+# the method using the `_list_objects_strategy` parameter in `pw.io.gdrive.read`.
+class _ListObjectsStrategy(Enum):
+    FullScan = 0
+    TreeTraversal = 1
+    SingleObjectRequest = 2
+
+
+class _ListObjectsLimitExceeded(Exception):
+    pass
 
 
 def extend_metadata(metadata: GDriveFile) -> GDriveFile:
@@ -74,14 +117,29 @@ def add_status(metadata: GDriveFile) -> GDriveFile:
 class _GDriveClient:
     def __init__(
         self,
+        root: str,
         credentials: ServiceCredentials,
         object_size_limit: int | None = None,
         file_name_pattern: list | str | None = None,
+        list_objects_strategy: _ListObjectsStrategy | None = None,
     ) -> None:
+        self.root = root
         self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
         self.object_size_limit = object_size_limit
         self.file_name_pattern = file_name_pattern
+        if list_objects_strategy is None:
+            list_objects_strategy = self._deduce_list_objects_strategy()
+        self.list_objects_strategy = list_objects_strategy
+
+    def _deduce_list_objects_strategy(self) -> _ListObjectsStrategy:
+        root_object = self._get(self.root)
+        if root_object is None or root_object["mimeType"] != MIME_TYPE_FOLDER:
+            return _ListObjectsStrategy.SingleObjectRequest
+        elif "parents" not in root_object:
+            return _ListObjectsStrategy.FullScan
+        else:
+            return _ListObjectsStrategy.TreeTraversal
 
     def _query(self, q: str = "") -> list:
         items = []
@@ -91,11 +149,12 @@ class _GDriveClient:
                 self.drive.files()
                 .list(
                     q=q,
-                    pageSize=10,
+                    pageSize=1000,
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
                     fields=f"nextPageToken, files({FILE_FIELDS})",
                     pageToken=page_token,
+                    corpora="allDrives",
                 )
                 .execute()
             )
@@ -106,23 +165,91 @@ class _GDriveClient:
 
         return items
 
-    def _ls(self, id: str) -> list[GDriveFile]:
-        root = self._get(id)
-        files: list[GDriveFile] = []
-        if root is None:
-            return []
-        elif root["mimeType"] != MIME_TYPE_FOLDER:
-            return [root]
-        else:
-            subitems = self._query(f"'{id}' in parents and trashed=false")
-            files = [i for i in subitems if i["mimeType"] != MIME_TYPE_FOLDER]
-            files = self._apply_filters(files)
-            subdirs = [i for i in subitems if i["mimeType"] == MIME_TYPE_FOLDER]
-            for subdir in subdirs:
-                files.extend(self._ls(subdir["id"]))
+    def _traverse_objects_with_limit(self) -> list[GDriveFile]:
+        files = []
+        n_requests_done = 0
+        queue: Queue[str] = Queue()
+        reachable_folder_ids = set([self.root])
 
-            files = [extend_metadata(file) for file in files]
-            return files
+        queue.put(self.root)
+        while not queue.empty():
+            items: list[str] = []
+            while len(items) < _MAX_ITEMS_PER_LIST_REQUEST and not queue.empty():
+                items.append(queue.get())
+
+            # We create and execute an API request to retrieve the contents of multiple
+            # directories. Note that if there is a continuation token and we actually made
+            # multiple requests, this will not be counted; we still count it as a single
+            # request.
+            query_parts = [f"'{item}' in parents" for item in items]
+            parent_condition = " or ".join(query_parts)
+            subitems = self._query(f"({parent_condition}) and trashed=false")
+            n_requests_done += 1
+
+            # Add files to the search result.
+            files_found = [i for i in subitems if i["mimeType"] != MIME_TYPE_FOLDER]
+            files.extend(files_found)
+
+            # Put the subdirs to the queue.
+            subdirs = [i["id"] for i in subitems if i["mimeType"] == MIME_TYPE_FOLDER]
+            for subdir in subdirs:
+                if subdir not in reachable_folder_ids:
+                    reachable_folder_ids.add(subdir)
+                    queue.put(subdir)
+
+            # If the limit will be exceeded, terminate.
+            n_requests_needed = queue.qsize() / _MAX_DIRECTORIES_FOR_TRAVERSAL
+            if queue.qsize() % _MAX_DIRECTORIES_FOR_TRAVERSAL > 0:
+                n_requests_needed += 1
+            if n_requests_done + n_requests_needed > _MAX_DIRECTORIES_FOR_TRAVERSAL:
+                raise _ListObjectsLimitExceeded()
+
+        return files
+
+    def _detect_objects_with_full_scan(self) -> list[GDriveFile]:
+        all_items = self._query("trashed=false")
+        connections = defaultdict(list)
+        for item in all_items:
+            if item["mimeType"] != MIME_TYPE_FOLDER:
+                # Don't build useless connections, we're only
+                # interested in folder hierarchy
+                continue
+
+            parents = item.get("parents")
+            if parents is not None:
+                assert (
+                    len(parents) == 1
+                ), "GDrive API returned unexpected number of parents"
+                parent_id = parents[0]
+                connections[parent_id].append(item["id"])
+
+        reachable_folder_ids = set([self.root])
+        queue: Queue[str] = Queue()
+        queue.put(self.root)
+        while not queue.empty():
+            item = queue.get()
+            for nested_item in connections[item]:
+                if nested_item not in reachable_folder_ids:
+                    reachable_folder_ids.add(nested_item)
+                    queue.put(nested_item)
+
+        result_items = []
+        for item in all_items:
+            if item["mimeType"] == MIME_TYPE_FOLDER:
+                continue
+
+            parents = item.get("parents")
+            if parents is not None:
+                item_is_reachable = (
+                    parents[0] in reachable_folder_ids or item["id"] == self.root
+                )
+            else:
+                item_is_reachable = item["id"] == self.root
+
+            if item_is_reachable:
+                result_items.append(item)
+
+        return result_items
 
     def _apply_filters(self, files: list[GDriveFile]) -> list[GDriveFile]:
         files = self._filter_by_size(files)
@@ -230,8 +357,39 @@ class _GDriveClient:
             file["status"] = "download_error"
             return None
 
-    def tree(self, root_id: str) -> _GDriveTree:
-        return _GDriveTree({file["id"]: file for file in self._ls(root_id)})
+    def tree(self) -> _GDriveTree:
+        match self.list_objects_strategy:
+            case _ListObjectsStrategy.TreeTraversal:
+                try:
+                    items = self._traverse_objects_with_limit()
+                except _ListObjectsLimitExceeded:
+                    self.list_objects_strategy = _ListObjectsStrategy.FullScan
+                    return self.tree()
+
+            case _ListObjectsStrategy.FullScan:
+                items = self._detect_objects_with_full_scan()
+
+            case _ListObjectsStrategy.SingleObjectRequest:
+                item = self._get(self.root)
+                if item is None:
+                    items = []
+                elif item["mimeType"] != MIME_TYPE_FOLDER:
+                    items = [item]
+                else:
+                    logging.error(
+                        f"The object {self.root} is not expected to be a folder"
+                    )
+                    self.list_objects_strategy = _ListObjectsStrategy.TreeTraversal
+                    return self.tree()
+
+            case _:
+                raise ValueError(
+                    f"Unknown list objects strategy: {self.list_objects_strategy}"
+                )
+
+        items = self._apply_filters(items)
+        items = [extend_metadata(file) for file in items]
+        return _GDriveTree({file["id"]: file for file in items})
 
 
 @dataclass(frozen=True)
@@ -280,6 +438,7 @@ class _GDriveSubject(ConnectorSubject):
         with_metadata: bool,
         object_size_limit: int | None,
         file_name_pattern: list | str | None,
+        list_objects_strategy: _ListObjectsStrategy | None,
     ) -> None:
         super().__init__(datasource_name="gdrive")
         self._credentials_factory = credentials_factory
@@ -290,6 +449,7 @@ class _GDriveSubject(ConnectorSubject):
         self._append_metadata = with_metadata
         self._object_size_limit = object_size_limit
         self._file_name_pattern = file_name_pattern
+        self._list_objects_strategy = list_objects_strategy
         assert mode in ["streaming", "static"]
 
     @property
@@ -306,15 +466,17 @@ class _GDriveSubject(ConnectorSubject):
 
     def run(self) -> None:
         client = _GDriveClient(
+            self._root,
             self._credentials_factory(),
             self._object_size_limit,
             self._file_name_pattern,
+            self._list_objects_strategy,
         )
         prev = _GDriveTree({})
 
         while True:
             try:
-                tree = client.tree(self._root)
+                tree = client.tree()
             except HttpError as e:
                 logging.error(
                     f"Failed to query GDrive: {e}. Retrying in {self._refresh_interval} seconds...",
@@ -352,11 +514,12 @@ def read(
     format: Literal["binary", "only_metadata"] = "binary",
     object_size_limit: int | None = None,
     refresh_interval: int = 30,
-    service_user_credentials_file: str,
+    service_user_credentials_file: str | PathLike,
     with_metadata: bool = False,
     file_name_pattern: list | str | None = None,
     name: str | None = None,
     max_backlog_size: int | None = None,
+    _list_objects_strategy: _ListObjectsStrategy | None = None,
     **kwargs,
 ) -> pw.Table:
     """Reads a table from a Google Drive directory or file.
@@ -421,7 +584,7 @@ def read(
 
     def credentials_factory() -> ServiceCredentials:
         return ServiceCredentials.from_service_account_file(
-            service_user_credentials_file
+            fspath(service_user_credentials_file)
         )
 
     only_provide_metadata = format == "only_metadata"
@@ -434,6 +597,7 @@ def read(
         with_metadata=with_metadata or only_provide_metadata,
         object_size_limit=object_size_limit,
         file_name_pattern=file_name_pattern,
+        list_objects_strategy=_list_objects_strategy,
     )
 
     table = pw.io.python.read(
