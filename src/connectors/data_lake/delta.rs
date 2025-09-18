@@ -738,10 +738,11 @@ impl DeltaTableReader {
                 runtime
                     .block_on(async { table.load_version(last_version_below_threshold).await })?;
                 current_version = last_version_below_threshold;
-                parquet_files_queue.clear();
             } else {
+                current_version = earliest_version;
                 warn!("All available versions are newer than the specified timestamp {start_from_timestamp_ms}. The read will start from the beginning.");
             }
+            parquet_files_queue.clear();
         }
 
         if !backfilling_thresholds.is_empty() {
