@@ -1,6 +1,7 @@
 import pytest
 
 import pathway as pw
+from pathway.internals.udfs.retries import ExponentialBackoffRetryStrategy
 from pathway.internals.udfs.utils import _coerce_sync
 from pathway.xpacks.llm import embedders
 
@@ -44,7 +45,9 @@ def test_openai_embedder(text: str, model: str, strategy: str):
 def test_openai_embedder_fails_no_truncation(model: str):
     truncation_keep_strategy = None
     embedder = embedders.OpenAIEmbedder(
-        model=model, truncation_keep_strategy=truncation_keep_strategy
+        model=model,
+        truncation_keep_strategy=truncation_keep_strategy,
+        retry_strategy=ExponentialBackoffRetryStrategy(),
     )
 
     sync_embedder = _coerce_sync(embedder.func)
@@ -60,7 +63,10 @@ def test_openai_embedder_with_common_parameter():
         schema=pw.schema_from_types(text=str), rows=[("aaa",), ("bbb",)]
     )
 
-    embedder = embedders.OpenAIEmbedder(model="text-embedding-3-small")
+    embedder = embedders.OpenAIEmbedder(
+        model="text-embedding-3-small",
+        retry_strategy=ExponentialBackoffRetryStrategy(),
+    )
 
     table = table.select(embedding=embedder(pw.this.text, dimensions=700))
 
@@ -79,7 +85,10 @@ def test_openai_embedder_with_different_parameter():
         rows=[("aaa", 300), ("bbb", 800)],
     )
 
-    embedder = embedders.OpenAIEmbedder(model="text-embedding-3-small")
+    embedder = embedders.OpenAIEmbedder(
+        model="text-embedding-3-small",
+        retry_strategy=ExponentialBackoffRetryStrategy(),
+    )
 
     table = table.select(
         text=pw.this.text,
