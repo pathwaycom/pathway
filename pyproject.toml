@@ -55,7 +55,7 @@ sql = [
 ]
 xpack-llm = [
     "openai ~= 1.60",
-    "litellm ~= 1.44",
+    "litellm ~= 1.44, < 1.77.3",
     "cohere ~= 5.1",
     "tiktoken >= 0.5",
     "langchain >= 0.2.0, < 0.4.0",
