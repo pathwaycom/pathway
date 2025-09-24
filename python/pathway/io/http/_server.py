@@ -340,7 +340,12 @@ class PathwayServer(ABC):
 
     @abstractmethod
     def _register_endpoint(
-        self, route, handler, *, format, schema, methods, documentation
+        self,
+        route: str,
+        handler: Callable[[web.Request], Awaitable[web.Response]],
+        *,
+        schema: type[pw.Schema],
+        **kwargs,
     ) -> None: ...
 
     def _get_response_writer(
@@ -395,6 +400,7 @@ class ServerSubject(io.python.ConnectorSubject, ABC):
         request_validator: Callable | None = None,
         documentation: EndpointDocumentation = EndpointDocumentation(),
         cache_strategy: CacheStrategy | None = None,
+        **kwargs,
     ) -> None:
         super().__init__(datasource_name="rest-connector")
         self._webserver = webserver
@@ -413,6 +419,7 @@ class ServerSubject(io.python.ConnectorSubject, ABC):
             schema=schema,
             methods=methods,
             documentation=documentation,
+            **kwargs,
         )
 
     def run(self):
@@ -596,7 +603,15 @@ class PathwayWebserver(PathwayServer):
         )
 
     def _register_endpoint(
-        self, route, handler, *, format, schema, methods, documentation
+        self,
+        route: str,
+        handler: Callable[[web.Request], Awaitable[web.Response]],
+        *,
+        schema: type[pw.Schema],
+        format: str = "raw",
+        methods: Sequence[str] = [],
+        documentation: EndpointDocumentation = EndpointDocumentation(),
+        **kwargs,
     ) -> None:
         endpoint_docs = {}
         for method in methods:

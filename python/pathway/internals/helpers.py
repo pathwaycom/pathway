@@ -15,6 +15,14 @@ T = TypeVar("T")
 T2 = TypeVar("T2")
 
 
+class _Undefined:
+    def __repr__(self):
+        return "undefined"
+
+
+_no_default_value_marker = _Undefined()
+
+
 class SetOnceProperty(Generic[T]):
     def __init__(self, wrapper=None):
         self._wrapper = wrapper

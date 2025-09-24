@@ -20,7 +20,7 @@ import pandas as pd
 
 from pathway.internals import api, dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
-from pathway.internals.helpers import StableSet
+from pathway.internals.helpers import StableSet, _no_default_value_marker, _Undefined
 from pathway.internals.runtime_type_check import check_arg_types
 
 if TYPE_CHECKING:
@@ -649,14 +649,6 @@ def is_subschema(left: type[Schema], right: type[Schema]):
             return False
     # TODO something about id_dtype
     return True
-
-
-class _Undefined:
-    def __repr__(self):
-        return "undefined"
-
-
-_no_default_value_marker = _Undefined()
 
 
 @dataclass(frozen=True)

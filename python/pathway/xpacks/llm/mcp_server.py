@@ -6,15 +6,18 @@ import json
 import threading
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from inspect import Parameter, Signature
 from typing import Any, Callable, Literal
+
+from aiohttp import web
 
 import pathway as pw
 import pathway.io as io
 from pathway.internals import api
 from pathway.internals.config import _check_entitlements
-from pathway.internals.schema import _no_default_value_marker
+from pathway.internals.helpers import _no_default_value_marker, _Undefined
 from pathway.internals.udfs.caches import CacheStrategy
 from pathway.io.http._server import PathwayServer, ServerSubject
 from pathway.optional_import import optional_imports
@@ -49,11 +52,16 @@ def _generate_handler_signature(schema: type[pw.Schema]):
 class _McpServerSubject(ServerSubject):
     def __init__(
         self,
-        webserver,
-        route,
-        schema,
-        delete_completed_queries,
-        cache_strategy=None,
+        webserver: PathwayServer,
+        route: str,
+        schema: type[pw.Schema],
+        delete_completed_queries: bool,
+        cache_strategy: CacheStrategy | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        output_schema: dict[str, Any] | None | _Undefined = _no_default_value_marker,
+        annotations: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
     ):
         super().__init__(
             webserver,
@@ -62,6 +70,11 @@ class _McpServerSubject(ServerSubject):
             schema=schema,
             delete_completed_queries=delete_completed_queries,
             cache_strategy=cache_strategy,
+            title=title,
+            description=description,
+            output_schema=output_schema,
+            annotations=annotations,
+            meta=meta,
         )
 
     async def handle(self, **kwargs):
@@ -179,12 +192,21 @@ class McpServer(PathwayServer):
 
     def _register_endpoint(
         self,
-        route,
-        handler,
+        route: str,
+        handler: Callable[[web.Request], Awaitable[web.Response]],
         *,
-        schema=None,
+        schema: type[pw.Schema],
+        title: str | None = None,
+        description: str | None = None,
+        output_schema: dict[str, Any] | None | _Undefined = _no_default_value_marker,
+        annotations: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
         **kwargs,
-    ):
+    ) -> None:
+        if isinstance(output_schema, _Undefined):
+            with optional_imports("xpack-llm"):
+                from fastmcp.utilities.types import NotSet
+
         async def wrapper(*args, **kwargs):
             return await handler(*args, **kwargs)
 
@@ -192,7 +214,17 @@ class McpServer(PathwayServer):
             _generate_handler_signature(schema)
         )
 
-        self._fastmcp.tool(wrapper, name=route)
+        self._fastmcp.tool(
+            wrapper,
+            name=route,
+            title=title,
+            description=description,
+            output_schema=(
+                output_schema if not isinstance(output_schema, _Undefined) else NotSet
+            ),
+            annotations=annotations,
+            meta=meta,
+        )
 
     def _run(self):
         with self._start_mutex:
@@ -211,12 +243,28 @@ class McpServer(PathwayServer):
         *,
         request_handler: Callable,
         schema: type[pw.Schema],
-        autocommit_duration_ms=50,
         delete_completed_queries: bool = False,
         cache_strategy: CacheStrategy | None = None,
+        title: str | None = None,
+        output_schema: dict[str, Any] | None | _Undefined = _no_default_value_marker,
+        annotations: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
+        autocommit_duration_ms: int | None = 50,
     ) -> None:
         """
         Registers a callable as an MCP tool.
+
+        Args:
+            name: Tool name exposed by the MCP server.
+            request_handler: Callable to process queries.
+            schema: Query schema, used to generate tool input schema.
+            delete_completed_queries: Delete completed queries, default False.
+            cache_strategy: Optional caching strategy.
+            title: Optional tool title for display purposes, `name` is used if missing.
+            output_schema: Optional output schema.
+            annotations: Optional specialized metadata like `readOnlyHint`, `idempotentHint`, ...
+            meta: Optional tool metadata.
+            autocommit_duration_ms: Maximum time between two commits in milliseconds.
         """
         subject = _McpServerSubject(
             webserver=self,
@@ -224,15 +272,21 @@ class McpServer(PathwayServer):
             schema=schema,
             delete_completed_queries=delete_completed_queries,
             cache_strategy=cache_strategy,
+            title=title if title is not None else name,
+            description=request_handler.__doc__,
+            output_schema=output_schema,
+            annotations=annotations,
+            meta=meta,
         )
+
         input_table = io.python.read(
             subject=subject,
             schema=schema,
             format="json",
             autocommit_duration_ms=autocommit_duration_ms,
         )
-        response_writer = self._get_response_writer(delete_completed_queries)
 
+        response_writer = self._get_response_writer(delete_completed_queries)
         response_writer(request_handler(input_table))
 
 
