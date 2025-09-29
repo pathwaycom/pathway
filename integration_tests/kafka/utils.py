@@ -1,12 +1,15 @@
 # Copyright © 2024 Pathway
 
+import dataclasses
 import json
 import pathlib
+import time
 import uuid
 from collections.abc import Iterable
 from typing import Mapping
 from uuid import uuid4
 
+import boto3
 import requests
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
@@ -15,6 +18,7 @@ from kafka.consumer.fetcher import ConsumerRecord
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
 SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
+KINESIS_ENDPOINT_URL = "http://kinesis:4567"
 
 
 class KafkaTestContext:
@@ -133,6 +137,154 @@ class MqttTestContext:
         self.writer_connection_string = MQTT_BASE_ROUTE.replace(
             "$CLIENT_ID", writer_client_id
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class KinesisRecord:
+    key: str
+    value: bytes
+
+
+@dataclasses.dataclass(frozen=True)
+class KinesisShard:
+    shard_id: str
+    is_open: bool
+    hash_range_start: int
+    hash_range_end: int
+
+
+class KinesisTestContext:
+    stream_name: str
+
+    def __init__(self, stream_name: str | None = None) -> None:
+        self.stream_name = stream_name or str(uuid4())
+        self.kinesis = boto3.client(
+            "kinesis",
+            region_name="us-east-1",
+            endpoint_url=KINESIS_ENDPOINT_URL,
+            aws_access_key_id="placeholder",
+            aws_secret_access_key="placeholder",
+        )
+        self.kinesis.create_stream(StreamName=self.stream_name, ShardCount=1)
+        self._wait_stream_to_activate()
+
+    def recreate(self, shard_count: int) -> None:
+        self.stream_name = str(uuid4())
+        self.kinesis.create_stream(StreamName=self.stream_name, ShardCount=shard_count)
+        self._wait_stream_to_activate()
+
+    def send_record(self, record: KinesisRecord) -> None:
+        self.kinesis.put_record(
+            StreamName=self.stream_name,
+            PartitionKey=record.key,
+            Data=record.value,
+        )
+
+    def list_shards_and_statuses(self) -> list[KinesisShard]:
+        shards: list[KinesisShard] = []
+
+        resp = self.kinesis.list_shards(StreamName=self.stream_name)
+        for sh in resp.get("Shards", []):
+            shard_id = sh["ShardId"]
+            is_open = "EndingSequenceNumber" not in sh["SequenceNumberRange"]
+            start = int(sh["HashKeyRange"]["StartingHashKey"])
+            end = int(sh["HashKeyRange"]["EndingHashKey"])
+            shards.append(
+                KinesisShard(
+                    shard_id=shard_id,
+                    is_open=is_open,
+                    hash_range_start=start,
+                    hash_range_end=end,
+                )
+            )
+
+        return shards
+
+    def split_shard(self, shard: KinesisShard) -> None:
+        n_expected_shards_after_split = len(self.list_shards_and_statuses()) + 2
+
+        hash_range_midpoint = (
+            shard.hash_range_start
+            + (shard.hash_range_end - shard.hash_range_start) // 2
+        )
+        self.kinesis.split_shard(
+            StreamName=self.stream_name,
+            ShardToSplit=shard.shard_id,
+            NewStartingHashKey=str(hash_range_midpoint),
+        )
+
+        for _ in range(100):
+            shards = self.list_shards_and_statuses()
+            shard_count_as_expected = len(shards) == n_expected_shards_after_split
+            source_shard_status_is_updated = False
+            for new_shard in shards:
+                if new_shard.shard_id == shard.shard_id and not new_shard.is_open:
+                    source_shard_status_is_updated = True
+            if source_shard_status_is_updated and shard_count_as_expected:
+                return
+            time.sleep(1.0)
+
+        raise RuntimeError("failed to wait for the target shards state after split")
+
+    def merge_shards(self, shard_1: KinesisShard, shard_2: KinesisShard) -> None:
+        if shard_1.hash_range_end + 1 != shard_2.hash_range_start:
+            raise ValueError("shards are not adjacent")
+        n_expected_shards_after_split = len(self.list_shards_and_statuses()) + 1
+
+        self.kinesis.merge_shards(
+            StreamName=self.stream_name,
+            ShardToMerge=shard_1.shard_id,
+            AdjacentShardToMerge=shard_2.shard_id,
+        )
+
+        for _ in range(100):
+            shards = self.list_shards_and_statuses()
+            shard_count_as_expected = len(shards) == n_expected_shards_after_split
+            shard_1_status_is_updated = False
+            shard_2_status_is_updated = False
+            for new_shard in shards:
+                if new_shard.shard_id == shard_1.shard_id and not new_shard.is_open:
+                    shard_1_status_is_updated = True
+                if new_shard.shard_id == shard_2.shard_id and not new_shard.is_open:
+                    shard_2_status_is_updated = True
+            if (
+                shard_1_status_is_updated
+                and shard_2_status_is_updated
+                and shard_count_as_expected
+            ):
+                return
+            time.sleep(1.0)
+
+        raise RuntimeError("failed to wait for the target shards state after merge")
+
+    def read_shard_records(self, shard_id) -> list[KinesisRecord]:
+        iterator_resp = self.kinesis.get_shard_iterator(
+            StreamName=self.stream_name,
+            ShardId=shard_id,
+            ShardIteratorType="TRIM_HORIZON",
+        )
+
+        shard_iterator = iterator_resp["ShardIterator"]
+        result = []
+        while shard_iterator:
+            recs = self.kinesis.get_records(ShardIterator=shard_iterator, Limit=100)
+            for r in recs["Records"]:
+                result.append(KinesisRecord(key=r["PartitionKey"], value=r["Data"]))
+            shard_iterator = recs.get("NextShardIterator")
+            if not recs["Records"]:
+                break
+
+        return result
+
+    def _wait_stream_to_activate(self) -> None:
+        stream_status = None
+        for _ in range(100):
+            desc = self.kinesis.describe_stream(StreamName=self.stream_name)
+            stream_status = desc["StreamDescription"]["StreamStatus"]
+            if stream_status == "ACTIVE":
+                break
+            time.sleep(1)
+        assert stream_status == "ACTIVE"
 
 
 def create_schema_in_registry(

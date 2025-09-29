@@ -33,17 +33,17 @@ pub const MAX_BATCH_WRITE_SIZE: usize = 25;
 pub const N_SEND_ATTEMPTS: usize = 5;
 
 #[derive(Debug, thiserror::Error)]
-pub enum AwsRequestError {
-    #[error("Create table error, service error details: {:?}", .0.as_service_error())]
+pub enum Error {
+    #[error("Create table error, error details: {0:?}")]
     CreateTableError(#[from] SdkError<CreateTableError, AwsHttpResponse>),
 
-    #[error("Delete table error, service error details: {:?}", .0.as_service_error())]
+    #[error("Delete table error, error details: {0:?}")]
     DeleteTableError(#[from] SdkError<DeleteTableError, AwsHttpResponse>),
 
-    #[error("Describe table error, service error details: {:?}", .0.as_service_error())]
+    #[error("Describe table error, error details: {0:?}")]
     DescribeTableError(#[from] SdkError<DescribeTableError, AwsHttpResponse>),
 
-    #[error("Batch write error, service error details: {:?}", .0.as_service_error())]
+    #[error("Batch write error, error details: {0:?}")]
     BatchWriteError(#[from] SdkError<BatchWriteItemError, AwsHttpResponse>),
 }
 
@@ -151,9 +151,9 @@ impl DynamoDBWriter {
                 )?;
             }
 
-            // Convert the possible error first into AwsRequestError,
+            // Convert the possible error first into Error,
             // and then to WriteError, if needed.
-            builder.send().await.map_err(AwsRequestError::from)?;
+            builder.send().await.map_err(Error::from)?;
             Ok(())
         })
     }
@@ -165,7 +165,7 @@ impl DynamoDBWriter {
                 .table_name(self.table_name.clone())
                 .send()
                 .await?;
-            Ok::<(), AwsRequestError>(())
+            Ok::<(), Error>(())
         })?;
         Ok(())
     }
@@ -188,7 +188,7 @@ impl DynamoDBWriter {
                     ) {
                         Ok(false)
                     } else {
-                        Err(AwsRequestError::from(err).into())
+                        Err(Error::from(err).into())
                     }
                 }
             }
@@ -349,7 +349,7 @@ impl Writer for DynamoDBWriter {
                     Err(e) => {
                         error!(
                             "An attempt to save item batch has failed: {}",
-                            AwsRequestError::from(e)
+                            Error::from(e)
                         );
                     }
                 }

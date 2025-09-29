@@ -454,8 +454,17 @@ class FileLinesNumberChecker:
         result = []
         for path, _ in self.expected_states:
             if path.exists():
-                with open(path) as f:
-                    result.append(f"Final output contents for {path}:\n{f.read()}")
+                with open(path, encoding="utf-8") as f:
+                    lines = f.readlines()
+                total_lines = len(lines)
+                if total_lines > 50:
+                    result.append(
+                        f"Final output contents for {path}:\n{total_lines} lines"
+                    )
+                else:
+                    result.append(
+                        f"Final output contents for {path}:\n{''.join(lines)}"
+                    )
             else:
                 result.append(f"{path} does not exist")
         return "\n".join(result)

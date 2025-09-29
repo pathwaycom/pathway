@@ -24,7 +24,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use arcstr::ArcStr;
-use aws_sdk_dynamodb::error::BuildError as DynamoDBBuildError;
+use aws_sdk_dynamodb::error::BuildError as AwsBuildError;
 use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::error::ArrowError;
 use deltalake::datafusion::common::DataFusionError;
@@ -49,7 +49,9 @@ use rumqttc::{
 use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
-use crate::connectors::aws::dynamodb::AwsRequestError;
+use crate::connectors::aws::dynamodb::Error as AwsDynamoDBError;
+use crate::connectors::aws::kinesis::Error as AwsKinesisError;
+use crate::connectors::aws::kinesis::KinesisReader;
 use crate::connectors::data_format::{
     create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
     COMMIT_LITERAL,
@@ -196,7 +198,7 @@ pub enum MessageQueueTopic {
 }
 
 impl MessageQueueTopic {
-    fn get_for_posting(&self, values: &[Value]) -> Result<String, WriteError> {
+    pub fn get_for_posting(&self, values: &[Value]) -> Result<String, WriteError> {
         match self {
             Self::Fixed(t) => Ok(t.clone()),
             Self::Dynamic(i) => {
@@ -306,6 +308,9 @@ pub enum ReadError {
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
+    #[error(transparent)]
+    Kinesis(#[from] AwsKinesisError),
+
     #[error("malformed data")]
     MalformedData,
 
@@ -370,6 +375,7 @@ pub enum StorageType {
     PosixLike,
     Iceberg,
     Mqtt,
+    Kinesis,
 }
 
 impl StorageType {
@@ -391,6 +397,7 @@ impl StorageType {
             StorageType::Nats => NatsReader::merge_two_frontiers(lhs, rhs),
             StorageType::Iceberg => IcebergReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mqtt => MqttReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Kinesis => KinesisReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -490,6 +497,18 @@ pub trait Reader {
                         },
                     ) => {
                         if (other_version, other_position) > (offset_version, offset_position) {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
+                        OffsetValue::KinesisOffset(offset_position),
+                        OffsetValue::KinesisOffset(other_position),
+                    ) => {
+                        // Kinesis offsets are integers without clear bound, hence we compare them as strings
+                        if other_position.len() > offset_position.len()
+                            || (other_position.len() == offset_position.len()
+                                && other_position > offset_position)
+                        {
                             result.advance_offset(offset_key.clone(), other_value.clone());
                         }
                     }
@@ -645,10 +664,13 @@ pub enum WriteError {
     IncorrectInitialSnapshot(IncorrectSnapshotError),
 
     #[error(transparent)]
-    AwsDynamoDBBuild(#[from] DynamoDBBuildError),
+    AwsBuildRequest(#[from] AwsBuildError),
 
     #[error(transparent)]
-    AwsRequest(#[from] AwsRequestError),
+    DynamoDB(#[from] AwsDynamoDBError),
+
+    #[error(transparent)]
+    Kinesis(#[from] AwsKinesisError),
 
     #[error("after several retried attempts, {0} items haven't been saved")]
     SomeItemsNotDelivered(usize),

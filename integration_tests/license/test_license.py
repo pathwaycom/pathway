@@ -34,6 +34,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "elasticsearch",
     "full-persistence",
     "iceberg",
+    "kinesis",
     "monitoring",
     "questdb",
     "xpack-sharepoint",

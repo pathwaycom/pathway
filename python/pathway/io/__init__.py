@@ -14,6 +14,7 @@ from pathway.io import (
     iceberg,
     jsonlines,
     kafka,
+    kinesis,
     logstash,
     minio,
     mongodb,
@@ -70,4 +71,5 @@ __all__ = [
     "mqtt",
     "questdb",
     "dynamodb",
+    "kinesis",
 ]

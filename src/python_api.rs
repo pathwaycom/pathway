@@ -19,6 +19,7 @@ use async_nats::connect as nats_connect;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
 use aws_sdk_dynamodb::Client as DynamoDBClient;
+use aws_sdk_kinesis::Client as KinesisClient;
 use azure_storage::StorageCredentials as AzureStorageCredentials;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
@@ -85,7 +86,7 @@ use self::external_index_wrappers::{
 };
 use self::threads::PythonThreadState;
 
-use crate::connectors::aws::DynamoDBWriter;
+use crate::connectors::aws::{DynamoDBWriter, KinesisReader, KinesisWriter};
 use crate::connectors::data_format::{
     BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
@@ -742,6 +743,15 @@ impl From<EngineError> for PyErr {
                 let args = (inner, trace);
                 return PyErr::from_type(ENGINE_ERROR_WITH_TRACE_TYPE.bind(py).clone(), args);
             }
+
+            let message = error.to_string();
+            if let EngineError::ReaderFailed(read_error) = error {
+                if let ReadError::Py(e) = *read_error {
+                    return e;
+                }
+                let exception_type = ENGINE_ERROR_TYPE.bind(py).clone();
+                return PyErr::from_type(exception_type, message);
+            }
             let exception_type = match error {
                 EngineError::DataError(ref error) => match error {
                     DataError::TypeMismatch { .. } => PyTypeError::type_object(py),
@@ -760,11 +770,9 @@ impl From<EngineError> for PyErr {
                 EngineError::IterationLimitTooSmall
                 | EngineError::InconsistentColumnProperties
                 | EngineError::IdInTableProperties => PyValueError::type_object(py),
-                EngineError::ReaderFailed(ReadError::Py(e)) => return e,
                 EngineError::OtherWorkerPanic => OTHER_WORKER_ERROR.bind(py).clone(),
                 _ => ENGINE_ERROR_TYPE.bind(py).clone(),
             };
-            let message = error.to_string();
             PyErr::from_type(exception_type, message)
         })
     }
@@ -2821,15 +2829,12 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
-        let connector_index = *self_.borrow().total_connectors.get(py).borrow();
         *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
-            connector_index,
-            self_.borrow().worker_index(),
-            self_.borrow().license.as_ref(),
-            self_.borrow().is_persisted,
+            &self_.borrow(),
+            &properties.borrow(),
         )?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
@@ -3674,15 +3679,12 @@ impl Scope {
         let py = self_.py();
 
         let callbacks = build_subscribe_callback(on_change, on_time_end, on_end, None);
-        let connector_index = *self_.borrow().total_connectors.get(py).borrow();
         *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
-            connector_index,
-            self_.borrow().worker_index(),
-            self_.borrow().license.as_ref(),
-            false,
+            &self_.borrow(),
+            &properties,
         )?;
         assert_eq!(parallel_readers, 1); // python connector that has parallel_readers == 1 has to be used
 
@@ -5446,7 +5448,7 @@ impl DataStorage {
 
     fn construct_fs_reader(
         &self,
-        is_persisted: bool,
+        scope: &Scope,
         data_format: &DataFormat,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let scanner = FilesystemScanner::new(self.path()?, &self.object_pattern).map_err(|e| {
@@ -5457,7 +5459,7 @@ impl DataStorage {
             self.build_tokenizer_for_posix_like_read(data_format),
             self.mode,
             self.only_provide_metadata,
-            is_persisted,
+            scope.is_persisted,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}")))?;
         Ok((Box::new(storage), 1))
@@ -5465,7 +5467,7 @@ impl DataStorage {
 
     fn construct_s3_reader(
         &self,
-        is_persisted: bool,
+        scope: &Scope,
         data_format: &DataFormat,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
@@ -5482,7 +5484,7 @@ impl DataStorage {
             self.build_tokenizer_for_posix_like_read(data_format),
             self.mode,
             self.only_provide_metadata,
-            is_persisted,
+            scope.is_persisted,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
         Ok((Box::new(storage), 1))
@@ -5682,9 +5684,9 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
-        license: Option<&License>,
+        scope: &Scope,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        if let Some(license) = license {
+        if let Some(license) = scope.license.as_ref() {
             license.check_entitlements(["deltalake"])?;
         }
         let backfilling_thresholds = self.backfilling_thresholds.clone().unwrap_or_default();
@@ -5708,12 +5710,13 @@ impl DataStorage {
 
     fn construct_nats_reader(
         &self,
-        connector_index: usize,
-        worker_index: usize,
+        py: pyo3::Python,
+        scope: &Scope,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let topic: String = self.message_queue_fixed_topic()?.to_string();
         let runtime = create_async_tokio_runtime()?;
+        let connector_index = *scope.total_connectors.get(py).borrow();
         let subscriber = runtime.block_on(async {
             let consumer_queue = format!("pathway-reader-{connector_index}");
             let client = nats_connect(uri)
@@ -5727,7 +5730,7 @@ impl DataStorage {
                 })?;
             Ok::<NatsSubscriber, PyErr>(subscriber)
         })?;
-        let reader = NatsReader::new(runtime, subscriber, worker_index, topic);
+        let reader = NatsReader::new(runtime, subscriber, scope.worker_index(), topic);
         Ok((Box::new(reader), 32))
     }
 
@@ -5735,7 +5738,7 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
-        license: Option<&License>,
+        scope: &Scope,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         if data_format.key_field_names.is_none() {
             return Err(PyValueError::new_err(
@@ -5743,7 +5746,7 @@ impl DataStorage {
             ));
         }
 
-        if let Some(license) = license {
+        if let Some(license) = scope.license.as_ref() {
             license.check_entitlements(["iceberg"])?;
         }
 
@@ -5818,25 +5821,60 @@ impl DataStorage {
         Ok((Box::new(MqttReader::new(connection)), 1))
     }
 
+    fn construct_kinesis_reader(
+        &self,
+        scope: &Scope,
+        properties: &ConnectorProperties,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["kinesis"])?;
+        }
+
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let config = runtime.block_on(async { ::aws_config::load_from_env().await });
+        let topic = &self.message_queue_fixed_topic()?;
+        let client = KinesisClient::new(&config);
+        let refresh_duration = properties.commit_duration_ms.as_ref().map_or_else(
+            || {
+                Err(PyValueError::new_err(
+                    "autocommit_duration_ms must be set for Kinesis input connector",
+                ))
+            },
+            |refresh_duration| Ok(::std::time::Duration::from_millis(*refresh_duration)),
+        )?;
+
+        let reader = KinesisReader::new(
+            runtime,
+            client,
+            topic.to_string(),
+            scope.worker_index(),
+            scope.worker_count(),
+            refresh_duration,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Kinesis reader: {e}")))?;
+
+        Ok((Box::new(reader), 32))
+    }
+
     fn construct_reader(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
-        connector_index: usize,
-        worker_index: usize,
-        license: Option<&License>,
-        is_persisted: bool,
+        scope: &Scope,
+        properties: &ConnectorProperties,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
-            "fs" => self.construct_fs_reader(is_persisted, data_format),
-            "s3" => self.construct_s3_reader(is_persisted, data_format),
+            "fs" => self.construct_fs_reader(scope, data_format),
+            "s3" => self.construct_s3_reader(scope, data_format),
             "kafka" => self.construct_kafka_reader(),
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
-            "deltalake" => self.construct_deltalake_reader(py, data_format, license),
-            "nats" => self.construct_nats_reader(connector_index, worker_index),
-            "iceberg" => self.construct_iceberg_reader(py, data_format, license),
+            "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
+            "nats" => self.construct_nats_reader(py, scope),
+            "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(),
+            "kinesis" => self.construct_kinesis_reader(scope, properties),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -6242,6 +6280,23 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_kinesis_writer(&self, license: Option<&License>) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["kinesis"])?;
+        }
+
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let config = runtime.block_on(async { ::aws_config::load_from_env().await });
+        let client = KinesisClient::new(&config);
+        let stream_name = self.message_queue_topic()?;
+
+        let writer = KinesisWriter::new(runtime, client, stream_name, self.key_field_index)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create Kinesis writer: {e}")))?;
+
+        Ok(Box::new(writer))
+    }
+
     fn construct_writer(
         &self,
         py: pyo3::Python,
@@ -6261,6 +6316,7 @@ impl DataStorage {
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
             "dynamodb" => self.construct_dynamodb_writer(py, data_format, license),
+            "kinesis" => self.construct_kinesis_writer(license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),

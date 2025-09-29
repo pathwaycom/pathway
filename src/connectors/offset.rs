@@ -18,6 +18,7 @@ pub enum OffsetKey {
     Kafka(ArcStr, i32),
     Nats(usize),
     Empty,
+    Kinesis(ArcStr),
 }
 
 impl HashInto for OffsetKey {
@@ -29,6 +30,7 @@ impl HashInto for OffsetKey {
             }
             OffsetKey::Nats(worker_index) => worker_index.hash_into(hasher),
             OffsetKey::Empty => {}
+            OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
         }
     }
 }
@@ -66,6 +68,7 @@ pub enum OffsetValue {
     },
     NatsReadEntriesCount(usize),
     MqttReadEntriesCount(usize),
+    KinesisOffset(String),
     Empty,
 }
 
@@ -140,6 +143,9 @@ impl HashInto for OffsetValue {
             }
             OffsetValue::IcebergSnapshot { snapshot_id } => {
                 snapshot_id.hash_into(hasher);
+            }
+            OffsetValue::KinesisOffset(offset) => {
+                offset.hash_into(hasher);
             }
             OffsetValue::Empty => {}
         }

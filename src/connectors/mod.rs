@@ -413,7 +413,7 @@ impl Connector {
                     error!("There had been an error processing the row read result: {error}");
                     consecutive_errors += 1;
                     if consecutive_errors > reader.max_allowed_consecutive_errors() {
-                        error_reporter.report(EngineError::ReaderFailed(error));
+                        error_reporter.report(EngineError::ReaderFailed(Box::new(error)));
                     }
                 }
             }
@@ -582,7 +582,7 @@ impl Connector {
                     snapshot_access,
                     realtime_reader_needed,
                 )
-                .map_err(EngineError::ReaderFailed)?;
+                .map_err(|e| EngineError::ReaderFailed(Box::new(e)))?;
                 if realtime_reader_needed {
                     Self::read_realtime_updates(
                         &mut *reader,

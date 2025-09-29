@@ -3213,7 +3213,9 @@ def test_raw_mq_raises_wrong_type(message_queue):
         # No key in MQTT and NATS
         with pytest.raises(
             ValueError,
-            match="The key column should be of the type 'BYTES'",
+            match=re.escape(
+                "The key column must have one of the following types: (BYTES, STR, ANY)"
+            ),
         ):
             write(
                 table,
@@ -3225,7 +3227,9 @@ def test_raw_mq_raises_wrong_type(message_queue):
 
     with pytest.raises(
         ValueError,
-        match="The value column should be of the type 'BYTES'",
+        match=re.escape(
+            "The value column must have one of the following types: (BYTES, STR, ANY)"
+        ),
     ):
         write(
             table,

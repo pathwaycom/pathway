@@ -322,12 +322,13 @@ class MessageQueueOutputFormat:
         topic_name: ColumnReference | None = None,
         schema_registry_settings: SchemaRegistrySettings | None = None,
         subject: str | None = None,
+        allowed_key_types: tuple[dt.DType, ...] | None = (dt.BYTES, dt.STR, dt.ANY),
+        allowed_value_types: tuple[dt.DType, ...] | None = (dt.BYTES, dt.STR, dt.ANY),
     ) -> MessageQueueOutputFormat:
         key_field_index = None
         header_fields: dict[str, int] = {}
         extracted_field_indices: dict[str, int] = {}
         columns_to_extract: list[ColumnReference] = []
-        allowed_column_types = (dt.BYTES, dt.STR, dt.ANY)
 
         if topic_name is not None:
             topic_name_index = cls.add_column_reference_to_extract(
@@ -343,9 +344,12 @@ class MessageQueueOutputFormat:
 
         # Common part for all formats: obtain key field index and prepare header fields
         if key is not None:
-            if table[key._name]._column.dtype not in allowed_column_types:
+            if (
+                allowed_key_types is not None
+                and table[key._name]._column.dtype not in allowed_key_types
+            ):
                 raise ValueError(
-                    f"The key column should be of the type '{allowed_column_types[0]}'"
+                    f"The key column must have one of the following types: {allowed_key_types}"
                 )
             key_field_index = cls.add_column_reference_to_extract(
                 key, columns_to_extract, extracted_field_indices
@@ -358,6 +362,10 @@ class MessageQueueOutputFormat:
 
         # Format-dependent parts: handle json and dsv separately
         if format == "json" or format == "dsv":
+            if value is not None:
+                raise ValueError(
+                    f"'value' and format='{format}' cannot be set at the same time"
+                )
             for column_name in table._columns:
                 cls.add_column_reference_to_extract(
                     table[column_name], columns_to_extract, extracted_field_indices
@@ -394,9 +402,12 @@ class MessageQueueOutputFormat:
                 )
 
             table = table.select(*columns_to_extract)
-            if table[value._name]._column.dtype not in allowed_column_types:
+            if (
+                allowed_value_types is not None
+                and table[value._name]._column.dtype not in allowed_value_types
+            ):
                 raise ValueError(
-                    f"The value column should be of the type '{allowed_column_types[0]}'"
+                    f"The value column must have one of the following types: {allowed_value_types}"
                 )
 
             data_format = api.DataFormat(
