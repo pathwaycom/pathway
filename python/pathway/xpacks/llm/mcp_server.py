@@ -9,18 +9,22 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from inspect import Parameter, Signature
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from aiohttp import web
 
 import pathway as pw
 import pathway.io as io
-from pathway.internals import api
+from pathway.internals import api, dtype
 from pathway.internals.config import _check_entitlements
 from pathway.internals.helpers import _no_default_value_marker, _Undefined
 from pathway.internals.udfs.caches import CacheStrategy
 from pathway.io.http._server import PathwayServer, ServerSubject
 from pathway.optional_import import optional_imports
+
+if TYPE_CHECKING:
+    with optional_imports("xpack-llm"):
+        from fastmcp import FastMCP
 
 
 def _generate_handler_signature(schema: type[pw.Schema]):
@@ -36,15 +40,20 @@ def _generate_handler_signature(schema: type[pw.Schema]):
                 if column.default_value is not _no_default_value_marker
                 else Parameter.empty
             )
+
+            # Workaround for hitting max recursion depth during type hint evaluation
+            # triggered inside FastMCP tool.
+            typehint = dict if param_type is dtype.JSON else param_type.typehint
+
             params.append(
                 Parameter(
                     param_name,
                     Parameter.KEYWORD_ONLY,
-                    annotation=param_type.typehint,
+                    annotation=typehint,
                     default=default,
                 )
             )
-            annotations[param_name] = param_type.typehint
+            annotations[param_name] = typehint
 
     return Signature(params), annotations
 
@@ -163,7 +172,7 @@ class McpServer(PathwayServer):
     It is encouraged to use the py:class:`~pathway.xpacks.llm.mcp_server.PathwayMcp` class for easier configuration.
     """
 
-    _fastmcp: Any
+    _fastmcp: FastMCP
     _thread: threading.Thread | None
     _start_mutex: threading.Lock
     _config: McpConfig
