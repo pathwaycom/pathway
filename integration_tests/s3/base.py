@@ -68,9 +68,9 @@ def delete_minio_object(path):
         aws_secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
         endpoint_url="https://minio-api.deploys.pathway.com",
     )
-    s3_client.delete_objects(
+    s3_client.delete_object(
         Bucket=MINIO_BUCKET_NAME,
-        Delete={"Objects": [{"Key": path}]},
+        Key=path,
     )
 
 
