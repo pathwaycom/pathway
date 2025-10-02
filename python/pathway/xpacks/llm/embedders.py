@@ -4,7 +4,7 @@ Pathway embedder UDFs.
 """
 import asyncio
 import logging
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 
@@ -85,23 +85,6 @@ class BaseEmbedder(pw.UDF):
         return super().__call__(input, *args, **kwargs)
 
 
-def _split_batched_kwargs(
-    kwargs: dict[str, list[Any]]
-) -> tuple[dict[str, Any], dict[str, list[Any]]]:
-    constant_kwargs = {}
-    per_row_kwargs = {}
-
-    if kwargs:
-        for key, values in kwargs.items():
-            v = values[0]
-            if all(value == v for value in values):
-                constant_kwargs[key] = v
-            else:
-                per_row_kwargs[key] = values
-
-    return constant_kwargs, per_row_kwargs
-
-
 class OpenAIEmbedder(BaseEmbedder):
     """Pathway wrapper for OpenAI Embedding services.
 
@@ -130,8 +113,6 @@ class OpenAIEmbedder(BaseEmbedder):
             Can be ``"start"``, ``"end"`` or ``None``. ``"start"`` will keep the first part of the text
             and remove the rest. ``"end"`` will keep the last part of the text.
             If `None`, no truncation will be applied to any of the documents, this may cause API exceptions.
-        batch_size: maximum size of a single batch to be sent to the embedder. Bigger
-            batches may reduce the time needed for embedding.
         encoding_format: The format to return the embeddings in. Can be either `float` or
             `base64 <https://pypi.org/project/pybase64/>`_.
         user: A unique identifier representing your end-user, which can help OpenAI to monitor
@@ -176,7 +157,6 @@ class OpenAIEmbedder(BaseEmbedder):
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "text-embedding-3-small",
         truncation_keep_strategy: Literal["start", "end"] | None = "start",
-        batch_size: int = 128,
         **openai_kwargs,
     ):
         with optional_imports("xpack-llm"):
@@ -185,7 +165,8 @@ class OpenAIEmbedder(BaseEmbedder):
         _monkeypatch_openai_async()
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
-            executor=executor, cache_strategy=cache_strategy, max_batch_size=batch_size
+            executor=executor,
+            cache_strategy=cache_strategy,
         )
         self.truncation_keep_strategy = truncation_keep_strategy
         self.kwargs = dict(openai_kwargs)
@@ -194,64 +175,32 @@ class OpenAIEmbedder(BaseEmbedder):
         if model is not None:
             self.kwargs["model"] = model
 
-    async def __wrapped__(self, inputs: list[str], **kwargs) -> list[np.ndarray]:
+    async def __wrapped__(self, input, **kwargs) -> np.ndarray:
         """Embed the documents
 
         Args:
-            inputs: mandatory, the strings to embed.
+            input: mandatory, the string to embed.
             **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
+        input = input or "."
 
+        kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
 
-        if kwargs.get("model") is None and self.kwargs.get("model") is None:
+        if kwargs.get("model") is None:
             raise ValueError(
                 "`model` parameter is missing in `OpenAIEmbedder`. "
                 "Please provide the model name either in the constructor or in the function call."
             )
 
-        constant_kwargs, per_row_kwargs = _split_batched_kwargs(kwargs)
-        constant_kwargs = {**self.kwargs, **constant_kwargs}
-
         if self.truncation_keep_strategy:
-            if "model" in per_row_kwargs:
-                inputs = [
-                    self.truncate_context(model, input, self.truncation_keep_strategy)
-                    for (model, input) in zip(per_row_kwargs["model"], inputs)
-                ]
-            else:
-                inputs = [
-                    self.truncate_context(
-                        constant_kwargs["model"], input, self.truncation_keep_strategy
-                    )
-                    for input in inputs
-                ]
+            input = self.truncate_context(
+                kwargs["model"], input, self.truncation_keep_strategy
+            )
 
-        # if kwargs are not the same for every input we cannot batch them
-        if per_row_kwargs:
-
-            async def embed_single(input, kwargs) -> np.ndarray:
-                kwargs = {**constant_kwargs, **kwargs}
-                ret = await self.client.embeddings.create(input=[input], **kwargs)
-                return np.array(ret.data[0].embedding)
-
-            list_of_per_row_kwargs = [
-                dict(zip(per_row_kwargs, values))
-                for values in zip(*per_row_kwargs.values())
-            ]
-            async with asyncio.TaskGroup() as tg:
-                tasks = [
-                    tg.create_task(embed_single(input, kwargs))
-                    for input, kwargs in zip(inputs, list_of_per_row_kwargs)
-                ]
-
-            result_list = [task.result() for task in tasks]
-            return result_list
-
-        else:
-            ret = await self.client.embeddings.create(input=inputs, **constant_kwargs)
-            return [np.array(datum.embedding) for datum in ret.data]
+        ret = await self.client.embeddings.create(input=[input], **kwargs)
+        return np.array(ret.data[0].embedding)
 
     @staticmethod
     def truncate_context(
@@ -297,25 +246,6 @@ class OpenAIEmbedder(BaseEmbedder):
             )
 
         return tokenizer.decode(tokens)
-
-    @staticmethod
-    def _count_tokens(text: str, model: str) -> int:
-        with optional_imports("xpack-llm"):
-            import tiktoken
-
-        tokenizer = tiktoken.encoding_for_model(model)
-        tokens = tokenizer.encode(text)
-        return len(tokens)
-
-    def get_embedding_dimension(self, **kwargs):
-        """Computes number of embedder's dimensions by asking the embedder to embed ``"."``.
-
-        Args:
-            **kwargs: parameters of the embedder, if unset defaults from the constructor
-              will be taken.
-        """
-        kwargs_as_list = {k: [v] for k, v in kwargs.items()}
-        return len(_coerce_sync(self.__wrapped__)(["."], **kwargs_as_list)[0])
 
 
 class LiteLLMEmbedder(BaseEmbedder):
@@ -470,7 +400,16 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         """  # noqa: E501
 
         kwargs = _extract_value_inside_dict(kwargs)
-        constant_kwargs, per_row_kwargs = _split_batched_kwargs(kwargs)
+        constant_kwargs = {}
+        per_row_kwargs = {}
+
+        if kwargs:
+            for key, values in kwargs.items():
+                v = values[0]
+                if all(value == v for value in values):
+                    constant_kwargs[key] = v
+                else:
+                    per_row_kwargs[key] = values
 
         # if kwargs are not the same for every input we cannot batch them
         if per_row_kwargs:
