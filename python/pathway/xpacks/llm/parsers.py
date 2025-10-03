@@ -11,25 +11,30 @@ import io
 import logging
 import re
 import warnings
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
 from functools import partial
 from io import BytesIO
 from typing import TYPE_CHECKING, Iterable, Iterator, Literal, TypeAlias, get_args
 
+import numpy as np
+from pdf2image import convert_from_bytes
 from PIL import Image
 from pydantic import BaseModel
+from unstructured.file_utils.filetype import FileType, detect_filetype
 
 import pathway as pw
 from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm import llms, prompts
+from pathway.xpacks.llm import _parser_utils, llms, prompts
 from pathway.xpacks.llm._utils import _prepare_executor
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
 if TYPE_CHECKING:
     with optional_imports("xpack-llm-docs"):
+        from paddleocr import PaddleOCR, PPStructureV3
         from unstructured.documents.elements import Element
 
 logger = logging.getLogger(__name__)
@@ -1091,3 +1096,197 @@ class PypdfParser(pw.UDF):
 
         modified_text = re.sub(r"\n(\w)", replace_newline, text)
         return modified_text
+
+
+class _PaddleParser(ABC):
+    """
+    Abstract wrapper for Paddle pipeline, that extracts text from OCR results.
+    """
+
+    pipeline: PaddleOCR | PPStructureV3
+
+    def __init__(self, pipeline: PaddleOCR | PPStructureV3):
+        self.pipeline = pipeline
+
+    def parse(self, image: np.ndarray) -> str:
+        ocr_result = self.pipeline.predict(image)
+        return self.extract_text(ocr_result)
+
+    @abstractmethod
+    def extract_text(self, ocr_result: list) -> str:
+        pass
+
+    @staticmethod
+    def create_for(pipeline: PaddleOCR | PPStructureV3) -> _PaddleParser:
+        with optional_imports("xpack-llm-docs"):
+            from paddleocr import PaddleOCR, PPStructureV3
+
+        match pipeline:
+            case PPStructureV3():
+                return _PaddlePPStructureV3Parser(pipeline)
+            case PaddleOCR():
+                return _PaddleOCRParser(pipeline)
+            case _:
+                raise NotImplementedError(
+                    f"Extractor for {type(pipeline)} is not implemented."
+                )
+
+
+class _PaddlePPStructureV3Parser(_PaddleParser):
+    def extract_text(self, ocr_result: list) -> str:
+        pages = []
+
+        for res in ocr_result:
+            try:
+                pages.append(res.markdown)
+            except AttributeError:
+                logger.error("Failed to extract text from OCR result.")
+                continue
+
+        result = self.pipeline.concatenate_markdown_pages(pages)
+
+        return result
+
+
+class _PaddleOCRParser(_PaddleParser):
+    def extract_text(self, ocr_result: list) -> str:
+        result = ""
+        for res in ocr_result:
+            try:
+                text = res["rec_texts"]
+                result += " ".join(text) + "\n\n"
+            except KeyError:
+                logger.error("Failed to extract text from OCR result.")
+                continue
+        return result
+
+
+class PaddleOCRParser(pw.UDF):
+    """
+    A class to parse images, PDFs and PPTX slides using PaddleOCR.
+
+    Args:
+        pipeline: A Paddle pipeline object. Currently PaddleOCR and PPStructureV3 are supported.
+            If not provided, a default PPStructureV3 pipeline will be used.
+            Use PPStructureV3 for better accuracy on documents with complex layouts. PaddleOCR can be used for
+            simpler documents, extracting only text but may be faster.
+        concatenate_pages: Whether to concatenate multi-paged documents into a single output. Defaults to False.
+        intermediate_image_format: Intermediate image format used when converting PDFs to images.
+            Defaults to ``"jpg"`` for speed and memory use.
+        max_image_size: Maximum allowed size of the images in bytes. Default is 15 MB.
+        downsize_horizontal_width: Width to which images are downsized if necessary.
+            Default is 1920.
+        cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            Defaults to None.
+        async_mode: Mode of execution for the UDF, either ``"batch_async"`` or ``"fully_async"``.
+            Default is ``"batch_async"``.
+    """
+
+    parser: _PaddleParser
+    intermediate_image_format: str
+    max_image_size: int
+    downsize_horizontal_width: int
+
+    def __init__(
+        self,
+        pipeline: PaddleOCR | PPStructureV3 | None = None,
+        *,
+        concatenate_pages: bool = False,
+        intermediate_image_format: str = "jpg",
+        max_image_size: int = 15 * 1024 * 1024,
+        downsize_horizontal_width: int = 1920,
+        cache_strategy: udfs.CacheStrategy | None = None,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
+    ):
+        super().__init__(
+            executor=_prepare_executor(async_mode=async_mode),
+            cache_strategy=cache_strategy,
+        )
+
+        with optional_imports("xpack-llm-docs"):
+            import paddleocr  # noqa:F401
+
+        self.intermediate_image_format = intermediate_image_format
+        self.max_image_size = max_image_size
+        self.downsize_horizontal_width = downsize_horizontal_width
+        self.concatenate_pages = concatenate_pages
+
+        if pipeline is None:
+            pipeline = self._default_pipeline()
+
+        self.parser = _PaddleParser.create_for(pipeline)
+
+    def _default_pipeline(self) -> PPStructureV3:
+        with optional_imports("xpack-llm-docs"):
+            from paddleocr import PPStructureV3
+        return PPStructureV3(
+            use_table_recognition=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            use_seal_recognition=False,
+            use_formula_recognition=False,
+            use_chart_recognition=False,
+            use_region_detection=False,
+        )
+
+    def _normalize_input(
+        self,
+        contents: bytes,
+    ) -> tuple[list[Image.Image], FileType | None]:
+        byte_file = io.BytesIO(contents)
+        filetype = detect_filetype(file=byte_file)
+
+        match filetype:
+            case FileType.PPT | FileType.PPTX:
+                contents = _parser_utils._convert_pptx_to_pdf(contents)
+                images = convert_from_bytes(
+                    contents, fmt=self.intermediate_image_format
+                )
+            case FileType.PDF:
+                images = convert_from_bytes(
+                    contents, fmt=self.intermediate_image_format
+                )
+            case _ as filetype:
+                try:
+                    images = [Image.open(io.BytesIO(contents)).convert("RGB")]
+                except Exception as e:
+                    logger.error(f"Failed to parse provided file. Reason: {e}")
+                    return [], None
+
+        images = [
+            _parser_utils.maybe_downscale(
+                img,
+                max_image_size=self.max_image_size,
+                downsize_horizontal_width=self.downsize_horizontal_width,
+            )
+            for img in images
+        ]
+
+        return images, filetype
+
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        images, original_filetype = self._normalize_input(contents)
+
+        def metadata(page_number: int) -> dict:
+            if original_filetype in [FileType.PPT, FileType.PPTX, FileType.PDF]:
+                return {"page_number": page_number}
+            return {}
+
+        docs = []
+
+        for i, image in enumerate(images):
+            try:
+                img_np = np.array(image)
+                text = self.parser.parse(img_np)
+                docs.append((text, metadata(i)))
+            except Exception as e:
+                logger.error(f"Failed to process an image. Reason: {e}")
+                continue
+
+        if self.concatenate_pages and len(docs) > 1:
+            concatenated_text = "\n\n".join([doc[0] for doc in docs])
+            docs = [(concatenated_text, {"page_number": 0})]
+
+        return docs
