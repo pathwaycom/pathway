@@ -2975,6 +2975,63 @@ id_type=<class 'pathway.engine.Pointer'>>
         context = clmn.AssertAppendOnlyContext(self._id_column)
         return self._table_with_context(context)
 
+    @trace_user_frame
+    @contextualized_operator
+    def unpack_snapshots(self) -> Table:
+        """
+        Transforms a table representation from a change stream into a snapshot stream.
+        A snapshot is the full state of the table after all additions, deletions, and updates
+        corresponding to a specific changes minibatch that has been applied.
+
+        For example, suppose that at time ``T`` the table contains three rows: ``A``, ``B``,
+        and ``C``. At the next Pathway minibatch, time ``T+1``, row ``C`` is replaced by
+        row ``D``. The table produced by this operator will then contain six rows as follows:
+        at time ``T`` the rows ``A``, ``B``, and ``C``, and at time ``T+1`` the rows
+        ``A``, ``B``, and ``D``.
+
+        Use caution when applying this method to large tables that change frequently.
+        Any Pathway minibatch in which at least one row is modified will emit a snapshot
+        containing all rows in the table, which can result in a very large output.
+
+        Example:
+
+        You can create a table streamed in three minibatches with three rows as follows:
+
+        >>> import pathway as pw
+        >>> class DataColumnSchema(pw.Schema):
+        ...     data: str
+        >>> table = pw.demo.generate_custom_stream(
+        ...     value_generators={"data": lambda x: str(x + 1)},
+        ...     schema=DataColumnSchema,
+        ...     nb_rows=3,
+        ... )
+
+        Then, the snapshot representation can be obtained:
+
+        >>> snapshot_representation = table.unpack_snapshots()
+
+        Use an output connector to write the snapshots grouped by time:
+
+        >>> pw.io.csv.write(snapshot_representation, "snapshots.txt")
+        >>> pw.run()
+        >>> with open("snapshots.txt", "r") as f:  # doctest: +SKIP
+        ...     print(f.read())
+        "data","time","diff"
+        "1","1758734723300","1"
+        "2","1758734724298","1"
+        "1","1758734724298","1"
+        "1","1758734725298","1"
+        "3","1758734725298","1"
+        "2","1758734725298","1"
+
+        The output shows three time-based snapshots: first the initial state with row
+        ``"1"``, then an updated state with rows ``"1"`` and ``"2"``, and finally the
+        state with rows ``"1"``, ``"2"``, and ``"3"``.
+        """
+
+        context = clmn.UnpackSnapshotsContext(self._id_column)
+        return self._table_with_context(context)
+
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])
 

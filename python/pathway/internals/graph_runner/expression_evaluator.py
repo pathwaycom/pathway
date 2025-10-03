@@ -1550,3 +1550,17 @@ class AssertAppendOnlyEvaluator(
             column_paths,
             properties,
         )
+
+
+class UnpackSnapshotsEvaluator(
+    ExpressionEvaluator, context_type=clmn.UnpackSnapshotsContext
+):
+    context: clmn.UnpackSnapshotsContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        properties = self._table_properties(output_storage)
+
+        return self.scope.unpack_snapshots(
+            self.state.get_table(self.context.input_universe()),
+            properties,
+        )

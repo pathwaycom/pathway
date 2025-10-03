@@ -4675,6 +4675,39 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
+
+    fn unpack_snapshots(
+        &mut self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let mut snapshot = HashMap::new();
+        let new_values = table
+            .values()
+            .consolidate_for_output_named("unpack_snapshots", true)
+            .flat_map(move |batch| {
+                let OutputBatch { time, data } = batch;
+                for ((key, values), diff) in data {
+                    match diff {
+                        DIFF_DELETION => snapshot.remove(&key),
+                        DIFF_INSERTION => snapshot.insert(key, values),
+                        _ => unreachable!("Unexpected diff value"),
+                    };
+                }
+                snapshot
+                    .values()
+                    .map(|v| ((Key::random(), v.clone()), time, DIFF_INSERTION))
+                    .collect::<Vec<_>>()
+            })
+            .as_collection();
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
 }
 
 trait InnerUniverse {
@@ -5733,6 +5766,14 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             .borrow_mut()
             .assert_append_only(table_handle, column_paths, table_properties)
     }
+
+    fn unpack_snapshots(
+        &self,
+        _table_handle: TableHandle,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        Err(Error::NotSupportedInIteration)
+    }
 }
 
 struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>>(
@@ -6448,6 +6489,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0
             .borrow_mut()
             .assert_append_only(table_handle, column_paths, table_properties)
+    }
+
+    fn unpack_snapshots(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .unpack_snapshots(table_handle, table_properties)
     }
 }
 

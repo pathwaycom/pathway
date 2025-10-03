@@ -303,6 +303,7 @@ NoNewColumnsContext = (
     | clmn.SetSchemaContext
     | clmn.RemoveRetractionsContext
     | clmn.StreamToTableContext
+    | clmn.UnpackSnapshotsContext
 )
 
 
@@ -319,6 +320,7 @@ class NoNewColumnsPathEvaluator(
         clmn.SetSchemaContext,
         clmn.RemoveRetractionsContext,
         clmn.StreamToTableContext,
+        clmn.UnpackSnapshotsContext,
     ],
 ):
     context: NoNewColumnsContext

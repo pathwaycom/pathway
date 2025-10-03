@@ -1333,3 +1333,26 @@ class AssertAppendOnlyContext(
         ret = Universe()
         G.universe_solver.register_as_equal(self.orig_id_column.universe, ret)
         return ret
+
+
+@dataclass(eq=False, frozen=True)
+class UnpackSnapshotsContext(Context):
+    """Context of `table.unpack_snapshots() operation."""
+
+    orig_id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
+
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
+
+    def id_column_type(self) -> dt.DType:
+        return self.orig_id_column.dtype
+
+    @cached_property
+    def universe(self) -> Universe:
+        ret = Universe()
+        if self.input_universe().is_empty():
+            ret.register_as_empty(no_warn=False)
+        return ret

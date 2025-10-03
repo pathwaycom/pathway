@@ -778,6 +778,11 @@ class Scope:
         column_paths: Iterable[ColumnPath],
         table_properties: TableProperties,
     ) -> Table: ...
+    def unpack_snapshots(
+        self,
+        table: Table,
+        table_properties: TableProperties,
+    ) -> Table: ...
 
 class Error: ...
 

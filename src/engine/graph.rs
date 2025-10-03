@@ -1025,6 +1025,12 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
+
+    fn unpack_snapshots(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -1731,5 +1737,13 @@ impl Graph for ScopedGraph {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| g.assert_append_only(table_handle, column_paths, table_properties))
+    }
+
+    fn unpack_snapshots(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.unpack_snapshots(table_handle, table_properties))
     }
 }
