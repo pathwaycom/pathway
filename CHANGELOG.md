@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.io.deltalake.read` now accepts the `start_from_timestamp_ms` parameter for non-append-only tables. In this case, the connector will replay the history of changes in the table version by version starting from the state of the table at the given timestamp. The differences between versions will be applied atomically.
+
 ## [0.26.3] - 2025-10-03
 
 ### Added
-
 - New parser `pathway.xpacks.llm.parsers.PaddleOCRParser` supporting parsing of PDF, PPTX and images.
 
 ## [0.26.2] - 2025-10-01

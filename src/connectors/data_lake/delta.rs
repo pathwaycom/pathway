@@ -51,7 +51,9 @@ use crate::connectors::data_format::{
 };
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_lake::ArrowDataType;
-use crate::connectors::data_storage::{ConnectorMode, ConversionError, ValuesMap};
+use crate::connectors::data_storage::{
+    CommitPossibility, ConnectorMode, ConversionError, ValuesMap,
+};
 use crate::connectors::metadata::ParquetMetadata;
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{
@@ -701,48 +703,26 @@ impl DeltaTableReader {
         }
         let mut current_version = table.version();
 
-        let mut parquet_files_queue = {
-            let history = runtime.block_on(async {
-                Ok::<Vec<DeltaTableCommitInfo>, ReadError>(table.history(None).await?)
-            })?;
-            Self::get_reader_actions(&table, path, history, &column_types)?
-        };
+        let mut parquet_files_queue = VecDeque::new();
         let mut backfilling_entries_queue = VecDeque::new();
+        let mut snapshot_loading_needed = backfilling_thresholds.is_empty();
 
         if let Some(start_from_timestamp_ms) = start_from_timestamp_ms {
             assert!(backfilling_thresholds.is_empty()); // Checked upstream in python_api.rs
-            let current_timestamp = current_unix_timestamp_ms();
-            if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
-                warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
-            }
-            let (earliest_version, latest_version) = runtime.block_on(async {
-                Ok::<(i64, i64), ReadError>((
-                    table.get_earliest_version().await?,
-                    table.get_latest_version().await?,
-                ))
-            })?;
-            let snapshot = table.snapshot()?;
-
-            let mut last_version_below_threshold = None;
-            for version in earliest_version..=latest_version {
-                let Some(timestamp) = snapshot.version_timestamp(version) else {
-                    continue;
-                };
-                if timestamp < start_from_timestamp_ms {
-                    last_version_below_threshold = Some(version);
-                } else {
-                    break;
-                }
-            }
-            if let Some(last_version_below_threshold) = last_version_below_threshold {
-                runtime
-                    .block_on(async { table.load_version(last_version_below_threshold).await })?;
-                current_version = last_version_below_threshold;
-            } else {
-                current_version = earliest_version;
-                warn!("All available versions are newer than the specified timestamp {start_from_timestamp_ms}. The read will start from the beginning.");
-            }
-            parquet_files_queue.clear();
+            Self::handle_start_from_timestamp_ms(
+                &runtime,
+                &mut table,
+                start_from_timestamp_ms,
+                is_append_only,
+                &mut current_version,
+                &mut snapshot_loading_needed,
+            )?;
+        } else {
+            snapshot_loading_needed = true;
+        }
+        if snapshot_loading_needed {
+            parquet_files_queue =
+                Self::get_reader_actions_for_table(&runtime, &table, path, &column_types)?;
         }
 
         if !backfilling_thresholds.is_empty() {
@@ -769,6 +749,64 @@ impl DeltaTableReader {
             rows_read_within_version: 0,
             current_action: None,
         })
+    }
+
+    fn handle_start_from_timestamp_ms(
+        runtime: &TokioRuntime,
+        table: &mut DeltaTable,
+        start_from_timestamp_ms: i64,
+        is_append_only: bool,
+        current_version: &mut i64,
+        snapshot_loading_needed: &mut bool,
+    ) -> Result<(), ReadError> {
+        let current_timestamp = current_unix_timestamp_ms();
+        if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
+            warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
+        }
+        let (earliest_version, latest_version) = runtime.block_on(async {
+            Ok::<(i64, i64), ReadError>((
+                table.get_earliest_version().await?,
+                table.get_latest_version().await?,
+            ))
+        })?;
+        let snapshot = table.snapshot()?;
+
+        let mut last_version_below_threshold = None;
+        let mut version_at_threshold = None;
+        for version in earliest_version..=latest_version {
+            let Some(timestamp) = snapshot.version_timestamp(version) else {
+                continue;
+            };
+            if timestamp < start_from_timestamp_ms {
+                last_version_below_threshold = Some(version);
+            } else {
+                if timestamp == start_from_timestamp_ms {
+                    version_at_threshold = Some(version);
+                }
+                break;
+            }
+        }
+
+        if !is_append_only && version_at_threshold.is_some() {
+            *current_version = version_at_threshold.unwrap();
+        } else if let Some(last_version_below_threshold) = last_version_below_threshold {
+            *current_version = last_version_below_threshold;
+        } else {
+            *current_version = earliest_version;
+            warn!(
+                    "All available versions are newer than the specified timestamp {start_from_timestamp_ms}. The read will start from the beginning, version {current_version}."
+                );
+            // NB: All versions are newer than the requested one, meaning that we need to read the
+            // full state at the `earliest_version` and then continue incrementally.
+        }
+
+        if is_append_only && last_version_below_threshold.is_some() {
+            // We've found the threshold version, we read only diffs from this version onwards.
+            *snapshot_loading_needed = false;
+        }
+
+        runtime.block_on(async { table.load_version(*current_version).await })?;
+        Ok(())
     }
 
     fn record_batch_has_pathway_fields(batch: &ArrowRecordBatch) -> bool {
@@ -891,7 +929,8 @@ impl DeltaTableReader {
                 if is_new_block {
                     backfilling_entries_queue.push_back(BackfillingEntry::SourceEvent(
                         ReadResult::FinishedSource {
-                            commit_allowed: true,
+                            // Applicable only for append-only tables, hence no need to avoid squashing diff = +1 with diff = -1
+                            commit_possibility: CommitPossibility::Possible,
                         },
                     ));
                     backfilling_entries_queue.push_back(BackfillingEntry::SourceEvent(
@@ -909,7 +948,9 @@ impl DeltaTableReader {
             }
             backfilling_entries_queue.push_back(BackfillingEntry::SourceEvent(
                 ReadResult::FinishedSource {
-                    commit_allowed: true,
+                    // Same as above, we don't force commits, since the situation with losing/collapsing +1 and -1 events
+                    // is not possible here
+                    commit_possibility: CommitPossibility::Possible,
                 },
             ));
             if pathway_meta_column_added {
@@ -941,6 +982,18 @@ impl DeltaTableReader {
             Value::Duration(dt) => ScalarValue::DurationMicrosecond(Some(dt.microseconds())),
             _ => todo!("querying is not supported for {value:?}"),
         }
+    }
+
+    fn get_reader_actions_for_table(
+        runtime: &TokioRuntime,
+        table: &DeltaTable,
+        base_path: &str,
+        column_types: &HashMap<String, Type>,
+    ) -> Result<VecDeque<DeltaReaderAction>, ReadError> {
+        let history = runtime.block_on(async {
+            Ok::<Vec<DeltaTableCommitInfo>, ReadError>(table.history(None).await?)
+        })?;
+        Self::get_reader_actions(table, base_path, history, column_types)
     }
 
     fn get_reader_actions(
@@ -1219,12 +1272,21 @@ impl DeltaTableReader {
                 None => {
                     // The Pathway time advancement (e.g. commit) is only possible if it was the
                     // last Parquet block within a version.
+                    let is_last_in_version = self
+                        .current_action
+                        .as_ref()
+                        .expect("current action must be set if there's a reader")
+                        .is_last_in_version;
+
                     let source_event = ReadResult::FinishedSource {
-                        commit_allowed: self
-                            .current_action
-                            .as_ref()
-                            .expect("current action must be set if there's a reader")
-                            .is_last_in_version,
+                        commit_possibility: if is_last_in_version {
+                            // The versions are read on-line, force to avoid squashing same-key events
+                            // with the previous or the next versions.
+                            // Note that it can be less strict if the batch only has additions.
+                            CommitPossibility::Forced
+                        } else {
+                            CommitPossibility::Forbidden
+                        },
                     };
                     self.reader = None;
                     self.current_action = None;

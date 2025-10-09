@@ -356,8 +356,9 @@ def read(
             custom endpoint is left blank, the authorized user's credentials for S3 will
             be used.
         start_from_timestamp_ms: If defined, only changes that occurred after the specified
-            timestamp will be read. This parameter can only be used for tables with
-            append-only behavior.
+            timestamp are read. When used with **non-append-only tables**, the state
+            of the table at the given timestamp is loaded first, and then all updates are read
+            incrementally.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.

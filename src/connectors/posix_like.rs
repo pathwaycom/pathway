@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use crate::connectors::data_storage::ConnectorMode;
+use crate::connectors::data_storage::{CommitPossibility, ConnectorMode};
 use crate::connectors::data_tokenize::Tokenize;
 use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::{
@@ -178,12 +178,12 @@ impl PosixLikeReader {
         // If there is an ongoing action, we must finalize it
         // and emit the corresponding event.
         if let Some(current_action) = take(&mut self.current_action) {
-            let commit_allowed = match current_action.action {
-                QueuedAction::Delete(_) => true,
+            let commit_possibility = match current_action.action {
+                QueuedAction::Delete(_) => CommitPossibility::Possible,
                 QueuedAction::Update(path, metadata) => {
                     self.scanner_actions_queue
                         .push_front(QueuedAction::Read(path, metadata));
-                    false
+                    CommitPossibility::Forbidden
                 }
                 QueuedAction::Read(path, _) => {
                     let are_deletions_enabled = self.are_deletions_enabled();
@@ -194,10 +194,10 @@ impl PosixLikeReader {
                             .remove_object(path.as_ref())
                             .expect("Removal from InMemory cache should not fail");
                     }
-                    true
+                    CommitPossibility::Possible
                 }
             };
-            return Ok(Some(ReadResult::FinishedSource { commit_allowed }));
+            return Ok(Some(ReadResult::FinishedSource { commit_possibility }));
         }
 
         // Find the next valid action to execute

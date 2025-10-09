@@ -34,7 +34,7 @@ use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::NDARRAY_SINGLE_ELEMENT_FIELD_NAME;
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_lake::MetadataPerColumn;
-use crate::connectors::data_storage::ConnectorMode;
+use crate::connectors::data_storage::{CommitPossibility, ConnectorMode};
 use crate::connectors::metadata::IcebergMetadata;
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
@@ -475,7 +475,7 @@ impl IcebergReader {
                     self.diff_queue
                         .push_front(ReadResult::NewSource(new_source_metadata.into()));
                     self.diff_queue.push_back(ReadResult::FinishedSource {
-                        commit_allowed: true,
+                        commit_possibility: CommitPossibility::Possible,
                     });
                 }
 

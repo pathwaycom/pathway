@@ -9,6 +9,7 @@ use eyre::eyre;
 use pathway_engine::connectors::data_format::InnerSchemaField;
 use pathway_engine::connectors::data_format::ParseError;
 use pathway_engine::connectors::data_format::TransparentParser;
+use pathway_engine::connectors::data_storage::CommitPossibility;
 use pathway_engine::connectors::data_storage::DataEventType;
 use pathway_engine::connectors::data_storage::ReaderContext;
 use pathway_engine::connectors::SessionType;
@@ -60,7 +61,7 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
                 EMPTY_OFFSET
             ),
             ReadResult::FinishedSource {
-                commit_allowed: true
+                commit_possibility: CommitPossibility::Possible
             }
         ]
     );
@@ -204,7 +205,7 @@ fn test_sqlite_read_table_nonparsable() -> eyre::Result<()> {
     assert_matches!(
         reader.read()?,
         ReadResult::FinishedSource {
-            commit_allowed: true,
+            commit_possibility: CommitPossibility::Possible
         }
     );
     Ok(())

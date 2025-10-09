@@ -256,10 +256,35 @@ impl ReaderContext {
 }
 
 #[derive(Debug)]
+pub enum CommitPossibility {
+    Forbidden,
+    Possible,
+    Forced,
+}
+
+impl CommitPossibility {
+    pub fn commit_allowed(&self) -> bool {
+        match self {
+            Self::Forbidden => false,
+            Self::Possible | Self::Forced => true,
+        }
+    }
+
+    pub fn commit_forced(&self) -> bool {
+        match self {
+            Self::Forbidden | Self::Possible => false,
+            Self::Forced => true,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum ReadResult {
     Finished,
     NewSource(SourceMetadata),
-    FinishedSource { commit_allowed: bool },
+    FinishedSource {
+        commit_possibility: CommitPossibility,
+    },
     Data(ReaderContext, Offset),
 }
 
@@ -1245,12 +1270,12 @@ impl Reader for PythonReader {
                     }
                     SpecialEvent::EnableAutocommits => {
                         return Ok(ReadResult::FinishedSource {
-                            commit_allowed: true,
+                            commit_possibility: CommitPossibility::Possible,
                         })
                     }
                     SpecialEvent::DisableAutocommits => {
                         return Ok(ReadResult::FinishedSource {
-                            commit_allowed: false,
+                            commit_possibility: CommitPossibility::Forbidden,
                         })
                     }
                     SpecialEvent::Commit => {}
@@ -1923,7 +1948,7 @@ impl SqliteReader {
 
         if !self.queued_updates.is_empty() {
             self.queued_updates.push_back(ReadResult::FinishedSource {
-                commit_allowed: true,
+                commit_possibility: CommitPossibility::Possible,
             });
         }
 
