@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+
+- New external integration with [Qdrant](https://qdrant.tech/)
+
 ## [0.26.3] - 2025-10-03
 
 ### Added

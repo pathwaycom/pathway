@@ -10,6 +10,7 @@ use crate::engine::external_index_wrappers::{ExternalIndexData, ExternalIndexQue
 use crate::external_integration::brute_force_knn_integration::{
     BruteForceKNNIndexFactory, BruteForceKnnMetricKind,
 };
+use crate::external_integration::qdrant_integration::QdrantIndexFactory;
 use crate::external_integration::tantivy_integration::TantivyIndexFactory;
 use crate::external_integration::usearch_integration::{USearchKNNIndexFactory, USearchMetricKind};
 use crate::external_integration::ExternalIndexFactory;
@@ -65,6 +66,24 @@ impl PyExternalIndexFactory {
                 reserved_space,
                 auxiliary_space,
                 metric,
+            )),
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (url, collection_name, vector_size, api_key=None))]
+    fn qdrant_factory(
+        url: String,
+        collection_name: String,
+        vector_size: usize,
+        api_key: Option<String>,
+    ) -> PyExternalIndexFactory {
+        PyExternalIndexFactory {
+            inner: Arc::new(QdrantIndexFactory::new(
+                url,
+                collection_name,
+                vector_size,
+                api_key,
             )),
         }
     }

@@ -1,6 +1,7 @@
 // Copyright © 2024 Pathway
 
 pub mod brute_force_knn_integration;
+pub mod qdrant_integration;
 pub mod tantivy_integration;
 pub mod usearch_integration;
 use std::ops::Deref;
