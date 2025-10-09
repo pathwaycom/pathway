@@ -16,3 +16,4 @@ __pycache__/
 .yarn
 *.csv
 !output_stream.csv
+.venv
