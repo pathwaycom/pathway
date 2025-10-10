@@ -904,6 +904,7 @@ class DataStorage:
         mqtt_settings: MqttSettings | None = None,
         only_provide_metadata: bool = False,
         sort_key_index: int | None = None,
+        legacy_mode: bool = False,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

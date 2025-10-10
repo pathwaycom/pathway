@@ -36,6 +36,7 @@ use futures::StreamExt;
 use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
+use mysql::Pool as MysqlConnectionPool;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
@@ -90,8 +91,8 @@ use crate::connectors::aws::{DynamoDBWriter, KinesisReader, KinesisWriter};
 use crate::connectors::data_format::{
     BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
-    KeyGenerationPolicy, NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter,
-    RegistryEncoderWrapper, SingleColumnFormatter, TransparentParser,
+    KeyGenerationPolicy, NullFormatter, Parser, RegistryEncoderWrapper, SingleColumnFormatter,
+    TransparentParser,
 };
 use crate::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
 use crate::connectors::data_lake::buffering::{
@@ -104,8 +105,8 @@ use crate::connectors::data_lake::iceberg::{
 use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
-    KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, NatsReader,
-    NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
+    KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, MysqlWriter,
+    NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
     PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter, RdkafkaWatermark, ReadError,
     ReadMethod, ReaderBuilder, SqliteReader, TableWriterInitMode, WriteError, Writer,
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
@@ -4469,6 +4470,7 @@ pub struct DataStorage {
     mqtt_settings: Option<MqttSettings>,
     only_provide_metadata: bool,
     sort_key_index: Option<usize>,
+    legacy_mode: bool,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4969,6 +4971,7 @@ impl DataStorage {
         mqtt_settings = None,
         only_provide_metadata = false,
         sort_key_index = None,
+        legacy_mode = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -5006,6 +5009,7 @@ impl DataStorage {
         mqtt_settings: Option<MqttSettings>,
         only_provide_metadata: bool,
         sort_key_index: Option<usize>,
+        legacy_mode: bool,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5042,6 +5046,7 @@ impl DataStorage {
             mqtt_settings,
             only_provide_metadata,
             sort_key_index,
+            legacy_mode,
         }
     }
 
@@ -5287,7 +5292,7 @@ impl DataStorage {
     fn connection_string(&self) -> PyResult<&str> {
         Self::extract_string_field(
             self.connection_string.as_ref(),
-            "For Postgres and MongoDB, the 'connection_string' field must be specified",
+            "For Postgres, MongoDB, and MySQL, the 'connection_string' field must be specified",
         )
     }
 
@@ -5769,10 +5774,7 @@ impl DataStorage {
             .namespace
             .clone()
             .ok_or_else(|| PyValueError::new_err("Namespace must be specified"))?;
-        let mut value_fields = Vec::new();
-        for field in &data_format.value_fields {
-            value_fields.push(field.borrow(py).clone());
-        }
+        let value_fields = data_format.value_fields_vec(py);
 
         let db_params = IcebergDBParams::new(
             uri.to_string(),
@@ -5978,12 +5980,13 @@ impl DataStorage {
                 self.max_batch_size,
                 self.snapshot_maintenance_on_output,
                 self.table_name()?,
-                &data_format.value_fields_type_map(py),
-                data_format.key_field_names.as_ref(),
+                &data_format.value_fields_vec(py),
+                data_format.key_field_names.as_deref(),
                 self.table_writer_init_mode,
+                self.legacy_mode,
             )
             .map_err(|e| {
-                PyIOError::new_err(format!("Unable to initialize PostgreSQL table: {e}"))
+                PyValueError::new_err(format!("Unable to initialize PostgreSQL table: {e}"))
             })?,
             Err(e) => {
                 return Err(PyIOError::new_err(format!(
@@ -6032,11 +6035,8 @@ impl DataStorage {
         }
 
         let path = self.path()?;
-        let mut value_fields = Vec::new();
+        let value_fields = data_format.value_fields_vec(py);
         let partition_columns = self.partition_columns.clone().unwrap_or_default();
-        for field in &data_format.value_fields {
-            value_fields.push(field.borrow(py).clone());
-        }
 
         let table_type = if self.snapshot_maintenance_on_output {
             MaintenanceMode::Snapshot
@@ -6112,10 +6112,7 @@ impl DataStorage {
             .namespace
             .clone()
             .ok_or_else(|| PyValueError::new_err("Namespace must be specified"))?;
-        let mut value_fields = Vec::new();
-        for field in &data_format.value_fields {
-            value_fields.push(field.borrow(py).clone());
-        }
+        let value_fields = data_format.value_fields_vec(py);
 
         let db_params = IcebergDBParams::new(
             uri.to_string(),
@@ -6201,11 +6198,7 @@ impl DataStorage {
         let sender = QuestDBSender::from_conf(uri)
             .map_err(|e| PyValueError::new_err(format!("Failed to create QuestDB sender: {e}")))?;
         let table_name = self.table_name()?;
-        let value_fields: Vec<_> = data_format
-            .value_fields
-            .iter()
-            .map(|field| field.borrow(py).clone().name)
-            .collect();
+        let value_fields: Vec<_> = data_format.value_field_names(py);
         let designated_timestamp_policy_name = data_format
             .designated_timestamp_policy
             .clone()
@@ -6277,11 +6270,7 @@ impl DataStorage {
             runtime,
             client,
             table_name.to_string(),
-            data_format
-                .value_fields
-                .iter()
-                .map(|f| f.borrow(py).clone())
-                .collect(),
+            data_format.value_fields_vec(py),
             self.key_field_index
                 .ok_or_else(|| PyValueError::new_err("'key_field_index' must be specified"))?,
             self.sort_key_index,
@@ -6309,6 +6298,33 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_mysql_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["mysql"])?;
+        }
+        let connection_string = self.connection_string()?;
+        let pool = MysqlConnectionPool::new(connection_string).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to create MySQL connection pool: {e}"))
+        })?;
+        let writer = MysqlWriter::new(
+            pool,
+            self.max_batch_size,
+            self.snapshot_maintenance_on_output,
+            self.table_name()?,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+            self.table_writer_init_mode,
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to initialize MySQL writer: {e}")))?;
+
+        Ok(Box::new(writer))
+    }
+
     fn construct_writer(
         &self,
         py: pyo3::Python,
@@ -6329,6 +6345,7 @@ impl DataStorage {
             "questdb" => self.construct_questdb_writer(py, data_format, license),
             "dynamodb" => self.construct_dynamodb_writer(py, data_format, license),
             "kinesis" => self.construct_kinesis_writer(license),
+            "mysql" => self.construct_mysql_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
@@ -6338,22 +6355,27 @@ impl DataStorage {
 
 impl DataFormat {
     pub fn value_fields_type_map(&self, py: pyo3::Python) -> HashMap<String, Type> {
-        let mut result = HashMap::with_capacity(self.value_fields.len());
-        for field in &self.value_fields {
-            let name = field.borrow(py).name.clone();
-            let type_ = field.borrow(py).type_.clone();
-            result.insert(name, type_);
-        }
-        result
+        self.value_fields
+            .iter()
+            .map(|field| {
+                let f = field.borrow(py);
+                (f.name.clone(), f.type_.clone())
+            })
+            .collect()
+    }
+
+    fn value_fields_vec(&self, py: pyo3::Python) -> Vec<ValueField> {
+        self.value_fields
+            .iter()
+            .map(|field| field.borrow(py).clone())
+            .collect()
     }
 
     fn value_field_names(&self, py: pyo3::Python) -> Vec<String> {
-        // TODO: schema support is to be added here
-        let mut value_field_names = Vec::new();
-        for field in &self.value_fields {
-            value_field_names.push(field.borrow(py).name.clone());
-        }
-        value_field_names
+        self.value_fields
+            .iter()
+            .map(|field| field.borrow(py).name.clone())
+            .collect()
     }
 
     fn construct_dsv_settings(&self, py: pyo3::Python) -> PyResult<DsvSettings> {
@@ -6368,15 +6390,6 @@ impl DataFormat {
             self.value_field_names(py),
             *delimiter,
         ))
-    }
-
-    fn table_name(&self) -> PyResult<String> {
-        match &self.table_name {
-            Some(table_name) => Ok(table_name.to_string()),
-            None => Err(PyValueError::new_err(
-                "For postgres format, table name should be specified",
-            )),
-        }
     }
 
     fn schema(&self, py: pyo3::Python) -> PyResult<HashMap<String, InnerSchemaField>> {
@@ -6450,30 +6463,6 @@ impl DataFormat {
                 let settings = self.construct_dsv_settings(py)?;
                 Ok(settings.formatter())
             }
-            "sql" => {
-                let formatter =
-                    PsqlUpdatesFormatter::new(self.table_name()?, self.value_field_names(py));
-                Ok(Box::new(formatter))
-            }
-            "sql_snapshot" => {
-                let key_field_names = self
-                    .key_field_names
-                    .clone()
-                    .filter(|k| !k.is_empty())
-                    .ok_or_else(|| PyValueError::new_err("Primary key must be specified"))?;
-                let maybe_formatter = PsqlSnapshotFormatter::new(
-                    self.table_name()?,
-                    key_field_names,
-                    self.value_field_names(py),
-                    self.external_diff_column_index,
-                );
-                match maybe_formatter {
-                    Ok(formatter) => Ok(Box::new(formatter)),
-                    Err(e) => Err(PyValueError::new_err(format!(
-                        "Incorrect formatter parameters: {e:?}"
-                    ))),
-                }
-            }
             "jsonlines" => {
                 let schema_registry_settings =
                     if let Some(schema_registry_settings) = &self.schema_registry_settings {
@@ -6506,7 +6495,7 @@ impl DataFormat {
                 Ok(Box::new(formatter))
             }
             "identity" => {
-                let formatter = IdentityFormatter::new();
+                let formatter = IdentityFormatter::new(self.external_diff_column_index);
                 Ok(Box::new(formatter))
             }
             "bson" => {

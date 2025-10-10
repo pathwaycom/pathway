@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-from utils import PGVECTOR_SETTINGS, POSTGRES_SETTINGS, ColumnProperties
+from utils import PGVECTOR_SETTINGS, POSTGRES_SETTINGS, ColumnProperties, SimpleObject
 
 import pathway as pw
 from pathway.internals import api
@@ -20,7 +20,7 @@ def test_psql_output_stream(tmp_path, postgres):
         available: bool
 
     input_path = tmp_path / "input.txt"
-    output_table = postgres.create_table(InputSchema, used_for_output=True)
+    output_table = postgres.create_table(InputSchema, add_special_fields=True)
 
     def _run(test_items: list[dict]) -> None:
         G.clear()
@@ -55,7 +55,8 @@ def test_psql_output_stream(tmp_path, postgres):
     assert rows == expected_rows
 
 
-def test_psql_output_snapshot(tmp_path, postgres):
+# TODO: remove when pw.io.postgres.write_snapshot is fully deprecated.
+def test_psql_output_snapshot_legacy(tmp_path, postgres):
     class InputSchema(pw.Schema):
         name: str = pw.column_definition(primary_key=True)
         count: int
@@ -63,7 +64,7 @@ def test_psql_output_snapshot(tmp_path, postgres):
         available: bool
 
     input_path = tmp_path / "input.txt"
-    output_table = postgres.create_table(InputSchema, used_for_output=True)
+    output_table = postgres.create_table(InputSchema, add_special_fields=True)
 
     def _run(test_items: list[dict]) -> None:
         G.clear()
@@ -102,12 +103,16 @@ def test_psql_write_snapshot_no_primary_key(postgres):
 
     table_name = postgres.random_table_name()
 
-    with pytest.raises(ValueError, match="Primary key must be specified"):
+    with pytest.raises(
+        ValueError,
+        match="primary key field names must be specified for a snapshot mode",
+    ):
         table = pw.debug.table_from_rows(InputSchema, [(1,), (2,), (3,)])
-        pw.io.postgres.write_snapshot(
+        pw.io.postgres.write(
             table,
             table_name=table_name,
             postgres_settings=POSTGRES_SETTINGS,
+            output_table_type="snapshot",
             primary_key=[],
             init_mode="create_if_not_exists",
         )
@@ -123,11 +128,12 @@ def test_psql_write_snapshot_single_column(postgres):
     for i in range(3):
         G.clear()
         table = pw.debug.table_from_rows(InputSchema, [(j + 1,) for j in range(i + 1)])
-        pw.io.postgres.write_snapshot(
+        pw.io.postgres.write(
             table,
             table_name=table_name,
             postgres_settings=POSTGRES_SETTINGS,
-            primary_key=["a"],
+            output_table_type="snapshot",
+            primary_key=[table.a],
             init_mode="create_if_not_exists",
         )
         run()
@@ -147,11 +153,12 @@ def test_psql_write_snapshot_only_primary_keys(postgres):
     for i in range(3):
         G.clear()
         table = pw.debug.table_from_rows(InputSchema, [(1, 1), (2, 2), (3, 3)])
-        pw.io.postgres.write_snapshot(
+        pw.io.postgres.write(
             table,
             table_name=table_name,
             postgres_settings=POSTGRES_SETTINGS,
-            primary_key=["a", "b"],
+            output_table_type="snapshot",
+            primary_key=[table.a, table.b],
             init_mode="create_if_not_exists",
         )
         run()
@@ -165,7 +172,15 @@ def test_psql_write_snapshot_only_primary_keys(postgres):
 
 def write_snapshot(primary_key: list[str]):
     def _write_snapshot(table: pw.Table, /, **kwargs):
-        pw.io.postgres.write_snapshot(table, **kwargs, primary_key=primary_key)
+        primary_key_columns = []
+        for column_name in primary_key:
+            primary_key_columns.append(table[column_name])
+        pw.io.postgres.write(
+            table,
+            **kwargs,
+            output_table_type="snapshot",
+            primary_key=primary_key_columns,
+        )
 
     return _write_snapshot
 
@@ -218,14 +233,6 @@ def test_init_default_table_not_exists(write_method):
             table_name="non_existent_table",
         )
         run()
-
-
-class SimpleObject:
-    def __init__(self, a):
-        self.a = a
-
-    def __eq__(self, other):
-        return self.a == other.a
 
 
 @pytest.mark.parametrize("init_mode", ["create_if_not_exists", "replace"])
@@ -405,12 +412,6 @@ def test_init_replace(write_method, postgres):
     assert external_schema["data"] == ColumnProperties(
         type_name="bigint", is_nullable=False
     )
-    assert external_schema["diff"] == ColumnProperties(
-        type_name="smallint", is_nullable=False
-    )
-    assert external_schema["time"] == ColumnProperties(
-        type_name="bigint", is_nullable=False
-    )
 
 
 def test_psql_json_datetimes(postgres):
@@ -471,7 +472,8 @@ def test_psql_json_datetimes(postgres):
     assert result["c"] == expected
 
 
-def test_psql_external_diff_column(tmp_path, postgres):
+# TODO: remove when pw.io.postgres.write_snapshot is fully deprecated.
+def test_psql_external_diff_column_legacy(tmp_path, postgres):
     class InputSchema(pw.Schema):
         name: str = pw.column_definition(primary_key=True)
         count: int
@@ -480,7 +482,7 @@ def test_psql_external_diff_column(tmp_path, postgres):
         external_diff: int
 
     input_path = tmp_path / "input.txt"
-    output_table = postgres.create_table(InputSchema, used_for_output=True)
+    output_table = postgres.create_table(InputSchema, add_special_fields=True)
 
     def _run(test_items: list[dict]) -> None:
         G.clear()
@@ -552,7 +554,7 @@ def test_pgvector_vectors(pgvector):
         a_vector: np.ndarray
         b_halfvec: np.ndarray
 
-    output_table = pgvector.create_table(OutputSchema, used_for_output=True)
+    output_table = pgvector.create_table(OutputSchema, add_special_fields=True)
 
     @pw.udf
     def make_array(a: int) -> np.ndarray:
@@ -582,3 +584,126 @@ def test_pgvector_vectors(pgvector):
         for name in ["a_vector", "b_halfvec"]:
             assert row[name] == expected_row[name]
             # assert np.all(np.isclose(row[name], expected_row[name])) # FIXME
+
+
+def test_psql_external_diff_column(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        name: str = pw.column_definition(primary_key=True)
+        count: int
+        price: float
+        available: bool
+        external_diff: int
+
+    input_path = tmp_path / "input.txt"
+    output_table = postgres.create_table(InputSchema, add_special_fields=False)
+
+    def _run(test_items: list[dict]) -> None:
+        G.clear()
+        with open(input_path, "w") as f:
+            for test_item in test_items:
+                f.write(json.dumps(test_item) + "\n")
+        table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+        pw.io.postgres.write(
+            table,
+            POSTGRES_SETTINGS,
+            output_table,
+            output_table_type="snapshot",
+            primary_key=[table.name],
+            _external_diff_column=table.external_diff,
+        )
+        run()
+
+    test_items = [
+        {
+            "name": "Milk",
+            "count": 500,
+            "price": 1.5,
+            "available": False,
+            "external_diff": 1,
+        },
+        {
+            "name": "Water",
+            "count": 600,
+            "price": 0.5,
+            "available": True,
+            "external_diff": 1,
+        },
+    ]
+    _run(test_items)
+
+    rows = postgres.get_table_contents(output_table, InputSchema.column_names())
+    rows.sort(key=lambda item: (item["name"], item["available"]))
+    assert rows == test_items
+
+    # Also test that the junk data in the additional columns would not break deletion
+    new_test_items = [
+        {
+            "name": "Milk",
+            "count": -1,
+            "price": -1.0,
+            "available": True,
+            "external_diff": -1,
+        }
+    ]
+    _run(new_test_items)
+
+    rows = postgres.get_table_contents(
+        output_table, InputSchema.column_names(), ("name", "available")
+    )
+    expected_rows = [
+        {
+            "name": "Water",
+            "count": 600,
+            "price": 0.5,
+            "available": True,
+            "external_diff": 1,
+        },
+    ]
+    assert rows == expected_rows
+
+
+def test_psql_output_snapshot(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        name: str = pw.column_definition(primary_key=True)
+        count: int
+        price: float
+        available: bool
+
+    input_path = tmp_path / "input.txt"
+    output_table = postgres.create_table(InputSchema, add_special_fields=False)
+
+    def _run(test_items: list[dict]) -> None:
+        G.clear()
+        with open(input_path, "w") as f:
+            for test_item in test_items:
+                f.write(json.dumps(test_item) + "\n")
+        table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+        pw.io.postgres.write(
+            table,
+            POSTGRES_SETTINGS,
+            output_table,
+            output_table_type="snapshot",
+            primary_key=[table.name],
+        )
+        run()
+
+    test_items = [
+        {"name": "Milk", "count": 500, "price": 1.5, "available": False},
+        {"name": "Water", "count": 600, "price": 0.5, "available": True},
+    ]
+    _run(test_items)
+
+    rows = postgres.get_table_contents(output_table, InputSchema.column_names())
+    rows.sort(key=lambda item: item["name"])
+    assert rows == test_items
+
+    new_test_items = [{"name": "Milk", "count": 500, "price": 1.5, "available": True}]
+    _run(new_test_items)
+
+    rows = postgres.get_table_contents(output_table, InputSchema.column_names(), "name")
+
+    expected_rows = [
+        {"name": "Milk", "count": 500, "price": 1.5, "available": True},
+        {"name": "Water", "count": 600, "price": 0.5, "available": True},
+    ]
+    assert rows == expected_rows

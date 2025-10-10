@@ -1,8 +1,10 @@
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Union
 
 import boto3
+import mysql.connector
 import psycopg2
 import requests
 from pymongo import MongoClient
@@ -56,11 +58,29 @@ KAFKA_SETTINGS = {
 
 DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
+MYSQL_DB_HOST = "mysql"
+MYSQL_DB_PORT = 3306
+MYSQL_DB_NAME = "testdb"
+MYSQL_DB_USER = "testuser"
+MYSQL_DB_PASSWORD = "testpass"
+MYSQL_CONNECTION_STRING = (
+    f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
+    + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+)
+
 
 @dataclass(frozen=True)
 class ColumnProperties:
     type_name: str
     is_nullable: bool
+
+
+class SimpleObject:
+    def __init__(self, a):
+        self.a = a
+
+    def __eq__(self, other):
+        return self.a == other.a
 
 
 class WireProtocolSupporterContext:
@@ -120,7 +140,7 @@ class WireProtocolSupporterContext:
         print(f"Inserting a row: {condition}")
         self.cursor.execute(condition)
 
-    def create_table(self, schema: type[pw.Schema], *, used_for_output: bool) -> str:
+    def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
         table_name = self.random_table_name()
 
         primary_key_found = False
@@ -152,7 +172,7 @@ class WireProtocolSupporterContext:
                 parts.append("PRIMARY KEY NOT NULL")
             fields.append(" ".join(parts))
 
-        if used_for_output:
+        if add_special_fields:
             fields.append("time BIGINT NOT NULL")
             fields.append("diff BIGINT NOT NULL")
 
@@ -331,6 +351,101 @@ class DynamoDBContext:
 
     def generate_table_name(self) -> str:
         return "table" + str(uuid.uuid4())
+
+
+class MySQLContext:
+    def __init__(self):
+        self.connection = mysql.connector.connect(
+            host=MYSQL_DB_HOST,
+            port=MYSQL_DB_PORT,
+            database=MYSQL_DB_NAME,
+            user=MYSQL_DB_USER,
+            password=MYSQL_DB_PASSWORD,
+            autocommit=True,
+        )
+        self.cursor = self.connection.cursor()
+
+    def get_table_schema(self, table_name: str) -> dict[str, ColumnProperties]:
+        query = """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = %s AND table_schema = %s
+            ORDER BY ordinal_position;
+        """
+        self.cursor.execute(query, (table_name, self.connection.database))
+        rows = self.cursor.fetchall()
+
+        schema_props = {}
+        for column_name, type_name, is_nullable in rows:
+            schema_props[column_name] = ColumnProperties(
+                type_name.lower(), is_nullable.upper() == "YES"
+            )
+        return schema_props
+
+    def insert_row(
+        self, table_name: str, values: dict[str, Union[int, bool, str, float]]
+    ) -> None:
+        field_names = list(values.keys())
+        placeholders = ", ".join(["%s"] * len(values))
+        query = f"INSERT INTO {table_name} ({','.join(field_names)}) VALUES ({placeholders})"
+        print(f"Inserting a row: {query}")
+        self.cursor.execute(query, tuple(values.values()))
+
+    def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
+        table_name = self.random_table_name()
+
+        primary_key_found = False
+        fields = []
+        for field_name, field_schema in schema.columns().items():
+            parts = [f"`{field_name}`"]
+            field_type = field_schema.dtype
+            if field_type == dtype.STR:
+                parts.append("VARCHAR(255)")
+            elif field_type == dtype.INT:
+                parts.append("BIGINT")
+            elif field_type == dtype.FLOAT:
+                parts.append("DOUBLE")
+            elif field_type == dtype.BOOL:
+                parts.append("BOOLEAN")
+            else:
+                raise RuntimeError(f"Unsupported field type {field_type}")
+            if field_schema.primary_key:
+                if primary_key_found:
+                    raise AssertionError("Only single primary key supported")
+                primary_key_found = True
+                parts.append("PRIMARY KEY NOT NULL")
+            fields.append(" ".join(parts))
+
+        if add_special_fields:
+            fields.append("`time` BIGINT NOT NULL")
+            fields.append("`diff` BIGINT NOT NULL")
+
+        create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({','.join(fields)})"
+        self.cursor.execute(create_sql)
+        return table_name
+
+    def get_table_contents(
+        self,
+        table_name: str,
+        column_names: list[str],
+        sort_by: Union[str, tuple, None] = None,
+    ) -> list[dict[str, Union[str, int, bool, float]]]:
+        select_query = f"SELECT {','.join(column_names)} FROM {table_name};"
+        self.cursor.execute(select_query)
+        rows = self.cursor.fetchall()
+        result = []
+        for row in rows:
+            row_map = dict(zip(column_names, row))
+            result.append(row_map)
+        if sort_by is not None:
+            if isinstance(sort_by, tuple):
+                result.sort(key=lambda item: tuple(item[key] for key in sort_by))
+            else:
+                result.sort(key=lambda item: item[sort_by])
+        return result
+
+    def random_table_name(self) -> str:
+        return f"mysql_{uuid.uuid4().hex}"
 
 
 class EntryCountChecker:

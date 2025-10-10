@@ -68,7 +68,7 @@ def test_debezium_postgres(tmp_path, postgres, debezium):
     class InputSchema(pw.Schema):
         value: int
 
-    table_name = postgres.create_table(InputSchema, used_for_output=False)
+    table_name = postgres.create_table(InputSchema, add_special_fields=False)
     topic_name = debezium.register_postgres(table_name)
     output_path = tmp_path / "output.jsonl"
     expected_sum = sum([x for x in range(INPUT_COLLECTION_SIZE)])

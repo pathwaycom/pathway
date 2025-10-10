@@ -36,6 +36,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "iceberg",
     "kinesis",
     "monitoring",
+    "mysql",
     "questdb",
     "xpack-sharepoint",
     "xpack-llm-mcp",

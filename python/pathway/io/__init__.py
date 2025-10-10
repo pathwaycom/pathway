@@ -19,6 +19,7 @@ from pathway.io import (
     minio,
     mongodb,
     mqtt,
+    mysql,
     nats,
     null,
     plaintext,
@@ -72,4 +73,5 @@ __all__ = [
     "questdb",
     "dynamodb",
     "kinesis",
+    "mysql",
 ]

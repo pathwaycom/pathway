@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
 use base64::Engine;
-use postgres::Transaction as PsqlTransaction;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyBytes;
 use s3::error::S3Error;
@@ -35,6 +34,10 @@ use futures::StreamExt;
 use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
+use mysql::{
+    prelude::Queryable, Error as MysqlError, Params as MysqlParams, Pool as MysqlConnectionPool,
+    PooledConn as MysqlConnection, TxOpts as MysqlTxOpts, Value as MysqlValue,
+};
 use postgres::types::ToSql;
 use questdb::ingress::{
     Buffer as QuestDBBuffer, Sender as QuestDBSender, Timestamp as QuestDBTimestamp,
@@ -66,8 +69,9 @@ use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
 use crate::engine::time::DateTime;
+use crate::engine::DateTimeNaive;
 use crate::engine::Type;
-use crate::engine::{Key, Value};
+use crate::engine::{Duration as EngineDuration, Key, Value};
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
@@ -75,6 +79,8 @@ use crate::persistence::{PersistentId, UniqueName};
 use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::PythonSubject;
+use crate::python_api::ValueField;
+use crate::retry::{execute_with_retries, RetryConfig};
 
 use async_nats::client::FlushError as NatsFlushError;
 use async_nats::client::PublishError as NatsPublishError;
@@ -670,6 +676,9 @@ pub enum WriteError {
     #[error(transparent)]
     MongoDB(#[from] MongoError),
 
+    #[error(transparent)]
+    Mysql(#[from] MysqlError),
+
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
 
@@ -702,6 +711,12 @@ pub enum WriteError {
 
     #[error("the type {0} can't be used in the index")]
     NotIndexType(Type),
+
+    #[error("the field '{0}' isn't present among the given value fields")]
+    FieldNotFound(String),
+
+    #[error("primary key field names must be specified for a snapshot mode")]
+    EmptyKeyFieldsForSnapshot,
 }
 
 pub trait Writer: Send {
@@ -1304,99 +1319,114 @@ pub struct PsqlWriter {
     buffer: Vec<FormatterContext>,
     snapshot_mode: bool,
     table_name: String,
+    query: SqlQueryTemplate,
+    legacy_mode: bool,
 }
 
 impl PsqlWriter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: PsqlClient,
+        mut client: PsqlClient,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
         table_name: &str,
-        schema: &HashMap<String, Type>,
-        key_field_names: Option<&Vec<String>>,
-        mode: TableWriterInitMode,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+        init_mode: TableWriterInitMode,
+        legacy_mode: bool,
     ) -> Result<PsqlWriter, WriteError> {
-        let mut writer = PsqlWriter {
+        let mut transaction = client.transaction()?;
+        init_mode.initialize(
+            table_name,
+            value_fields,
+            key_field_names,
+            !snapshot_mode || legacy_mode,
+            |query| {
+                transaction.execute(query, &[])?;
+                Ok(())
+            },
+            Self::postgres_data_type,
+        )?;
+        transaction.commit()?;
+
+        let query = SqlQueryTemplate::new(
+            snapshot_mode,
+            table_name,
+            value_fields,
+            key_field_names,
+            legacy_mode,
+            |index| format!("${}", index + 1),
+            Self::on_insert_conflict_condition,
+        )?;
+
+        let writer = PsqlWriter {
             client,
             max_batch_size,
+            query,
             buffer: Vec::new(),
             snapshot_mode,
             table_name: table_name.to_string(),
+            legacy_mode,
         };
-        writer.initialize(mode, table_name, schema, key_field_names)?;
+
         Ok(writer)
     }
 
-    pub fn initialize(
-        &mut self,
-        mode: TableWriterInitMode,
+    // Generates a statement that is used in "on conflict" part of the query
+    fn on_insert_conflict_condition(
         table_name: &str,
-        schema: &HashMap<String, Type>,
-        key_field_names: Option<&Vec<String>>,
-    ) -> Result<(), WriteError> {
-        match mode {
-            TableWriterInitMode::Default => return Ok(()),
-            TableWriterInitMode::Replace | TableWriterInitMode::CreateIfNotExists => {
-                let mut transaction = self.client.transaction()?;
-
-                if mode == TableWriterInitMode::Replace {
-                    Self::drop_table_if_exists(&mut transaction, table_name)?;
+        key_field_names: &[String],
+        value_fields: &[ValueField],
+        legacy_mode: bool,
+    ) -> String {
+        let mut value_field_positions = Vec::new();
+        let mut key_field_positions = vec![0; key_field_names.len()];
+        for (value_index, value_field) in value_fields.iter().enumerate() {
+            value_field_positions.push(value_index);
+            for (key_index, key_field) in key_field_names.iter().enumerate() {
+                if *key_field == value_field.name {
+                    value_field_positions.pop();
+                    key_field_positions[key_index] = value_index;
+                    break;
                 }
-                Self::create_table_if_not_exists(
-                    &mut transaction,
-                    table_name,
-                    schema,
-                    key_field_names,
-                )?;
-
-                transaction.commit()?;
             }
         }
 
-        Ok(())
-    }
+        let mut legacy_update_pairs = Vec::with_capacity(2);
+        if legacy_mode {
+            legacy_update_pairs.push(format!("time=${}", value_fields.len() + 1));
+            legacy_update_pairs.push(format!("diff=${}", value_fields.len() + 2));
+        }
 
-    fn create_table_if_not_exists(
-        transaction: &mut PsqlTransaction,
-        table_name: &str,
-        schema: &HashMap<String, Type>,
-        key_field_names: Option<&Vec<String>>,
-    ) -> Result<(), WriteError> {
-        let columns: Vec<String> = schema
+        let update_pairs = value_field_positions
             .iter()
-            .map(|(name, dtype)| {
-                Self::postgres_data_type(dtype, false)
-                    .map(|dtype_str| format!("{name} {dtype_str}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|position| format!("{}=${}", value_fields[*position].name, *position + 1))
+            .chain(legacy_update_pairs)
+            .join(",");
 
-        let primary_key = key_field_names
-            .as_ref()
-            .filter(|keys| !keys.is_empty())
-            .map_or(String::new(), |keys| {
-                format!(", PRIMARY KEY ({})", keys.join(", "))
-            });
+        if update_pairs.is_empty() {
+            format!(
+                "ON CONFLICT ({}) DO NOTHING",
+                key_field_names.iter().join(",")
+            )
+        } else {
+            let update_condition = key_field_positions
+                .iter()
+                .map(|position| {
+                    format!(
+                        "{}.{}=${}",
+                        table_name,
+                        value_fields[*position].name,
+                        *position + 1
+                    )
+                })
+                .join(" AND ");
 
-        transaction.execute(
-            &format!(
-                "CREATE TABLE IF NOT EXISTS {} ({}, time BIGINT NOT NULL, diff SMALLINT NOT NULL{})",
-                table_name,
-                columns.join(", "),
-                primary_key
-            ),
-            &[],
-        )?;
-
-        Ok(())
-    }
-
-    fn drop_table_if_exists(
-        transaction: &mut PsqlTransaction,
-        table_name: &str,
-    ) -> Result<(), WriteError> {
-        let query = format!("DROP TABLE IF EXISTS {table_name}");
-        transaction.execute(&query, &[])?;
-        Ok(())
+            format!(
+                "ON CONFLICT ({}) DO UPDATE SET {update_pairs} WHERE {update_condition}",
+                key_field_names.iter().join(",")
+            )
+        }
     }
 
     fn postgres_data_type(type_: &Type, is_nested: bool) -> Result<String, WriteError> {
@@ -1441,6 +1471,81 @@ pub enum TableWriterInitMode {
     Default,
     CreateIfNotExists,
     Replace,
+}
+
+impl TableWriterInitMode {
+    pub fn initialize(
+        &self,
+        table_name: &str,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+        include_special_fields: bool,
+        mut execute_query: impl FnMut(&str) -> Result<(), WriteError>,
+        to_db_type: impl FnMut(&Type, bool) -> Result<String, WriteError>,
+    ) -> Result<(), WriteError> {
+        match self {
+            TableWriterInitMode::Default => return Ok(()),
+            TableWriterInitMode::Replace | TableWriterInitMode::CreateIfNotExists => {
+                if self == &TableWriterInitMode::Replace {
+                    Self::drop_table_if_exists(table_name, &mut execute_query)?;
+                }
+                Self::create_table_if_not_exists(
+                    table_name,
+                    value_fields,
+                    key_field_names,
+                    include_special_fields,
+                    &mut execute_query,
+                    to_db_type,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn create_table_if_not_exists(
+        table_name: &str,
+        schema: &[ValueField],
+        key_field_names: Option<&[String]>,
+        include_special_fields: bool,
+        mut execute_query: impl FnMut(&str) -> Result<(), WriteError>,
+        mut to_db_type: impl FnMut(&Type, bool) -> Result<String, WriteError>,
+    ) -> Result<(), WriteError> {
+        let columns: Vec<String> = schema
+            .iter()
+            .map(|item| {
+                to_db_type(&item.type_, false).map(|dtype_str| format!("{} {dtype_str}", item.name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let primary_key = key_field_names
+            .as_ref()
+            .filter(|keys| !keys.is_empty())
+            .map_or(String::new(), |keys| {
+                format!(", PRIMARY KEY ({})", keys.join(", "))
+            });
+
+        let maybe_special_fields = if include_special_fields {
+            ", time BIGINT NOT NULL, diff SMALLINT NOT NULL"
+        } else {
+            ""
+        };
+
+        let query = format!(
+            "CREATE TABLE IF NOT EXISTS {table_name} ({} {maybe_special_fields} {primary_key})",
+            columns.join(", ")
+        );
+
+        execute_query(&query)
+    }
+
+    fn drop_table_if_exists(
+        table_name: &str,
+        mut execute_query: impl FnMut(&str) -> Result<(), WriteError>,
+    ) -> Result<(), WriteError> {
+        let query = format!("DROP TABLE IF EXISTS {table_name}");
+        execute_query(&query)
+    }
 }
 
 mod to_sql {
@@ -1597,23 +1702,37 @@ impl Writer for PsqlWriter {
         let mut transaction = self.client.transaction()?;
 
         for data in self.buffer.drain(..) {
-            let params: Vec<_> = data
+            // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
+            let diff = Value::Int(data.diff.try_into().unwrap());
+            let time = Value::Int(data.time.0.try_into().unwrap());
+            let mut params: Vec<_> = data
                 .values
                 .iter()
                 .map(|v| v as &(dyn ToSql + Sync))
                 .collect();
+            let params = if self.snapshot_mode {
+                if data.diff > 0 && self.legacy_mode {
+                    params.push(&time);
+                    params.push(&diff);
+                    params
+                } else if data.diff > 0 && !self.legacy_mode {
+                    params
+                } else {
+                    self.query.primary_key_fields(params)
+                }
+            } else {
+                params.push(&time);
+                params.push(&diff);
+                params
+            };
 
-            for payload in data.payloads {
-                let payload = payload.into_raw_bytes()?;
-                let query = from_utf8(&payload)?;
-
-                transaction
-                    .execute(query, params.as_slice())
-                    .map_err(|error| WriteError::PsqlQueryFailed {
-                        query: query.to_string(),
-                        error,
-                    })?;
-            }
+            let query = self.query.build_query(data.diff);
+            transaction
+                .execute(&query, params.as_slice())
+                .map_err(|error| WriteError::PsqlQueryFailed {
+                    query: query.to_string(),
+                    error,
+                })?;
         }
 
         transaction.commit()?;
@@ -2411,6 +2530,47 @@ impl QuestDBWriter {
             has_updates: false,
         })
     }
+
+    fn put_value_into_buffer(
+        buffer: &mut QuestDBBuffer,
+        value: Value,
+        column_name: &str,
+    ) -> Result<(), WriteError> {
+        match value {
+            Value::None => buffer, // just don't specify the value
+            Value::Bool(b) => buffer.column_bool(column_name, b)?,
+            Value::Int(i) => buffer.column_i64(column_name, i)?,
+            Value::Float(f) => buffer.column_f64(column_name, *f)?,
+            Value::String(s) => buffer.column_str(column_name, s)?,
+            Value::DateTimeNaive(dt) => buffer.column_ts(
+                column_name,
+                QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
+            )?,
+            Value::DateTimeUtc(dt) => buffer.column_ts(
+                column_name,
+                QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
+            )?,
+            Value::Duration(d) => buffer.column_i64(column_name, d.nanoseconds())?,
+            Value::Json(j) => buffer.column_str(column_name, j.to_string())?,
+            Value::PyObjectWrapper(_) => {
+                buffer.column_str(column_name, create_bincoded_value(&value)?)?
+            }
+            Value::Pointer(p) => buffer.column_str(column_name, p.to_string())?,
+            Value::Bytes(b) => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+                buffer.column_str(column_name, encoded)?
+            }
+            Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
+                let json_value = serialize_value_to_json(&value)?;
+                buffer.column_str(column_name, json_value.to_string())?
+            }
+            Value::Pending | Value::Error => Err(FormatterError::ValueNonSerializable(
+                value.kind(),
+                "QuestDB",
+            ))?,
+        };
+        Ok(())
+    }
 }
 
 impl Writer for QuestDBWriter {
@@ -2446,44 +2606,7 @@ impl Writer for QuestDBWriter {
             if column_id == skip_column_id {
                 continue;
             }
-            match value {
-                Value::None => &mut self.buffer, // just don't specify the value
-                Value::Bool(b) => self.buffer.column_bool(column_name.as_str(), b)?,
-                Value::Int(i) => self.buffer.column_i64(column_name.as_str(), i)?,
-                Value::Float(f) => self.buffer.column_f64(column_name.as_str(), *f)?,
-                Value::String(s) => self.buffer.column_str(column_name.as_str(), s)?,
-                Value::DateTimeNaive(dt) => self.buffer.column_ts(
-                    column_name.as_str(),
-                    QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
-                )?,
-                Value::DateTimeUtc(dt) => self.buffer.column_ts(
-                    column_name.as_str(),
-                    QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
-                )?,
-                Value::Duration(d) => self
-                    .buffer
-                    .column_i64(column_name.as_str(), d.nanoseconds())?,
-                Value::Json(j) => self
-                    .buffer
-                    .column_str(column_name.as_str(), j.to_string())?,
-                Value::PyObjectWrapper(_) => self
-                    .buffer
-                    .column_str(column_name.as_str(), create_bincoded_value(&value)?)?,
-                Value::Pointer(p) => self
-                    .buffer
-                    .column_str(column_name.as_str(), p.to_string())?,
-                Value::Bytes(b) => {
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(b);
-                    self.buffer.column_str(column_name.as_str(), encoded)?
-                }
-                Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
-                    let json_value = serialize_value_to_json(&value)?;
-                    self.buffer
-                        .column_str(column_name.as_str(), json_value.to_string())?
-                }
-                Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable)?,
-                Value::Pending => Err(FormatterError::PendingValueNonJsonSerializable)?,
-            };
+            Self::put_value_into_buffer(&mut self.buffer, value, column_name.as_str())?;
         }
         self.buffer.column_i64(
             SPECIAL_FIELD_DIFF,
@@ -2537,5 +2660,370 @@ impl Writer for QuestDBWriter {
 
     fn single_threaded(&self) -> bool {
         false
+    }
+}
+
+enum SqlQueryTemplate {
+    StreamOfChanges(String),
+    Snapshot {
+        insertion: String,
+        deletion: String,
+        primary_key_indices: Vec<usize>,
+    },
+}
+
+impl SqlQueryTemplate {
+    fn new(
+        snapshot_mode: bool,
+        table_name: &str,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+        include_special_columns_in_snapshot_mode: bool,
+        mut wildcard_by_index: impl FnMut(usize) -> String,
+        mut on_insert_conflict_condition: impl FnMut(&str, &[String], &[ValueField], bool) -> String,
+    ) -> Result<Self, WriteError> {
+        let field_list = value_fields.iter().map(|f| &f.name).join(",");
+        if snapshot_mode {
+            let key_field_names = key_field_names.ok_or(WriteError::EmptyKeyFieldsForSnapshot)?;
+            if key_field_names.is_empty() {
+                return Err(WriteError::EmptyKeyFieldsForSnapshot);
+            }
+            let insertion = if include_special_columns_in_snapshot_mode {
+                let placeholders = (0..value_fields.len() + 2)
+                    .map(&mut wildcard_by_index)
+                    .join(",");
+                format!(
+                    "INSERT INTO {table_name} ({field_list},time,diff) VALUES ({placeholders}) {}",
+                    on_insert_conflict_condition(
+                        table_name,
+                        key_field_names,
+                        value_fields,
+                        include_special_columns_in_snapshot_mode
+                    ),
+                )
+            } else {
+                let placeholders = (0..value_fields.len())
+                    .map(&mut wildcard_by_index)
+                    .join(",");
+                format!(
+                    "INSERT INTO {table_name} ({field_list}) VALUES ({placeholders}) {}",
+                    on_insert_conflict_condition(
+                        table_name,
+                        key_field_names,
+                        value_fields,
+                        include_special_columns_in_snapshot_mode
+                    ),
+                )
+            };
+
+            let primary_key_indices = Self::primary_key_indices(value_fields, key_field_names)?;
+            let tokens: Vec<_> = key_field_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| format!("{name}={}", wildcard_by_index(i)))
+                .collect();
+            let deletion = format!("DELETE FROM {table_name} WHERE {}", tokens.join(" AND "));
+            Ok(SqlQueryTemplate::Snapshot {
+                insertion: insertion.to_string(),
+                deletion: deletion.to_string(),
+                primary_key_indices,
+            })
+        } else {
+            let placeholders = (0..value_fields.len() + 2)
+                .map(&mut wildcard_by_index)
+                .join(",");
+            Ok(Self::StreamOfChanges(format!(
+                "INSERT INTO {table_name} ({field_list},time,diff) VALUES ({placeholders})"
+            )))
+        }
+    }
+
+    fn primary_key_indices(
+        value_fields: &[ValueField],
+        key_field_names: &[String],
+    ) -> Result<Vec<usize>, WriteError> {
+        // We expect a small number of fields, so a straightforward O(N^2) scan is fine
+        // and likely faster in practice than building a HashMap due to lower constant
+        // factors and better cache locality.
+        let mut primary_key_indices: Vec<_> = key_field_names
+            .iter()
+            .map(|name| {
+                value_fields
+                    .iter()
+                    .position(|vf| vf.name == *name)
+                    .ok_or_else(|| WriteError::FieldNotFound(name.to_string()))
+            })
+            .collect::<Result<_, _>>()?;
+        primary_key_indices.sort_unstable();
+        Ok(primary_key_indices)
+    }
+
+    fn primary_key_fields<T>(&self, mut fields: Vec<T>) -> Vec<T> {
+        let Self::Snapshot {
+            primary_key_indices,
+            ..
+        } = self
+        else {
+            unreachable!()
+        };
+        for (index, pkey_index) in primary_key_indices.iter().enumerate() {
+            fields.swap(index, *pkey_index);
+        }
+        fields.truncate(primary_key_indices.len());
+
+        fields
+    }
+
+    fn build_query(&self, diff: isize) -> String {
+        match self {
+            Self::StreamOfChanges(query) => query.to_string(),
+            Self::Snapshot { insertion, .. } if diff > 0 => insertion.to_string(),
+            Self::Snapshot { deletion, .. } if diff < 0 => deletion.to_string(),
+            Self::Snapshot { .. } => unreachable!(),
+        }
+    }
+}
+
+const MAX_MYSQL_RETRIES: usize = 3;
+
+pub struct MysqlWriter {
+    pool: MysqlConnectionPool,
+    current_connection: MysqlConnection,
+    max_batch_size: Option<usize>,
+    buffer: Vec<FormatterContext>,
+    snapshot_mode: bool,
+    table_name: String,
+    query_template: SqlQueryTemplate,
+}
+
+impl MysqlWriter {
+    pub fn new(
+        pool: MysqlConnectionPool,
+        max_batch_size: Option<usize>,
+        snapshot_mode: bool,
+        table_name: &str,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+        mode: TableWriterInitMode,
+    ) -> Result<MysqlWriter, WriteError> {
+        let mut connection = pool.get_conn()?;
+        let mut transaction = connection.start_transaction(MysqlTxOpts::default())?;
+        mode.initialize(
+            table_name,
+            value_fields,
+            key_field_names,
+            !snapshot_mode,
+            |query| {
+                transaction.query_drop(query)?;
+                Ok(())
+            },
+            Self::mysql_data_type,
+        )?;
+        transaction.commit()?;
+
+        let writer = MysqlWriter {
+            current_connection: pool.get_conn()?,
+            pool,
+            max_batch_size,
+            snapshot_mode,
+            table_name: table_name.to_string(),
+            query_template: SqlQueryTemplate::new(
+                snapshot_mode,
+                table_name,
+                value_fields,
+                key_field_names,
+                false,
+                |_| "?".to_string(),
+                Self::on_insert_conflict_condition,
+            )?,
+            buffer: Vec::new(),
+        };
+
+        Ok(writer)
+    }
+
+    // Generates a statement that is used in "on conflict" part of the query
+    fn on_insert_conflict_condition(
+        _table_name: &str,
+        _key_field_names: &[String],
+        value_fields: &[ValueField],
+        _legacy_mode: bool,
+    ) -> String {
+        let update_pairs = value_fields
+            .iter()
+            .map(|field| format!("{name}=new.{name}", name = field.name))
+            .collect::<Vec<_>>();
+
+        format!("AS new ON DUPLICATE KEY UPDATE {}", update_pairs.join(", "))
+    }
+
+    fn mysql_data_type(type_: &Type, is_nested: bool) -> Result<String, WriteError> {
+        let not_null_suffix = if is_nested { "" } else { " NOT NULL" };
+        Ok(match type_ {
+            Type::Bool => format!("BOOLEAN{not_null_suffix}"),
+            Type::Int => format!("BIGINT{not_null_suffix}"),
+            Type::Float => format!("DOUBLE{not_null_suffix}"),
+            Type::Pointer | Type::String => format!("TEXT{not_null_suffix}"),
+            Type::Bytes | Type::PyObjectWrapper => format!("BLOB{not_null_suffix}"),
+            Type::Json => format!("JSON{not_null_suffix}"),
+            Type::Duration => format!("TIME(6){not_null_suffix}"),
+            Type::DateTimeNaive | Type::DateTimeUtc => format!("DATETIME(6){not_null_suffix}"),
+            Type::Optional(wrapped) => {
+                if let Type::Any = **wrapped {
+                    return Err(WriteError::UnsupportedType(type_.clone()));
+                }
+                let wrapped = Self::mysql_data_type(wrapped, true)?;
+                return Ok(wrapped);
+            }
+            Type::Any | Type::Tuple(_) | Type::List(_) | Type::Array(_, _) | Type::Future(_) => {
+                return Err(WriteError::UnsupportedType(type_.clone()))
+            }
+        })
+    }
+
+    fn to_mysql_date(dt: DateTimeNaive) -> MysqlValue {
+        MysqlValue::Date(
+            dt.year().try_into().expect("years must fit u16"),
+            dt.month().try_into().expect("months must fit u8"),
+            dt.day().try_into().expect("days must fit u8"),
+            dt.hour().try_into().expect("hours must fit u8"),
+            dt.minute().try_into().expect("minutes must fit u8"),
+            dt.second().try_into().expect("seconds must fit u8"),
+            dt.microsecond()
+                .try_into()
+                .expect("microseconds must fit u32"),
+        )
+    }
+
+    fn to_mysql_value(value: &Value) -> Result<MysqlValue, WriteError> {
+        match value {
+            Value::None => Ok(MysqlValue::NULL),
+            Value::Bool(b) => Ok(MysqlValue::from(b)),
+            Value::Int(i) => Ok(MysqlValue::Int(*i)),
+            Value::Float(f) => Ok(MysqlValue::Double((*f).into())),
+            Value::Pointer(p) => Ok(MysqlValue::Bytes(p.to_string().into())),
+            Value::String(s) => Ok(MysqlValue::Bytes(s.to_string().into())),
+            Value::Bytes(b) => Ok(MysqlValue::Bytes(b.to_vec())),
+            Value::DateTimeNaive(dt) => Ok(Self::to_mysql_date(*dt)),
+            Value::DateTimeUtc(dt) => {
+                Ok(Self::to_mysql_date(dt.to_naive_in_timezone("UTC").unwrap()))
+            }
+            Value::Duration(d) => {
+                let is_negative = d < &EngineDuration::new(0);
+                let mut total_microseconds = d.microseconds();
+                if is_negative {
+                    total_microseconds *= -1;
+                }
+                let microseconds: u32 = (total_microseconds % 1_000_000)
+                    .try_into()
+                    .expect("microsecond part must fit u32");
+
+                let total_seconds = total_microseconds / 1_000_000;
+                let seconds: u8 = (total_seconds % 60)
+                    .try_into()
+                    .expect("second part must fit u8");
+
+                let total_minutes = total_seconds / 60;
+                let minutes: u8 = (total_minutes % 60)
+                    .try_into()
+                    .expect("minute part must fit u8");
+
+                let total_hours = total_minutes / 60;
+                let hours: u8 = (total_hours % 24)
+                    .try_into()
+                    .expect("hour part must fit u8");
+
+                let total_days = total_hours / 24;
+                let days: u32 = total_days.try_into().expect("day part must fit u32");
+                Ok(MysqlValue::Time(
+                    is_negative,
+                    days,
+                    hours,
+                    minutes,
+                    seconds,
+                    microseconds,
+                ))
+            }
+            Value::Json(j) => Ok(MysqlValue::Bytes(j.to_string().into())),
+            Value::PyObjectWrapper(_) => Ok(MysqlValue::Bytes(
+                bincode::serialize(value).map_err(|e| *e)?,
+            )),
+            Value::IntArray(_)
+            | Value::FloatArray(_)
+            | Value::Tuple(_)
+            | Value::Error
+            | Value::Pending => Err(FormatterError::ValueNonSerializable(value.kind(), "MySQL"))?,
+        }
+    }
+
+    fn flush_with_current_connection(&mut self) -> Result<(), WriteError> {
+        let mut transaction = self
+            .current_connection
+            .start_transaction(MysqlTxOpts::default())?;
+        for data in &self.buffer {
+            let mut params: Vec<_> = data
+                .values
+                .iter()
+                .map(Self::to_mysql_value)
+                .collect::<Result<_, _>>()?;
+            let params = if self.snapshot_mode {
+                if data.diff > 0 {
+                    params
+                } else {
+                    self.query_template.primary_key_fields(params)
+                }
+            } else {
+                params.push(MysqlValue::Int(data.time.0.try_into().unwrap()));
+                params.push(MysqlValue::Int(data.diff.try_into().unwrap()));
+                params
+            };
+            transaction.exec_drop(
+                self.query_template.build_query(data.diff),
+                MysqlParams::Positional(params),
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+impl Writer for MysqlWriter {
+    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        self.buffer.push(data);
+        if let Some(max_batch_size) = self.max_batch_size {
+            if self.buffer.len() == max_batch_size {
+                self.flush(true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        execute_with_retries(
+            || {
+                let cc_save_result = self.flush_with_current_connection();
+                if cc_save_result.is_err() {
+                    self.current_connection = self.pool.get_conn()?;
+                }
+                cc_save_result
+            },
+            RetryConfig::default(),
+            MAX_MYSQL_RETRIES,
+        )?;
+        self.buffer.clear();
+
+        Ok(())
+    }
+
+    fn name(&self) -> String {
+        format!("MySQL({})", self.table_name)
+    }
+
+    fn single_threaded(&self) -> bool {
+        self.snapshot_mode
     }
 }

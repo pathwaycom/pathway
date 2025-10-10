@@ -248,8 +248,9 @@ impl DynamoDBWriter {
             Value::PyObjectWrapper(v) => Ok(AttributeValue::B(
                 bincode::serialize(v).map_err(|e| *e)?.into(),
             )),
-            Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable.into()),
-            Value::Pending => Err(FormatterError::PendingValueNonJsonSerializable.into()),
+            Value::Error | Value::Pending => {
+                Err(FormatterError::ValueNonSerializable(value.kind(), "DynamoDB").into())
+            }
         }
     }
 

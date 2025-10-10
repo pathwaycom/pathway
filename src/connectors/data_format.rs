@@ -4,9 +4,7 @@ use std::any::type_name;
 use std::borrow::Cow;
 use std::clone::Clone;
 use std::collections::HashMap;
-use std::io::Write;
 use std::iter::zip;
-use std::mem::take;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
@@ -16,8 +14,8 @@ use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::time::DateTime;
 use crate::engine::{
-    value::parse_pathway_pointer, DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Error,
-    Key, Result, Timestamp, Type, Value,
+    value::parse_pathway_pointer, value::Kind as ValueKind, DateTimeNaive, DateTimeUtc,
+    Duration as EngineDuration, Error, Key, Result, Timestamp, Type, Value,
 };
 
 use async_nats::header::HeaderMap as NatsHeaders;
@@ -434,20 +432,8 @@ pub enum FormatterError {
     #[error("incorrect column index")]
     IncorrectColumnIndex,
 
-    #[error("type {type_:?} is not bson-serializable")]
-    TypeNonBsonSerializable { type_: Type },
-
-    #[error("Error value is not json-serializable")]
-    ErrorValueNonJsonSerializable,
-
-    #[error("Error value is not bson-serializable")]
-    ErrorValueNonBsonSerializable,
-
-    #[error("Pending value is not json-serializable")]
-    PendingValueNonJsonSerializable,
-
-    #[error("Pending value is not bson-serializable")]
-    PendingValueNonBsonSerializable,
+    #[error("value kind '{0:?}' is not serializable into format: '{1}'")]
+    ValueNonSerializable(ValueKind, &'static str),
 
     #[error("this connector doesn't support this value type")]
     UnsupportedValueType,
@@ -1337,8 +1323,9 @@ pub fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterErro
             let encoded = create_bincoded_value(value)?;
             Ok(json!(encoded))
         }
-        Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable),
-        Value::Pending => Err(FormatterError::PendingValueNonJsonSerializable),
+        Value::Error | Value::Pending => {
+            Err(FormatterError::ValueNonSerializable(value.kind(), "JSON"))
+        }
     }
 }
 
@@ -1818,225 +1805,6 @@ impl Parser for TransparentParser {
 }
 
 #[derive(Debug)]
-pub struct PsqlUpdatesFormatter {
-    table_name: String,
-    value_field_names: Vec<String>,
-}
-
-impl PsqlUpdatesFormatter {
-    pub fn new(table_name: String, value_field_names: Vec<String>) -> PsqlUpdatesFormatter {
-        PsqlUpdatesFormatter {
-            table_name,
-            value_field_names,
-        }
-    }
-}
-
-impl Formatter for PsqlUpdatesFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        if values.len() != self.value_field_names.len() {
-            return Err(FormatterError::ColumnsValuesCountMismatch);
-        }
-
-        let mut result = Vec::new();
-        writeln!(
-            result,
-            "INSERT INTO {} ({},time,diff) VALUES ({},{},{})",
-            self.table_name,
-            self.value_field_names.iter().join(","),
-            (1..=values.len()).format_with(",", |x, f| f(&format_args!("${x}"))),
-            time,
-            diff
-        )
-        .unwrap();
-
-        Ok(FormatterContext::new_single_payload(
-            result,
-            *key,
-            values.to_vec(),
-            time,
-            diff,
-        ))
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum PsqlSnapshotFormatterError {
-    #[error("repeated value field {0:?}")]
-    RepeatedValueField(String),
-
-    #[error("unknown key field {0:?}")]
-    UnknownKey(String),
-}
-
-#[derive(Debug)]
-pub struct PsqlSnapshotFormatter {
-    table_name: String,
-    key_field_names: Vec<String>,
-    value_field_names: Vec<String>,
-
-    key_field_positions: Vec<usize>,
-    value_field_positions: Vec<usize>,
-    external_diff_column_index: Option<usize>,
-}
-
-impl PsqlSnapshotFormatter {
-    pub fn new(
-        table_name: String,
-        mut key_field_names: Vec<String>,
-        mut value_field_names: Vec<String>,
-        external_diff_column_index: Option<usize>,
-    ) -> Result<PsqlSnapshotFormatter, PsqlSnapshotFormatterError> {
-        let mut field_positions = HashMap::<String, usize>::with_capacity(value_field_names.len());
-        for (index, field_name) in value_field_names.iter_mut().enumerate() {
-            if field_positions.contains_key(field_name) {
-                return Err(PsqlSnapshotFormatterError::RepeatedValueField(take(
-                    field_name,
-                )));
-            }
-            field_positions.insert(field_name.clone(), index);
-        }
-
-        let mut key_field_positions = Vec::with_capacity(key_field_names.len());
-        for key_field_name in &mut key_field_names {
-            let position = field_positions
-                .remove(key_field_name)
-                .ok_or_else(|| PsqlSnapshotFormatterError::UnknownKey(take(key_field_name)))?;
-            key_field_positions.push(position);
-        }
-
-        let mut value_field_positions: Vec<_> = field_positions.into_values().collect();
-
-        key_field_positions.sort_unstable();
-        value_field_positions.sort_unstable();
-        Ok(PsqlSnapshotFormatter {
-            table_name,
-            key_field_names,
-            value_field_names,
-
-            key_field_positions,
-            value_field_positions,
-            external_diff_column_index,
-        })
-    }
-}
-
-impl Formatter for PsqlSnapshotFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        if values.len() != self.value_field_names.len() {
-            return Err(FormatterError::ColumnsValuesCountMismatch);
-        }
-
-        let mut result = Vec::new();
-
-        let effective_diff: isize =
-            if let Some(external_diff_column_index) = self.external_diff_column_index {
-                let value = &values[external_diff_column_index];
-                match value {
-                    Value::Int(x) if *x == -1 || *x == 1 => (*x)
-                        .try_into()
-                        .expect("the values from {-1, 1} must convert into isize"),
-                    _ => return Err(FormatterError::IncorrectDiffColumnValue(value.clone())),
-                }
-            } else {
-                diff
-            };
-
-        if effective_diff == 1 {
-            let update_pairs = self
-                .value_field_positions
-                .iter()
-                .map(|position| format!("{}=${}", self.value_field_names[*position], *position + 1))
-                .join(",");
-
-            let on_conflict = if update_pairs.is_empty() {
-                "DO NOTHING".to_string()
-            } else {
-                let update_condition = self
-                    .key_field_positions
-                    .iter()
-                    .map(|position| {
-                        format!(
-                            "{}.{}=${}",
-                            self.table_name,
-                            self.value_field_names[*position],
-                            *position + 1
-                        )
-                    })
-                    .join(" AND ");
-                format!(
-                    "DO UPDATE SET {update_pairs},time={time},diff={diff} WHERE {update_condition}"
-                )
-            };
-
-            writeln!(
-                result,
-                "INSERT INTO {} ({},time,diff) VALUES ({},{},{}) ON CONFLICT ({}) {}",
-                self.table_name,
-                self.value_field_names.iter().format(","),
-                (1..=values.len()).format_with(",", |x, f| f(&format_args!("${x}"))),
-                time,
-                diff,
-                self.key_field_names.iter().join(","),
-                on_conflict
-            )
-            .unwrap();
-
-            Ok(FormatterContext::new_single_payload(
-                result,
-                *key,
-                values.to_vec(),
-                time,
-                diff,
-            ))
-        } else {
-            let mut tokens = Vec::new();
-            let mut key_part_values = Vec::new();
-            for (name, position) in self
-                .key_field_names
-                .iter()
-                .zip(self.key_field_positions.iter())
-            {
-                key_part_values.push(values[*position].clone());
-                tokens.push(format!(
-                    "{name}={}",
-                    format_args!("${}", key_part_values.len())
-                ));
-            }
-
-            writeln!(
-                result,
-                "DELETE FROM {} WHERE {}",
-                self.table_name,
-                tokens.join(" AND "),
-            )
-            .unwrap();
-
-            Ok(FormatterContext::new_single_payload(
-                result,
-                *key,
-                take(&mut key_part_values),
-                time,
-                diff,
-            ))
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct RegistryEncoderWrapper {
     encoder: RegistryJsonEncoder,
     subject: String,
@@ -2173,11 +1941,15 @@ impl Formatter for NullFormatter {
 }
 
 #[derive(Default)]
-pub struct IdentityFormatter {}
+pub struct IdentityFormatter {
+    external_diff_column_index: Option<usize>,
+}
 
 impl IdentityFormatter {
-    pub fn new() -> IdentityFormatter {
-        IdentityFormatter {}
+    pub fn new(external_diff_column_index: Option<usize>) -> Self {
+        Self {
+            external_diff_column_index,
+        }
     }
 }
 
@@ -2189,12 +1961,23 @@ impl Formatter for IdentityFormatter {
         time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
+        let prepared_diff =
+            if let Some(external_diff_column_index) = self.external_diff_column_index {
+                let value = &values[external_diff_column_index];
+                match value {
+                    Value::Int(inner) if *inner == 1 => 1,
+                    Value::Int(inner) if *inner == -1 => -1,
+                    _ => return Err(FormatterError::IncorrectDiffColumnValue(value.clone())),
+                }
+            } else {
+                diff
+            };
         Ok(FormatterContext::new_single_payload(
             Vec::new(),
             *key,
             values.to_vec(),
             time,
-            diff,
+            prepared_diff,
         ))
     }
 }
@@ -2246,11 +2029,9 @@ fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
         // of the BSON DateTime type
         Value::Duration(d) => Ok(bson!(d.milliseconds())),
         Value::Json(j) => Ok(bson!(j.to_string())),
-        Value::Error => Err(FormatterError::ErrorValueNonBsonSerializable),
-        Value::PyObjectWrapper(_) => Err(FormatterError::TypeNonBsonSerializable {
-            type_: Type::PyObjectWrapper,
-        }),
-        Value::Pending => Err(FormatterError::PendingValueNonBsonSerializable),
+        Value::PyObjectWrapper(_) | Value::Error | Value::Pending => {
+            Err(FormatterError::ValueNonSerializable(value.kind(), "BSON"))
+        }
     }
 }
 

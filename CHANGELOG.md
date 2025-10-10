@@ -5,9 +5,14 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.mysql.write` method for writing to MySQL. It supports two output table types: stream of changes and a realtime-updated data snapshot.
+
 ### Changed
 - `pw.io.deltalake.read` now accepts the `start_from_timestamp_ms` parameter for non-append-only tables. In this case, the connector will replay the history of changes in the table version by version starting from the state of the table at the given timestamp. The differences between versions will be applied atomically.
 - Asynchronous UDFs for connecting to API based llm and embedding models now have by default retry strategy set to `pw.udfs.ExponentialRetryStrategy()`
+- `pw.io.postgres.write` method now supports two output table types: stream of changes and realtime-updated data snapshot. The output table type can be chosen with the `output_table_type` parameter.
+- `pw.io.postgres.write_snapshot` method has been deprecated.
 
 ## [0.26.3] - 2025-10-03
 
