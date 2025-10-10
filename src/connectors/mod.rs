@@ -717,9 +717,9 @@ impl Connector {
                             // During this process, reading may be paused again for an indefinite period,
                             // if synchronization group blocks the arrival of the new events in the updated
                             // data unit. Therefore, deferring events depends on whether commits are allowed.
-                            Entry::RealtimeEvent(ReadResult::FinishedSource { commit_allowed }) => {
-                                in_connector_group && !commit_allowed
-                            }
+                            Entry::RealtimeEvent(ReadResult::FinishedSource {
+                                ref commit_possibility,
+                            }) => in_connector_group && !commit_possibility.commit_allowed(),
                             _ => !deferred_events.is_empty(),
                         };
                         deferred_events.push(entry);
@@ -771,11 +771,11 @@ impl Connector {
         match entry {
             Entry::RealtimeEvent(read_result) => match read_result {
                 ReadResult::Finished => {}
-                ReadResult::FinishedSource {
-                    commit_allowed: commit_allowed_external,
-                } => {
-                    *commit_allowed = commit_allowed_external;
-                    if *commit_allowed && self.has_clock_advanced() {
+                ReadResult::FinishedSource { commit_possibility } => {
+                    *commit_allowed = commit_possibility.commit_allowed();
+                    let commit_needed =
+                        self.has_clock_advanced() || commit_possibility.commit_forced();
+                    if *commit_allowed && commit_needed {
                         let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
                         self.on_parsed_data(
                             parsed_entries,
