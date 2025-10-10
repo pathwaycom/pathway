@@ -6786,7 +6786,7 @@ where
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen, name = "ExpportedTable")]
+#[pyclass(module = "pathway.engine", frozen, name = "ExportedTable")]
 pub struct PyExportedTable {
     inner: Arc<dyn ExportedTable>,
 }
