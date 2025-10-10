@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.io.deltalake.read` now accepts the `start_from_timestamp_ms` parameter for non-append-only tables. In this case, the connector will replay the history of changes in the table version by version starting from the state of the table at the given timestamp. The differences between versions will be applied atomically.
+- Asynchronous UDFs for connecting to API based llm and embedding models now have by default retry strategy set to `pw.udfs.ExponentialRetryStrategy()`
 
 ## [0.26.3] - 2025-10-03
 

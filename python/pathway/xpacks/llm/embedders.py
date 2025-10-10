@@ -96,7 +96,8 @@ class OpenAIEmbedder(BaseEmbedder):
         capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
+            Defaults to the `ExponentialRetryStrategy
+            <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
@@ -153,7 +154,9 @@ class OpenAIEmbedder(BaseEmbedder):
         self,
         *,
         capacity: int | None = None,
-        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "text-embedding-3-small",
         truncation_keep_strategy: Literal["start", "end"] | None = "start",
@@ -259,7 +262,8 @@ class LiteLLMEmbedder(BaseEmbedder):
         capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
+            Defaults to the `ExponentialRetryStrategy
+            <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
@@ -305,7 +309,9 @@ class LiteLLMEmbedder(BaseEmbedder):
         self,
         *,
         capacity: int | None = None,
-        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = None,
         **llmlite_kwargs,
@@ -454,7 +460,8 @@ class GeminiEmbedder(BaseEmbedder):
         capacity: Maximum number of concurrent operations allowed.
             Defaults to ``None``, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to ``None``, meaning no retries.
+            Defaults to the `ExponentialRetryStrategy
+            <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
@@ -495,7 +502,9 @@ class GeminiEmbedder(BaseEmbedder):
         self,
         *,
         capacity: int | None = None,
-        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "models/embedding-001",
         api_key: str | None = None,
