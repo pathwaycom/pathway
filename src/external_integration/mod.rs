@@ -1,6 +1,7 @@
 // Copyright © 2024 Pathway
 
 pub mod brute_force_knn_integration;
+pub mod qdrant_integration;
 pub mod tantivy_integration;
 pub mod usearch_integration;
 use std::ops::Deref;
@@ -55,6 +56,22 @@ pub struct IndexDerivedImpl {
     query_accessor: Accessor,
     query_limit_accessor: OptionAccessor,
     query_filter_accessor: OptionAccessor,
+}
+
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum IndexingError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Qdrant(#[from] qdrant_client::QdrantError),
+}
+
+impl From<IndexingError> for Error {
+    fn from(error: IndexingError) -> Self {
+        Error::Other(Box::new(error))
+    }
 }
 
 impl IndexDerivedImpl {

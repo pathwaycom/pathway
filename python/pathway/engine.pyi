@@ -1028,6 +1028,13 @@ class ExternalIndexFactory:
         auxiliary_space: int,
         metric: BruteForceKnnMetricKind,
     ) -> ExternalIndexFactory: ...
+    @staticmethod
+    def qdrant_factory(
+        url: str,
+        collection_name: str,
+        vector_size: int,
+        api_key: str | None = None,
+    ) -> ExternalIndexFactory: ...
 
 @dataclasses.dataclass(frozen=True)
 class ExternalIndexData:
