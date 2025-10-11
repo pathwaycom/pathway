@@ -58,6 +58,22 @@ pub struct IndexDerivedImpl {
     query_filter_accessor: OptionAccessor,
 }
 
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum IndexingError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Qdrant(#[from] qdrant_client::QdrantError),
+}
+
+impl From<IndexingError> for Error {
+    fn from(error: IndexingError) -> Self {
+        Error::Other(Box::new(error))
+    }
+}
+
 impl IndexDerivedImpl {
     pub fn new(
         inner: Box<dyn ExternalIndex>,
