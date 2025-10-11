@@ -1,6 +1,7 @@
-// Copyright © 2024 Pathway
+// Copyright © 2025 Pathway
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::engine::error::DynResult;
@@ -14,7 +15,7 @@ use qdrant_client::qdrant::{
 use qdrant_client::Qdrant;
 
 use super::{
-    DerivedFilteredSearchIndex, ExternalIndex, ExternalIndexFactory, KeyScoreMatch,
+    DerivedFilteredSearchIndex, ExternalIndex, ExternalIndexFactory, IndexingError, KeyScoreMatch,
     KeyToU64IdMapper, NonFilteringExternalIndex,
 };
 
@@ -28,34 +29,34 @@ pub struct QdrantIndex {
 
 impl QdrantIndex {
     pub fn new(
-        url: String,
+        url: &str,
         collection_name: String,
         vector_size: usize,
         api_key: Option<String>,
-    ) -> DynResult<QdrantIndex> {
+    ) -> Result<Self, Error> {
         let runtime = create_async_tokio_runtime()
             .map_err(|e| Error::Other(format!("Failed to create async runtime: {e}").into()))?;
 
-        let client = Qdrant::from_url(&url)
+        let client = Qdrant::from_url(url)
             .api_key(api_key)
             .build()
-            .map_err(|e| Error::Other(format!("Failed to create Qdrant client: {e}").into()))?;
+            .map_err(IndexingError::from)?;
 
-        let collection_exists = runtime
-            .block_on(client.collection_exists(&collection_name))
-            .map_err(|e| {
-                Error::Other(format!("Failed to check collection existence: {e}").into())
-            })?;
+        runtime.block_on(async {
+            let exists = client.collection_exists(&collection_name).await?;
 
-        if !collection_exists {
-            runtime
-                .block_on(client.create_collection(
-                    CreateCollectionBuilder::new(collection_name.clone()).vectors_config(
-                        VectorParamsBuilder::new(vector_size as u64, Distance::Cosine),
-                    ),
-                ))
-                .map_err(|e| Error::Other(format!("Failed to create collection: {e}").into()))?;
-        }
+            if !exists {
+                client
+                    .create_collection(
+                        CreateCollectionBuilder::new(collection_name.clone()).vectors_config(
+                            VectorParamsBuilder::new(vector_size as u64, Distance::Cosine),
+                        ),
+                    )
+                    .await?;
+            }
+
+            Ok::<_, IndexingError>(())
+        })?;
 
         Ok(QdrantIndex {
             client,
@@ -66,19 +67,23 @@ impl QdrantIndex {
         })
     }
 
-    fn search_one(&self, data: &[f64], limit: usize) -> DynResult<Vec<KeyScoreMatch>> {
+    #[allow(clippy::cast_possible_truncation)]
+    async fn search_one_async(
+        &self,
+        data: &[f64],
+        limit: usize,
+    ) -> Result<Vec<KeyScoreMatch>, IndexingError> {
         let query_vec: Vec<f32> = data.iter().map(|v| *v as f32).collect();
         let search_result = self
-            .runtime
-            .block_on(
-                self.client.query(
-                    QueryPointsBuilder::new(&self.collection_name)
-                        .query(query_vec)
-                        .limit(limit as u64)
-                        .with_payload(false),
-                ),
+            .client
+            .query(
+                QueryPointsBuilder::new(&self.collection_name)
+                    .query(query_vec)
+                    .limit(limit as u64)
+                    .with_payload(false),
             )
-            .map_err(|e| Error::Other(format!("Search failed: {e}").into()))?;
+            .await?;
+
         let mut results = Vec::with_capacity(search_result.result.len());
         for point in search_result.result {
             let Some(point_id) = point.id else {
@@ -113,69 +118,121 @@ impl QdrantIndex {
         Ok(results)
     }
 
-    fn add_one(&mut self, key: Key, data: &[f64]) -> DynResult<()> {
-        if data.len() != self.vector_size {
-            return Err(format!(
-                "Vector size mismatch: expected {}, got {}",
-                self.vector_size,
-                data.len()
-            )
-            .into());
+    #[allow(clippy::cast_possible_truncation)]
+    fn add_batch(&mut self, data: Vec<(Key, Vec<f64>)>) -> Result<(), IndexingError> {
+        let mut points = Vec::with_capacity(data.len());
+
+        for (key, vec_data) in data {
+            if vec_data.len() != self.vector_size {
+                return Err(IndexingError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Vector size mismatch: expected {}, got {}",
+                        self.vector_size,
+                        vec_data.len()
+                    ),
+                )));
+            }
+
+            let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
+            let vec_f32: Vec<f32> = vec_data.iter().map(|v| *v as f32).collect();
+            points.push(PointStruct::new(
+                key_id,
+                vec_f32,
+                HashMap::<String, Value>::new(),
+            ));
         }
 
-        let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
-        let vec_f32: Vec<f32> = data.iter().map(|v| *v as f32).collect();
-
-        self.runtime
-            .block_on(self.client.upsert_points(UpsertPointsBuilder::new(
-                &self.collection_name,
-                vec![PointStruct::new(
-                    key_id,
-                    vec_f32,
-                    HashMap::<String, Value>::new(),
-                )],
-            )))
-            .map_err(|e| Error::Other(format!("Failed to add point: {e}").into()))?;
+        self.runtime.block_on(
+            self.client
+                .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points)),
+        )?;
 
         Ok(())
     }
 
-    fn remove_one(&mut self, key: Key) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.remove_key(key)?;
+    fn remove_batch(&mut self, keys: Vec<Key>) -> Result<Vec<u64>, IndexingError> {
+        let mut key_ids = Vec::with_capacity(keys.len());
+        let mut missing_keys = Vec::new();
 
-        self.runtime
-            .block_on(
-                self.client.delete_points(
-                    DeletePointsBuilder::new(&self.collection_name).points([key_id]),
-                ),
-            )
-            .map_err(|e| Error::Other(format!("Failed to remove point: {e}").into()))?;
+        for key in keys {
+            match self.key_to_id_mapper.remove_key(key) {
+                Ok(key_id) => key_ids.push(key_id),
+                Err(_) => missing_keys.push(key),
+            }
+        }
 
-        Ok(())
+        if !key_ids.is_empty() {
+            self.runtime.block_on(self.client.delete_points(
+                DeletePointsBuilder::new(&self.collection_name).points(key_ids.clone()),
+            ))?;
+        }
+
+        Ok(key_ids)
     }
 }
 
 impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for QdrantIndex {
     fn add(&mut self, add_data: Vec<(Key, Vec<f64>)>) -> Vec<(Key, DynResult<()>)> {
-        add_data
-            .into_iter()
-            .map(|(key, data)| (key, self.add_one(key, &data)))
-            .collect()
+        if add_data.is_empty() {
+            return Vec::new();
+        }
+
+        let keys: Vec<Key> = add_data.iter().map(|(k, _)| *k).collect();
+
+        match self.add_batch(add_data) {
+            Ok(()) => keys.into_iter().map(|key| (key, Ok(()))).collect(),
+            Err(e) => {
+                let shared_error: Arc<str> = Error::from(e).to_string().into();
+                keys.into_iter()
+                    .map(|key| (key, Err(Error::Other(shared_error.as_ref().into()).into())))
+                    .collect()
+            }
+        }
     }
 
     fn remove(&mut self, keys: Vec<Key>) -> Vec<(Key, DynResult<()>)> {
-        keys.into_iter()
-            .map(|key| (key, self.remove_one(key)))
-            .collect()
+        if keys.is_empty() {
+            return Vec::new();
+        }
+
+        let original_keys = keys.clone();
+
+        match self.remove_batch(keys) {
+            Ok(_) => original_keys.into_iter().map(|key| (key, Ok(()))).collect(),
+            Err(e) => {
+                let shared_error: Arc<str> = Error::from(e).to_string().into();
+                original_keys
+                    .into_iter()
+                    .map(|key| (key, Err(Error::Other(shared_error.as_ref().into()).into())))
+                    .collect()
+            }
+        }
     }
 
     fn search(
         &self,
         queries: &[(Key, Vec<f64>, usize)],
     ) -> Vec<(Key, DynResult<Vec<KeyScoreMatch>>)> {
-        queries
-            .iter()
-            .map(|(key, data, limit)| (*key, self.search_one(data, *limit)))
+        if queries.is_empty() {
+            return Vec::new();
+        }
+
+        let keys: Vec<Key> = queries.iter().map(|(k, _, _)| *k).collect();
+
+        let results = self.runtime.block_on(async {
+            let mut futures = Vec::with_capacity(queries.len());
+
+            for (_, data, limit) in queries {
+                futures.push(self.search_one_async(data, *limit));
+            }
+
+            futures::future::join_all(futures).await
+        });
+
+        keys.into_iter()
+            .zip(results)
+            .map(|(key, result)| (key, result.map_err(|e| Error::from(e).into())))
             .collect()
     }
 }
@@ -189,13 +246,13 @@ pub struct QdrantIndexFactory {
 
 impl QdrantIndexFactory {
     pub fn new(
-        url: String,
+        url: &str,
         collection_name: String,
         vector_size: usize,
         api_key: Option<String>,
     ) -> QdrantIndexFactory {
         QdrantIndexFactory {
-            url,
+            url: url.to_string(),
             collection_name,
             vector_size,
             api_key,
@@ -206,7 +263,7 @@ impl QdrantIndexFactory {
 impl ExternalIndexFactory for QdrantIndexFactory {
     fn make_instance(&self) -> Result<Box<dyn ExternalIndex>, Error> {
         let qdrant_index = QdrantIndex::new(
-            self.url.clone(),
+            &self.url,
             self.collection_name.clone(),
             self.vector_size,
             self.api_key.clone(),
