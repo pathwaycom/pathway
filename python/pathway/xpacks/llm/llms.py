@@ -103,7 +103,8 @@ class OpenAIChat(BaseChat):
         capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
+            Defaults to the `ExponentialRetryStrategy
+            <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
@@ -241,7 +242,9 @@ class OpenAIChat(BaseChat):
     def __init__(
         self,
         capacity: int | None = None,
-        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "gpt-3.5-turbo",
         *,
@@ -332,7 +335,8 @@ class LiteLLMChat(BaseChat):
         capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
+            Defaults to the `ExponentialRetryStrategy
+            <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
@@ -371,7 +375,9 @@ class LiteLLMChat(BaseChat):
     def __init__(
         self,
         capacity: int | None = None,
-        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = None,
         *,
@@ -632,7 +638,8 @@ class CohereChat(BaseChat):
         capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
+            Defaults to the `ExponentialRetryStrategy
+            <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
@@ -666,7 +673,9 @@ class CohereChat(BaseChat):
     def __init__(
         self,
         capacity: int | None = None,
-        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "command",
         **cohere_kwargs,

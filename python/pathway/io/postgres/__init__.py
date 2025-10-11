@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Iterable, Literal
 
 from pathway.internals import api, datasink, dtype
@@ -11,6 +12,8 @@ from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import get_column_index, init_mode_from_str
+
+_SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 
 
 def _connection_string_from_settings(settings: dict):
@@ -26,13 +29,23 @@ def write(
     *,
     max_batch_size: int | None = None,
     init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
+    output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
+    primary_key: list[ColumnReference] | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    _external_diff_column: ColumnReference | None = None,
 ) -> None:
-    """Writes ``table``'s stream of updates to a postgres table.
+    """Writes ``table`` to a Postgres table. Two types of output tables are supported:
+    **stream of changes** and **snapshot**.
 
-    In order for write to be successful, it is required that the table contains ``time``
-    and ``diff`` columns of the integer type.
+    When using **stream of changes**, the output table contains a log of all changes that
+    occurred in the Pathway table. In this case, it is expected to have two additional columns,
+    ``time`` and ``diff``, both of integer type. ``time`` indicates the transactional
+    minibatch time in which the row change occurred. ``diff`` can be either ``1`` for
+    row insertion or ``-1`` for row deletion.
+
+    When using **snapshot**, the set of columns in the output table matches the set of
+    columns in the table you are writing. No additional columns are created.
 
     Args:
         table: Table to be written.
@@ -48,6 +61,15 @@ def write(
             "create_if_not_exists": initializes the SQL writer by creating the necessary table
             if they do not already exist;
             "replace": Initializes the SQL writer by replacing any existing table.
+        output_table_type: Defines how the output table manages its data. If set to ``"stream_of_changes"``
+            (the default), the system outputs a stream of modifications to the target table.
+            This stream includes two additional integer columns: ``time``, representing the computation
+            minibatch, and ``diff``, indicating the type of change (``1`` for row addition and
+            ``-1`` for row deletion). If set to ``"snapshot"``, the table maintains the current
+            state of the data, updated atomically with each minibatch and ensuring that no partial
+            minibatch updates are visible.
+        primary_key: When using snapshot mode, one or more columns that form the primary
+            key in the target Postgres table.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on the
@@ -111,26 +133,80 @@ def write(
     ...     connection_string_parts,
     ...     "pets",
     ... )
+
+    Consider another scenario: the ``pets`` table is updated and you need to keep only
+    the latest record for each pet, identified by the ``pet`` field in this table.
+    In this case, you need the output table type to be ``"snapshot"``. The table can be
+    created automatically in the database if you set ``init_mode`` to ``"replace"`` or
+    ``"create_if_not_exists"``. If you create it manually, the command can look like this:
+
+    .. code-block:: sql
+
+        CREATE TABLE pets (
+            pet TEXT PRIMARY KEY,
+            age INTEGER,
+            owner TEXT
+        );
+
+    The primary key in the target table is the ``pet`` field. Therefore, the ``primary_key``
+    parameter for the command should be ``[t.pet]``. You can write this table as follows:
+
+    >>> pw.io.postgres.write(
+    ...     t,
+    ...     connection_string_parts,
+    ...     "pets",
+    ...     output_table_type="snapshot",
+    ...     primary_key=[t.pet],
+    ... )
     """
+
+    is_snapshot_mode = output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
         table_name=table_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
-    )
-    data_format = api.DataFormat(
-        format_type="sql",
-        key_field_names=[],
-        value_fields=_format_output_value_fields(table),
-        table_name=table_name,
+        snapshot_maintenance_on_output=is_snapshot_mode,
     )
 
+    if not is_snapshot_mode:
+        if _external_diff_column is not None:
+            raise ValueError(
+                "_external_diff_column is only supported for the snapshot table type"
+            )
+        if primary_key is not None:
+            raise ValueError(
+                "primary_key can only be specified for the snapshot table type"
+            )
+    if (
+        _external_diff_column is not None
+        and _external_diff_column._column.dtype != dtype.INT
+    ):
+        raise ValueError("_external_diff_column can only have an integer type")
+
+    external_diff_column_index = get_column_index(table, _external_diff_column)
+    key_field_names = None
+    if primary_key is not None:
+        key_field_names = []
+        for pkey_field in primary_key:
+            key_field_names.append(pkey_field.name)
+    data_format = api.DataFormat(
+        format_type="identity",
+        key_field_names=key_field_names,
+        value_fields=_format_output_value_fields(table),
+        table_name=table_name,
+        external_diff_column_index=external_diff_column_index,
+    )
+
+    datasink_type = (
+        "snapshot" if output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE else "sink"
+    )
     table.to(
         datasink.GenericDataSink(
             data_storage,
             data_format,
-            datasink_name="postgres.sink",
+            datasink_name=f"postgres.{datasink_type}",
             unique_name=name,
             sort_by=sort_by,
         )
@@ -150,7 +226,12 @@ def write_snapshot(
     sort_by: Iterable[ColumnReference] | None = None,
     _external_diff_column: ColumnReference | None = None,
 ) -> None:
-    """Maintains a snapshot of a table within a Postgres table.
+    """**WARNING**: This method is deprecated. Please use ``pw.io.postgres.write`` with
+    the parameter ``output_table_type="snapshot"`` instead. Note that the new version
+    does not create the ``time`` and ``diff`` columns and maintains a current snapshot
+    of the table you are writing.
+
+    Maintains a snapshot of a table within a Postgres table.
 
     In order for write to be successful, it is required that the table contains ``time``
     and ``diff`` columns of the integer type.
@@ -214,6 +295,13 @@ def write_snapshot(
     ... )
     """
 
+    warnings.warn(
+        "`pw.io.postgres.write_snapshot` is deprecated and will be removed soon. "
+        'Please use `pw.io.postgres.write` with output_table_type="snapshot" instead.',
+        DeprecationWarning,
+        stacklevel=5,
+    )
+
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
@@ -221,6 +309,7 @@ def write_snapshot(
         snapshot_maintenance_on_output=True,
         table_name=table_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
+        legacy_mode=True,
     )
 
     if (
@@ -230,7 +319,7 @@ def write_snapshot(
         raise ValueError("_external_diff_column can only have an integer type")
     external_diff_column_index = get_column_index(table, _external_diff_column)
     data_format = api.DataFormat(
-        format_type="sql_snapshot",
+        format_type="identity",
         key_field_names=primary_key,
         value_fields=_format_output_value_fields(table),
         table_name=table_name,

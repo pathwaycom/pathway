@@ -3,6 +3,7 @@ from utils import (
     DebeziumContext,
     DynamoDBContext,
     MongoDBContext,
+    MySQLContext,
     PgvectorContext,
     PostgresContext,
     QuestDBContext,
@@ -37,3 +38,8 @@ def debezium():
 @pytest.fixture
 def dynamodb():
     return DynamoDBContext()
+
+
+@pytest.fixture
+def mysql():
+    return MySQLContext()
