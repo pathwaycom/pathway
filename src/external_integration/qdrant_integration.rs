@@ -75,7 +75,7 @@ impl QdrantIndex {
                     QueryPointsBuilder::new(&self.collection_name)
                         .query(query_vec)
                         .limit(limit as u64)
-                        .with_payload(true),
+                        .with_payload(false),
                 ),
             )
             .map_err(|e| Error::Other(format!("Search failed: {e}").into()))?;
