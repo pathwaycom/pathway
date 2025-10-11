@@ -73,7 +73,7 @@ impl PyExternalIndexFactory {
     #[staticmethod]
     #[pyo3(signature = (url, collection_name, vector_size, api_key=None))]
     fn qdrant_factory(
-        url: String,
+        url: &str,
         collection_name: String,
         vector_size: usize,
         api_key: Option<String>,
