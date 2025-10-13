@@ -34,8 +34,7 @@ impl QdrantIndex {
         vector_size: usize,
         api_key: Option<String>,
     ) -> Result<Self, Error> {
-        let runtime = create_async_tokio_runtime()
-            .map_err(|e| Error::Other(format!("Failed to create async runtime: {e}").into()))?;
+        let runtime = create_async_tokio_runtime().map_err(IndexingError::from)?;
 
         let client = Qdrant::from_url(url)
             .api_key(api_key)
@@ -84,83 +83,82 @@ impl QdrantIndex {
             )
             .await?;
 
-        let mut results = Vec::with_capacity(search_result.result.len());
-        for point in search_result.result {
-            let Some(point_id) = point.id else {
-                warn!("Qdrant returned point without ID, ignoring");
-                continue;
-            };
+        let results = search_result
+            .result
+            .into_iter()
+            .filter_map(|point| {
+                let Some(point_id) = point.id else {
+                    warn!("Qdrant returned point without ID, ignoring");
+                    return None;
+                };
 
-            let Some(point_id_options) = point_id.point_id_options else {
-                warn!("Qdrant returned point ID without options, ignoring");
-                continue;
-            };
+                let Some(point_id_options) = point_id.point_id_options else {
+                    warn!("Qdrant returned point ID without options, ignoring");
+                    return None;
+                };
 
-            let id = match point_id_options {
-                PointIdOptions::Num(num) => num,
-                PointIdOptions::Uuid(_) => {
-                    warn!("Qdrant returned UUID point ID, expected numeric ID");
-                    continue;
-                }
-            };
+                let id = match point_id_options {
+                    PointIdOptions::Num(num) => num,
+                    PointIdOptions::Uuid(_) => {
+                        warn!("Qdrant returned UUID point ID, expected numeric ID");
+                        return None;
+                    }
+                };
 
-            let Some(key) = self.key_to_id_mapper.get_key_for_id(id) else {
-                warn!("Qdrant index returned a nonexistent ID {id}, ignoring");
-                continue;
-            };
+                let Some(key) = self.key_to_id_mapper.get_key_for_id(id) else {
+                    warn!("Qdrant index returned a nonexistent ID {id}, ignoring");
+                    return None;
+                };
 
-            results.push(KeyScoreMatch {
-                key,
-                score: f64::from(point.score),
-            });
-        }
+                Some(KeyScoreMatch {
+                    key,
+                    score: f64::from(point.score),
+                })
+            })
+            .collect();
 
         Ok(results)
     }
 
     #[allow(clippy::cast_possible_truncation)]
     fn add_batch(&mut self, data: Vec<(Key, Vec<f64>)>) -> Result<(), IndexingError> {
-        let mut points = Vec::with_capacity(data.len());
+        let points: Result<Vec<_>, IndexingError> = data
+            .into_iter()
+            .map(|(key, vec_data)| {
+                if vec_data.len() != self.vector_size {
+                    return Err(IndexingError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Vector size mismatch: expected {}, got {}",
+                            self.vector_size,
+                            vec_data.len()
+                        ),
+                    )));
+                }
 
-        for (key, vec_data) in data {
-            if vec_data.len() != self.vector_size {
-                return Err(IndexingError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Vector size mismatch: expected {}, got {}",
-                        self.vector_size,
-                        vec_data.len()
-                    ),
-                )));
-            }
-
-            let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
-            let vec_f32: Vec<f32> = vec_data.iter().map(|v| *v as f32).collect();
-            points.push(PointStruct::new(
-                key_id,
-                vec_f32,
-                HashMap::<String, Value>::new(),
-            ));
-        }
+                let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
+                let vec_f32: Vec<f32> = vec_data.iter().map(|v| *v as f32).collect();
+                Ok(PointStruct::new(
+                    key_id,
+                    vec_f32,
+                    HashMap::<String, Value>::new(),
+                ))
+            })
+            .collect();
 
         self.runtime.block_on(
             self.client
-                .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points)),
+                .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points?)),
         )?;
 
         Ok(())
     }
 
     fn remove_batch(&mut self, keys: Vec<Key>) -> Result<Vec<u64>, IndexingError> {
-        let mut key_ids = Vec::with_capacity(keys.len());
-        let mut missing_keys = Vec::new();
-
-        for key in keys {
-            match self.key_to_id_mapper.remove_key(key) {
-                Ok(key_id) => key_ids.push(key_id),
-                Err(_) => missing_keys.push(key),
-            }
-        }
+        let key_ids: Vec<u64> = keys
+            .into_iter()
+            .filter_map(|key| self.key_to_id_mapper.remove_key(key).ok())
+            .collect();
 
         if !key_ids.is_empty() {
             self.runtime.block_on(self.client.delete_points(
@@ -221,11 +219,10 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for QdrantIndex {
         let keys: Vec<Key> = queries.iter().map(|(k, _, _)| *k).collect();
 
         let results = self.runtime.block_on(async {
-            let mut futures = Vec::with_capacity(queries.len());
-
-            for (_, data, limit) in queries {
-                futures.push(self.search_one_async(data, *limit));
-            }
+            let futures: Vec<_> = queries
+                .iter()
+                .map(|(_, data, limit)| self.search_one_async(data, *limit))
+                .collect();
 
             futures::future::join_all(futures).await
         });
