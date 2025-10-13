@@ -11,6 +11,7 @@ use crate::connectors::synchronization::Error as InputSynchronizationError;
 use crate::persistence::Error as PersistenceBackendError;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
+use crate::external_integration::IndexingError;
 
 #[allow(clippy::module_name_repetitions)]
 pub type DynError = Box<dyn error::Error + Send + Sync>;
@@ -142,6 +143,9 @@ pub enum Error {
 
     #[error("input synchronization failed: {0}")]
     InputSynchronization(#[from] InputSynchronizationError),
+
+    #[error("indexing has failed: {0}")]
+    Indexing(#[from] IndexingError),
 
     #[error("precision for HyperLogLogPlus should be between 4 and 18 but is {0}")]
     HyperLogLogPlusInvalidPrecision(usize),

@@ -68,12 +68,6 @@ pub enum IndexingError {
     Qdrant(#[from] qdrant_client::QdrantError),
 }
 
-impl From<IndexingError> for Error {
-    fn from(error: IndexingError) -> Self {
-        Error::Other(Box::new(error))
-    }
-}
-
 impl IndexDerivedImpl {
     pub fn new(
         inner: Box<dyn ExternalIndex>,
