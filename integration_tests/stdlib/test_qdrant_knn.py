@@ -6,6 +6,8 @@ import pathway as pw
 from pathway.engine import ExternalIndexFactory
 from pathway.tests.utils import assert_table_equality
 
+QDRANT_URL = "http://qdrant:6334"
+
 
 def make_list(vector_as_str: str) -> list[float]:
     return [float(x) for x in vector_as_str.split(",")]
@@ -42,7 +44,7 @@ def test_basic_search():
     ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
 
     index_factory = ExternalIndexFactory.qdrant_factory(
-        url="http://localhost:6334",
+        url=QDRANT_URL,
         collection_name="test_basic",
         vector_size=3,
     )
@@ -91,7 +93,7 @@ def test_with_deletions():
     ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
 
     index_factory = ExternalIndexFactory.qdrant_factory(
-        url="http://localhost:6334",
+        url=QDRANT_URL,
         collection_name="test_deletions",
         vector_size=3,
     )
@@ -153,7 +155,7 @@ def test_filter():
     ).with_columns(data=pw.apply(make_list, pw.this.data))
 
     index_factory = ExternalIndexFactory.qdrant_factory(
-        url="http://localhost:6334",
+        url=QDRANT_URL,
         collection_name="test_filter",
         vector_size=3,
     )
