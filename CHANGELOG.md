@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.26.4] - 2025-10-16
+
 ### Added
 - New external integration with [Qdrant](https://qdrant.tech/).
 - `pw.io.mysql.write` method for writing to MySQL. It supports two output table types: stream of changes and a realtime-updated data snapshot.
