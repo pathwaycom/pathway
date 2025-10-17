@@ -16,16 +16,21 @@ class TimestampSchema(pw.Schema):
 
 class TimestampSubject(io.python.ConnectorSubject):
     _refresh_rate: datetime.timedelta
+    _initial_delay: datetime.timedelta
 
-    def __init__(self, refresh_rate: datetime.timedelta) -> None:
+    def __init__(
+        self, refresh_rate: datetime.timedelta, initial_delay: datetime.timedelta
+    ) -> None:
         super().__init__()
         self._refresh_rate = refresh_rate
+        self._initial_delay = initial_delay
 
     @property
     def _deletions_enabled(self) -> bool:
         return False
 
     def run(self) -> None:
+        time.sleep(self._initial_delay.total_seconds())
         while True:
             now_utc = datetime.datetime.now(tz=datetime.timezone.utc)
             self.next(timestamp_utc=now_utc)
@@ -34,7 +39,10 @@ class TimestampSubject(io.python.ConnectorSubject):
 
 
 @cache
-def utc_now(refresh_rate: datetime.timedelta = datetime.timedelta(seconds=60)):
+def utc_now(
+    refresh_rate: datetime.timedelta = datetime.timedelta(seconds=60),
+    initial_delay: datetime.timedelta = datetime.timedelta(seconds=0),
+):
     """
     Provides a continuously updating stream of the current UTC time.
 
@@ -50,7 +58,7 @@ def utc_now(refresh_rate: datetime.timedelta = datetime.timedelta(seconds=60)):
         according to the specified refresh rate.
     """
     return io.python.read(
-        TimestampSubject(refresh_rate=refresh_rate),
+        TimestampSubject(refresh_rate=refresh_rate, initial_delay=initial_delay),
         schema=TimestampSchema,
     )
 
