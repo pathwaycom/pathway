@@ -81,8 +81,8 @@ xpack-llm-docs = [
     "pypdf",
     # unstructured dependency, but unstructured doesn't force this version even though it's needed
     "pdfminer.six == 20250506",
-    "paddleocr[doc-parser] >= 3.2.0",
-    "paddlepaddle >=3.1.1"
+    "paddleocr[doc-parser] == 3.2.0",
+    "paddlepaddle == 3.1.1"
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
