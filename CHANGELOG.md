@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.xpacks.llm.question_answering.RerankedRAGQuestionAnswerer` class for RAG with document reranking support. This enables two-stage retrieval where initial vector similarity search is followed by reranking to improve document relevance ordering.
+
 ## [0.26.4] - 2025-10-16
 
 ### Added
