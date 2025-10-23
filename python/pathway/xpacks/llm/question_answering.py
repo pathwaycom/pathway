@@ -984,6 +984,170 @@ class DeckRetriever(BaseQuestionAnswerer):
         self.server.run(*args, **kwargs)
 
 
+class RerankedRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
+    """
+    Enhanced RAG Question Answerer with document reranking support.
+
+    This implementation extends the base RAG question answerer by incorporating a reranking step
+    to improve the relevance and quality of retrieved documents. After initial retrieval based on
+    vector similarity, a reranker model reassesses each document's relevance to the query,
+    ensuring the most contextually appropriate documents are used for answer generation.
+
+    Reranking addresses limitations of initial cosine similarity-based retrieval by using more
+    sophisticated relevance scoring methods (such as cross-encoders or LLM-based evaluation)
+    that jointly evaluate query-document pairs [web:4][web:5][web:14].
+
+    Args:
+        llm: LLM instance for question answering.
+            See https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms for available models.
+        indexer: Indexing object for search & retrieval to be used for context augmentation.
+        reranker: Reranker instance to evaluate document relevance. Can be ``CrossEncoderReranker``,
+            ``EncoderReranker``, or ``LLMReranker`` from ``pathway.xpacks.llm.rerankers``.
+            If ``None``, behaves as standard RAG without reranking. Defaults to ``None``.
+        rerank_topk: Number of top-scoring documents to retain after reranking.
+            If ``None``, defaults to half of ``search_topk``. Defaults to ``None``.
+        **kwargs: Additional arguments passed to ``BaseRAGQuestionAnswerer`` (e.g., ``search_topk``,
+            ``default_llm_name``, ``prompt_template``, ``context_processor``).
+
+    Example:
+
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers, rerankers  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.question_answering import RerankedRAGQuestionAnswerer  # doctest: +SKIP
+    >>> from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy  # doctest: +SKIP
+    >>> my_folder = pw.io.fs.read(
+    ...     path="/PATH/TO/MY/DATA/*",  # replace with your folder
+    ...     format="binary",
+    ...     with_metadata=True)  # doctest: +SKIP
+    >>> sources = [my_folder]  # doctest: +SKIP
+    >>> app_host = "0.0.0.0"  # doctest: +SKIP
+    >>> app_port = 8000  # doctest: +SKIP
+    >>> parser = parsers.UnstructuredParser()  # doctest: +SKIP
+    >>> text_splitter = splitters.TokenCountSplitter(max_tokens=400)  # doctest: +SKIP
+    >>> embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())  # doctest: +SKIP
+    >>> vector_server = VectorStoreServer(  # doctest: +SKIP
+    ...     *sources,
+    ...     embedder=embedder,
+    ...     splitter=text_splitter,
+    ...     parser=parser,
+    ... )
+    >>> chat = llms.OpenAIChat(  # doctest: +SKIP
+    ...     model="gpt-4o",
+    ...     retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6),
+    ...     cache_strategy=DiskCache(),
+    ...     temperature=0.05,
+    ... )
+    >>> reranker = rerankers.CrossEncoderReranker(  # doctest: +SKIP
+    ...     model_name="cross-encoder/ms-marco-MiniLM-L-6-v2",
+    ...     cache_strategy=DiskCache(),
+    ... )
+    >>> app = RerankedRAGQuestionAnswerer(  # doctest: +SKIP
+    ...     llm=chat,
+    ...     indexer=vector_server,
+    ...     reranker=reranker,
+    ...     search_topk=20,
+    ...     rerank_topk=5,
+    ... )
+    >>> app.build_server(host=app_host, port=app_port)  # doctest: +SKIP
+    >>> app.run_server()  # doctest: +SKIP
+    """
+
+    def __init__(
+            self,
+            llm,
+            indexer,
+            reranker=None,
+            rerank_topk=None,
+            **kwargs
+    ):
+        super().__init__(llm=llm, indexer=indexer, **kwargs)
+        self.reranker = reranker
+        self.rerank_topk = rerank_topk if rerank_topk is not None else max(1, self.search_topk // 2)
+
+    @pw.table_transformer
+    def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+        """Answer a question based on the available information with document reduction."""
+
+        pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
+            pw_ai_queries.select(
+                metadata_filter=pw.this.filters,
+                filepath_globpattern=pw.cast(str | None, None),
+                query=pw.this.prompt,
+                k=self.search_topk,
+            )
+        ).select(
+            docs=pw.this.result,
+        )
+
+        @pw.udf
+        def add_score_to_doc(doc: pw.Json, score: float) -> dict:
+            return {**doc.as_dict(), "reranker_score": score}
+
+        # Flatten docs (a json array) into a list of rows. keep origin_id on each row.
+        pw_ai_results_exploded = pw_ai_results.flatten(pw.this.docs, origin_id='query_id')
+
+        # Apply reranker to assess relevance of each doc
+        pw_ai_results_scored = pw_ai_results_exploded.select(
+            pw.this.prompt,
+            pw.this.model,
+            pw.this.filters,
+            pw.this.return_context_docs,
+            pw.this.query_id,
+            doc=pw.this.docs,
+            reranker_score=self.reranker(pw.this.docs["text"], pw.this.prompt)
+        )
+
+        pw_ai_results_scored = pw_ai_results_scored.await_futures()
+
+        # Add score to each document, and create sort key based on descending rerank scores
+        pw_ai_results_scored = pw_ai_results_scored.with_columns(
+            sort_key=-pw.this.reranker_score,
+            doc_with_score=add_score_to_doc(pw.this.doc, pw.this.reranker_score)
+        )
+
+        # Reassemble the doc list by Grouping by query_id. Sort documents by sort_key.
+        pw_ai_results = pw_ai_results_scored.groupby(pw.this.query_id, sort_by=pw.this.sort_key).reduce(
+            query_id=pw.this.query_id,
+            prompt=pw.reducers.any(pw.this.prompt),
+            model=pw.reducers.any(pw.this.model),
+            filters=pw.reducers.any(pw.this.filters),
+            return_context_docs=pw.reducers.any(pw.this.return_context_docs),
+            docs=pw.reducers.tuple(pw.this.doc_with_score),
+        ).with_id(pw.this.query_id)
+
+        # Keep only the top k documents with highest rerank score
+        pw_ai_results = pw_ai_results.with_columns(
+            docs=_limit_documents(pw.this.docs, k=self.rerank_topk)
+        )
+
+        pw_ai_results += pw_ai_results.select(
+            context=self.docs_to_context_transformer(pw.this.docs)
+        )
+
+        pw_ai_results += pw_ai_results.select(
+            rag_prompt=self.prompt_udf(pw.this.context, pw.this.prompt)
+        )
+
+        pw_ai_results += pw_ai_results.select(
+            response=self.llm(
+                llms.prompt_chat_single_qa(pw.this.rag_prompt),
+                model=pw.this.model,
+            )
+        )
+
+        pw_ai_results = pw_ai_results.await_futures()
+
+        pw_ai_results += pw_ai_results.select(
+            result=_prepare_RAG_response(
+                pw.this.response, pw.this.docs,
+                pw.this.return_context_docs
+            )
+        )
+
+        return pw_ai_results
+
+
 def send_post_request(
     url: str, data: dict, headers: dict = {}, timeout: int | None = None
 ):
