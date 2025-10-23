@@ -430,7 +430,7 @@ response_writer(result)
 #     run(data_dir=args.data_dir, host=args.host, port=args.port)
 # ```
 # %% [markdown]
-# A similar approach was taken in our [alerting example](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/drive_alert).
+# A similar approach was taken in our [alerting example](https://github.com/pathwaycom/llm-app/tree/main/templates/drive_alert).
 # It is an LLM app that can send you alerts on slack when the response to your query has changed significantly.
 # %% [markdown]
 # ## Summary

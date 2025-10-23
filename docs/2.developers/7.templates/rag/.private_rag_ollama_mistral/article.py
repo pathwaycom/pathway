@@ -279,8 +279,8 @@ Extensive genetic studies were conducted during the 2010s which indicated that d
 #
 # We can now go further by building and deploying your RAG application in production with Pathway, including updating data in constant connection with data sources and serving the endpoints 24/7. All the code logic we have built so far can be used directly!
 #
-# For a full production-ready set-up, we have built a slightly larger RAG application demonstrator which also includes reading your data sources, parsing the data, and serving the endpoint. To get started, check it out [here](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/private-rag).
-# You will find easy-to-follow setup instructions in our [question answering demo](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/demo-question-answering).
+# For a full production-ready set-up, we have built a slightly larger RAG application demonstrator which also includes reading your data sources, parsing the data, and serving the endpoint. To get started, check it out [here](https://github.com/pathwaycom/llm-app/tree/main/templates/private_rag).
+# You will find easy-to-follow setup instructions in our [question answering demo](https://github.com/pathwaycom/llm-app/tree/main/templates/question_answering).
 #
 # Enjoy your fully private RAG application!
 

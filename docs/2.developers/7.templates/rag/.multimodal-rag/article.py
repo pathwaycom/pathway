@@ -210,7 +210,7 @@ from pathway.xpacks.llm.document_store import DocumentStore
 # default file you can use to test
 # to use your own data via the Colab UI, click on the 'Files' tab in the left sidebar, go to data folder (that was created prior to this) then drag and drop your files there.
 
-# !wget -q -P ./data/ https://github.com/pathwaycom/llm-app/raw/main/examples/pipelines/gpt_4o_multimodal_rag/data/20230203_alphabet_10K.pdf
+# !wget -q -P ./data/ https://github.com/pathwaycom/llm-app/raw/main/templates/multimodal_rag/data/20230203_alphabet_10K.pdf
 
 # + [markdown] id="D7HFGv7ZFl_g"
 # #### **Read Documents**
@@ -296,7 +296,7 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DefaultCache())
 # + [markdown] id="S3zsr-NGop8B"
 # ## **Conclusion**
 # This is how you can easily implement a Multimodal RAG Pipeline using GPT-4o and Pathway. You used the [BaseRAGQuestionAnswerer](https://pathway.com/developers/api-docs/pathway-xpacks-llm/question_answering#pathway.xpacks.llm.question_answering.BaseRAGQuestionAnswerer) class from [pathway.xpacks](https://pathway.com/developers/user-guide/llm-xpack/overview), which integrates the foundational components for our RAG application, including data ingestion, LLM integration, database creation and querying, and serving the application on an endpoint. For more advanced RAG options, you can explore [rerankers](https://pathway.com/developers/api-docs/pathway-xpacks-llm/rerankers#pathway.xpacks.llm.rerankers.CrossEncoderReranker) and the [adaptive RAG example](https://pathway.com/developers/showcases/adaptive-rag).
-# For implementing this example using open source LLMs, here’s a [private RAG app template](https://pathway.com/developers/showcases/private-rag-ollama-mistral) that you can use as a starting point. It will help you run the entire application locally making it ideal for use-cases with sensitive data and explainable AI needs. You can do this within Docker as well by following the steps in [Pathway’s LLM App templates](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/gpt_4o_multimodal_rag) repository.
+# For implementing this example using open source LLMs, here’s a [private RAG app template](https://pathway.com/developers/showcases/private-rag-ollama-mistral) that you can use as a starting point. It will help you run the entire application locally making it ideal for use-cases with sensitive data and explainable AI needs. You can do this within Docker as well by following the steps in [Pathway’s LLM App templates](https://github.com/pathwaycom/llm-app/tree/main/templates/multimodal_rag) repository.
 #
 #
 # To explore more app templates and advanced use cases, visit [Pathway App Templates](https://pathway.com/developers/showcases) or Pathway’s [official blog](https://pathway.com/blog).
