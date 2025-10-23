@@ -258,6 +258,26 @@ The entire documentation of Pathway is available at [pathway.com/developers/](ht
 
 If you have any question, don't hesitate to [open an issue on GitHub](https://github.com/pathwaycom/pathway/issues), join us on [Discord](https://discord.com/invite/pathway), or send us an email at [contact@pathway.com](mailto:contact@pathway.com).
 
+
+
+## 🤝 Featured Collaborations & Integrations
+
+We build cutting-edge data processing pipelines and co-promote solutions that push the boundaries of what's possible with Python and streaming data.
+Meet the people helping us shape the future of data engineering.
+
+<div align="center">
+
+| Project | Description |
+| ------------ | ----------- |
+| [Databento](https://databento.com/blog/option-greeks) | A simpler, faster way to get market data. |
+| [LangChain](https://docs.langchain.com/oss/python/integrations/vectorstores/pathway) | LangChain is the platform for agent engineering. |
+| [LlamaIndex](https://developers.llamaindex.ai/python/examples/retrievers/pathway_retriever/) | The developer-trusted framework for building context-aware AI agents. |
+| [MinIO](https://www.min.io/) | MinIO is a high-performance, S3 compatible object store, open sourced under GNU AGPLv3 license. |
+| [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) | PaddleOCR is an industry-leading, production-ready OCR and document AI engine, offering end-to-end solutions from text extraction to intelligent document understanding. |
+| [Redpanda](https://www.redpanda.com/blog/replace-kafka-redpanda-data-analysis-streaming) | Build, operate, and govern streaming and AI applications without the complexity of Kafka. |
+</div>
+
+
 ## License<a id="license"></a>
 
 Pathway is distributed on a [BSL 1.1 License](https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt) which allows for unlimited non-commercial use, as well as use of the Pathway package [for most commercial purposes](https://pathway.com/license/), free of charge. Code in this repository automatically converts to Open Source (Apache 2.0 License) after 4 years. Some [public repos](https://github.com/pathwaycom) which are complementary to this one (examples, libraries, connectors, etc.) are licensed as Open Source, under the MIT license.
