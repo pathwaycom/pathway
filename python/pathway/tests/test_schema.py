@@ -10,12 +10,13 @@ import sys
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pytest
 from dateutil import tz
 
 import pathway as pw
 from pathway.internals.schema import Schema
-from pathway.tests.utils import write_csv
+from pathway.tests.utils import write_csv, write_lines
 
 
 def assert_same_schema(left: type[Schema], right: type[Schema]):
@@ -433,3 +434,65 @@ def test_schema_defaults_serialization():
         DeserializedSchema.to_json_serializable_dict(), sort_keys=True
     )
     assert serialized_schema_json == roundtrip_schema_json
+
+
+@pytest.mark.parametrize("option", ["inheritance_1", "inheritance_2", "disjunction"])
+def test_schemas_composition(option, tmp_path):
+    input_path = tmp_path / "input.jsonl"
+
+    class BaseSchema_1(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str = pw.column_definition(
+            default_value="default_value",
+            description="test description",
+            example="some example",
+        )
+
+    class BaseSchema_2(pw.Schema):
+        value2: bool
+
+    if option == "inheritance_1":
+
+        class InputSchema(BaseSchema_1):
+            value2: bool
+
+    elif option == "inheritance_2":
+
+        class InputSchema(BaseSchema_1, BaseSchema_2):
+            pass
+
+    elif option == "disjunction":
+        InputSchema = BaseSchema_1 | BaseSchema_2
+    else:
+        raise ValueError("unexpected option: {option}")
+
+    class ExpectedSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str = pw.column_definition(
+            default_value="default_value",
+            description="test description",
+            example="some example",
+        )
+        value2: bool
+
+    InputSchema.assert_matches_schema(
+        ExpectedSchema,
+        allow_subtype=False,
+        allow_superset=False,
+        ignore_primary_keys=False,
+        ignore_properties=False,
+    )
+
+    input_data = """
+        {"key": 0, "value": "hello", "value2": true}
+        {"key": 1, "value2": false}
+    """
+    write_lines(input_path, input_data)
+
+    table = pw.io.jsonlines.read(input_path, mode="static", schema=InputSchema)
+
+    output_table = pw.debug.table_to_pandas(table)
+    row_0 = output_table.loc[output_table["key"] == 0, ["value", "value2"]].iloc[0]
+    assert (row_0 == pd.Series({"value": "hello", "value2": True})).all()
+    row_1 = output_table.loc[output_table["key"] == 1, ["value", "value2"]].iloc[0]
+    assert (row_1 == pd.Series({"value": "default_value", "value2": False})).all()

@@ -178,13 +178,21 @@ def schema_add(*schemas: type[Schema]) -> type[Schema]:
 
 
 def _create_column_definitions(
-    schema: SchemaMetaclass, schema_properties: SchemaProperties
+    schema: SchemaMetaclass,
+    bases: tuple[type],
+    schema_properties: SchemaProperties,
 ) -> dict[str, ColumnSchema]:
     localns = locals()
     #  Update locals to handle recursive Schema definitions
     localns[schema.__name__] = schema
     annotations = get_type_hints(schema, localns=localns)
     fields = _cls_fields(schema)
+    for base in bases:
+        if not isinstance(base, SchemaMetaclass):
+            continue
+        for column_name, column_schema in base.__columns__.items():
+            if column_name not in fields:
+                fields[column_name] = column_schema.to_definition()
 
     columns = {}
 
@@ -274,15 +282,17 @@ class SchemaMetaclass(type):
     @trace.trace_user_frame
     def __init__(
         self,
-        *args,
+        name: str,
+        bases: tuple[type],
+        namespace: dict[str, Any],
         append_only: bool | None = None,
         id_dtype: dt.DType = dt.ANY_POINTER,
         id_append_only: bool | None = None,
         **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(name, bases, namespace, **kwargs)
         schema_properties = SchemaProperties(append_only=append_only)
-        self.__columns__ = _create_column_definitions(self, schema_properties)
+        self.__columns__ = _create_column_definitions(self, bases, schema_properties)
         pk_dtypes = [col.dtype for col in self.__columns__.values() if col.primary_key]
         if len(pk_dtypes) > 0:
             derived_type = dt.Pointer(*pk_dtypes)
@@ -588,6 +598,7 @@ class SchemaMetaclass(type):
         allow_superset: bool = True,
         ignore_primary_keys: bool = True,
         allow_subtype: bool = True,
+        ignore_properties: bool = True,
     ) -> None:
         self_dict = self._dtypes()
         other_dict = other._dtypes()
@@ -619,6 +630,12 @@ class SchemaMetaclass(type):
                 f"primary keys in the schemas do not match - they are {self.primary_key_columns()} in {self.__name__}",
                 f" and {other.primary_key_columns()} in {other.__name__}",
             )
+        if not ignore_properties:
+            self_columns = self.columns()
+            other_columns = other.columns()
+            for column_name, column_schema in self_columns.items():
+                other_column_schema = other_columns[column_name]
+                assert column_schema == other_column_schema
 
 
 def _schema_builder(
