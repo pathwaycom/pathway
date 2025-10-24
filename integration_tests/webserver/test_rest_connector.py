@@ -342,6 +342,13 @@ def test_server_schema_generation_via_endpoint(port: int) -> None:
     def checker() -> bool:
         try:
             response = requests.get(
+                f"http://127.0.0.1:{port}/_schema/?format=json", timeout=1
+            )
+            response.raise_for_status()
+            schema = response.json()
+            assert schema["paths"].keys() == {"/uppercase"}
+
+            response = requests.get(
                 f"http://127.0.0.1:{port}/_schema?format=json", timeout=1
             )
             response.raise_for_status()
@@ -532,3 +539,50 @@ def test_requests_caching(tmp_path: pathlib.Path, port: int) -> None:
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 6), 30)
     t.join()
+
+
+@pytest.mark.parametrize("route", ["/endpoint", "/endpoint/", "/", ""])
+def test_trailing_slashes(port: int, route: str) -> None:
+    class InputSchema(pw.Schema):
+        user: str = pw.column_definition(default_value="manul")
+
+    def endpoint_logic(queries: pw.Table) -> pw.Table:
+        return queries.select(
+            query_id=queries.id, result=pw.apply(lambda x: x.lower(), pw.this.user)
+        )
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+    queries, response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        schema=InputSchema,
+        route=route,
+        delete_completed_queries=True,
+        methods=(
+            "GET",
+            "POST",
+        ),
+        autocommit_duration_ms=50,
+    )
+    responses = endpoint_logic(queries)
+    response_writer(responses)
+
+    base_query_url = f"http://127.0.0.1:{port}/{route}".rstrip("/")
+    query_routes = {
+        base_query_url: "manul",
+        f"{base_query_url}/": "manul",
+        f"{base_query_url}?user=Test": "test",
+        f"{base_query_url}/?user=Test": "test",
+    }
+
+    def checker() -> bool:
+        try:
+            for method in ["post", "get"]:
+                for url, expected_response in query_routes.items():
+                    response = requests.request(method, url, timeout=1)
+                    response.raise_for_status()
+                    assert response.json() == expected_response
+        except Exception:
+            return False
+        return True
+
+    wait_result_with_checker(checker, 5)

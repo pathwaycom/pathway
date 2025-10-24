@@ -16,6 +16,7 @@ from warnings import warn
 import aiohttp_cors
 import yaml
 from aiohttp import web
+from aiohttp.web_middlewares import normalize_path_middleware
 
 import pathway.internals as pw
 import pathway.io as io
@@ -412,6 +413,9 @@ class ServerSubject(io.python.ConnectorSubject, ABC):
         self._cache_strategy = cache_strategy
         self._request_processor = self._create_request_processor()
 
+        # The middleware ensures that the routes with appended slash will be served
+        route = route.rstrip("/") or "/"
+
         webserver._register_endpoint(
             route,
             self.handle,
@@ -514,7 +518,11 @@ class PathwayWebserver(PathwayServer):
         super().__init__()
         self._host = host
         self._port = port
-        self._app = web.Application()
+        self._app = web.Application(
+            middlewares=[
+                normalize_path_middleware(append_slash=False, remove_slash=True)
+            ]
+        )
         self._registered_routes = {}
         if with_cors:
             self._cors = aiohttp_cors.setup(self._app)
