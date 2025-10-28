@@ -150,13 +150,37 @@ milliseconds;
         Args:
             backend: storage backend settings;
             snapshot_interval_ms: the desired freshness of the persisted snapshot in
-              milliseconds. The greater the value is, the more the amount of time that
-              the snapshot may fall behind, and the less computational resources are
-              required.
+                milliseconds. The greater the value is, the more the amount of time that
+                the snapshot may fall behind, and the less computational resources are
+                required.
+            persistence_mode: Can be set to one of the following values.
+                ``api.PersistenceMode.PERSISTING``: the default value and means that all data
+                will be persisted. When this parameter is specified, or when it is omitted,
+                and the configuration is passed to ``pw.run``, no additional actions are
+                required to persist the state of your program. Alternatively, you can use
+                ``api.PersistenceMode.UDF_CACHING`` meaning that only user-defined function (UDF)
+                calls will be cached. The cache stores the mapping from function input parameters to
+                their results, so if a function is called again with the same inputs,
+                the cached result is returned.
 
         Returns:
             Persistence config.
+
+        Note:
+
+        ``api.PersistenceMode.UDF_CACHING`` currently works either when the File System
+        is used as the backend for persistent storage, or, if another backend is used, a
+        temporary directory will be created for writing the cache. In the latter case,
+        persistence guarantees are not provided.
+
+        By default, ``api.PersistenceMode.UDF_CACHING`` does not persist data from input
+        sources. This means that if the program restarts, it will re-read all input streams
+        from the beginning. However, this behavior can be overridden by assigning names
+        to specific input sources. If an input connector has a name parameter, the input
+        stream for this source will also be persisted. Upon restart, the program will
+        resume reading from the point where it previously stopped.
         """
+
         warnings.warn(
             "The `pw.persistence.Config.simple_config` method for persistence config "
             "construction is deprecated. Please use the `pw.persistence.Config` "

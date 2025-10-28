@@ -33,7 +33,6 @@ from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.io.airbyte.logic import _PathwayAirbyteDestination
 from pathway.io.deltalake import _PATHWAY_COLUMN_META_FIELD
-from pathway.tests.test_persistence import only_with_license_key
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
     CountDifferentTimestampsCallback,
@@ -45,6 +44,7 @@ from pathway.tests.utils import (
     assert_table_equality,
     assert_table_equality_wo_index,
     needs_multiprocessing_fork,
+    only_with_license_key,
     run,
     run_all,
     wait_result_with_checker,
@@ -5278,3 +5278,49 @@ def test_delta_snapshot_mode_rewind(tmp_path):
     # There are no events following after `time_start_5`, so we take the snapshot
     # that is actual at this point of time. It's just one action: [2]
     assert len(from_delta_table_to_file(time_start_5)) == 1
+
+
+@pytest.mark.parametrize("table_name", [None, "abc"])
+def test_persistence_udf_caching_option(table_name, tmp_path):
+    input_path = tmp_path / "input.csv"
+    pstorage_path = tmp_path / "pstorage"
+
+    input_contents = "a,b\n1,3\n2,4\n3,5"
+    write_lines(input_path, input_contents)
+
+    class InputSchema(pw.Schema):
+        a: int
+        b: int
+
+    def run_once(expected_empty: bool):
+        G.clear()
+        persistence_backend = pw.persistence.Backend.filesystem(pstorage_path)
+        persistence_config = pw.persistence.Config.simple_config(
+            persistence_backend,
+            persistence_mode=pw.PersistenceMode.UDF_CACHING,
+        )
+        table = pw.io.csv.read(
+            input_path, schema=InputSchema, mode="static", name=table_name
+        )
+
+        expected_table_markdown = """
+            a | b
+        """
+        if not expected_empty:
+            expected_table_markdown += """
+                1 | 3
+                2 | 4
+                3 | 5
+            """
+        assert_table_equality_wo_index(
+            table,
+            T(expected_table_markdown).update_types(a=int, b=int),
+            persistence_config=persistence_config,
+        )
+
+    run_once(expected_empty=False)
+    if table_name is None:
+        # UDF Caching doesn't persist tables by default
+        run_once(expected_empty=False)
+    else:
+        run_once(expected_empty=True)

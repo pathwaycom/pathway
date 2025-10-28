@@ -25,13 +25,14 @@ pub struct FilesystemKVStorage {
 
 impl FilesystemKVStorage {
     pub fn new(root_path: &Path) -> Result<Self, Error> {
+        ensure_directory(root_path)?;
+        let root_path = std::fs::canonicalize(root_path)?;
         let root_path_str = root_path.to_str().ok_or(Error::PathIsNotUtf8)?;
         let root_glob_pattern = GlobPattern::new(&format!("{root_path_str}/**/*"))?;
-        ensure_directory(root_path)?;
         Ok(Self {
-            root_path: root_path.to_path_buf(),
             root_glob_pattern,
             path_prefix_len: root_path_str.len() + 1,
+            root_path,
         })
     }
 
