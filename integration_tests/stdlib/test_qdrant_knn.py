@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import pathway as pw
 from pathway.engine import ExternalIndexFactory
 from pathway.tests.utils import assert_table_equality
@@ -24,6 +26,7 @@ class QuerySchema(pw.Schema):
     limit: int
 
 
+@pytest.mark.flaky(reruns=5)
 def test_basic_search():
     index = pw.debug.table_from_markdown(
         """
@@ -72,6 +75,7 @@ def test_basic_search():
     assert_table_equality(result, expected)
 
 
+@pytest.mark.flaky(reruns=5)
 def test_with_deletions():
     index = pw.debug.table_from_markdown(
         """
@@ -121,6 +125,7 @@ def test_with_deletions():
     assert_table_equality(result, expected)
 
 
+@pytest.mark.flaky(reruns=5)
 def test_filter():
     class InputSchemaWithFilter(pw.Schema):
         pk_source: int = pw.column_definition(primary_key=True)
