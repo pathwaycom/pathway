@@ -16,6 +16,7 @@ use crate::engine::{
 use crate::persistence::frontier::OffsetAntichain;
 
 use async_nats::connect as nats_connect;
+use async_nats::jetstream;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
 use aws_sdk_dynamodb::Client as DynamoDBClient;
@@ -112,6 +113,7 @@ use crate::connectors::data_storage::{
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
+use crate::connectors::nats;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::synchronization::ConnectorGroupDescriptor;
@@ -4432,6 +4434,7 @@ impl MqttSettings {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct DataStorage {
@@ -4471,6 +4474,8 @@ pub struct DataStorage {
     only_provide_metadata: bool,
     sort_key_index: Option<usize>,
     legacy_mode: bool,
+    js_stream_name: Option<String>,
+    durable_consumer_name: Option<String>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4972,8 +4977,11 @@ impl DataStorage {
         only_provide_metadata = false,
         sort_key_index = None,
         legacy_mode = false,
+        js_stream_name = None,
+        durable_consumer_name = None,
     ))]
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::fn_params_excessive_bools)]
     fn new(
         storage_type: String,
         path: Option<String>,
@@ -5010,6 +5018,8 @@ impl DataStorage {
         only_provide_metadata: bool,
         sort_key_index: Option<usize>,
         legacy_mode: bool,
+        js_stream_name: Option<String>,
+        durable_consumer_name: Option<String>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5047,6 +5057,8 @@ impl DataStorage {
             only_provide_metadata,
             sort_key_index,
             legacy_mode,
+            js_stream_name,
+            durable_consumer_name,
         }
     }
 
@@ -5734,20 +5746,69 @@ impl DataStorage {
         let topic: String = self.message_queue_fixed_topic()?.to_string();
         let runtime = create_async_tokio_runtime()?;
         let connector_index = *scope.total_connectors.get(py).borrow();
-        let subscriber = runtime.block_on(async {
-            let consumer_queue = format!("pathway-reader-{connector_index}");
-            let client = nats_connect(uri)
-                .await
-                .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
-            let subscriber = client
-                .queue_subscribe(topic.clone(), consumer_queue) // Kafka "consumer group" equivalent to enable parallel reads
-                .await
-                .map_err(|e| {
-                    PyIOError::new_err(format!("Failed to subscribe to NATS topic: {e}"))
+        let readers_group_name = format!("pathway-reader-{connector_index}");
+
+        let poller = if let Some(js_stream_name) = &self.js_stream_name {
+            let messages = runtime.block_on(async {
+                let client = async_nats::connect(uri)
+                    .await
+                    .map_err(|e| PyIOError::new_err(format!("Failed to connect: {e}")))?;
+
+                let js = jetstream::new(client);
+                let stream = js
+                    .get_stream(js_stream_name)
+                    .await
+                    .map_err(|e| PyIOError::new_err(format!("JetStream stream not found: {e}")))?;
+
+                let consumer = if let Some(durable_consumer_name) = &self.durable_consumer_name {
+                    stream
+                        .get_consumer(durable_consumer_name)
+                        .await
+                        .map_err(|e| {
+                            PyIOError::new_err(
+                                format!(
+                                    "Failed to retrieve the specified pull consumer '{durable_consumer_name}': {e}"
+                                )
+                            )
+                        })?
+                } else {
+                    stream
+                        .get_or_create_consumer(
+                            &readers_group_name.clone(),
+                            async_nats::jetstream::consumer::pull::Config {
+                                durable_name: Some(readers_group_name),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map_err(|e| {
+                            PyIOError::new_err(format!("Failed to create JetStream consumer: {e}"))
+                        })?
+                };
+
+                let messages = consumer.stream().messages().await.map_err(|e| {
+                    PyIOError::new_err(format!("Failed to request JetStream messages: {e}"))
                 })?;
-            Ok::<NatsSubscriber, PyErr>(subscriber)
-        })?;
-        let reader = NatsReader::new(runtime, subscriber, scope.worker_index(), topic);
+
+                Ok::<_, PyErr>(messages)
+            })?;
+            nats::NatsPoller::JetStream(Box::new(messages))
+        } else {
+            let subscriber = runtime.block_on(async {
+                let client = nats_connect(uri)
+                    .await
+                    .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
+                let subscriber = client
+                    .queue_subscribe(topic.clone(), readers_group_name) // Kafka "consumer group" equivalent to enable parallel reads
+                    .await
+                    .map_err(|e| {
+                        PyIOError::new_err(format!("Failed to subscribe to NATS topic: {e}"))
+                    })?;
+                Ok::<NatsSubscriber, PyErr>(subscriber)
+            })?;
+            nats::NatsPoller::Simple(subscriber)
+        };
+        let reader = NatsReader::new(runtime, poller, scope.worker_index(), topic);
         Ok((Box::new(reader), 32))
     }
 
@@ -6151,7 +6212,6 @@ impl DataStorage {
 
     fn construct_nats_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.path()?;
-        let topic = self.message_queue_topic()?;
         let runtime = create_async_tokio_runtime()?;
         let client = runtime.block_on(async {
             let client = nats_connect(uri)
@@ -6159,7 +6219,17 @@ impl DataStorage {
                 .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
             Ok::<NatsClient, PyErr>(client)
         })?;
-        let writer = NatsWriter::new(runtime, client, topic, self.header_fields.clone());
+        let accessor: Box<dyn nats::WriteAccessor> = if self.js_stream_name.is_some() {
+            Box::new(nats::JetStreamWriteAccessor::new(client))
+        } else {
+            Box::new(nats::SimpleWriteAccessor::new(client))
+        };
+        let writer = NatsWriter::new(
+            runtime,
+            accessor,
+            self.message_queue_topic()?,
+            self.header_fields.clone(),
+        );
         Ok(Box::new(writer))
     }
 

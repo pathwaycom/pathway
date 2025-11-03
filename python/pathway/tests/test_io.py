@@ -5324,3 +5324,18 @@ def test_persistence_udf_caching_option(table_name, tmp_path):
         run_once(expected_empty=False)
     else:
         run_once(expected_empty=True)
+
+
+def test_nats_incorrect_params():
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Durable consumer name can only be used if JetStream is enabled"
+        ),
+    ):
+        pw.io.nats.read(
+            uri="nats://nats:4222",
+            topic="NatsTopic.Hello",
+            format="plaintext",
+            durable_consumer_name="consumer",
+        )

@@ -23,6 +23,8 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use arcstr::ArcStr;
+use async_nats::jetstream::consumer::pull::MessagesErrorKind;
+use async_nats::jetstream::consumer::StreamErrorKind;
 use aws_sdk_dynamodb::error::BuildError as AwsBuildError;
 use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::error::ArrowError;
@@ -30,7 +32,6 @@ use deltalake::datafusion::common::DataFusionError;
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::parquet::errors::ParquetError;
 use deltalake::DeltaTableError;
-use futures::StreamExt;
 use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
@@ -49,7 +50,6 @@ use rumqttc::{
     Connection as MqttConnection, ConnectionError as MqttConnectionError, Event as MqttEvent,
     Incoming as MqttIncoming, Outgoing as MqttOutgoing, Packet as MqttPacket,
 };
-use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::aws::dynamodb::Error as AwsDynamoDBError;
@@ -84,8 +84,8 @@ use crate::retry::{execute_with_retries, RetryConfig};
 
 use async_nats::client::FlushError as NatsFlushError;
 use async_nats::client::PublishError as NatsPublishError;
-use async_nats::Client as NatsClient;
-use async_nats::Subscriber as NatsSubscriber;
+use async_nats::error::Error as NatsError;
+use async_nats::jetstream::context::PublishErrorKind as JetStreamPublishError;
 use bincode::ErrorKind as BincodeError;
 use elasticsearch::{BulkParts, Elasticsearch};
 use glob::PatternError as GlobPatternError;
@@ -111,6 +111,8 @@ pub use super::data_lake::delta::{
 };
 pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
+pub use super::nats::NatsReader;
+pub use super::nats::NatsWriter;
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -359,6 +361,15 @@ pub enum ReadError {
 
     #[error("explicit primary key specification is required for non-append-only tables")]
     PrimaryKeyRequired,
+
+    #[error(transparent)]
+    NatsStreaming(#[from] async_nats::error::Error<StreamErrorKind>),
+
+    #[error(transparent)]
+    NatsPolling(#[from] async_nats::error::Error<MessagesErrorKind>),
+
+    #[error("failed to acknowledge read nats message: {0}")]
+    NatsMessageAck(async_nats::Error),
 }
 
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
@@ -636,6 +647,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
+
+    #[error(transparent)]
+    JetStream(#[from] NatsError<JetStreamPublishError>),
 
     #[error(transparent)]
     IcebergError(#[from] IcebergError),
@@ -2153,149 +2167,6 @@ impl Writer for MongoWriter {
 
     fn name(&self) -> String {
         format!("MongoDB({})", self.collection.name())
-    }
-}
-
-pub struct NatsReader {
-    runtime: TokioRuntime,
-    subscriber: NatsSubscriber,
-    worker_index: usize,
-    total_entries_read: usize,
-    stream_name: String,
-}
-
-impl Reader for NatsReader {
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(message) = self.runtime.block_on(async {
-            self.subscriber
-                .next()
-                .await
-                .map(|message| message.payload.to_vec())
-        }) {
-            let payload = ReaderContext::from_raw_bytes(DataEventType::Insert, message);
-            self.total_entries_read += 1;
-            let offset = (
-                OffsetKey::Nats(self.worker_index),
-                OffsetValue::NatsReadEntriesCount(self.total_entries_read),
-            );
-            Ok(ReadResult::Data(payload, offset))
-        } else {
-            Ok(ReadResult::Finished)
-        }
-    }
-
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        let offset_value = frontier.get_offset(&OffsetKey::Nats(self.worker_index));
-        if let Some(offset) = offset_value {
-            if let OffsetValue::NatsReadEntriesCount(last_run_entries_read) = offset {
-                self.total_entries_read = *last_run_entries_read;
-            } else {
-                error!("Unexpected offset type for NATS reader: {offset:?}");
-            }
-        }
-        Ok(())
-    }
-
-    fn short_description(&self) -> Cow<'static, str> {
-        format!("NATS({})", self.stream_name).into()
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::Nats
-    }
-
-    fn max_allowed_consecutive_errors(&self) -> usize {
-        32
-    }
-}
-
-impl NatsReader {
-    pub fn new(
-        runtime: TokioRuntime,
-        subscriber: NatsSubscriber,
-        worker_index: usize,
-        stream_name: String,
-    ) -> NatsReader {
-        NatsReader {
-            runtime,
-            subscriber,
-            worker_index,
-            stream_name,
-            total_entries_read: 0,
-        }
-    }
-}
-
-pub struct NatsWriter {
-    runtime: TokioRuntime,
-    client: NatsClient,
-    topic: MessageQueueTopic,
-    header_fields: Vec<(String, usize)>,
-}
-
-impl Writer for NatsWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.runtime.block_on(async {
-            let last_payload_index = data.payloads.len() - 1;
-            let mut common_headers = data.construct_nats_headers(&self.header_fields);
-            for (index, payload) in data.payloads.into_iter().enumerate() {
-                // Avoid copying data on the last iteration, reuse the existing headers
-                let headers = {
-                    if index == last_payload_index {
-                        take(&mut common_headers)
-                    } else {
-                        common_headers.clone()
-                    }
-                };
-                let payload = payload.into_raw_bytes()?;
-                let effective_topic = self.topic.get_for_posting(&data.values)?;
-                self.client
-                    .publish_with_headers(effective_topic, headers, payload.into())
-                    .await
-                    .map_err(WriteError::NatsPublish)?;
-            }
-            Ok(())
-        })
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        self.runtime
-            .block_on(async { self.client.flush().await })
-            .map_err(WriteError::NatsFlush)
-    }
-
-    fn name(&self) -> String {
-        format!("NATS({})", self.topic)
-    }
-
-    fn retriable(&self) -> bool {
-        true
-    }
-
-    fn single_threaded(&self) -> bool {
-        false
-    }
-}
-
-impl Drop for NatsWriter {
-    fn drop(&mut self) {
-        self.flush(true).expect("failed to send the final messages");
-    }
-}
-
-impl NatsWriter {
-    pub fn new(
-        runtime: TokioRuntime,
-        client: NatsClient,
-        topic: MessageQueueTopic,
-        header_fields: Vec<(String, usize)>,
-    ) -> Self {
-        NatsWriter {
-            runtime,
-            client,
-            topic,
-            header_fields,
-        }
     }
 }
 
