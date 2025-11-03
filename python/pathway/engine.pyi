@@ -905,6 +905,8 @@ class DataStorage:
         only_provide_metadata: bool = False,
         sort_key_index: int | None = None,
         legacy_mode: bool = False,
+        js_stream_name: str | None = None,
+        durable_consumer_name: str | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

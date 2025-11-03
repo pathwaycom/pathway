@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` now supports document reranking. This enables two-stage retrieval where initial vector similarity search is followed by reranking to improve document relevance ordering.
 
+### Added
+- JetStream extension is now supported in both NATS read and write connectors.
+
 ### Fixed
 - Endpoints created by `pw.io.http.rest_connector` now accept requests both with and without a trailing slash. For example, `/endpoint/` and `/endpoint` are now treated equivalently.
 - Schemas that inherit from other schemas now automatically preserve all properties from their parent schemas.

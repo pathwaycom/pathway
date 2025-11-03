@@ -25,6 +25,7 @@ pub mod data_storage;
 pub mod data_tokenize;
 pub mod metadata;
 pub mod monitoring;
+pub mod nats;
 pub mod offset;
 pub mod posix_like;
 pub mod scanner;
