@@ -464,7 +464,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
         rerank_topk: Number of top-scoring documents to retain after reranking, when a reranker is provided.
-            If ``None``, defaults to half of ``search_topk``. Defaults to ``None``.
+            If ``None``, reranking is disabled. Defaults to ``None``.
 
 
     Example:
@@ -596,7 +596,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         # Flatten docs into rows
         pw_ai_results_exploded = pw_ai_results.flatten(
-            pw_ai_results.docs, origin_id='query_id'
+            pw_ai_results.docs, origin_id="query_id"
         )
 
         # Apply reranker
