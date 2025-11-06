@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -450,6 +451,8 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     Args:
         llm: LLM instance for question answering. See https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms for available models.
         indexer: Indexing object for search & retrieval to be used for context augmentation.
+        reranker: Reranker instance to evaluate document relevance. See https://pathway.com/developers/api-docs/pathway-xpacks-llm/rerankers for available models.
+            If ``None``, behaves as standard RAG without reranking. Defaults to ``None``.
         default_llm_name: Default LLM model to be used in queries, only used if ``model`` parameter in post request is not specified.
             Omitting or setting this to ``None`` will default to the model name set during LLM's initialization.
         prompt_template: Template for document question answering with short response.
@@ -460,12 +463,14 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
+        rerank_topk: Number of top-scoring documents to retain after reranking, when a reranker is provided.
+            If ``None``, defaults to half of ``search_topk``. Defaults to ``None``.
 
 
     Example:
 
     >>> import pathway as pw  # doctest: +SKIP
-    >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers, rerankers  # doctest: +SKIP
     >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
     >>> from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy  # doctest: +SKIP
     >>> from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer  # doctest: +SKIP
@@ -492,10 +497,15 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     ...     cache_strategy=DiskCache(),
     ...     temperature=0.05,
     ... )
+    >>> reranker = rerankers.CrossEncoderReranker(  # doctest: +SKIP
+    ...     model_name="cross-encoder/ms-marco-MiniLM-L-6-v2",
+    ...     cache_strategy=DiskCache(),
+    ... )
     >>> prompt_template = "Answer the question. Context: {context}. Question: {query}"  # doctest: +SKIP
     >>> rag = BaseRAGQuestionAnswerer(  # doctest: +SKIP
     ...     llm=chat,
     ...     indexer=vector_server,
+    ...     reranker=reranker,
     ...     prompt_template=prompt_template,
     ... )
     >>> app = QASummaryRestServer(app_host, app_port, rag)  # doctest: +SKIP
@@ -514,10 +524,13 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         ) = SimpleContextProcessor(),
         summarize_template: pw.UDF = prompts.prompt_summarize,
         search_topk: int = 6,
+        reranker: pw.UDF | None = None,
+        rerank_topk: int | None = None,
     ) -> None:
 
         self.llm = llm
         self.indexer = indexer
+        self.reranker = reranker
 
         if default_llm_name is None:
             default_llm_name = llm.model
@@ -542,7 +555,18 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         self.summarize_template = summarize_template
         self.search_topk = search_topk
+        self.rerank_topk = rerank_topk
         self.server: None | QASummaryRestServer = None
+
+        # Check reranker settings mismatch
+        if (self.reranker is None) != (rerank_topk is None):
+            logging.warning(
+                "Incomplete reranker configuration: "
+                "Both 'reranker' and 'rerank_topk' must be specified. "
+                "Reranking disabled."
+            )
+            self.reranker = None
+            self.rerank_topk = None
 
     def _init_schemas(self, default_llm_name: str | None = None) -> None:
         """Initialize API schemas with optional and non-optional arguments."""
@@ -563,6 +587,56 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self.StatisticsQuerySchema = self.indexer.StatisticsQuerySchema
         self.InputsQuerySchema = self.indexer.InputsQuerySchema
 
+    def _apply_reranking(self, pw_ai_results: pw.Table) -> pw.Table:
+        """Apply reranking to retrieved documents."""
+
+        @pw.udf
+        def add_score_to_doc(doc: pw.Json, score: float) -> dict:
+            return {**doc.as_dict(), "reranker_score": score}
+
+        # Flatten docs into rows
+        pw_ai_results_exploded = pw_ai_results.flatten(
+            pw_ai_results.docs, origin_id='query_id'
+        )
+
+        # Apply reranker
+        pw_ai_results_scored = pw_ai_results_exploded.select(
+            pw.this.prompt,
+            pw.this.model,
+            pw.this.filters,
+            pw.this.return_context_docs,
+            pw.this.query_id,
+            doc=pw.this.docs,
+            reranker_score=self.reranker(pw.this.docs["text"], pw.this.prompt),  # type: ignore
+        )
+
+        pw_ai_results_scored = pw_ai_results_scored.await_futures()
+
+        # Add score and sort
+        pw_ai_results_scored = pw_ai_results_scored.with_columns(
+            sort_key=-pw.this.reranker_score,
+            doc_with_score=add_score_to_doc(pw.this.doc, pw.this.reranker_score),
+        )
+
+        # Reassemble documents
+        pw_ai_results = (
+            pw_ai_results_scored.groupby(pw.this.query_id, sort_by=pw.this.sort_key)
+            .reduce(
+                query_id=pw.this.query_id,
+                prompt=pw.reducers.any(pw.this.prompt),
+                model=pw.reducers.any(pw.this.model),
+                filters=pw.reducers.any(pw.this.filters),
+                return_context_docs=pw.reducers.any(pw.this.return_context_docs),
+                docs=pw.reducers.tuple(pw.this.doc_with_score),
+            )
+            .with_id(pw.this.query_id)
+        )
+
+        # Keep only top k
+        return pw_ai_results.with_columns(
+            docs=_limit_documents(pw.this.docs, k=self.rerank_topk)
+        )
+
     @pw.table_transformer
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
@@ -577,6 +651,9 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         ).select(
             docs=pw.this.result,
         )
+
+        if self.reranker is not None:
+            pw_ai_results = self._apply_reranking(pw_ai_results)
 
         pw_ai_results += pw_ai_results.select(
             context=self.docs_to_context_transformer(pw.this.docs)
