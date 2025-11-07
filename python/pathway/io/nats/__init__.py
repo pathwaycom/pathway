@@ -73,7 +73,7 @@ def read(
             where the path follows the
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         jetstream_stream_name: if specified, the
-            `JetStream <https://docs.nats.io/nats-concepts/jetstream>_` extension is used.
+            `JetStream <https://docs.nats.io/nats-concepts/jetstream>`_ extension is used.
             In this case, the specified stream will be used.
         durable_consumer_name: the name of the durable pull consumer to use with JetStream.
             If not specified, the consumer will be created automatically with default
@@ -260,7 +260,7 @@ def write(
             of a single column of the string type.
         delimiter: field delimiter to be used in case of delimiter-separated values format.
         jetstream_stream_name: if specified, the
-            `JetStream <https://docs.nats.io/nats-concepts/jetstream>_` extension is used.
+            `JetStream <https://docs.nats.io/nats-concepts/jetstream>`_ extension is used.
             In this case, the specified stream will be used.
         value: reference to the column that should be used as a payload in
             the produced message in ``"plaintext"`` or ``"raw"`` format. It can be deduced
