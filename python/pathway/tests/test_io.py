@@ -1205,6 +1205,29 @@ def test_duplicated_name(tmp_path: pathlib.Path):
         )
 
 
+def test_duplicated_name_for_python_connector(tmp_path: pathlib.Path):
+    class MySchema(pw.Schema):
+        a: int
+        b: str
+
+    class MySubject(pw.io.python.ConnectorSubject):
+        def run(self) -> None:
+            for i in range(4):
+                self.next(a=i, b=f"x{i}")
+
+        @property
+        def _deletions_enabled(self) -> bool:
+            return False
+
+    t1 = pw.io.python.read(MySubject(), schema=MySchema)
+    t2 = pw.io.python.read(MySubject(), schema=MySchema)
+    pw.io.null.write(t1)
+    pw.io.null.write(t2)
+    persistence_backend = pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+    persistence_config = pw.persistence.Config(persistence_backend)
+    run_all(persistence_config=persistence_config)
+
+
 def test_duplicated_name_between_input_and_output(tmp_path: pathlib.Path):
     pstorage_path = tmp_path / "PStorage"
     input_path = tmp_path / "input_first.txt"

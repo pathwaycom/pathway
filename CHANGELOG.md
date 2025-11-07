@@ -17,6 +17,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Endpoints created by `pw.io.http.rest_connector` now accept requests both with and without a trailing slash. For example, `/endpoint/` and `/endpoint` are now treated equivalently.
 - Schemas that inherit from other schemas now automatically preserve all properties from their parent schemas.
 - Fixed an issue where the persistence configuration failed when provided with a relative filesystem path.
+- Fixed unique name autogeneration for the Python connectors.
 
 ## [0.26.4] - 2025-10-16
 
