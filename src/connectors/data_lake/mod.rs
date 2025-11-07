@@ -78,6 +78,7 @@ impl MaintenanceMode {
 pub struct LakeWriterSettings {
     pub use_64bit_size_type: bool,
     pub utc_timezone_name: ArcStr,
+    pub timestamp_unit: ArrowTimeUnit,
 }
 
 pub type ArrowMetadata = HashMap<String, String>;

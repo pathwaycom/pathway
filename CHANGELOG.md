@@ -5,11 +5,13 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Changed
-- `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` now supports document reranking. This enables two-stage retrieval where initial vector similarity search is followed by reranking to improve document relevance ordering.
-
 ### Added
 - JetStream extension is now supported in both NATS read and write connectors.
+- The Iceberg connectors now support Glue as a catalog backend.
+
+### Changed
+- **BREAKING** The API for the Iceberg connectors has changed. The `catalog` parameter is now required in both `pw.io.iceberg.read` and `pw.io.iceberg.write`. This parameter can be either of type `pw.io.iceberg.RestCatalog` or `pw.io.iceberg.GlueCatalog`, and it must contain the connection parameters.
+- `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` now supports document reranking. This enables two-stage retrieval where initial vector similarity search is followed by reranking to improve document relevance ordering.
 
 ### Fixed
 - Endpoints created by `pw.io.http.rest_connector` now accept requests both with and without a trailing slash. For example, `/endpoint/` and `/endpoint` are now treated equivalently.

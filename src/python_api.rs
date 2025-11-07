@@ -23,6 +23,7 @@ use aws_sdk_dynamodb::Client as DynamoDBClient;
 use aws_sdk_kinesis::Client as KinesisClient;
 use azure_storage::StorageCredentials as AzureStorageCredentials;
 use csv::ReaderBuilder as CsvReaderBuilder;
+use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
     http::{
@@ -34,6 +35,7 @@ use elasticsearch::{
 use futures::future;
 use futures::stream::FuturesOrdered;
 use futures::StreamExt;
+use iceberg::{Catalog as IcebergCatalog, CatalogBuilder};
 use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
@@ -82,6 +84,7 @@ use std::os::unix::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
+use tokio::runtime::Runtime as TokioRuntime;
 
 use self::external_index_wrappers::{
     PyBruteForceKnnMetricKind, PyExternalIndexData, PyExternalIndexQuery, PyUSearchMetricKind,
@@ -100,9 +103,7 @@ use crate::connectors::data_lake::buffering::{
     AppendOnlyColumnBuffer, ColumnBuffer, SnapshotColumnBuffer,
 };
 use crate::connectors::data_lake::delta::DeltaOptimizerRule;
-use crate::connectors::data_lake::iceberg::{
-    IcebergBatchWriter, IcebergDBParams, IcebergTableParams,
-};
+use crate::connectors::data_lake::iceberg::{IcebergBatchWriter, IcebergTableParams};
 use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
@@ -4067,7 +4068,7 @@ impl AzureBlobStorageSettings {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AwsS3Settings {
     bucket_name: Option<String>,
     region: s3::region::Region,
@@ -4476,6 +4477,7 @@ pub struct DataStorage {
     legacy_mode: bool,
     js_stream_name: Option<String>,
     durable_consumer_name: Option<String>,
+    iceberg_catalog: Option<IcebergCatalogSettings>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4936,6 +4938,7 @@ pub struct DataFormat {
     subject: Option<String>,
     designated_timestamp_policy: Option<String>,
     external_diff_column_index: Option<usize>,
+    timestamp_unit: Option<String>,
 }
 
 #[pymethods]
@@ -4979,6 +4982,7 @@ impl DataStorage {
         legacy_mode = false,
         js_stream_name = None,
         durable_consumer_name = None,
+        iceberg_catalog = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5020,6 +5024,7 @@ impl DataStorage {
         legacy_mode: bool,
         js_stream_name: Option<String>,
         durable_consumer_name: Option<String>,
+        iceberg_catalog: Option<IcebergCatalogSettings>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5059,6 +5064,7 @@ impl DataStorage {
             legacy_mode,
             js_stream_name,
             durable_consumer_name,
+            iceberg_catalog,
         }
     }
 
@@ -5153,6 +5159,7 @@ impl DataFormat {
         subject = None,
         designated_timestamp_policy = None,
         external_diff_column_index = None,
+        timestamp_unit = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -5172,6 +5179,7 @@ impl DataFormat {
         subject: Option<String>,
         designated_timestamp_policy: Option<String>,
         external_diff_column_index: Option<usize>,
+        timestamp_unit: Option<String>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -5190,11 +5198,156 @@ impl DataFormat {
             subject,
             designated_timestamp_policy,
             external_diff_column_index,
+            timestamp_unit,
         }
     }
 
     fn is_native_session_used(&self) -> bool {
         matches!(self.session_type, SessionType::Native)
+    }
+}
+
+#[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct IcebergCatalogSettings {
+    type_: String,
+    uri: Option<String>,
+    warehouse: Option<String>,
+    catalog_id: Option<String>,
+    aws_settings: Option<AwsS3Settings>,
+}
+
+#[pymethods]
+impl IcebergCatalogSettings {
+    #[new]
+    #[pyo3(signature = (
+        type_,
+        uri = None,
+        warehouse = None,
+        catalog_id = None,
+        aws_settings = None,
+    ))]
+    pub fn new(
+        type_: String,
+        uri: Option<String>,
+        warehouse: Option<String>,
+        catalog_id: Option<String>,
+        aws_settings: Option<AwsS3Settings>,
+    ) -> Self {
+        Self {
+            type_,
+            uri,
+            warehouse,
+            catalog_id,
+            aws_settings,
+        }
+    }
+}
+
+impl IcebergCatalogSettings {
+    fn expect_parameter(parameter: Option<&String>, name: &str) -> PyResult<String> {
+        Ok(parameter
+            .ok_or(PyValueError::new_err(format!(
+                "expected parameter: '{name}'"
+            )))?
+            .to_string())
+    }
+
+    fn insert_if_some(
+        props: &mut HashMap<String, String>,
+        key: &str,
+        value: Option<&impl ToString>,
+    ) {
+        if let Some(v) = value {
+            props.insert(key.to_string(), v.to_string());
+        }
+    }
+
+    async fn create_rest_catalog(&self) -> PyResult<Box<dyn IcebergCatalog>> {
+        let mut props = HashMap::from([(
+            ::iceberg_catalog_rest::REST_CATALOG_PROP_URI.to_string(),
+            Self::expect_parameter(self.uri.as_ref(), "uri")?,
+        )]);
+        Self::insert_if_some(
+            &mut props,
+            ::iceberg_catalog_rest::REST_CATALOG_PROP_WAREHOUSE,
+            self.warehouse.as_ref(),
+        );
+        let catalog = ::iceberg_catalog_rest::RestCatalogBuilder::default()
+            .load("rest", props)
+            .await
+            .map_err(|e| {
+                PyValueError::new_err(format!("failed to initialize Iceberg catalog: {e}"))
+            })?;
+        Ok(Box::new(catalog))
+    }
+
+    async fn create_glue_catalog(&self) -> PyResult<Box<dyn IcebergCatalog>> {
+        let mut props = HashMap::from([(
+            ::iceberg_catalog_glue::GLUE_CATALOG_PROP_WAREHOUSE.to_string(),
+            Self::expect_parameter(self.warehouse.as_ref(), "warehouse")?,
+        )]);
+        Self::insert_if_some(
+            &mut props,
+            ::iceberg_catalog_glue::GLUE_CATALOG_PROP_URI,
+            self.uri.as_ref(),
+        );
+        Self::insert_if_some(
+            &mut props,
+            ::iceberg_catalog_glue::GLUE_CATALOG_PROP_CATALOG_ID,
+            self.catalog_id.as_ref(),
+        );
+        if let Some(aws_settings) = &self.aws_settings {
+            props.insert(
+                ::iceberg_catalog_glue::AWS_REGION_NAME.to_string(),
+                aws_settings.region.to_string(),
+            );
+            Self::insert_if_some(
+                &mut props,
+                ::iceberg_catalog_glue::AWS_ACCESS_KEY_ID,
+                aws_settings.access_key.as_ref(),
+            );
+            Self::insert_if_some(
+                &mut props,
+                ::iceberg_catalog_glue::AWS_SECRET_ACCESS_KEY,
+                aws_settings.secret_access_key.as_ref(),
+            );
+            Self::insert_if_some(
+                &mut props,
+                ::iceberg_catalog_glue::AWS_PROFILE_NAME,
+                aws_settings.profile.as_ref(),
+            );
+            Self::insert_if_some(
+                &mut props,
+                ::iceberg_catalog_glue::AWS_SESSION_TOKEN,
+                aws_settings.session_token.as_ref(),
+            );
+        }
+        let catalog = ::iceberg_catalog_glue::GlueCatalogBuilder::default()
+            .load("glue", props)
+            .await
+            .map_err(|e| {
+                PyValueError::new_err(format!("failed to initialize Iceberg catalog: {e}"))
+            })?;
+        Ok(Box::new(catalog))
+    }
+
+    pub fn create(&self, runtime: &TokioRuntime) -> PyResult<Box<dyn IcebergCatalog>> {
+        runtime.block_on(async {
+            let catalog = match self.type_.as_str() {
+                "rest" => self.create_rest_catalog().await,
+                "glue" => self.create_glue_catalog().await,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown type of Iceberg catalog: {other}"
+                    )))
+                }
+            };
+            let catalog: Box<dyn IcebergCatalog> = catalog.map_err(|e| {
+                PyValueError::new_err(format!("failed to initialize Iceberg catalog: {e}"))
+            })?;
+            Ok(catalog)
+        })
     }
 }
 
@@ -5355,59 +5508,14 @@ impl DataStorage {
         }
     }
 
-    fn iceberg_s3_storage_options(&self) -> HashMap<String, String> {
-        let Some(ref settings) = self.aws_s3_settings else {
-            return HashMap::new();
-        };
-        let settings_py: &Py<_> = settings.borrow();
-        let settings = settings_py.get();
-        let mut props = HashMap::new();
-        if let Some(access_key) = &settings.access_key {
-            props.insert(
-                ::iceberg::io::S3_ACCESS_KEY_ID.to_string(),
-                access_key.to_string(),
-            );
-        }
-        if let Some(secret_access_key) = &settings.secret_access_key {
-            props.insert(
-                ::iceberg::io::S3_SECRET_ACCESS_KEY.to_string(),
-                secret_access_key.to_string(),
-            );
-        }
-        if let Some(session_token) = &settings.session_token {
-            props.insert(
-                ::iceberg::io::S3_SESSION_TOKEN.to_string(),
-                session_token.to_string(),
-            );
-        }
-        if settings.with_path_style {
-            props.insert(
-                ::iceberg::io::S3_PATH_STYLE_ACCESS.to_string(),
-                "true".to_string(),
-            );
-        }
-        if settings.profile.is_some() {
-            warn!("Profile is specified in AWS Credentials, however this kind of authorization is not supported by the Iceberg connector");
-        }
-        if let s3::Region::Custom { endpoint, region } = &settings.region {
-            if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
-                props.insert(::iceberg::io::S3_ENDPOINT.to_string(), endpoint.to_string());
-            } else {
-                props.insert(
-                    ::iceberg::io::S3_ENDPOINT.to_string(),
-                    format!("https://{endpoint}"),
-                );
-            }
-            if region != endpoint {
-                props.insert(::iceberg::io::S3_REGION.to_string(), region.to_string());
-            }
-        } else {
-            props.insert(
-                ::iceberg::io::S3_REGION.to_string(),
-                settings.region.to_string(),
-            );
-        }
-        props
+    fn create_iceberg_catalog(&self, runtime: &TokioRuntime) -> PyResult<Box<dyn IcebergCatalog>> {
+        self
+            .iceberg_catalog
+            .as_ref()
+            .ok_or(PyValueError::new_err(
+                "Iceberg catalog configuration must be specified in the 'iceberg_catalog' field of DataStorage",
+            ))?
+            .create(runtime)
     }
 
     fn kafka_client_config(&self) -> PyResult<ClientConfig> {
@@ -5828,8 +5936,6 @@ impl DataStorage {
             license.check_entitlements(["iceberg"])?;
         }
 
-        let uri = self.path()?;
-        let warehouse = self.database.as_ref();
         let table_name = self.table_name()?;
         let namespace = self
             .namespace
@@ -5837,20 +5943,23 @@ impl DataStorage {
             .ok_or_else(|| PyValueError::new_err("Namespace must be specified"))?;
         let value_fields = data_format.value_fields_vec(py);
 
-        let db_params = IcebergDBParams::new(
-            uri.to_string(),
-            warehouse.cloned(),
-            namespace,
-            self.iceberg_s3_storage_options(),
-        );
-        let table_params =
-            IcebergTableParams::new(table_name.to_string(), &value_fields).map_err(|e| {
-                PyIOError::new_err(format!(
-                    "Unable to create table params for Iceberg reader: {e}"
-                ))
-            })?;
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let catalog = self.create_iceberg_catalog(&runtime)?;
+        let table_params = IcebergTableParams::new(
+            table_name.to_string(),
+            &value_fields,
+            ArrowTimeUnit::Microsecond, // used only for schema generation, can be arbitrary here
+        )
+        .map_err(|e| {
+            PyIOError::new_err(format!(
+                "Unable to create table params for Iceberg reader: {e}"
+            ))
+        })?;
         let reader = IcebergReader::new(
-            &db_params,
+            runtime,
+            catalog,
+            &namespace,
             &table_params,
             data_format.value_fields_type_map(py),
             self.mode,
@@ -6166,8 +6275,6 @@ impl DataStorage {
             ));
         }
 
-        let uri = self.path()?;
-        let warehouse = self.database.as_ref();
         let table_name = self.table_name()?;
         let namespace = self
             .namespace
@@ -6175,23 +6282,25 @@ impl DataStorage {
             .ok_or_else(|| PyValueError::new_err("Namespace must be specified"))?;
         let value_fields = data_format.value_fields_vec(py);
 
-        let db_params = IcebergDBParams::new(
-            uri.to_string(),
-            warehouse.cloned(),
-            namespace,
-            self.iceberg_s3_storage_options(),
-        );
-        let table_params =
-            IcebergTableParams::new(table_name.to_string(), &value_fields).map_err(|e| {
-                PyIOError::new_err(format!(
-                    "Unable to create table params for Iceberg writer: {e}"
-                ))
-            })?;
-        let batch_writer = IcebergBatchWriter::new(&db_params, &table_params).map_err(|e| {
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let catalog = self.create_iceberg_catalog(&runtime)?;
+        let table_params = IcebergTableParams::new(
+            table_name.to_string(),
+            &value_fields,
+            data_format.arrow_time_unit()?,
+        )
+        .map_err(|e| {
             PyIOError::new_err(format!(
-                "Unable to create batch writer for Iceberg writer: {e}"
+                "Unable to create table params for Iceberg writer: {e}"
             ))
         })?;
+        let batch_writer = IcebergBatchWriter::new(runtime, catalog, &namespace, &table_params)
+            .map_err(|e| {
+                PyIOError::new_err(format!(
+                    "Unable to create batch writer for Iceberg writer: {e}"
+                ))
+            })?;
         let schema = construct_arrow_schema(
             &value_fields,
             &batch_writer,
@@ -6479,6 +6588,23 @@ impl DataFormat {
             }
         }
         Ok(types)
+    }
+
+    fn arrow_time_unit(&self) -> PyResult<ArrowTimeUnit> {
+        let unit = self
+            .timestamp_unit
+            .as_ref()
+            .ok_or(PyValueError::new_err(
+                "expected time unit, but it is not specified",
+            ))?
+            .as_ref();
+        match unit {
+            "us" => Ok(ArrowTimeUnit::Microsecond),
+            "ns" => Ok(ArrowTimeUnit::Nanosecond),
+            other => Err(PyValueError::new_err(format!(
+                "unknown time unit: '{other}'"
+            ))),
+        }
     }
 
     fn construct_parser(&self, py: pyo3::Python) -> PyResult<Box<dyn Parser>> {
@@ -7015,6 +7141,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyDeltaOptimizerRule>()?;
     m.add_class::<MqttSettings>()?;
     m.add_class::<PySchemaRegistrySettings>()?;
+    m.add_class::<IcebergCatalogSettings>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

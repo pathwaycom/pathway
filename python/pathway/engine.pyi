@@ -907,8 +907,19 @@ class DataStorage:
         legacy_mode: bool = False,
         js_stream_name: str | None = None,
         durable_consumer_name: str | None = None,
+        iceberg_catalog: IcebergCatalogSettings | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
+
+class IcebergCatalogSettings:
+    def __init__(
+        self,
+        type_: str,
+        uri: str | None = None,
+        warehouse: str | None = None,
+        catalog_id: str | None = None,
+        aws_settings: AwsS3Settings | None = None,
+    ) -> None: ...
 
 class CsvParserSettings:
     def __init__(self, *args, **kwargs): ...

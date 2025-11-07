@@ -3725,7 +3725,7 @@ def test_iceberg_no_primary_key():
         match="Iceberg reader requires explicit primary key fields specification",
     ):
         pw.io.iceberg.read(
-            catalog_uri="http://localhost:8181",
+            catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181"),
             namespace=["app"],
             table_name="test",
             schema=InputSchema,

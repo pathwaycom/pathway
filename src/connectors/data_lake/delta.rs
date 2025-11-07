@@ -12,6 +12,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
+use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
 use deltalake::datafusion::execution::context::SessionContext as DeltaSessionContext;
 use deltalake::datafusion::logical_expr::col;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
@@ -518,6 +519,7 @@ impl LakeBatchWriter for DeltaBatchWriter {
         LakeWriterSettings {
             use_64bit_size_type: false,
             utc_timezone_name: "UTC".into(),
+            timestamp_unit: ArrowTimeUnit::Microsecond,
         }
     }
 

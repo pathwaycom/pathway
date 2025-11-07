@@ -12,7 +12,12 @@ from pyiceberg.catalog.glue import GlueCatalog
 
 import pathway as pw
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import get_aws_s3_settings, run, wait_result_with_checker
+from pathway.tests.utils import (
+    FileLinesNumberChecker,
+    get_aws_s3_settings,
+    run,
+    wait_result_with_checker,
+)
 
 INPUT_CONTENTS_1 = """{"user_id": 1, "name": "John"}
 {"user_id": 2, "name": "Jane"}
@@ -28,15 +33,24 @@ INPUT_CONTENTS_3 = """{"user_id": 9, "name": "Anna"}
 {"user_id": 12, "name": "Sarah"}"""
 
 LOCAL_BACKEND_NAME = "local"
-S3_BACKEND_NAME = "s3"
-CATALOG_URI = {
-    LOCAL_BACKEND_NAME: os.environ.get("ICEBERG_CATALOG_URI", "http://iceberg:8181"),
-    S3_BACKEND_NAME: os.environ.get("ICEBERG_S3_CATALOG_URI", "http://iceberg-s3:8181"),
-}
-S3_CONNECTION_SETTINGS = {
-    LOCAL_BACKEND_NAME: None,
-    S3_BACKEND_NAME: get_aws_s3_settings(),
-}
+GLUE_BACKEND_NAME = "glue"
+
+
+def _get_catalog(backend: str, s3_path: str | None = None):
+    if backend == LOCAL_BACKEND_NAME:
+        return pw.io.iceberg.RestCatalog(
+            uri=os.environ.get("ICEBERG_CATALOG_URI", "http://iceberg:8181"),
+        )
+    elif backend == GLUE_BACKEND_NAME:
+        assert s3_path is not None, "s3_path is required for Glue catalog"
+        return pw.io.iceberg.GlueCatalog(
+            warehouse=s3_path,
+            aws_settings=get_aws_s3_settings(),
+        )
+    else:
+        raise ValueError(f"unknown backend: '{backend}'")
+
+
 INPUT_CONTENTS = {
     1: INPUT_CONTENTS_1,
     2: INPUT_CONTENTS_2,
@@ -44,22 +58,26 @@ INPUT_CONTENTS = {
 }
 
 
+GLUE_CATALOG = GlueCatalog(
+    name="default",
+    **{"glue.region": "eu-central-1"},
+)
+
+
 def _get_pandas_table(backend: str, table_name: str) -> pd.DataFrame:
     if backend == LOCAL_BACKEND_NAME:
-        catalog = load_catalog(name="default", uri=CATALOG_URI[backend])
-    elif backend == S3_BACKEND_NAME:
-        catalog = GlueCatalog(name="default")
+        catalog = load_catalog(
+            name="default",
+            uri=os.environ.get("ICEBERG_CATALOG_URI", "http://iceberg:8181"),
+        )
+        iceberg_table = catalog.load_table(table_name)
+    elif backend == GLUE_BACKEND_NAME:
+        iceberg_table = GLUE_CATALOG.load_table(table_name)
     else:
-        raise RuntimeError(f"Unknown backend type: {backend}")
-    table = catalog.load_table(table_name)
-    scan = table.scan()
+        raise ValueError(f"unknown backend: '{backend}'")
+
+    scan = iceberg_table.scan()
     return scan.to_pandas()
-
-
-def _get_warehouse_path(backend: str, table_name: str) -> str | None:
-    if backend == LOCAL_BACKEND_NAME:
-        return None
-    return f"s3://aws-integrationtest/iceberg/{table_name}"
 
 
 class IcebergEntriesCountChecker:
@@ -83,11 +101,12 @@ class IcebergEntriesCountChecker:
             return f"Failed to read the table. Exception: {e}"
 
 
-@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, S3_BACKEND_NAME])
-def test_iceberg_read_after_write(backend, tmp_path):
+@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, GLUE_BACKEND_NAME])
+def test_iceberg_read_after_write(backend, tmp_path, s3_path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
     pstorage_path = tmp_path / "pstorage"
+    full_s3_path = f"s3://aws-integrationtest/{s3_path}"
     table_name = uuid.uuid4().hex
     namespace = uuid.uuid4().hex
 
@@ -110,24 +129,20 @@ def test_iceberg_read_after_write(backend, tmp_path):
         )
         pw.io.iceberg.write(
             table,
-            catalog_uri=CATALOG_URI[backend],
+            catalog=_get_catalog(backend, s3_path=full_s3_path),
             namespace=[namespace],
             table_name=table_name,
-            warehouse=_get_warehouse_path(backend, table_name),
-            s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
         )
         run()
 
         # Read the data from the Iceberg table via Pathway
         G.clear()
         table = pw.io.iceberg.read(
-            catalog_uri=CATALOG_URI[backend],
+            catalog=_get_catalog(backend, s3_path=full_s3_path),
             namespace=[namespace],
             table_name=table_name,
             mode="static",
             schema=InputSchema,
-            warehouse=_get_warehouse_path(backend, table_name),
-            s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
         )
         pw.io.jsonlines.write(table, output_path)
         persistence_config = pw.persistence.Config(
@@ -147,9 +162,10 @@ def test_iceberg_read_after_write(backend, tmp_path):
 
 
 @pytest.mark.flaky(reruns=5)
-@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, S3_BACKEND_NAME])
-def test_iceberg_several_runs(backend, tmp_path):
+@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, GLUE_BACKEND_NAME])
+def test_iceberg_several_runs(backend, tmp_path, s3_path):
     input_path = tmp_path / "input.txt"
+    full_s3_path = f"s3://aws-integrationtest/{s3_path}"
     table_name = uuid.uuid4().hex
     namespace = uuid.uuid4().hex
     all_ids = set()
@@ -174,11 +190,9 @@ def test_iceberg_several_runs(backend, tmp_path):
         )
         pw.io.iceberg.write(
             table,
-            catalog_uri=CATALOG_URI[backend],
+            catalog=_get_catalog(backend, s3_path=full_s3_path),
             namespace=[namespace],
             table_name=table_name,
-            warehouse=_get_warehouse_path(backend, table_name),
-            s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
         )
         run()
 
@@ -195,9 +209,11 @@ def test_iceberg_several_runs(backend, tmp_path):
         run_single_iteration(seq_number)
 
 
-@pytest.mark.parametrize("backend", ["local", "s3"])
-def test_iceberg_streaming(backend, tmp_path):
+@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, GLUE_BACKEND_NAME])
+def test_iceberg_streaming(backend, tmp_path, s3_path):
     inputs_path = tmp_path / "inputs"
+    output_path = tmp_path / "output.jsonl"
+    full_s3_path = f"s3://aws-integrationtest/{s3_path}"
     inputs_path.mkdir()
     table_name = uuid.uuid4().hex
     namespace = uuid.uuid4().hex
@@ -207,9 +223,8 @@ def test_iceberg_streaming(backend, tmp_path):
             input_path = inputs_path / f"{i}.txt"
             input_path.write_text(INPUT_CONTENTS[i])
             wait_result_with_checker(
-                IcebergEntriesCountChecker(backend, f"{namespace}.{table_name}", 4 * i),
+                FileLinesNumberChecker(output_path, 4 * i),
                 30,
-                step=1,
                 target=None,
             )
 
@@ -222,14 +237,15 @@ def test_iceberg_streaming(backend, tmp_path):
         schema=InputSchema,
         mode="streaming",
     )
+    # It's much quicker to check the file to make sure entries are ingested,
+    # rather than to query the catalog
+    pw.io.jsonlines.write(table, output_path)
     pw.io.iceberg.write(
         table,
-        catalog_uri=CATALOG_URI[backend],
+        catalog=_get_catalog(backend, s3_path=full_s3_path),
         namespace=[namespace],
         table_name=table_name,
         min_commit_frequency=1000,
-        warehouse=_get_warehouse_path(backend, table_name),
-        s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
 
     t = threading.Thread(target=stream_inputs)
@@ -238,7 +254,7 @@ def test_iceberg_streaming(backend, tmp_path):
         IcebergEntriesCountChecker(
             backend, f"{namespace}.{table_name}", 4 * len(INPUT_CONTENTS)
         ),
-        30,
+        timeout_sec=100,
     )
 
     all_ids = set()
@@ -257,10 +273,11 @@ def test_iceberg_streaming(backend, tmp_path):
     assert len(set(pandas_table["time"])) == len(INPUT_CONTENTS)
 
 
-@pytest.mark.parametrize("backend", ["local", "s3"])
-def test_py_object_wrapper_in_iceberg(backend, tmp_path):
+@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, GLUE_BACKEND_NAME])
+def test_py_object_wrapper_in_iceberg(backend, tmp_path, s3_path):
     input_path = tmp_path / "input.jsonl"
     output_path = tmp_path / "output.jsonl"
+    full_s3_path = f"s3://aws-integrationtest/{s3_path}"
     table_name = uuid.uuid4().hex
     namespace = uuid.uuid4().hex
     input_path.write_text("test")
@@ -272,11 +289,9 @@ def test_py_object_wrapper_in_iceberg(backend, tmp_path):
     )
     pw.io.iceberg.write(
         table,
-        catalog_uri=CATALOG_URI[backend],
+        catalog=_get_catalog(backend, s3_path=full_s3_path),
         namespace=[namespace],
         table_name=table_name,
-        warehouse=_get_warehouse_path(backend, table_name),
-        s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     run()
     G.clear()
@@ -290,13 +305,11 @@ def test_py_object_wrapper_in_iceberg(backend, tmp_path):
         return a.value(x)
 
     table = pw.io.iceberg.read(
-        catalog_uri=CATALOG_URI[backend],
+        catalog=_get_catalog(backend, s3_path=full_s3_path),
         namespace=[namespace],
         table_name=table_name,
         mode="static",
         schema=InputSchema,
-        warehouse=_get_warehouse_path(backend, table_name),
-        s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     table = table.select(len=use_python_object(pw.this.fun, pw.this.data))
     pw.io.jsonlines.write(table, output_path)
@@ -307,9 +320,10 @@ def test_py_object_wrapper_in_iceberg(backend, tmp_path):
         assert data["len"] == 4
 
 
-@pytest.mark.parametrize("backend", ["local", "s3"])
-def test_iceberg_different_types_serialization(backend, tmp_path):
+@pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, GLUE_BACKEND_NAME])
+def test_iceberg_different_types_serialization(backend, tmp_path, s3_path):
     input_path = tmp_path / "input.jsonl"
+    full_s3_path = f"s3://aws-integrationtest/{s3_path}"
     table_name = uuid.uuid4().hex
     namespace = uuid.uuid4().hex
     input_path.write_text("test")
@@ -332,11 +346,10 @@ def test_iceberg_different_types_serialization(backend, tmp_path):
     )
     pw.io.iceberg.write(
         table,
-        catalog_uri=CATALOG_URI[backend],
+        catalog=_get_catalog(backend, s3_path=full_s3_path),
         namespace=[namespace],
         table_name=table_name,
-        warehouse=_get_warehouse_path(backend, table_name),
-        s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
+        timestamp_unit="ns" if backend == GLUE_BACKEND_NAME else "us",
     )
     run()
     G.clear()
@@ -363,13 +376,11 @@ def test_iceberg_different_types_serialization(backend, tmp_path):
                 assert row[field] == expected_value
 
     table = pw.io.iceberg.read(
-        catalog_uri=CATALOG_URI[backend],
+        catalog=_get_catalog(backend, s3_path=full_s3_path),
         namespace=[namespace],
         table_name=table_name,
         mode="static",
         schema=InputSchema,
-        warehouse=_get_warehouse_path(backend, table_name),
-        s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     checker = Checker()
     pw.io.subscribe(table, on_change=checker)

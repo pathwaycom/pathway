@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
 from pathway.internals import api, datasink, datasource
@@ -11,29 +12,100 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import (
-    _get_unique_name,
-    _prepare_s3_connection_engine_settings,
-    internal_connector_mode,
-    read_schema,
-)
-from pathway.io.minio import MinIOSettings
-from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
+from pathway.io._utils import _get_unique_name, internal_connector_mode, read_schema
+
+_REST_CATALOG_TYPE_NAME = "rest"
+_GLUE_CATALOG_TYPE_NAME = "glue"
+
+
+@dataclass
+class RestCatalog:
+    """
+    Configuration settings for a REST Iceberg catalog.
+
+    Args:
+        uri: The URI of the catalog.
+        warehouse: Optional data warehouse path.
+
+    Returns:
+        A configuration object.
+
+    Example:
+
+    Suppose you need to connect to a REST catalog running at
+    ``http://localhost:8181``. The connection settings can be constructed as follows:
+
+    >>> import pathway as pw  # NODOCS
+    >>> settings = pw.io.iceberg.RestCatalog(uri="http://localhost:8181")
+    """
+
+    uri: str
+    warehouse: str | None = None
+
+    def _to_engine(self) -> api.IcebergCatalogSettings:
+        return api.IcebergCatalogSettings(
+            type_=_REST_CATALOG_TYPE_NAME, uri=self.uri, warehouse=self.warehouse
+        )
+
+
+@dataclass
+class GlueCatalog:
+    """
+    Configuration settings for a Glue Iceberg catalog.
+
+    Args:
+        warehouse: The path to the data warehouse.
+        uri: The URI of the Glue catalog endpoint.
+        catalog_id: The ID of the Glue catalog.
+        aws_settings: The AWS connection settings.
+
+    Returns:
+        A configuration object.
+
+    Example:
+
+    Suppose you need to connect to a Glue catalog running in the ``datalake`` AWS bucket,
+    located in the ``eu-central-1`` region.
+
+    If the data warehouse path is ``storage/root``, the configuration object can be
+    constructed as follows:
+
+    >>> import pathway as pw  # NODOCS
+    >>> settings = pw.io.iceberg.GlueCatalog(
+    ...     warehouse="s3://datalake/storage/root",
+    ...     aws_settings=pw.io.s3.AwsS3Settings(region="eu-central-1"),
+    ... )
+
+    If possible, the AWS credentials are inferred from the environment. You can also
+    specify the credentials explicitly in the ``AwsS3Settings`` object.
+    """
+
+    warehouse: str
+    uri: str | None = None
+    catalog_id: str | None = None
+    aws_settings: AwsS3Settings | None = None
+
+    def _to_engine(self) -> api.IcebergCatalogSettings:
+        return api.IcebergCatalogSettings(
+            type_=_GLUE_CATALOG_TYPE_NAME,
+            uri=self.uri,
+            warehouse=self.warehouse,
+            catalog_id=self.catalog_id,
+            aws_settings=(
+                self.aws_settings.settings if self.aws_settings is not None else None
+            ),
+        )
 
 
 @check_arg_types
 @trace_user_frame
 def read(
-    catalog_uri: str,
+    catalog: RestCatalog | GlueCatalog,
     namespace: list[str],
     table_name: str,
     schema: type[Schema],
     *,
     mode: Literal["streaming", "static"] = "streaming",
-    s3_connection_settings: (
-        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
-    ) = None,
-    warehouse: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     max_backlog_size: int | None = None,
@@ -49,7 +121,7 @@ def read(
     function.
 
     Args:
-        catalog_uri: URI of the Iceberg REST catalog.
+        catalog: Settings for Iceberg catalog connection.
         namespace: The name of the namespace containing the table read.
         table_name: The name of the table to be read.
         schema: Schema of the resulting table.
@@ -59,8 +131,6 @@ def read(
             new row additions and reflect these events in the state. On the other hand,
             the ``"static"`` mode will only consider the available data and ingest all
             of it in one commit. The default value is ``"streaming"``.
-        s3_connection_settings: S3 credentials when using S3 as a backend.
-        warehouse: Optional, path to the Iceberg storage warehouse.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
@@ -94,7 +164,7 @@ def read(
     Then, this table must be read from the Iceberg storage.
 
     >>> input_table = pw.io.iceberg.read(
-    ...     catalog_uri="http://localhost:8181/",
+    ...     catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181/"),
     ...     namespace=["app"],
     ...     table_name="users",
     ...     schema=InputSchema,
@@ -113,16 +183,13 @@ def read(
 
     _check_entitlements("iceberg")
     schema, api_schema = read_schema(schema)
-    engine_s3_settings = _prepare_s3_connection_engine_settings(s3_connection_settings)
 
     data_storage = api.DataStorage(
         storage_type="iceberg",
-        path=catalog_uri,
-        database=warehouse,
+        iceberg_catalog=catalog._to_engine(),
         table_name=table_name,
         namespace=namespace,
         mode=internal_connector_mode(mode),
-        aws_s3_settings=engine_s3_settings,
     )
     data_format = api.DataFormat(
         format_type="transparent",
@@ -151,22 +218,19 @@ def read(
 @trace_user_frame
 def write(
     table: Table,
-    catalog_uri: str,
+    catalog: RestCatalog | GlueCatalog,
     namespace: list[str],
     table_name: str,
     *,
-    s3_connection_settings: (
-        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
-    ) = None,
-    warehouse: str | None = None,
+    timestamp_unit: Literal["us", "ns"] = "ns",
     min_commit_frequency: int | None = 60_000,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ):
     """
     Writes the stream of changes from ``table`` into `Iceberg <https://iceberg.apache.org/>`_
-    data storage. The data storage must be defined with the REST catalog URI, the namespace,
-    and the table name.
+    data storage. The data storage must be defined with the catalog, the namespace, and
+    the table name.
 
     If the namespace or the table doesn't exist, they will be created by the connector.
     The schema of the new table is inferred from the ``table``'s schema. The output table
@@ -176,13 +240,18 @@ def write(
 
     Args:
         table: Table to be written.
-        catalog_uri: URI of the Iceberg REST catalog.
+        catalog: The catalog of the target storage.
         namespace: The name of the namespace containing the target table. If the namespace
             doesn't exist, it will be created by the connector.
         table_name: The name of the table to be written. If a table with such a name
             doesn't exist, it will be created by the connector.
-        s3_connection_settings: S3 credentials when using S3 as a backend.
-        warehouse: Optional, path to the Iceberg storage warehouse.
+        timestamp_unit: The precision used for timestamp serialization.
+            It can be either ``"us"`` for microseconds or ``"ns"`` for nanoseconds.
+            When selecting the precision, ensure that your catalog supports the chosen
+            unit, as different underlying data types are used: ``timestamp`` for
+            microsecond precision and ``timestamp_ns`` for nanosecond precision.
+            Note that some catalogs only support a specific timestamp format. In the
+            case of the Glue catalog, only **nanoseconds** are supported.
         min_commit_frequency: Specifies the minimum time interval between two data
             commits in storage, measured in milliseconds. If set to ``None``, finalized
             minibatches will be committed as soon as possible. Keep in mind that each
@@ -202,7 +271,7 @@ def write(
 
     Consider a users data table stored locally in a file called ``users.txt`` in CSV format.
     The Iceberg output connector provides the capability to place this table into
-    Iceberg storage, defined by the catalog with URI ``http://localhost:8181``. The target
+    Iceberg storage, defined by the REST catalog with URI ``http://localhost:8181``. The target
     table is ``users``, located in the ``app`` namespace.
 
     First, the table must be read. To do this, you need to define the schema. For
@@ -226,7 +295,7 @@ def write(
 
     >>> pw.io.iceberg.write(
     ...     users,
-    ...     catalog_uri="http://localhost:8181/",
+    ...     catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181/"),
     ...     namespace=["app"],
     ...     table_name="users",
     ... )
@@ -236,21 +305,19 @@ def write(
     Iceberg storage.
     """
     _check_entitlements("iceberg")
-    engine_s3_settings = _prepare_s3_connection_engine_settings(s3_connection_settings)
     data_storage = api.DataStorage(
         storage_type="iceberg",
-        path=catalog_uri,
+        iceberg_catalog=catalog._to_engine(),
         min_commit_frequency=min_commit_frequency,
-        database=warehouse,
         table_name=table_name,
         namespace=namespace,
-        aws_s3_settings=engine_s3_settings,
     )
 
     data_format = api.DataFormat(
         format_type="identity",
         key_field_names=None,
         value_fields=_format_output_value_fields(table),
+        timestamp_unit=timestamp_unit,
     )
 
     table.to(

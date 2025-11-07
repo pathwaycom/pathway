@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::{self as channel, Sender};
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
+use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
 use serde_json::json;
 
 use pathway_engine::connectors::data_format::FormatterContext;
@@ -42,6 +43,7 @@ impl LakeBatchWriter for ArrowBatchWriter {
         LakeWriterSettings {
             use_64bit_size_type: false,
             utc_timezone_name: "UTC".into(),
+            timestamp_unit: ArrowTimeUnit::Microsecond,
         }
     }
 

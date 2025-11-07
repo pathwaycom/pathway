@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
 use deltalake::arrow::record_batch::RecordBatch as ArrowRecordBatch;
 use deltalake::datafusion::parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use deltalake::parquet::file::properties::WriterProperties;
@@ -15,6 +16,7 @@ use iceberg::spec::{
     Schema as IcebergSchema, Type as IcebergType,
 };
 use iceberg::table::Table as IcebergTable;
+use iceberg::transaction::ApplyTransactionAction;
 use iceberg::transaction::Transaction;
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::location_generator::{
@@ -22,15 +24,14 @@ use iceberg::writer::file_writer::location_generator::{
 };
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
+use iceberg::Catalog as IcebergCatalog;
 use iceberg::Error as IcebergError;
-use iceberg::{Catalog, Namespace, NamespaceIdent, TableCreation, TableIdent};
-use iceberg_catalog_rest::{RestCatalog, RestCatalogConfig};
+use iceberg::{Namespace, NamespaceIdent, TableCreation, TableIdent};
 use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
     columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
 };
-use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::NDARRAY_SINGLE_ELEMENT_FIELD_NAME;
 use crate::connectors::data_lake::buffering::PayloadType;
 use crate::connectors::data_lake::MetadataPerColumn;
@@ -46,61 +47,23 @@ use crate::python_api::ValueField;
 use crate::retry::{execute_with_retries, RetryConfig};
 use crate::timestamp::current_unix_timestamp_ms;
 
-#[derive(Clone)]
-#[allow(clippy::module_name_repetitions)]
-pub struct IcebergDBParams {
-    uri: String,
-    warehouse: Option<String>,
-    namespace: Vec<String>,
-    props: HashMap<String, String>,
-}
-
-impl IcebergDBParams {
-    pub fn new(
-        uri: String,
-        warehouse: Option<String>,
-        namespace: Vec<String>,
-        props: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            uri,
-            warehouse,
-            namespace,
-            props,
+fn ensure_namespace(
+    runtime: &TokioRuntime,
+    catalog: &dyn IcebergCatalog,
+    namespace: &[String],
+) -> Result<Namespace, IcebergError> {
+    let ident = NamespaceIdent::from_strs(namespace)?;
+    runtime.block_on(async {
+        if let Ok(ns) = catalog.get_namespace(&ident).await {
+            return Ok(ns);
         }
-    }
-
-    pub fn create_catalog(&self) -> RestCatalog {
-        let config_builder = RestCatalogConfig::builder().uri(self.uri.clone());
-        let config = if let Some(warehouse) = &self.warehouse {
-            config_builder
-                .warehouse(warehouse.clone())
-                .props(self.props.clone())
-                .build()
-        } else {
-            config_builder.props(self.props.clone()).build()
-        };
-        RestCatalog::new(config)
-    }
-
-    pub fn ensure_namespace(
-        &self,
-        runtime: &TokioRuntime,
-        catalog: &RestCatalog,
-    ) -> Result<Namespace, IcebergError> {
-        let ident = NamespaceIdent::from_strs(self.namespace.clone())?;
-        runtime.block_on(async {
-            if let Ok(ns) = catalog.get_namespace(&ident).await {
-                return Ok(ns);
-            }
-            catalog
-                .create_namespace(
-                    &ident,
-                    HashMap::from([("author".to_string(), "pathway".to_string())]),
-                )
-                .await
-        })
-    }
+        catalog
+            .create_namespace(
+                &ident,
+                HashMap::from([("author".to_string(), "pathway".to_string())]),
+            )
+            .await
+    })
 }
 
 #[derive(Clone)]
@@ -109,11 +72,16 @@ pub struct IcebergTableParams {
     name: String,
     schema: IcebergSchema,
     metadata_per_column: MetadataPerColumn,
+    timestamp_unit: ArrowTimeUnit,
 }
 
 impl IcebergTableParams {
-    pub fn new(name: String, fields: &[ValueField]) -> Result<Self, WriteError> {
-        let schema = Self::build_schema(fields)?;
+    pub fn new(
+        name: String,
+        fields: &[ValueField],
+        timestamp_unit: ArrowTimeUnit,
+    ) -> Result<Self, WriteError> {
+        let schema = Self::build_schema(fields, timestamp_unit)?;
         let mut metadata_per_column = MetadataPerColumn::new();
         for field in schema.as_struct().fields() {
             let mut metadata = HashMap::with_capacity(1);
@@ -124,6 +92,7 @@ impl IcebergTableParams {
             name,
             schema,
             metadata_per_column,
+            timestamp_unit,
         })
     }
 
@@ -134,9 +103,8 @@ impl IcebergTableParams {
     pub fn ensure_table(
         &self,
         runtime: &TokioRuntime,
-        catalog: &RestCatalog,
+        catalog: &dyn IcebergCatalog,
         namespace: &Namespace,
-        warehouse: Option<&String>,
     ) -> Result<IcebergTable, WriteError> {
         let table_ident = TableIdent::new(namespace.name().clone(), self.name.clone());
         let table = runtime.block_on(async {
@@ -151,12 +119,7 @@ impl IcebergTableParams {
                     )]))
                     .schema(self.schema.clone());
 
-                let creation = if let Some(warehouse) = warehouse {
-                    creation_builder.location(warehouse.clone()).build()
-                } else {
-                    creation_builder.build()
-                };
-
+                let creation = creation_builder.build();
                 catalog.create_table(namespace.name(), creation).await
             }
         })?;
@@ -164,13 +127,16 @@ impl IcebergTableParams {
         Ok(table)
     }
 
-    fn build_schema(fields: &[ValueField]) -> Result<IcebergSchema, WriteError> {
+    fn build_schema(
+        fields: &[ValueField],
+        timestamp_unit: ArrowTimeUnit,
+    ) -> Result<IcebergSchema, WriteError> {
         let mut nested_fields = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
             nested_fields.push(Arc::new(NestedField::new(
                 (index + 1).try_into().unwrap(),
                 field.name.clone(),
-                Self::iceberg_type(&field.type_)?,
+                Self::iceberg_type(&field.type_, timestamp_unit)?,
                 false, // No optional fields
             )));
         }
@@ -180,7 +146,7 @@ impl IcebergTableParams {
             nested_fields.push(Arc::new(NestedField::new(
                 current_field_index.try_into().unwrap(),
                 name,
-                Self::iceberg_type(&type_)?,
+                Self::iceberg_type(&type_, timestamp_unit)?,
                 false,
             )));
         }
@@ -190,7 +156,10 @@ impl IcebergTableParams {
         Ok(iceberg_schema)
     }
 
-    fn iceberg_type(type_: &Type) -> Result<IcebergType, WriteError> {
+    fn iceberg_type(
+        type_: &Type,
+        timestamp_unit: ArrowTimeUnit,
+    ) -> Result<IcebergType, WriteError> {
         let iceberg_type = match type_ {
             Type::Bool => IcebergType::Primitive(IcebergPrimitiveType::Boolean),
             Type::Float => IcebergType::Primitive(IcebergPrimitiveType::Double),
@@ -200,13 +169,30 @@ impl IcebergTableParams {
             Type::Bytes | Type::PyObjectWrapper => {
                 IcebergType::Primitive(IcebergPrimitiveType::Binary)
             }
-            Type::DateTimeNaive => IcebergType::Primitive(IcebergPrimitiveType::Timestamp),
-            Type::DateTimeUtc => IcebergType::Primitive(IcebergPrimitiveType::Timestamptz),
+            Type::DateTimeNaive => match timestamp_unit {
+                ArrowTimeUnit::Microsecond => {
+                    IcebergType::Primitive(IcebergPrimitiveType::Timestamp)
+                }
+                ArrowTimeUnit::Nanosecond => {
+                    IcebergType::Primitive(IcebergPrimitiveType::TimestampNs)
+                }
+                _ => unreachable!(),
+            },
+            Type::DateTimeUtc => match timestamp_unit {
+                ArrowTimeUnit::Microsecond => {
+                    IcebergType::Primitive(IcebergPrimitiveType::Timestamptz)
+                }
+                ArrowTimeUnit::Nanosecond => {
+                    IcebergType::Primitive(IcebergPrimitiveType::TimestamptzNs)
+                }
+                _ => unreachable!(),
+            },
             Type::Int | Type::Duration => IcebergType::Primitive(IcebergPrimitiveType::Long),
-            Type::Optional(wrapped) => Self::iceberg_type(wrapped)?,
+            Type::Optional(wrapped) => Self::iceberg_type(wrapped, timestamp_unit)?,
             Type::List(element_type) => {
                 let element_type_is_optional = element_type.is_optional();
-                let nested_element_type = Self::iceberg_type(element_type.unoptionalize())?;
+                let nested_element_type =
+                    Self::iceberg_type(element_type.unoptionalize(), timestamp_unit)?;
                 let nested_type = NestedField::new(
                     0,
                     NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
@@ -229,33 +215,27 @@ const MAX_CATALOG_RETRIES: usize = 5;
 #[allow(clippy::module_name_repetitions)]
 pub struct IcebergBatchWriter {
     runtime: TokioRuntime,
-    catalog: RestCatalog,
+    catalog: Box<dyn IcebergCatalog>,
     table: IcebergTable,
     table_ident: TableIdent,
     metadata_per_column: MetadataPerColumn,
+    timestamp_unit: ArrowTimeUnit,
 }
 
 impl IcebergBatchWriter {
     pub fn new(
-        db_params: &IcebergDBParams,
+        runtime: TokioRuntime,
+        catalog: Box<dyn IcebergCatalog>,
+        namespace: &[String],
         table_params: &IcebergTableParams,
     ) -> Result<Self, WriteError> {
-        let runtime = create_async_tokio_runtime()?;
-        let catalog = db_params.create_catalog();
         let namespace = execute_with_retries(
-            || db_params.ensure_namespace(&runtime, &catalog),
+            || ensure_namespace(&runtime, catalog.as_ref(), namespace),
             RetryConfig::default(),
             MAX_CATALOG_RETRIES,
         )?;
         let table = execute_with_retries(
-            || {
-                table_params.ensure_table(
-                    &runtime,
-                    &catalog,
-                    &namespace,
-                    db_params.warehouse.as_ref(),
-                )
-            },
+            || table_params.ensure_table(&runtime, catalog.as_ref(), &namespace),
             RetryConfig::default(),
             MAX_CATALOG_RETRIES,
         )?;
@@ -266,6 +246,7 @@ impl IcebergBatchWriter {
             table,
             table_ident: TableIdent::new(namespace.name().clone(), table_params.name.clone()),
             metadata_per_column: table_params.metadata_per_column(),
+            timestamp_unit: table_params.timestamp_unit,
         })
     }
 
@@ -287,6 +268,7 @@ impl IcebergBatchWriter {
         let parquet_writer_builder = ParquetWriterBuilder::new(
             WriterProperties::default(),
             table.metadata().current_schema().clone(),
+            None,
             table.file_io().clone(),
             location_generator.clone(),
             file_name_generator.clone(),
@@ -315,10 +297,9 @@ impl LakeBatchWriter for IcebergBatchWriter {
 
             // Append the prepared data block to the table and commit the change
             let tx = Transaction::new(&self.table);
-            let mut append_action = tx.fast_append(None, vec![])?;
-            append_action.add_data_files(data_file.clone())?;
-            let tx = append_action.apply().await?;
-            let _ = tx.commit(&self.catalog).await?;
+            let append_action = tx.fast_append().add_data_files(data_file.clone());
+            let tx = append_action.apply(tx)?;
+            let _ = tx.commit(self.catalog.as_ref()).await?;
 
             self.table = self.catalog.load_table(&self.table_ident).await?;
 
@@ -330,6 +311,7 @@ impl LakeBatchWriter for IcebergBatchWriter {
         LakeWriterSettings {
             use_64bit_size_type: true,
             utc_timezone_name: "+00:00".into(),
+            timestamp_unit: self.timestamp_unit,
         }
     }
 
@@ -369,7 +351,7 @@ pub type IcebergSnapshotId = i64;
 
 #[allow(clippy::module_name_repetitions)]
 pub struct IcebergReader {
-    catalog: RestCatalog,
+    catalog: Box<dyn IcebergCatalog>,
     table_ident: TableIdent,
     column_types: HashMap<String, Type>,
     streaming_mode: ConnectorMode,
@@ -385,14 +367,14 @@ const ICEBERG_SLEEP_BETWEEN_SNAPSHOT_CHECKS: Duration = Duration::from_millis(10
 
 impl IcebergReader {
     pub fn new(
-        db_params: &IcebergDBParams,
+        runtime: TokioRuntime,
+        catalog: Box<dyn IcebergCatalog>,
+        namespace: &[String],
         table_params: &IcebergTableParams,
         column_types: HashMap<String, Type>,
         streaming_mode: ConnectorMode,
     ) -> Result<Self, ReadError> {
-        let runtime = create_async_tokio_runtime()?;
-        let catalog = db_params.create_catalog();
-        let namespace = db_params.ensure_namespace(&runtime, &catalog)?;
+        let namespace = ensure_namespace(&runtime, catalog.as_ref(), namespace)?;
         let table_ident = TableIdent::new(namespace.name().clone(), table_params.name.clone());
 
         // Check that the table exists.
@@ -514,8 +496,7 @@ impl IcebergReader {
         let reader_builder = table.reader_builder();
         let entries: Vec<_> = reader_builder
             .build()
-            .read(iceberg_task_stream)
-            .await?
+            .read(iceberg_task_stream)?
             .try_collect()
             .await?;
         let mut result = Vec::new();

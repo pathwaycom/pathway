@@ -7,7 +7,8 @@ use deltalake::arrow::array::{
     Float64Array as ArrowFloat64Array, Int64Array as ArrowInt64Array,
     LargeBinaryArray as ArrowLargeBinaryArray, LargeListArray as ArrowLargeListArray,
     ListArray as ArrowListArray, StringArray as ArrowStringArray, StructArray as ArrowStructArray,
-    TimestampMicrosecondArray as ArrowTimestampArray,
+    TimestampMicrosecondArray as ArrowTimestampMsArray,
+    TimestampNanosecondArray as ArrowTimestampNsArray,
 };
 use deltalake::arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use deltalake::arrow::datatypes::{
@@ -87,7 +88,7 @@ pub fn array_for_type(
                 Value::DateTimeNaive(dt) => Ok(dt.timestamp_microseconds()),
                 _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
             })?;
-            Ok(Arc::new(ArrowTimestampArray::from(v)))
+            Ok(Arc::new(ArrowTimestampMsArray::from(v)))
         }
         ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, Some(tz)) => {
             let v = array_of_simple_type::<i64>(values, |v| match v {
@@ -95,7 +96,27 @@ pub fn array_for_type(
                 Value::DateTimeUtc(dt) => Ok(dt.timestamp_microseconds()),
                 _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
             })?;
-            Ok(Arc::new(ArrowTimestampArray::from(v).with_timezone(&**tz)))
+            Ok(Arc::new(
+                ArrowTimestampMsArray::from(v).with_timezone(&**tz),
+            ))
+        }
+        ArrowDataType::Timestamp(ArrowTimeUnit::Nanosecond, None) => {
+            let v = array_of_simple_type::<i64>(values, |v| match v {
+                #[allow(clippy::cast_possible_truncation)]
+                Value::DateTimeNaive(dt) => Ok(dt.timestamp()),
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            Ok(Arc::new(ArrowTimestampNsArray::from(v)))
+        }
+        ArrowDataType::Timestamp(ArrowTimeUnit::Nanosecond, Some(tz)) => {
+            let v = array_of_simple_type::<i64>(values, |v| match v {
+                #[allow(clippy::cast_possible_truncation)]
+                Value::DateTimeUtc(dt) => Ok(dt.timestamp()),
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            Ok(Arc::new(
+                ArrowTimestampNsArray::from(v).with_timezone(&**tz),
+            ))
         }
         ArrowDataType::List(nested_type) => array_of_lists(values, nested_type, false),
         ArrowDataType::LargeList(nested_type) => array_of_lists(values, nested_type, true),
@@ -253,9 +274,9 @@ fn arrow_data_type(
         }
         // DeltaLake timestamps are stored in microseconds:
         // https://docs.rs/deltalake/latest/deltalake/kernel/enum.PrimitiveType.html#variant.Timestamp
-        Type::DateTimeNaive => ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, None),
+        Type::DateTimeNaive => ArrowDataType::Timestamp(settings.timestamp_unit, None),
         Type::DateTimeUtc => ArrowDataType::Timestamp(
-            ArrowTimeUnit::Microsecond,
+            settings.timestamp_unit,
             Some(settings.utc_timezone_name.clone().into()),
         ),
         Type::Optional(wrapped) => return arrow_data_type(wrapped, settings),
