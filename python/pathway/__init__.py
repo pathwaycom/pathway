@@ -211,3 +211,4 @@ Table.show = viz.show
 Table._repr_mimebundle_ = viz._repr_mimebundle_
 
 Table.inactivity_detection = temporal.inactivity_detection
+Table.add_update_timestamp_utc = temporal.add_update_timestamp_utc

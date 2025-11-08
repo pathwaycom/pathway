@@ -9,7 +9,11 @@ from unittest.mock import patch
 import pandas as pd
 
 import pathway as pw
-from pathway.tests.utils import T, assert_stream_equality_wo_index
+from pathway.tests.utils import (
+    T,
+    assert_stream_equality,
+    assert_stream_equality_wo_index,
+)
 
 
 def fake_utc_now(total_duration_ms: int) -> Callable[[pw.Duration], pw.Table]:
@@ -233,3 +237,37 @@ instance | inactivity_timestamp_utc | resumed_activity_timestamp_utc | __time__ 
     )
 
     assert_stream_equality_wo_index(inactivities, expected_inactivities)
+
+
+@patch("pathway.stdlib.temporal.time_utils.utc_now")
+def test_add_update_timestamp_utc(utc_now_mock):
+    utc_now_mock.side_effect = fake_utc_now(500)
+    t = T(
+        """
+           |  value | __time__ | __diff__
+        1  |     10 |        0 |        1
+        2  |     20 |        0 |        1
+        3  |     30 |        0 |        1
+        1  |     10 |      130 |       -1
+        1  |    110 |      130 |        1
+        3  |     30 |      230 |       -1
+    """
+    )
+    result = t.add_update_timestamp_utc(refresh_rate=pw.Duration(milliseconds=100))
+
+    expected = T(
+        """
+           |  value | updated_timestamp_utc | __time__ | __diff__
+        1  |     10 |                     0 |        0 |        1
+        2  |     20 |                     0 |        0 |        1
+        3  |     30 |                     0 |        0 |        1
+        1  |     10 |                     0 |      130 |       -1
+        1  |    110 |                   100 |      130 |        1
+        3  |     30 |                     0 |      230 |       -1
+    """
+    ).with_columns(
+        updated_timestamp_utc=pw.this.updated_timestamp_utc.dt.utc_from_timestamp(
+            unit="ms"
+        )
+    )
+    assert_stream_equality(result, expected)

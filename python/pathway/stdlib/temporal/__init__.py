@@ -40,7 +40,7 @@ from .temporal_behavior import (
     common_behavior,
     exactly_once_behavior,
 )
-from .time_utils import inactivity_detection, utc_now
+from .time_utils import add_update_timestamp_utc, inactivity_detection, utc_now
 
 __all__ = [
     "AsofJoinResult",
@@ -79,4 +79,5 @@ __all__ = [
     "exactly_once_behavior",
     "utc_now",
     "inactivity_detection",
+    "add_update_timestamp_utc",
 ]

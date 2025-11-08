@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - JetStream extension is now supported in both NATS read and write connectors.
 - The Iceberg connectors now support Glue as a catalog backend.
+- New `Table.add_update_timestamp_utc` function for tracking update time of rows in the table
 
 ### Changed
 - **BREAKING** The API for the Iceberg connectors has changed. The `catalog` parameter is now required in both `pw.io.iceberg.read` and `pw.io.iceberg.write`. This parameter can be either of type `pw.io.iceberg.RestCatalog` or `pw.io.iceberg.GlueCatalog`, and it must contain the connection parameters.

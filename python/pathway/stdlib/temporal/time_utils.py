@@ -184,3 +184,46 @@ def inactivity_detection(
         inactivities = inactivities.without(pw.this.instance)
 
     return inactivities
+
+
+@check_arg_types
+@trace_user_frame
+def add_update_timestamp_utc(
+    self: pw.Table,
+    refresh_rate: pw.Duration = pw.Duration(seconds=1),
+    update_timestamp_column_name: str = "updated_timestamp_utc",
+) -> pw.Table:
+    """Adds a column with the UTC timestamp of the last row update
+
+    Args:
+        refresh_rate (pw.Duration, optional): The interval at which the UTC
+            timestamp is refreshed. Defaults to 1 second.
+        update_timestamp_column_name (str, optional): The name of the column to
+            store the update timestamp. Defaults to "updated_timestamp_utc".
+
+    Returns:
+        pw.Table: A new table with an additional column containing the UTC
+            timestamp of the last update for each row. The id column is preserved.
+    """
+    utc_now_single_row = utc_now(refresh_rate=refresh_rate).reduce(
+        timestamp_utc=pw.reducers.latest(pw.this.timestamp_utc)
+    )
+
+    stream = self.with_columns(_id=pw.this.id).to_stream()
+
+    stream_joined = stream.asof_now_join_left(utc_now_single_row)
+    new_cols = {
+        update_timestamp_column_name: pw.coalesce(
+            pw.right.timestamp_utc,
+            pw.DateTimeUtc(datetime.datetime.now(tz=datetime.timezone.utc)),
+        )
+    }
+    stream_with_update_time = stream_joined.select(*pw.left, **new_cols)
+
+    result = (
+        stream_with_update_time.stream_to_table(pw.this.is_upsert)
+        .without(pw.this.is_upsert)
+        .with_id(pw.this._id)
+        .without(pw.this._id)
+    )
+    return result

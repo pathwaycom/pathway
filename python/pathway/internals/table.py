@@ -75,6 +75,7 @@ class Table(
         from pathway.stdlib.ordered import diff  # type: ignore[misc]
         from pathway.stdlib.statistical import interpolate  # type: ignore[misc]
         from pathway.stdlib.temporal import (  # type: ignore[misc]
+            add_update_timestamp_utc,
             asof_join,
             asof_join_left,
             asof_join_outer,
