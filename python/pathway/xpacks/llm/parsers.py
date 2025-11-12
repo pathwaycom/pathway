@@ -1165,6 +1165,11 @@ class PaddleOCRParser(pw.UDF):
     """
     A class to parse images, PDFs and PPTX slides using PaddleOCR.
 
+    PaddleOCRParser requires ``paddlepaddle`` to be installed, with the version depending on your hardware.
+    If you want to run the OCR on CPU, install it with ``pip install paddlepaddle>=3.2.0``.
+    For GPU support, follow the instructions on the
+    `official site <https://www.paddlepaddle.org.cn/en/install/quick>`_.
+
     Args:
         pipeline: A Paddle pipeline object. Currently PaddleOCR and PPStructureV3 are supported.
             If not provided, a default PPStructureV3 pipeline will be used.
@@ -1206,6 +1211,16 @@ class PaddleOCRParser(pw.UDF):
 
         with optional_imports("xpack-llm-docs"):
             import paddleocr  # noqa:F401
+
+        try:
+            import paddle  # noqa:F401
+        except ImportError as e:
+            raise ImportError(
+                "PaddleOCRParser requires `paddlepaddle` to be installed, "
+                "with the version depending on your hardware. "
+                "If you want to run the OCR on CPU, install it with `pip install paddlepaddle>=3.2.0`. "
+                "For GPU support, follow the instructions at https://www.paddlepaddle.org.cn/en/install/quick."
+            ) from e
 
         self.intermediate_image_format = intermediate_image_format
         self.max_image_size = max_image_size
