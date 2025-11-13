@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.27.0] - 2025-11-13
+
 ### Added
 - JetStream extension is now supported in both NATS read and write connectors.
 - The Iceberg connectors now support Glue as a catalog backend.
