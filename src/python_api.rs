@@ -4480,6 +4480,24 @@ pub struct DataStorage {
     iceberg_catalog: Option<IcebergCatalogSettings>,
 }
 
+/// Specifies the type of persistence used by Pathway.
+///
+///   Attributes:
+///     PERSISTING: Persists all data and state necessary to fully restore the computation.
+///     UDF_CACHING: Only the results of UDFs, for which `cache_strategy` is set, are persisted, however, the data
+///       needs to be read again by the input connectors.
+///       
+///       Note:
+///       ``pw.PersistenceMode.UDF_CACHING`` currently works either when the File System
+///       is used as the backend for persistent storage, or, if another backend is used, a
+///       temporary directory will be created for writing the cache. In the latter case,
+///       persistence guarantees are not provided.
+///       By default, ``pw.PersistenceMode.UDF_CACHING`` does not persist data from input
+///       sources. This means that if the program restarts, it will re-read all input streams
+///       from the beginning. However, this behavior can be overridden by assigning names
+///       to specific input sources. If an input connector has a name parameter, the input
+///       stream for this source will also be persisted. Upon restart, the program will
+///       resume reading from the point where it previously stopped.
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
 pub struct PyPersistenceMode(PersistenceMode);
 

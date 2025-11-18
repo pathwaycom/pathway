@@ -161,6 +161,21 @@ impl PyExternalIndexQuery {
     }
 }
 
+/// Used for choosing the metric used in the USearchKnn index.
+/// As these correspond to values of `MetricKind` from the usearch crate,
+/// you can find more information about them in the
+/// `usearch documentation <https://docs.rs/usearch/latest/usearch/ffi/struct.MetricKind.html>`_.
+///
+/// Attributes:
+///   IP: Inner Product distance.
+///   L2SQ: Squared Euclidean distance.
+///   COS: Cosine distance.
+///   PEARSON: Pearson distance.
+///   HAVERSINE: Haversine distance.
+///   DIVERGENCE: Jensen Shannon Divergence distance.
+///   HAMMING: Hamming distance.
+///   TANIMOTO: Tanimoto distance.
+///   SORENSEN: Sorensen distance.
 #[pyclass(module = "pathway.engine", frozen, name = "USearchMetricKind")]
 pub struct PyUSearchMetricKind(USearchMetricKind);
 
@@ -201,6 +216,11 @@ impl<'py> IntoPyObject<'py> for USearchMetricKind {
     }
 }
 
+/// Used for choosing the metric used in the BruteForceKnn index.
+///
+/// Attributes:
+///   L2SQ: Squared Euclidean distance.
+///   COS: Cosine distance.
 #[pyclass(module = "pathway.engine", frozen, name = "BruteForceKnnMetricKind")]
 pub struct PyBruteForceKnnMetricKind(BruteForceKnnMetricKind);
 
