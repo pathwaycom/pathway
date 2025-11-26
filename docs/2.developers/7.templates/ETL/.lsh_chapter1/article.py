@@ -71,7 +71,7 @@
 
 
 # %% [markdown]
-# ## <a name="app_code"></a>And here comes: Your real-time classification Data App in Pathway
+# ## And here comes: Your real-time classification Data App in Pathway
 
 # %% [markdown]
 # In Pathway, everything you need to perform efficient real-time classification is already implemented for you.
