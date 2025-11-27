@@ -4137,13 +4137,45 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
     fn filter_out_results_of_forgetting(
         &mut self,
         table_handle: TableHandle,
+        ensure_consistency: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let table = self
             .tables
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-        let new_table = table.values().filter_out_forgetting();
+
+        let maybe_inconsistent_table = table.values().filter_out_forgetting();
+        let new_table = if ensure_consistency {
+            let mut state = HashMap::new();
+            maybe_inconsistent_table
+                .consolidate_for_output_named("filter_out_results_of_forgetting::ensure_consistency", true)
+                .flat_map(move |batch| {
+                    let OutputBatch { time, data } = batch;
+                    let mut result = Vec::with_capacity(data.len());
+                    for ((key, value), diff) in data {
+                        if diff == DIFF_INSERTION {
+                            let former_state = state.insert(key, value.clone());
+                            if let Some(former_state) = former_state {
+                                result.push(((key, former_state), time, DIFF_DELETION));
+                            }
+                            result.push(((key, value), time, diff));
+                        } else if diff == DIFF_DELETION {
+                            let former_state = state.remove(&key);
+                            if let Some(former_state) = former_state {
+                                result.push(((key, former_state), time, diff));
+                            }
+                        } else {
+                            panic!("unexpected diff: {diff:?} for an entry ({key:?}, {value:?}) at time {time:?}");
+                        }
+                    }
+                    result
+                })
+                .as_collection()
+        } else {
+            maybe_inconsistent_table
+        };
+
         Ok(self
             .tables
             .alloc(Table::from_collection(new_table).with_properties(table_properties)))
@@ -5362,6 +5394,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
     fn filter_out_results_of_forgetting(
         &self,
         _table_handle: TableHandle,
+        _ensure_consistency: bool,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::NotSupportedInIteration)
@@ -6022,11 +6055,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
     fn filter_out_results_of_forgetting(
         &self,
         table_handle: TableHandle,
+        ensure_consistency: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .filter_out_results_of_forgetting(table_handle, table_properties)
+        self.0.borrow_mut().filter_out_results_of_forgetting(
+            table_handle,
+            ensure_consistency,
+            table_properties,
+        )
     }
 
     fn freeze(

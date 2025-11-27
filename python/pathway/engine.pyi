@@ -567,6 +567,7 @@ class Scope:
     def filter_out_results_of_forgetting(
         self,
         table: Table,
+        ensure_consistency: bool,
         table_properties: TableProperties,
     ) -> Table: ...
     def freeze(

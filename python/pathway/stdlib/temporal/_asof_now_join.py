@@ -154,7 +154,7 @@ class AsofNowJoinResult(DesugaringContext):
         10    | 5   | 26       | 1
         """
         result = self._join_result.select(*args, **kwargs)
-        result = result._filter_out_results_of_forgetting()
+        result = result.filter_out_results_of_forgetting(ensure_consistency=False)
         if (
             self._id is not None
             and self._id._column == self._left_with_forgetting._id_column

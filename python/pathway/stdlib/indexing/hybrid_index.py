@@ -115,7 +115,9 @@ class HybridIndex(InnerIndex):
         )
 
         if as_of_now:
-            limited_results = limited_results._filter_out_results_of_forgetting()
+            limited_results = limited_results.filter_out_results_of_forgetting(
+                ensure_consistency=False
+            )
 
         return limited_results
 

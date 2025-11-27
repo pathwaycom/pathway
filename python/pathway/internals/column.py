@@ -668,9 +668,10 @@ class ForgetImmediatelyContext(Context):
 
 @dataclass(eq=False, frozen=True)
 class FilterOutForgettingContext(Context):
-    """Context of `table._filter_out_results_of_forgetting() operation."""
+    """Context of `table.filter_out_results_of_forgetting() operation."""
 
     orig_id_column: IdColumn
+    ensure_consistency: bool
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]

@@ -3101,12 +3101,14 @@ impl Scope {
     pub fn filter_out_results_of_forgetting(
         self_: &Bound<Self>,
         table: PyRef<Table>,
+        ensure_consistency: bool,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let new_table_handle = self_
-            .borrow()
-            .graph
-            .filter_out_results_of_forgetting(table.handle, table_properties.0)?;
+        let new_table_handle = self_.borrow().graph.filter_out_results_of_forgetting(
+            table.handle,
+            ensure_consistency,
+            table_properties.0,
+        )?;
         Table::new(self_, new_table_handle)
     }
 

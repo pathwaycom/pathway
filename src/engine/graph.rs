@@ -761,6 +761,7 @@ pub trait Graph {
     fn filter_out_results_of_forgetting(
         &self,
         table_handle: TableHandle,
+        ensure_consistency: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -1289,9 +1290,12 @@ impl Graph for ScopedGraph {
     fn filter_out_results_of_forgetting(
         &self,
         table_handle: TableHandle,
+        ensure_consistency: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.filter_out_results_of_forgetting(table_handle, table_properties))
+        self.try_with(|g| {
+            g.filter_out_results_of_forgetting(table_handle, ensure_consistency, table_properties)
+        })
     }
 
     fn freeze(

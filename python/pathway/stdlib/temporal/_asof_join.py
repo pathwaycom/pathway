@@ -235,7 +235,9 @@ class AsofJoinResult(DesugaringContext):
         self._all_cols = all_cols
         merge_result = self._merge()
         if _filter_out_results_of_forgetting:
-            merge_result = merge_result._filter_out_results_of_forgetting()
+            merge_result = merge_result.filter_out_results_of_forgetting(
+                ensure_consistency=False
+            )
         self._merge_result = merge_result
 
         self._sub_desugaring = SubstitutionDesugaring(

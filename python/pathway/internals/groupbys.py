@@ -212,7 +212,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         }
         reduced = self._reduce(**desugared_reducers)
         if self._filter_out_results_of_forgetting:
-            reduced = reduced._filter_out_results_of_forgetting()
+            reduced = reduced.filter_out_results_of_forgetting(ensure_consistency=False)
         return reduced.select(**output_expressions)
 
     def _maybe_warn(self, expression: expr.ColumnExpression) -> None:

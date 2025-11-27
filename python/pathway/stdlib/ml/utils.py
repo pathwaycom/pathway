@@ -83,7 +83,7 @@ def _predict_asof_now(
                 new_kwargs[name] = kwarg
 
         result = prediction_function(*new_args, **new_kwargs)
-        result = result._filter_out_results_of_forgetting()
+        result = result.filter_out_results_of_forgetting(ensure_consistency=False)
         if with_queries_universe:
             # FIXME assert that table is append-only,
             # then results should also be append-only (promise that)

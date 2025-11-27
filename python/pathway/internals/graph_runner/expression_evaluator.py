@@ -970,7 +970,9 @@ class FilterOutForgettingContext(
         properties = self._table_properties(output_storage)
 
         return self.scope.filter_out_results_of_forgetting(
-            self.state.get_table(self.context.input_universe()), properties
+            self.state.get_table(self.context.input_universe()),
+            self.context.ensure_consistency,
+            properties,
         )
 
 
@@ -1133,7 +1135,7 @@ class PromiseSameUniverseAsOfNowEvaluator(
         )
 
         return self.scope.filter_out_results_of_forgetting(
-            table_with_merged_universes, properties
+            table_with_merged_universes, False, properties
         )
 
 

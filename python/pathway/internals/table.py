@@ -669,7 +669,10 @@ id_type=<class 'pathway.engine.Pointer'>>
     @trace_user_frame
     @desugar
     def forget(
-        self, time_column: expr.ColumnExpression, threshold: IntervalType
+        self,
+        time_column: expr.ColumnExpression,
+        threshold: IntervalType,
+        mark_forgetting_records: bool = False,
     ) -> Table[TSchema]:
         """Remove old entries when they start to satisfy ``time_column <= max(time_column) - threshold``.
 
@@ -683,6 +686,12 @@ id_type=<class 'pathway.engine.Pointer'>>
             threshold: value used to determine which entries are old enough to be removed.
                 Should match the type of the ``time_column`` (``int -> int``,
                 ``float -> float``, ``datetime -> timedelta``).
+            mark_forgetting_records : If set to ``True``, Pathway marks records
+                corresponding to the deletion of expired entries in a special way,
+                without changing their visible representation.
+                This flag is useful when combined with ``filter_out_results_of_forgetting``,
+                which can later remove those marked deletion records. In other words, it
+                allows you to revert the effects of forgetting at a later stage.
 
         Example:
 
@@ -723,9 +732,26 @@ id_type=<class 'pathway.engine.Pointer'>>
         The removal of ``t=1,v=1`` entry resulted in the retraction of all its results from a join
         (only ``t=1,v=1,a=1`` in this case). If you would like to filter out retractions,
         you can do ``to_stream().filter(pw.this.is_upsert)`` on the result of a join.
+
+        For cases where you don't need to permanently forget data across the entire
+        pipeline, but only want to temporarily limit the dataset to a specific time
+        window for a computation, and then return to processing the full data stream,
+        you can use the parameter ``mark_forgetting_records`` set to ``True`` to achieve
+        this.
+
+        For example:
+
+        >>> t_with_forgetting = t.forget(pw.this.t, 3)
+        >>> # You computation on a t_with_forgetting, bounded by the 3 time units
+        >>> t = t_with_forgetting.filter_out_results_of_forgetting()
+
+        This way, your table will be temporarily windowed, computations can be applied,
+        and then the stream will return to its normal state.
         """
         return self._forget(
-            time_column + threshold, time_column, mark_forgetting_records=False
+            time_column + threshold,
+            time_column,
+            mark_forgetting_records=mark_forgetting_records,
         )
 
     @trace_user_frame
@@ -764,13 +790,61 @@ id_type=<class 'pathway.engine.Pointer'>>
     @desugar
     @check_arg_types
     @contextualized_operator
-    def _filter_out_results_of_forgetting(
-        self,
+    def filter_out_results_of_forgetting(
+        self, ensure_consistency: bool = False
     ) -> Table:
+        """
+        Remove all row-deletion events from the table that were produced by the
+        ``forget`` method.
+
+        This method has an effect only if ``forget`` was previously called with
+        ``mark_forgetting_records`` parameter set to ``True``. Only the deletions that
+        are triggered by forgetting will be removed.
+
+        Args:
+            ensure_consistency: When enabled, Pathway keeps track of the latest value for
+            each key. This ensures that when entries emitted by forgetting are removed,
+            the sequence of remaining additions and deletions stays consistent.
+            For example, if an entry is removed due to forgetting and another entry with
+            the same key appears afterward, the stream would normally have two additions
+            for the same key, which is inconsistent. With the flag enabled, Pathway
+            tracks the state of each key. It will emit a deletion before the second
+            addition, guaranteeing that the stream remains consistent. Note that this
+            feature uses additional memory to store the current snapshot of the table.
+            If your data and use case guarantee that such inconsistencies won't occur,
+            you can leave this check disabled.
+
+        Note:
+
+        Using ``forget`` with a set ``mark_forgetting_records`` immediately followed by
+        ``filter_out_results_of_forgetting`` is effectively a no-op.
+
+        The first call produces a table that temporarily contains both original
+        and "forgotten" records, each forgotten record appears as an event
+        with the ``diff`` equal to ``-1``. The second call removes those deletion events
+        and restores the table to its original state.
+
+        The method is, however, useful when you perform intermediate computations between
+        these two calls. For example, you can call ``forget`` with a certain time window
+        to limit the scope of processing, effectively creating a bounded window of data.
+        Within that window, you can perform computations that benefit from this limited dataset.
+        After those computations, calling ``filter_out_results_of_forgetting``
+        removes all deletion events and restores the table to a consistent state in which
+        the previous forgetting operation is undone, and you have the complete set of rows,
+        no longer limited to the forgetting window.
+
+        This approach lets you compute metrics inside a bounded window and then
+        continue processing the entire data stream without carrying forward
+        deletions for old records. Downstream consumers will receive fewer events because
+        only insertions are propagated further.
+        """
+
         # The output universe is a superset of input universe because forgetting entries
         # are filtered out. At each point in time, the set of keys with +1 diff can be
         # bigger than a set of keys with +1 diff in an input table.
-        context = clmn.FilterOutForgettingContext(self._id_column)
+        context = clmn.FilterOutForgettingContext(
+            self._id_column, ensure_consistency=ensure_consistency
+        )
         return self._table_with_context(context)
 
     @trace_user_frame

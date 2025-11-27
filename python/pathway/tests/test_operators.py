@@ -15,7 +15,12 @@ from dateutil import tz
 
 import pathway as pw
 from pathway.debug import table_from_pandas, table_to_pandas
-from pathway.tests.utils import T, assert_table_equality, run_all
+from pathway.tests.utils import (
+    T,
+    assert_table_equality,
+    assert_table_equality_wo_index,
+    run_all,
+)
 
 
 @pytest.mark.parametrize(
@@ -1474,3 +1479,56 @@ def test_and_or_are_lazy():
     )
 
     assert_table_equality(result, expected)
+
+
+def test_remove_results_of_forgetting():
+    t = pw.debug.table_from_markdown(
+        """
+        a |  t | __time__
+        1 |  2 |     2
+        1 |  3 |     2
+        2 |  4 |     2
+        2 |  8 |     4
+        1 |  5 |     6
+        3 |  1 |     6
+        2 |  5 |     8
+        1 | 15 |     8
+        1 |  7 |    10
+    """
+    )
+
+    t = t.forget(pw.this.t, 2, mark_forgetting_records=True)
+    res = t.groupby(pw.this.a).reduce(pw.this.a, sum=pw.reducers.sum(pw.this.a))
+    res = res.filter_out_results_of_forgetting(ensure_consistency=True)
+
+    expected = pw.debug.table_from_markdown(
+        """
+        a |  sum
+        1 |  2
+        2 |  4
+        3 |  3
+    """
+    )
+    assert_table_equality_wo_index(res, expected)
+
+
+@pytest.mark.parametrize("ensure_consistency", [False, True])
+def test_remove_results_of_forgetting_2(ensure_consistency: bool):
+    t_original = pw.debug.table_from_markdown(
+        """
+        a |  t | __time__
+        1 |  2 |     2
+        1 |  3 |     2
+        2 |  4 |     2
+        2 |  8 |     4
+        1 |  5 |     6
+        3 |  1 |     6
+        2 |  5 |     8
+        1 | 15 |     8
+        1 |  7 |    10
+    """
+    )
+
+    t = t_original.forget(pw.this.t, 2, mark_forgetting_records=True)
+    res = t.filter_out_results_of_forgetting(ensure_consistency=ensure_consistency)
+    assert_table_equality_wo_index(res, t_original)

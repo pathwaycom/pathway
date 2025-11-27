@@ -449,7 +449,7 @@ class _NonZeroDifferenceIntervalJoinResult(IntervalJoinResult):
             result = Table.concat_reindex(*to_concat)
 
         if self._filter_out_results_of_forgetting:
-            result = result._filter_out_results_of_forgetting()
+            result = result.filter_out_results_of_forgetting(ensure_consistency=False)
         return result
 
     @staticmethod
@@ -566,7 +566,7 @@ class _ZeroDifferenceIntervalJoinResult(IntervalJoinResult):
         result = self._join_result.select(**all_args)
 
         if self._filter_out_results_of_forgetting:
-            result = result._filter_out_results_of_forgetting()
+            result = result.filter_out_results_of_forgetting(ensure_consistency=False)
         return result
 
 
