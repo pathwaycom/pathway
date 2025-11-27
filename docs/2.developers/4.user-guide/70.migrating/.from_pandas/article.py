@@ -46,8 +46,10 @@
 # ## Install Pathway
 # To install the latest Pathway release, which is now available on a free-to-use license:
 #
-# ::pip-install
-# ::
+# ```bash
+# pip install -U pathway
+# ```
+#
 # You are ready to roll - let's get to it!
 
 # ## Get the Data into Your Stream
@@ -168,7 +170,9 @@ pw.io.csv.write(t, "sum_output_stream.csv")
 # ```
 
 #
+# ::note
 # **IMPORTANT:** Make sure to always include `pw.run()` at the end of your Pathway script. All the steps before this command are simply defining the pipeline. `pw.run()` tells Pathway to actually execute it.
+# ::
 #
 # To be able to see the result of your work in action, let's separate the data generation and data processing code into 2 separate scripts that we can then launch simultaneously from our terminal.
 #
