@@ -34,9 +34,8 @@ if TYPE_CHECKING:
 def _get_jmespath_filter(metadata_filter: str, filepath_globpattern: str) -> str | None:
     ret_parts = []
     if metadata_filter:
-        metadata_filter = (
-            metadata_filter.replace("'", r"\'").replace("`", "'").replace('"', "")
-        )
+        # Remove problematic quote escaping that causes parse errors
+        metadata_filter = metadata_filter.replace("`", "'")
         ret_parts.append(f"({metadata_filter})")
     if filepath_globpattern:
         ret_parts.append(f"globmatch('{filepath_globpattern}', path)")
