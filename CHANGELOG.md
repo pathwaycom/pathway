@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.Table.filter_out_results_of_forgetting` method, allowing to revert the effects of forgetting at a later stage.
 
+### Changed
+- The MCP server `tool` method now allows to pass an optional `description`, default value ​​being kept as the handler's docstring.
+
 ## [0.27.0] - 2025-11-13
 
 ### Added

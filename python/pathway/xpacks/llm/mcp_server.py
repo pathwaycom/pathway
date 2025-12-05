@@ -255,6 +255,7 @@ class McpServer(PathwayServer):
         delete_completed_queries: bool = False,
         cache_strategy: CacheStrategy | None = None,
         title: str | None = None,
+        description: str | None = None,
         output_schema: dict[str, Any] | None | _Undefined = _no_default_value_marker,
         annotations: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
@@ -269,7 +270,8 @@ class McpServer(PathwayServer):
             schema: Query schema, used to generate tool input schema.
             delete_completed_queries: Delete completed queries, default False.
             cache_strategy: Optional caching strategy.
-            title: Optional tool title for display purposes, `name` is used if missing.
+            title: Optional tool title for display purposes, `name` is used if `None`.
+            description: Optional tool description, `request_handler` docstring is used if `None`.
             output_schema: Optional output schema.
             annotations: Optional specialized metadata like `readOnlyHint`, `idempotentHint`, ...
             meta: Optional tool metadata.
@@ -282,7 +284,9 @@ class McpServer(PathwayServer):
             delete_completed_queries=delete_completed_queries,
             cache_strategy=cache_strategy,
             title=title if title is not None else name,
-            description=request_handler.__doc__,
+            description=(
+                description if description is not None else request_handler.__doc__
+            ),
             output_schema=output_schema,
             annotations=annotations,
             meta=meta,
