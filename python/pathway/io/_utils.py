@@ -30,6 +30,7 @@ STREAMING_MODE_NAME = "streaming"
 SNAPSHOT_MODE_NAME = "streaming_with_deletions"  # deprecated
 
 METADATA_COLUMN_NAME = "_metadata"
+MESSAGE_QUEUE_KEY_COLUMN_NAME = "key"
 
 STATUS_SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
 STATUS_DOWNLOADED = "downloaded"
@@ -206,6 +207,31 @@ def assert_schema_not_none(
         return schema
 
 
+class PlaintextKeySchema(pw.Schema):
+    key: str
+
+
+class RawKeySchema(pw.Schema):
+    key: bytes
+
+
+def construct_raw_data_schema_by_flags(
+    *, with_native_record_key: bool, parse_utf8: bool, with_metadata: bool
+) -> type[pw.Schema]:
+    Schema: Any
+    if parse_utf8:
+        Schema = PlaintextDataSchema
+        if with_native_record_key:
+            Schema = Schema | PlaintextKeySchema
+    else:
+        Schema = RawDataSchema
+        if with_native_record_key:
+            Schema = Schema | RawKeySchema
+    if with_metadata:
+        Schema = Schema | MetadataSchema
+    return Schema
+
+
 def construct_schema_and_data_format(
     format: str,
     *,
@@ -215,6 +241,7 @@ def construct_schema_and_data_format(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     schema_registry_settings: SchemaRegistrySettings | None = None,
+    with_native_record_key: bool = False,
     _stacklevel: int = 1,
 ) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
@@ -231,13 +258,11 @@ def construct_schema_and_data_format(
                 raise ValueError(f"Unexpected argument for plaintext format: {param}")
 
         parse_utf8 = format not in ("binary", "only_metadata")
-        if parse_utf8:
-            schema = PlaintextDataSchema
-        else:
-            schema = RawDataSchema
-
-        if with_metadata:
-            schema |= MetadataSchema
+        schema = construct_raw_data_schema_by_flags(
+            with_native_record_key=with_native_record_key,
+            parse_utf8=parse_utf8,
+            with_metadata=with_metadata,
+        )
         schema, api_schema = read_schema(schema)
 
         return schema, api.DataFormat(
@@ -251,6 +276,9 @@ def construct_schema_and_data_format(
             ),
             schema_registry_settings=maybe_schema_registry_settings(
                 schema_registry_settings
+            ),
+            message_queue_key_field=(
+                MESSAGE_QUEUE_KEY_COLUMN_NAME if with_native_record_key else None
             ),
         )
 

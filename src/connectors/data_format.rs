@@ -878,32 +878,63 @@ impl KeyGenerationPolicy {
 }
 
 pub struct IdentityParser {
-    value_fields: Vec<String>,
     parse_utf8: bool,
     metadata_column_value: Value,
     session_type: SessionType,
     key_generation_policy: KeyGenerationPolicy,
+
+    n_value_fields: usize,
+    key_field_index: Option<usize>,
+    metadata_field_index: Option<usize>,
+    value_field_index: usize,
 }
 
 impl IdentityParser {
     pub fn new(
-        value_fields: Vec<String>,
+        value_fields: &[String],
         parse_utf8: bool,
+        message_queue_key_field: Option<&String>,
         key_generation_policy: KeyGenerationPolicy,
         session_type: SessionType,
     ) -> IdentityParser {
+        let mut key_field_index = None;
+        let mut metadata_field_index = None;
+        let mut value_field_index = None;
+        for (index, value_field) in value_fields.iter().enumerate() {
+            if value_field == METADATA_FIELD_NAME {
+                assert!(metadata_field_index.is_none());
+                metadata_field_index = Some(index);
+            } else if Some(value_field) == message_queue_key_field {
+                assert!(key_field_index.is_none());
+                key_field_index = Some(index);
+            } else {
+                assert!(value_field_index.is_none());
+                value_field_index = Some(index);
+            }
+        }
+
         Self {
-            value_fields,
+            n_value_fields: value_fields.len(),
             parse_utf8,
             metadata_column_value: Value::None,
             key_generation_policy,
             session_type,
+            key_field_index,
+            metadata_field_index,
+            value_field_index: value_field_index
+                .expect("value field must be present in the schema"),
         }
     }
 }
 
 impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
+        let mut values = Vec::with_capacity(self.n_value_fields);
+        for _ in 0..self.n_value_fields {
+            // clone isn't available for the array element type, hence constructing manually
+            values.push(Ok(Value::None));
+        }
+
         let (event, key, value, metadata) = match data {
             RawBytes(event, raw_bytes) => (
                 *event,
@@ -911,16 +942,23 @@ impl Parser for IdentityParser {
                 value_from_bytes(raw_bytes, self.parse_utf8),
                 Ok(None),
             ),
-            KeyValue((key, value)) => match value {
-                Some(bytes) => (
-                    DataEventType::Insert,
-                    self.key_generation_policy
-                        .generate(key.as_ref(), self.parse_utf8),
-                    value_from_bytes(bytes, self.parse_utf8),
-                    Ok(None),
-                ),
-                None => return Err(ParseError::EmptyKafkaPayload.into()),
-            },
+            KeyValue((key, value)) => {
+                if let Some(key_field_index) = self.key_field_index {
+                    values[key_field_index] = key
+                        .as_ref()
+                        .map_or_else(|| Ok(Value::None), |k| value_from_bytes(k, self.parse_utf8));
+                }
+                match value {
+                    Some(bytes) => (
+                        DataEventType::Insert,
+                        self.key_generation_policy
+                            .generate(key.as_ref(), self.parse_utf8),
+                        value_from_bytes(bytes, self.parse_utf8),
+                        Ok(None),
+                    ),
+                    None => return Err(ParseError::EmptyKafkaPayload.into()),
+                }
+            }
             Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
             }
@@ -932,22 +970,11 @@ impl Parser for IdentityParser {
         let event = if is_commit {
             ParsedEventWithErrors::AdvanceTime
         } else {
-            let mut values = Vec::new();
-            let mut metadata = Some(metadata);
-            let mut value = Some(value);
-            for field in &self.value_fields {
-                let to_insert = if field == METADATA_FIELD_NAME {
-                    metadata
-                        .take()
-                        .expect("metadata column should be used exactly once in IdentityParser")
-                        .map(|metadata| metadata.unwrap_or(self.metadata_column_value.clone()))
-                } else {
-                    value
-                        .take()
-                        .expect("value column should be used exactly once in IdentityParser")
-                };
-                values.push(to_insert);
+            if let Some(metadata_field_index) = self.metadata_field_index {
+                values[metadata_field_index] =
+                    metadata.map(|metadata| metadata.unwrap_or(self.metadata_column_value.clone()));
             }
+            values[self.value_field_index] = value;
             ParsedEventWithErrors::new(self.session_type(), event, key, values)
         };
 
@@ -960,7 +987,7 @@ impl Parser for IdentityParser {
     }
 
     fn column_count(&self) -> usize {
-        self.value_fields.len()
+        self.n_value_fields
     }
 
     fn session_type(&self) -> SessionType {

@@ -255,8 +255,9 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
         false,
     )?;
     let parser = IdentityParser::new(
-        vec!["data".to_string(), "_metadata".to_string()],
+        &["data".to_string(), "_metadata".to_string()],
         false,
+        None,
         KeyGenerationPolicy::PreferMessageKey,
         SessionType::Native,
     );
@@ -277,8 +278,9 @@ fn test_metadata_identity_dir() -> eyre::Result<()> {
         false,
     )?;
     let parser = IdentityParser::new(
-        vec!["data".to_string(), "_metadata".to_string()],
+        &["data".to_string(), "_metadata".to_string()],
         false,
+        None,
         KeyGenerationPolicy::PreferMessageKey,
         SessionType::Native,
     );

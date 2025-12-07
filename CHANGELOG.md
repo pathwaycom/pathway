@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - The MCP server `tool` method now allows to pass an optional `description`, default value ​​being kept as the handler's docstring.
+- `pw.io.kafka.read` and `pw.io.redpanda.read` now create a `key` column storing the contents of the message keys.
 
 ## [0.27.0] - 2025-11-13
 

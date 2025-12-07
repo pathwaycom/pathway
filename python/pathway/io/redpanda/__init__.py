@@ -33,7 +33,18 @@ def read(
     **kwargs,
 ) -> Table:
     """Reads table from a set of topics in Redpanda.
-    There are three formats currently supported: "raw", "csv", and "json".
+
+    There are three formats currently supported: ``"plaintext"``, ``"raw"``, and ``"json"``.
+    If the ``"raw"`` format is chosen, the key and the payload are read from the topic as raw
+    bytes and used in the table "as is". If you choose the ``"plaintext"`` option, however,
+    they are parsed from the UTF-8 into the plaintext entries. In both cases, the
+    table consists of a primary key and two columns ``"key"`` and ``"data"``,
+    denoting the key and the payload read.
+
+    If ``"json"`` is chosen, the connector first parses the payload of the message
+    according to the JSON format and then creates the columns corresponding to the
+    schema defined by the ``schema`` parameter. The values of these columns are
+    taken from the respective parsed JSON fields.
 
     Args:
         rdkafka_settings: Connection settings in the format of
@@ -45,7 +56,7 @@ def read(
             process them as they arrive, and send them into the engine. Alternatively,
             if set to ``"static"``, the engine will only read and process the data that
             is already available at the time of execution.
-        format: format of the input data, "raw", "csv", or "json"
+        format: format of the input data, ``"raw"``, ``"plaintext"``, or ``"json"``.
         schema_registry_settings: settings for connecting to the Confluent Schema Registry,
             if this type of registry is used.
         debug_data: Static data replacing original one when debug mode is active.
@@ -73,9 +84,11 @@ def read(
     Returns:
         Table: The table read.
 
-    When using the format "raw", the connector will produce a single-column table:
-    all the data is saved into a column named `data`.
-    For other formats, the argument value_column is required and defines the columns.
+    When using the format ``"raw"`` or ``"plaintext"``, the connector will produce a
+    two-column table: all the payloads are saved into a column named ``data``, while the
+    keys are saved into a column ``key``.
+
+    For other formats, the schema is required and defines the columns.
 
     Example:
 

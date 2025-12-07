@@ -4959,6 +4959,7 @@ pub struct DataFormat {
     designated_timestamp_policy: Option<String>,
     external_diff_column_index: Option<usize>,
     timestamp_unit: Option<String>,
+    message_queue_key_field: Option<String>,
 }
 
 #[pymethods]
@@ -5180,6 +5181,7 @@ impl DataFormat {
         designated_timestamp_policy = None,
         external_diff_column_index = None,
         timestamp_unit = None,
+        message_queue_key_field = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -5200,6 +5202,7 @@ impl DataFormat {
         designated_timestamp_policy: Option<String>,
         external_diff_column_index: Option<usize>,
         timestamp_unit: Option<String>,
+        message_queue_key_field: Option<String>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -5219,6 +5222,7 @@ impl DataFormat {
             designated_timestamp_policy,
             external_diff_column_index,
             timestamp_unit,
+            message_queue_key_field,
         }
     }
 
@@ -6658,8 +6662,9 @@ impl DataFormat {
                 Ok(Box::new(parser))
             }
             "identity" => Ok(Box::new(IdentityParser::new(
-                self.value_field_names(py),
+                self.value_field_names(py).as_slice(),
                 self.parse_utf8,
+                self.message_queue_key_field.as_ref(),
                 self.key_generation_policy,
                 self.session_type,
             ))),

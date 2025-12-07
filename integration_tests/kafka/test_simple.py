@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 
+import pandas as pd
 import pytest
 
 import pathway as pw
@@ -53,6 +54,31 @@ def test_kafka_raw(with_metadata, tmp_path, kafka_context):
         ),
         10,
     )
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+@pytest.mark.parametrize("input_format", ["plaintext", "raw"])
+@pytest.mark.flaky(reruns=3)
+def test_kafka_key_parsing(input_format, with_metadata, tmp_path, kafka_context):
+    context = [("1", "one"), ("2", "two"), ("3", "three")]
+    kafka_context.fill(context)
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format=input_format,
+        autocommit_duration_ms=100,
+        with_metadata=with_metadata,
+        mode="static",
+    )
+
+    pandas_table = pw.debug.table_to_pandas(table)
+    for key, value in context:
+        if input_format != "plaintext":
+            key = key.encode("utf-8")  # type: ignore
+            value = value.encode("utf-8")  # type: ignore
+        row = pandas_table.loc[pandas_table["key"] == key, ["data"]].iloc[0]
+        assert (row == pd.Series({"data": value})).all()
 
 
 @pytest.mark.flaky(reruns=3)

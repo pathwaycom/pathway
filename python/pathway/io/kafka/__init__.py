@@ -52,7 +52,8 @@ def read(
     If the ``"raw"`` format is chosen, the key and the payload are read from the topic as raw
     bytes and used in the table "as is". If you choose the ``"plaintext"`` option, however,
     they are parsed from the UTF-8 into the plaintext entries. In both cases, the
-    table consists of a primary key and a single column ``"data"``, denoting the payload read.
+    table consists of a primary key and two columns ``"key"`` and ``"data"``,
+    denoting the key and the payload read.
 
     If ``"json"`` is chosen, the connector first parses the payload of the message
     according to the JSON format and then creates the columns corresponding to the
@@ -108,9 +109,11 @@ def read(
     Returns:
         Table: The table read.
 
-    When using the format "raw", the connector will produce a single-column table:
-    all the data is saved into a column named ``data``.
-    For other formats, the argument value_column is required and defines the columns.
+    When using the format ``"raw"`` or ``"plaintext"``, the connector will produce a
+    two-column table: all the payloads are saved into a column named ``data``, while the
+    keys are saved into a column ``key``.
+
+    For other formats, the schema is required and defines the columns.
 
     Example:
 
@@ -140,7 +143,8 @@ def read(
     ...    format="raw",
     ... )
 
-    All the data will be accessible in the column data.
+    All the payload data will be accessible in the column ``data``, the keys of the messages
+    will be stored in the column ``key``.
 
     JSON version:
 
@@ -236,6 +240,7 @@ def read(
         schema=schema,
         json_field_paths=json_field_paths,
         schema_registry_settings=schema_registry_settings,
+        with_native_record_key=True,
         _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(
