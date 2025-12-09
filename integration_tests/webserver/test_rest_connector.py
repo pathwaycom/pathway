@@ -45,8 +45,9 @@ def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:
         r.raise_for_status()
         assert r.text == '"TWO"', r.text
 
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=True
+        webserver=webserver, schema=InputSchema, delete_completed_queries=True
     )
     responses = logic(queries)
     response_writer(responses)
@@ -89,9 +90,9 @@ def test_server_customization(tmp_path: pathlib.Path, port: int) -> None:
             json={"query": "two"},
         ).raise_for_status()
 
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1",
-        port=port,
+        webserver=webserver,
         schema=InputSchema,
         route="/endpoint",
         delete_completed_queries=True,
@@ -129,8 +130,9 @@ def test_server_schema_customization(tmp_path: pathlib.Path, port: int) -> None:
             json={"query": "two"},
         ).raise_for_status()
 
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=True
+        webserver=webserver, schema=InputSchema, delete_completed_queries=True
     )
     responses = logic(queries)
     response_writer(responses)
@@ -160,8 +162,9 @@ def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
             json={"k": 1, "v": 2},
         ).raise_for_status()
 
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=False
+        webserver=webserver, schema=InputSchema, delete_completed_queries=False
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 
@@ -199,13 +202,14 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> Non
         k: int
         v: int
 
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=False
+        webserver=webserver, schema=InputSchema, delete_completed_queries=False
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 
     queries_dup, response_writer_dup = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=False
+        webserver=webserver, schema=InputSchema, delete_completed_queries=False
     )
     response_writer_dup(queries_dup.select(query_id=queries_dup.id, result=pw.this.v))
 

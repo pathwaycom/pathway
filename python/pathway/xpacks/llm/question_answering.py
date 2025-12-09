@@ -19,9 +19,9 @@ from pathway.xpacks.llm.document_store import (
 )
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.mcp_server import McpServable, McpServer
+from pathway.xpacks.llm.document_store import DocumentStoreClient
 from pathway.xpacks.llm.vector_store import (
     SlidesVectorStoreServer,
-    VectorStoreClient,
     VectorStoreServer,
 )
 
@@ -1106,7 +1106,7 @@ class RAGClient:
         self.timeout = timeout
         self.additional_headers = additional_headers or {}
 
-        self.index_client = VectorStoreClient(
+        self.index_client = DocumentStoreClient(
             url=self.url,
             timeout=self.timeout,
             additional_headers=self.additional_headers,
