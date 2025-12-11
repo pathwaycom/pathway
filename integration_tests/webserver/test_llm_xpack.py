@@ -20,7 +20,8 @@ from pathway.tests.utils import wait_result_with_checker
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer, RAGClient
 from pathway.xpacks.llm.tests.mocks import FakeChatModel, fake_embeddings_model
 from pathway.xpacks.llm.tests.utils import build_vector_store, create_build_rag_app
-from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
+from pathway.xpacks.llm.document_store import DocumentStoreClient
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 PATHWAY_HOST = "127.0.0.1"
 
@@ -85,7 +86,7 @@ def test_similarity_search_without_metadata(tmp_path: pathlib.Path, port: int):
     with open(tmp_path / "file_one.txt", "w+") as f:
         f.write("foo")
 
-    client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+    client = DocumentStoreClient(host=PATHWAY_HOST, port=port)
 
     def checker() -> bool:
         output = []
@@ -109,7 +110,7 @@ def test_vector_store_with_langchain(tmp_path: pathlib.Path, port) -> None:
     with open(tmp_path / "file_one.txt", "w+") as f:
         f.write("foo\n\nbar")
 
-    client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+    client = DocumentStoreClient(host=PATHWAY_HOST, port=port)
 
     def checker() -> bool:
         output = []
@@ -281,7 +282,7 @@ def test_vectorstore_builds(port: int, cache_strategy_cls):
 
     def checker() -> bool:
         try:
-            client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+            client = DocumentStoreClient(host=PATHWAY_HOST, port=port)
             inputs = client.get_input_files()
 
             assert len(inputs) == 1
@@ -529,7 +530,7 @@ def test_serve_callable_with_search(port: int):
 
     @rag_app.serve_callable(route=f"/{TEST_ENDPOINT}")
     async def return_top_doc_text(query):
-        vs_client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+        vs_client = DocumentStoreClient(host=PATHWAY_HOST, port=port)
         return vs_client.query(query, k=1)[0]["text"]
 
     def checker() -> bool:
