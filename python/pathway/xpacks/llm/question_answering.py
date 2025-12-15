@@ -519,6 +519,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         *,
         default_llm_name: str | None = None,
         prompt_template: str | Callable[[str, str], str] | pw.UDF = prompts.prompt_qa,
+        query_transformer_prompt: pw.UDF | None = None,
         context_processor: (
             BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
         ) = SimpleContextProcessor(),
@@ -538,6 +539,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self._init_schemas(default_llm_name)
 
         self.prompt_udf = _get_RAG_prompt_udf(prompt_template)
+        self.query_transformer_prompt = query_transformer_prompt
 
         if isinstance(context_processor, BaseContextProcessor):
             self.docs_to_context_transformer = context_processor.as_udf()
@@ -641,11 +643,29 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
 
-        pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
-            pw_ai_queries.select(
+        pw_ai_results = pw_ai_queries
+
+        if self.query_transformer_prompt is not None:
+            pw_ai_results += pw_ai_results.select(
+                _rewrite_prompt=self.query_transformer_prompt(pw.this.prompt)
+            )
+            pw_ai_results += pw_ai_results.select(
+                _transformed_query=self.llm(
+                    llms.prompt_chat_single_qa(pw.this._rewrite_prompt),
+                    model=pw.this.model,
+                )
+            )
+            pw_ai_results += pw_ai_results.select(
+                search_query=pw.this._transformed_query
+            )
+        else:
+            pw_ai_results += pw_ai_results.select(search_query=pw.this.prompt)
+
+        pw_ai_results += self.indexer.retrieve_query(
+            pw_ai_results.select(
                 metadata_filter=pw.this.filters,
                 filepath_globpattern=pw.cast(str | None, None),
-                query=pw.this.prompt,
+                query=pw.this.search_query,
                 k=self.search_topk,
             )
         ).select(
