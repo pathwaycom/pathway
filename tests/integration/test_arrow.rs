@@ -7,7 +7,7 @@ use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
 use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
 use serde_json::json;
 
-use pathway_engine::connectors::data_format::FormatterContext;
+use pathway_engine::connectors::data_format::{FieldSource, FormatterContext};
 use pathway_engine::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
 use pathway_engine::connectors::data_lake::buffering::{AppendOnlyColumnBuffer, PayloadType};
 use pathway_engine::connectors::data_lake::{
@@ -57,6 +57,7 @@ fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {
     let value_field = ValueField {
         name: "value".to_string(),
         type_: type_.clone(),
+        source: FieldSource::Payload,
         default: None,
         metadata: None,
     };

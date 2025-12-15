@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.kafka.read` and `pw.io.redpanda.read` now allow each schema field to be specified as coming from either the message key or the message value.
+
 ## [0.27.1] - 2025-12-08
 
 ### Added

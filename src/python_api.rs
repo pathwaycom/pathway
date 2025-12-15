@@ -93,10 +93,10 @@ use self::threads::PythonThreadState;
 
 use crate::connectors::aws::{DynamoDBWriter, KinesisReader, KinesisWriter};
 use crate::connectors::data_format::{
-    BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter,
+    BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, FieldSource, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
     KeyGenerationPolicy, NullFormatter, Parser, RegistryEncoderWrapper, SingleColumnFormatter,
-    TransparentParser,
+    TransparentParser, METADATA_FIELD_NAME,
 };
 use crate::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
 use crate::connectors::data_lake::buffering::{
@@ -2055,6 +2055,32 @@ impl PyReadMethod {
     pub const BY_LINE: ReadMethod = ReadMethod::ByLine;
     #[classattr]
     pub const FULL: ReadMethod = ReadMethod::Full;
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "FieldSource")]
+pub struct PyFieldSource(FieldSource);
+
+#[pymethods]
+impl PyFieldSource {
+    #[classattr]
+    pub const KEY: FieldSource = FieldSource::Key;
+    #[classattr]
+    pub const PAYLOAD: FieldSource = FieldSource::Payload;
+}
+
+impl<'py> FromPyObject<'py> for FieldSource {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyFieldSource>>()?.0)
+    }
+}
+
+impl<'py> IntoPyObject<'py> for FieldSource {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PyFieldSource(self).into_bound_py_any(py)
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ConnectorMode")]
@@ -4779,6 +4805,8 @@ pub struct ValueField {
     #[pyo3(get)]
     pub type_: Type,
     #[pyo3(get)]
+    pub source: FieldSource,
+    #[pyo3(get)]
     pub default: Option<Value>,
     #[pyo3(get)]
     pub metadata: Option<String>,
@@ -4793,11 +4821,18 @@ impl ValueField {
 #[pymethods]
 impl ValueField {
     #[new]
-    #[pyo3(signature = (name, type_))]
-    fn new(name: String, type_: Type) -> Self {
+    #[pyo3(signature = (name, type_, source = FieldSource::Payload))]
+    pub fn new(name: String, type_: Type, source: FieldSource) -> Self {
+        let effective_source = if name == METADATA_FIELD_NAME {
+            FieldSource::Metadata
+        } else {
+            source
+        };
+
         ValueField {
             name,
             type_,
+            source: effective_source,
             default: None,
             metadata: None,
         }
@@ -6648,8 +6683,8 @@ impl DataFormat {
             }
             "jsonlines" => {
                 let parser = JsonLinesParser::new(
-                    self.key_field_names.clone(),
-                    self.value_field_names(py),
+                    self.key_field_names.as_deref(),
+                    self.value_fields_vec(py),
                     self.column_paths.clone().unwrap_or_default(),
                     self.field_absence_is_error,
                     self.schema(py)?,
@@ -7136,6 +7171,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyDebeziumDBType>()?;
     m.add_class::<PyKeyGenerationPolicy>()?;
     m.add_class::<PyReadMethod>()?;
+    m.add_class::<PyFieldSource>()?;
     m.add_class::<PyMonitoringLevel>()?;
     m.add_class::<PyTableWriterInitMode>()?;
     m.add_class::<Universe>()?;

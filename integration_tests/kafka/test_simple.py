@@ -8,7 +8,6 @@ import threading
 import time
 import uuid
 
-import pandas as pd
 import pytest
 
 import pathway as pw
@@ -60,9 +59,16 @@ def test_kafka_raw(with_metadata, tmp_path, kafka_context):
 @pytest.mark.parametrize("input_format", ["plaintext", "raw"])
 @pytest.mark.flaky(reruns=3)
 def test_kafka_key_parsing(input_format, with_metadata, tmp_path, kafka_context):
-    context = [("1", "one"), ("2", "two"), ("3", "three")]
+    context = [
+        ("1", "one"),
+        ("2", "two"),
+        ("3", "three"),
+        ("4", None),
+        (None, "five"),
+    ]
     kafka_context.fill(context)
 
+    output_path = tmp_path / "output.jsonl"
     table = pw.io.kafka.read(
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
         topic=kafka_context.input_topic,
@@ -71,14 +77,23 @@ def test_kafka_key_parsing(input_format, with_metadata, tmp_path, kafka_context)
         with_metadata=with_metadata,
         mode="static",
     )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
 
-    pandas_table = pw.debug.table_to_pandas(table)
-    for key, value in context:
-        if input_format != "plaintext":
-            key = key.encode("utf-8")  # type: ignore
-            value = value.encode("utf-8")  # type: ignore
-        row = pandas_table.loc[pandas_table["key"] == key, ["data"]].iloc[0]
-        assert (row == pd.Series({"data": value})).all()
+    parsed_values = []
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            key = data["key"]
+            value = data["data"]
+            if input_format == "raw" and key is not None:
+                key = base64.b64decode(key).decode("utf-8")
+            if input_format == "raw" and value is not None:
+                value = base64.b64decode(value).decode("utf-8")
+            parsed_values.append((key, value))
+    parsed_values.sort(key=lambda data: str(data[0]))
+    context.sort(key=lambda data: str(data[0]))
+    assert parsed_values == context
 
 
 @pytest.mark.flaky(reruns=3)
@@ -144,6 +159,133 @@ def test_kafka_json(tmp_path, kafka_context, with_metadata):
     class InputSchema(pw.Schema):
         k: int = pw.column_definition(primary_key=True)
         v: str
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="json",
+        schema=InputSchema,
+        with_metadata=with_metadata,
+        autocommit_duration_ms=100,
+    )
+
+    pw.io.csv.write(table, tmp_path / "output.csv")
+
+    wait_result_with_checker(
+        expect_csv_checker(
+            """
+            k    | v
+            0    | foo
+            1    | bar
+            2    | baz
+            """,
+            tmp_path / "output.csv",
+            usecols=["v"],
+            index_col=["k"],
+        ),
+        10,
+    )
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+@pytest.mark.flaky(reruns=3)
+def test_kafka_json_key_parsing(tmp_path, kafka_context, with_metadata):
+    context = [
+        (json.dumps({"k": 0}), json.dumps({"v": "foo"})),
+        (json.dumps({"k": 1}), json.dumps({"v": "bar"})),
+        (json.dumps({"k": 2}), json.dumps({"v": "baz"})),
+    ]
+    kafka_context.fill(context)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True, source_component="key")
+        v: str = pw.column_definition(primary_key=True, source_component="payload")
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="json",
+        schema=InputSchema,
+        with_metadata=with_metadata,
+        autocommit_duration_ms=100,
+    )
+
+    pw.io.csv.write(table, tmp_path / "output.csv")
+
+    wait_result_with_checker(
+        expect_csv_checker(
+            """
+            k    | v
+            0    | foo
+            1    | bar
+            2    | baz
+            """,
+            tmp_path / "output.csv",
+            usecols=["v"],
+            index_col=["k"],
+        ),
+        10,
+    )
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+@pytest.mark.flaky(reruns=3)
+def test_kafka_json_key_jsonpaths(tmp_path, kafka_context, with_metadata):
+    context = [
+        (json.dumps({"k": {"l": 0, "m": 3}}), json.dumps({"v": {"vv": "foo"}})),
+        (json.dumps({"k": {"l": 1, "m": 4}}), json.dumps({"v": {"vv": "bar"}})),
+        (json.dumps({"k": {"l": 2, "m": 5}}), json.dumps({"v": {"vv": "baz"}})),
+    ]
+    kafka_context.fill(context)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True, source_component="key")
+        v: str = pw.column_definition(primary_key=True, source_component="payload")
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="json",
+        schema=InputSchema,
+        with_metadata=with_metadata,
+        autocommit_duration_ms=100,
+        json_field_paths={"k": "/k/l", "v": "/v/vv"},
+    )
+
+    pw.io.csv.write(table, tmp_path / "output.csv")
+
+    wait_result_with_checker(
+        expect_csv_checker(
+            """
+            k    | v
+            0    | foo
+            1    | bar
+            2    | baz
+            """,
+            tmp_path / "output.csv",
+            usecols=["v"],
+            index_col=["k"],
+        ),
+        10,
+    )
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+@pytest.mark.parametrize("unparsable_value", ["abracadabra", None])
+@pytest.mark.flaky(reruns=3)
+def test_kafka_json_data_only_in_key(
+    tmp_path, unparsable_value, kafka_context, with_metadata
+):
+    context = [
+        (json.dumps({"k": 0, "v": "foo"}), unparsable_value),
+        (json.dumps({"k": 1, "v": "bar"}), unparsable_value),
+        (json.dumps({"k": 2, "v": "baz"}), unparsable_value),
+    ]
+    kafka_context.fill(context)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True, source_component="key")
+        v: str = pw.column_definition(primary_key=True, source_component="key")
 
     table = pw.io.kafka.read(
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
@@ -704,6 +846,7 @@ def test_kafka_registry(tmp_path, kafka_context):
 
     input_path = tmp_path / "input.jsonl"
     output_path = tmp_path / "output.jsonl"
+    raw_output_path = tmp_path / "output_raw.jsonl"
     input_entries = [
         {"key": 1, "value": "one"},
         {"key": 2, "value": "two"},
@@ -743,9 +886,17 @@ def test_kafka_registry(tmp_path, kafka_context):
             timeout=datetime.timedelta(seconds=5),
         ),
     )
+    table_raw = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="raw",
+    )
 
     pw.io.jsonlines.write(table_reread, output_path)
-    wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 30)
+    pw.io.jsonlines.write(table_raw, raw_output_path)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path, 2).add_path(raw_output_path, 2), 30
+    )
     output_entries = []
     with open(output_path, "r") as f:
         for line in f:
@@ -758,3 +909,44 @@ def test_kafka_registry(tmp_path, kafka_context):
             )
     output_entries.sort(key=lambda x: x["key"])
     assert output_entries == input_entries
+
+    # Send the data encoded by the registry as a key, while keeping the value as empty.
+    # Check that value parsing works.
+    additional_topic = kafka_context.create_additional_topic()
+    with open(raw_output_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            encoded_message = base64.b64decode(data["data"])
+            kafka_context.send(message=(encoded_message, None), topic=additional_topic)
+
+    class KeyTableSchema(pw.Schema):
+        key: int = pw.column_definition(source_component="key")
+        value: str = pw.column_definition(source_component="key")
+
+    G.clear()
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=additional_topic,
+        format="json",
+        schema=KeyTableSchema,
+        schema_registry_settings=pw.io.kafka.SchemaRegistrySettings(
+            urls=[SCHEMA_REGISTRY_BASE_ROUTE],
+            timeout=datetime.timedelta(seconds=5),
+        ),
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    roundtrip_entries = []
+    with open(output_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            roundtrip_entries.append(
+                {
+                    "key": data["key"],
+                    "value": data["value"],
+                }
+            )
+    roundtrip_entries.sort(key=lambda x: x["key"])
+    assert roundtrip_entries == input_entries

@@ -5362,3 +5362,19 @@ def test_nats_incorrect_params():
             format="plaintext",
             durable_consumer_name="consumer",
         )
+
+
+def test_forbidden_component():
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(source_component="key")
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "The field 'key' in the schema of the source 'fs' has unsupported source component: 'key'"
+        ),
+    ):
+        pw.io.jsonlines.read(
+            "./a.txt",
+            schema=InputSchema,
+        )

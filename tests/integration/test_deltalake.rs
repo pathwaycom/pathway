@@ -11,7 +11,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use pathway_engine::connectors::data_format::{
-    Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
+    FieldSource, Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
 };
 use pathway_engine::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
 use pathway_engine::connectors::data_lake::buffering::{
@@ -42,6 +42,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
     let value_fields = vec![ValueField {
         name: "field".to_string(),
         type_: type_.clone(),
+        source: FieldSource::Payload,
         default: None,
         metadata: None,
     }];
@@ -522,6 +523,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
     let value_fields = vec![ValueField {
         name: "field".to_string(),
         type_: Type::String,
+        source: FieldSource::Payload,
         default: None,
         metadata: None,
     }];

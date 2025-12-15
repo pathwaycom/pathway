@@ -1,6 +1,8 @@
 // Copyright © 2024 Pathway
 
-use super::helpers::{new_csv_filesystem_reader, new_filesystem_reader, read_data_from_reader};
+use super::helpers::{
+    new_csv_filesystem_reader, new_filesystem_reader, read_data_from_reader, value_field,
+};
 
 use std::collections::HashMap;
 
@@ -260,8 +262,8 @@ fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
         false,
     )?;
     let parser = JsonLinesParser::new(
-        Some(vec!["a".to_string()]),
-        vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        Some(&["a".to_string()]),
+        vec![value_field("b"), value_field("c"), value_field("d")],
         HashMap::new(),
         true,
         schema,
@@ -308,8 +310,8 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
         false,
     )?;
     let parser = JsonLinesParser::new(
-        Some(vec!["a".to_string()]),
-        vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        Some(&["a".to_string()]),
+        vec![value_field("b"), value_field("c"), value_field("d")],
         HashMap::new(),
         true,
         schema,
@@ -362,8 +364,8 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
         false,
     )?;
     let parser = JsonLinesParser::new(
-        Some(vec!["a".to_string()]),
-        vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        Some(&["a".to_string()]),
+        vec![value_field("b"), value_field("c"), value_field("d")],
         routes,
         true,
         schema,
@@ -410,8 +412,8 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
         false,
     )?;
     let parser = JsonLinesParser::new(
-        Some(vec!["a".to_string()]),
-        vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        Some(&["a".to_string()]),
+        vec![value_field("b"), value_field("c"), value_field("d")],
         HashMap::new(),
         true,
         schema,

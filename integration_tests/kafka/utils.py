@@ -21,6 +21,10 @@ SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
 KINESIS_ENDPOINT_URL = "http://kinesis:4567"
 
 
+def random_topic_name():
+    return f"integration-tests-{uuid4()}"
+
+
 class KafkaTestContext:
     _producer: KafkaProducer
     _admin: KafkaAdminClient
@@ -34,25 +38,43 @@ class KafkaTestContext:
         self._admin = KafkaAdminClient(
             bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"],
         )
-        self._input_topic = f"integration-tests-{uuid4()}"
-        self._output_topic = f"integration-tests-{uuid4()}"
+        self._input_topic = random_topic_name()
+        self._output_topic = random_topic_name()
+        self._created_topics: set[str] = set()
+
         self._create_topic(self.input_topic)
         self._create_topic(self.output_topic)
+
+    def create_additional_topic(self) -> str:
+        topic_name = random_topic_name()
+        self._create_topic(topic_name)
+        return topic_name
 
     def _create_topic(self, name: str, num_partitions: int = 1) -> None:
         self._admin.create_topics(
             [NewTopic(name=name, num_partitions=num_partitions, replication_factor=1)]
         )
+        self._created_topics.add(name)
 
     def _delete_topic(self, name: str) -> None:
         self._admin.delete_topics(topics=[name])
 
-    def send(self, message: str | tuple[str, str]) -> None:
+    def send(
+        self, message: str | tuple[str | bytes | None, str | bytes | None], topic=None
+    ) -> None:
+        topic = topic or self._input_topic
+
         if isinstance(message, tuple):
             (key, value) = message
         else:
             (key, value) = str(uuid4()), message
-        self._producer.send(self.input_topic, key=key.encode(), value=value.encode())
+
+        if isinstance(key, str):
+            key = key.encode()
+        if isinstance(value, str):
+            value = value.encode()
+
+        self._producer.send(topic, key=key, value=value)
 
     def set_input_topic_partitions(self, num_partitions: int):
         self._delete_topic(self._input_topic)
@@ -97,8 +119,8 @@ class KafkaTestContext:
         return self.read_topic(self._input_topic, poll_timeout_ms)
 
     def teardown(self) -> None:
-        self._delete_topic(self.input_topic)
-        self._delete_topic(self.output_topic)
+        for topic in self._created_topics:
+            self._delete_topic(topic)
         self._producer.close()
         self._admin.close()
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from os import PathLike
 from pydoc import locate
 from types import MappingProxyType, UnionType
-from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, get_type_hints
 from warnings import warn
 
 import numpy as np
@@ -26,6 +26,10 @@ from pathway.internals.runtime_type_check import check_arg_types
 if TYPE_CHECKING:
     import pathway.internals.expression as expr
     from pathway.internals import column as clmn
+
+
+KEY_SOURCE_COMPONENT = "key"
+PAYLOAD_SOURCE_COMPONENT = "payload"
 
 
 def _cls_fields(cls):
@@ -244,6 +248,7 @@ def _create_column_definitions(
             append_only=_get_column_property("append_only", False),
             description=column.description,
             example=column.example,
+            source_component=column.source_component,
         )
 
     if fields:
@@ -677,6 +682,7 @@ class ColumnSchema:
     append_only: bool = False
     description: str | None = None  # used in OpenAPI schema autogeneration
     example: Any = None  # used in OpenAPI schema autogeneration
+    source_component: str = PAYLOAD_SOURCE_COMPONENT
 
     def has_default_value(self) -> bool:
         return not isinstance(self.default_value, _Undefined)
@@ -690,6 +696,7 @@ class ColumnSchema:
             append_only=self.append_only,
             description=self.description,
             example=self.example,
+            source_component=self.source_component,
         )
 
     def to_json_serializable_dict(self) -> dict:
@@ -699,6 +706,7 @@ class ColumnSchema:
             "primary_key": self.primary_key,
             "append_only": self.append_only,
             "description": self.description,
+            "source_component": self.source_component,
         }
         if not isinstance(self.default_value, _Undefined):
             default_value_base64 = base64.b64encode(
@@ -716,6 +724,15 @@ class ColumnSchema:
     def typehint(self):
         return self.dtype.typehint
 
+    @property
+    def engine_field_source(self):
+        if self.source_component == PAYLOAD_SOURCE_COMPONENT:
+            return api.FieldSource.PAYLOAD
+        elif self.source_component == KEY_SOURCE_COMPONENT:
+            return api.FieldSource.KEY
+        else:
+            raise ValueError(f"Unknown source component: {self.source_component}")
+
 
 @dataclass(frozen=True)
 class ColumnDefinition:
@@ -726,6 +743,7 @@ class ColumnDefinition:
     append_only: bool | None = None
     description: str | None = None  # used in OpenAPI schema autogeneration
     example: Any = None  # used in OpenAPI schema autogeneration
+    source_component: str = PAYLOAD_SOURCE_COMPONENT
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)
@@ -744,6 +762,7 @@ def column_definition(
     append_only: bool | None = None,
     description: str | None = None,
     example: Any = None,
+    source_component: Literal["key", "payload"] = "payload",
     _serialized_default_value: Any | None = None,
     _serialized_example: Any | None = None,
 ) -> Any:  # Return any so that mypy does not complain
@@ -764,6 +783,9 @@ def column_definition(
             connector in automated OpenAPI schema generation.
         example: example of the column value. Used by HTTP input connector in automated
             OpenAPI schema generation.
+        source_component: the part of the input message from which the value should be
+            parsed when JSON format is used. In Kafka, this can be used to specify that
+            certain fields must be parsed from the message key.
 
     Returns:
         Column definition.
@@ -801,6 +823,7 @@ id_type=pathway.engine.Pointer[int]>
         append_only=append_only,
         description=description,
         example=example,
+        source_component=source_component,
     )
 
 

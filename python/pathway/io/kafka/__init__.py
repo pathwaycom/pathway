@@ -10,7 +10,11 @@ from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import SchemaRegistryHeader, SchemaRegistrySettings
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.schema import Schema
+from pathway.internals.schema import (
+    KEY_SOURCE_COMPONENT,
+    PAYLOAD_SOURCE_COMPONENT,
+    Schema,
+)
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
@@ -124,11 +128,11 @@ def read(
 
     >>> import os
     >>> rdkafka_settings = {
-    ...    "bootstrap.servers": "localhost:9092",
-    ...    "security.protocol": "sasl_ssl",
-    ...    "sasl.mechanism": "PLAIN",
-    ...    "sasl.username": os.environ["KAFKA_USERNAME"],
-    ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
+    ...     "bootstrap.servers": "localhost:9092",
+    ...     "security.protocol": "sasl_ssl",
+    ...     "sasl.mechanism": "PLAIN",
+    ...     "sasl.username": os.environ["KAFKA_USERNAME"],
+    ...     "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
 
     To connect to the topic "animals" and accept messages, the connector must be used
@@ -138,9 +142,9 @@ def read(
 
     >>> import pathway as pw
     >>> t = pw.io.kafka.read(
-    ...   rdkafka_settings,
-    ...    topic="animals",
-    ...    format="raw",
+    ...     rdkafka_settings,
+    ...     topic="animals",
+    ...     format="raw",
     ... )
 
     All the payload data will be accessible in the column ``data``, the keys of the messages
@@ -148,10 +152,9 @@ def read(
 
     JSON version:
 
-    >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
-    ...   owner: str
-    ...   pet: str
+    ...     owner: str
+    ...     pet: str
     >>> t = pw.io.kafka.read(
     ...     rdkafka_settings,
     ...     topic="animals",
@@ -193,20 +196,48 @@ def read(
     (1-based) or the 1st (0-based) element in the array of measurements. Then, you
     use JSON Pointer and do a connector, which gets the data as follows:
 
-    >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
-    ...   pet_name: str
-    ...   pet_height: int
+    ...     pet_name: str
+    ...     pet_height: int
     >>> t = pw.io.kafka.read(
-    ...    rdkafka_settings,
-    ...    topic="animals",
-    ...    format="json",
-    ...    schema=InputSchema,
-    ...    json_field_paths={
-    ...        "pet_name": "/pet/name",
-    ...        "pet_height": "/pet/measurements/1"
-    ...    },
+    ...     rdkafka_settings,
+    ...     topic="animals",
+    ...     format="json",
+    ...     schema=InputSchema,
+    ...     json_field_paths={
+    ...         "pet_name": "/pet/name",
+    ...         "pet_height": "/pet/measurements/1"
+    ...     },
     ... )
+
+    Note that a Kafka message contains a key and a payload. By default, the schema fields
+    are parsed from the payload, but this behavior can be changed. To do that, you need
+    to specify the ``source_component`` parameter for the target fields. For example,
+    if the schema is similar to the example above, but there is also a unique pet ID
+    stored in the key JSON at the path ``/pet/identification/id``, you can read it by
+    first modifying the schema:
+
+    >>> class InputSchema(pw.Schema):
+    ...     pet_id: int = pw.column_definition(primary_key=True, source_component="key")
+    ...     pet_name: str
+    ...     pet_height: int
+
+    And then by providing a JSONPath to this field as well in the ``read`` method:
+
+    >>> t = pw.io.kafka.read(
+    ...     rdkafka_settings,
+    ...     topic="animals",
+    ...     format="json",
+    ...     schema=InputSchema,
+    ...     json_field_paths={
+    ...         "pet_id": "/pet/identification/id",
+    ...         "pet_name": "/pet/name",
+    ...         "pet_height": "/pet/measurements/1"
+    ...     },
+    ... )
+
+    Note that you would not need to provide the JSONPath for ``pet_id`` if it is
+    at the top level of the key JSON.
     """
     # The data_storage is common to all kafka connectors
 
@@ -233,6 +264,8 @@ def read(
         start_from_timestamp_ms=start_from_timestamp_ms,
         mode=internal_connector_mode(mode),
     )
+
+    # TODO: support case when the key is scalar and the value is json
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
         with_metadata=with_metadata,
@@ -258,6 +291,10 @@ def read(
             append_only=data_format.is_native_session_used(),  # simple comparison wouldn't work
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
+        supported_components=(
+            KEY_SOURCE_COMPONENT,
+            PAYLOAD_SOURCE_COMPONENT,
+        ),
     )
 
 
@@ -446,11 +483,11 @@ def write(
 
     >>> import os
     >>> rdkafka_settings = {
-    ...    "bootstrap.servers": "localhost:9092",
-    ...    "security.protocol": "sasl_ssl",
-    ...    "sasl.mechanism": "PLAIN",
-    ...    "sasl.username": os.environ["KAFKA_USERNAME"],
-    ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
+    ...     "bootstrap.servers": "localhost:9092",
+    ...     "security.protocol": "sasl_ssl",
+    ...     "sasl.mechanism": "PLAIN",
+    ...     "sasl.username": os.environ["KAFKA_USERNAME"],
+    ...     "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
 
     You want to send a Pathway table ``t`` to the Kafka instance.
@@ -464,10 +501,10 @@ def write(
     JSON version:
 
     >>> pw.io.kafka.write(
-    ...    t,
-    ...    rdkafka_settings,
-    ...    "animals",
-    ...    format="json",
+    ...     t,
+    ...     rdkafka_settings,
+    ...     "animals",
+    ...     format="json",
     ... )
 
     All the updates of table ``t`` will be sent to the Kafka instance.
@@ -497,11 +534,11 @@ def write(
     table as follows:
 
     >>> pw.io.kafka.write(
-    ...    t2,
-    ...    rdkafka_settings,
-    ...    "test",
-    ...    format="raw",
-    ...    value=t2.foo,
+    ...     t2,
+    ...     rdkafka_settings,
+    ...     "test",
+    ...     format="raw",
+    ...     value=t2.foo,
     ... )
 
     If at the same time you would prefer to have the key of the produced messages to be
@@ -509,12 +546,12 @@ def write(
     follows:
 
     >>> pw.io.kafka.write(
-    ...    t2,
-    ...    rdkafka_settings,
-    ...    "test",
-    ...    format="raw",
-    ...    key=t2.bar,
-    ...    value=t2.foo,
+    ...     t2,
+    ...     rdkafka_settings,
+    ...     "test",
+    ...     format="raw",
+    ...     key=t2.bar,
+    ...     value=t2.foo,
     ... )
 
     Still, the table has three fields and the field ``baz`` is not produced. You can do it
@@ -522,13 +559,13 @@ def write(
     specify it:
 
     >>> pw.io.kafka.write(
-    ...    t2,
-    ...    rdkafka_settings,
-    ...    "test",
-    ...    format="raw",
-    ...    key=t2.bar,
-    ...    value=t2.foo,
-    ...    headers=[t2.baz],
+    ...     t2,
+    ...     rdkafka_settings,
+    ...     "test",
+    ...     format="raw",
+    ...     key=t2.bar,
+    ...     value=t2.foo,
+    ...     headers=[t2.baz],
     ... )
     """
     output_format = MessageQueueOutputFormat.construct(

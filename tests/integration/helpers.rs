@@ -14,8 +14,8 @@ use pathway_engine::persistence::config::{PersistenceManagerOuterConfig, Persist
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 use pathway_engine::connectors::data_format::{
-    ErrorRemovalLogic, FormattedDocument, KeyFieldsWithErrors, ParseResult, ParsedEvent,
-    ParsedEventWithErrors, Parser, ValueFieldsWithErrors,
+    ErrorRemovalLogic, FieldSource, FormattedDocument, KeyFieldsWithErrors, ParseResult,
+    ParsedEvent, ParsedEventWithErrors, Parser, ValueFieldsWithErrors,
 };
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, DataEventType, ReadError, ReadMethod, ReadResult, Reader, ReaderBuilder,
@@ -25,10 +25,11 @@ use pathway_engine::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer
 use pathway_engine::connectors::posix_like::PosixLikeReader;
 use pathway_engine::connectors::scanner::FilesystemScanner;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
-use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Value};
+use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Type, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;
 use pathway_engine::persistence::input_snapshot::Event as SnapshotEvent;
 use pathway_engine::persistence::PersistentId;
+use pathway_engine::python_api::ValueField;
 
 #[derive(Debug)]
 pub struct FullReadResult {
@@ -361,7 +362,7 @@ pub fn assert_error_shown_for_reader_context(
     error_placement: ErrorPlacement,
 ) {
     let row_parse_result = parser.parse(context);
-    println!("{row_parse_result:?}");
+    eprintln!("Row parse result: {row_parse_result:?}");
     let errors = error_placement.extract_errors(row_parse_result);
     for e in errors {
         eprintln!("Error details: {e:?}");
@@ -441,4 +442,8 @@ pub fn new_csv_filesystem_reader(
         false, // read the contents in full, not only metadata
         is_persisted,
     )
+}
+
+pub fn value_field(name: &str) -> ValueField {
+    ValueField::new(name.to_string(), Type::Any, FieldSource::Payload)
 }

@@ -2,7 +2,7 @@
 
 use super::helpers::{
     create_persistence_manager, full_cycle_read, new_csv_filesystem_reader, new_filesystem_reader,
-    FullReadResult,
+    value_field, FullReadResult,
 };
 
 use std::collections::HashMap;
@@ -66,8 +66,8 @@ fn json_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, 
         ),
     ];
     let parser = JsonLinesParser::new(
-        Some(vec!["key".to_string()]),
-        vec!["value".to_string()],
+        Some(&["key".to_string()]),
+        vec![value_field("value")],
         HashMap::new(),
         true,
         schema.into(),

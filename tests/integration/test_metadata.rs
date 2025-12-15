@@ -1,6 +1,8 @@
 // Copyright © 2024 Pathway
 
-use super::helpers::{new_csv_filesystem_reader, new_filesystem_reader, read_data_from_reader};
+use super::helpers::{
+    new_csv_filesystem_reader, new_filesystem_reader, read_data_from_reader, value_field,
+};
 
 use std::collections::HashMap;
 
@@ -198,7 +200,7 @@ fn test_metadata_json_file() -> eyre::Result<()> {
     ];
     let parser = JsonLinesParser::new(
         None,
-        vec!["a".to_string(), "_metadata".to_string()],
+        vec![value_field("a"), value_field("_metadata")],
         HashMap::new(),
         false,
         schema.into(),
@@ -230,7 +232,7 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
     ];
     let parser = JsonLinesParser::new(
         None,
-        vec!["a".to_string(), "_metadata".to_string()],
+        vec![value_field("a"), value_field("_metadata")],
         HashMap::new(),
         false,
         schema.into(),

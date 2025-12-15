@@ -17,6 +17,7 @@ use crate::engine::{
     value::parse_pathway_pointer, value::Kind as ValueKind, DateTimeNaive, DateTimeUtc,
     Duration as EngineDuration, Error, Key, Result, Timestamp, Type, Value,
 };
+use crate::python_api::ValueField;
 
 use async_nats::header::HeaderMap as NatsHeaders;
 use base64::engine::general_purpose::STANDARD as base64encoder;
@@ -633,7 +634,7 @@ fn parse_with_type(
 }
 
 fn ensure_all_fields_in_schema(
-    key_column_names: Option<&Vec<String>>,
+    key_column_names: Option<&[String]>,
     value_column_names: &[String],
     schema: &HashMap<String, InnerSchemaField>,
 ) -> Result<()> {
@@ -653,7 +654,7 @@ fn ensure_all_fields_in_schema(
 }
 
 /// "magic field" containing the metadata
-const METADATA_FIELD_NAME: &str = "_metadata";
+pub const METADATA_FIELD_NAME: &str = "_metadata";
 
 impl DsvParser {
     pub fn new(
@@ -661,7 +662,7 @@ impl DsvParser {
         schema: HashMap<String, InnerSchemaField>,
     ) -> Result<DsvParser> {
         ensure_all_fields_in_schema(
-            settings.key_column_names.as_ref(),
+            settings.key_column_names.as_deref(),
             &settings.value_column_names,
             &schema,
         )?;
@@ -948,16 +949,16 @@ impl Parser for IdentityParser {
                         .as_ref()
                         .map_or_else(|| Ok(Value::None), |k| value_from_bytes(k, self.parse_utf8));
                 }
-                match value {
-                    Some(bytes) => (
-                        DataEventType::Insert,
-                        self.key_generation_policy
-                            .generate(key.as_ref(), self.parse_utf8),
-                        value_from_bytes(bytes, self.parse_utf8),
-                        Ok(None),
+                (
+                    DataEventType::Insert,
+                    self.key_generation_policy
+                        .generate(key.as_ref(), self.parse_utf8),
+                    value.as_ref().map_or_else(
+                        || Ok(Value::None),
+                        |bytes| value_from_bytes(bytes, self.parse_utf8),
                     ),
-                    None => return Err(ParseError::EmptyKafkaPayload.into()),
-                }
+                    Ok(None),
+                )
             }
             Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
@@ -1362,7 +1363,6 @@ fn values_by_names_from_json(
     column_paths: &HashMap<String, String>,
     field_absence_is_error: bool,
     schema: &HashMap<String, InnerSchemaField>,
-    metadata_column_value: &Value,
 ) -> ValueFieldsWithErrors {
     let mut parsed_values = Vec::with_capacity(field_names.len());
     for value_field in field_names {
@@ -1374,9 +1374,7 @@ fn values_by_names_from_json(
             }
         };
 
-        let value = if value_field == METADATA_FIELD_NAME {
-            Ok(metadata_column_value.clone())
-        } else if let Some(path) = column_paths.get(value_field) {
+        let value = if let Some(path) = column_paths.get(value_field) {
             if let Some(value) = payload.pointer(path) {
                 parse_value_from_json(value, dtype).ok_or_else(|| {
                     ParseError::FailedToParseFromJson {
@@ -1466,16 +1464,9 @@ impl DebeziumMessageParser {
         };
 
         let key = self.key_field_names.as_ref().map(|names| {
-            values_by_names_from_json(
-                key,
-                names,
-                &HashMap::new(),
-                true,
-                &HashMap::new(),
-                &Value::None,
-            )
-            .into_iter()
-            .collect()
+            values_by_names_from_json(key, names, &HashMap::new(), true, &HashMap::new())
+                .into_iter()
+                .collect()
         });
 
         let parsed_values = values_by_names_from_json(
@@ -1484,7 +1475,6 @@ impl DebeziumMessageParser {
             &HashMap::new(),
             true,
             &HashMap::new(),
-            &Value::None,
         );
 
         Ok(ParsedEventWithErrors::new(
@@ -1507,16 +1497,9 @@ impl DebeziumMessageParser {
             }
             DebeziumDBType::MongoDB => {
                 let key = self.key_field_names.as_ref().map(|names| {
-                    values_by_names_from_json(
-                        key,
-                        names,
-                        &HashMap::new(),
-                        true,
-                        &HashMap::new(),
-                        &Value::None,
-                    )
-                    .into_iter()
-                    .collect()
+                    values_by_names_from_json(key, names, &HashMap::new(), true, &HashMap::new())
+                        .into_iter()
+                        .collect()
                 });
                 //deletion in upsert session - no data needed
                 ParsedEventWithErrors::Delete((key, vec![]))
@@ -1641,9 +1624,42 @@ impl Parser for DebeziumMessageParser {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum FieldSource {
+    Key,
+    Payload,
+    Metadata,
+}
+
+#[derive(Default, Debug)]
+pub struct FieldSourceLists {
+    to_parse_from_key: Vec<String>,
+    to_parse_from_payload: Vec<String>,
+    sources_order: Vec<FieldSource>,
+}
+
+impl FieldSourceLists {
+    pub fn new() -> Self {
+        Self {
+            to_parse_from_key: Vec::new(),
+            to_parse_from_payload: Vec::new(),
+            sources_order: Vec::new(),
+        }
+    }
+
+    pub fn add_field(&mut self, name: String, source: FieldSource) {
+        self.sources_order.push(source);
+        match source {
+            FieldSource::Key => self.to_parse_from_key.push(name),
+            FieldSource::Payload => self.to_parse_from_payload.push(name),
+            FieldSource::Metadata => {}
+        }
+    }
+}
+
 pub struct JsonLinesParser {
-    key_field_names: Option<Vec<String>>,
-    value_field_names: Vec<String>,
+    key_field_source_lists: Option<FieldSourceLists>,
+    value_field_source_lists: FieldSourceLists,
     column_paths: HashMap<String, String>,
     field_absence_is_error: bool,
     schema: HashMap<String, InnerSchemaField>,
@@ -1654,18 +1670,43 @@ pub struct JsonLinesParser {
 
 impl JsonLinesParser {
     pub fn new(
-        key_field_names: Option<Vec<String>>,
-        value_field_names: Vec<String>,
+        key_field_names: Option<&[String]>,
+        value_fields: Vec<ValueField>,
         column_paths: HashMap<String, String>,
         field_absence_is_error: bool,
         schema: HashMap<String, InnerSchemaField>,
         session_type: SessionType,
         schema_registry_decoder: Option<RegistryJsonDecoder>,
     ) -> Result<JsonLinesParser> {
-        ensure_all_fields_in_schema(key_field_names.as_ref(), &value_field_names, &schema)?;
+        let key_source_lists = if let Some(key_field_names) = key_field_names {
+            let mut key_sources_lists = FieldSourceLists::new();
+            for key_field_name in key_field_names {
+                // In order not to break the backwards compatibility, we allow that some of the
+                // key fields are not present in the `value_fields` vector. We then consider that
+                // they come from payload.
+                let source = value_fields
+                    .iter()
+                    .find(|vf| vf.name == *key_field_name)
+                    .map_or(FieldSource::Payload, |vf| vf.source);
+                key_sources_lists.add_field(key_field_name.to_string(), source);
+            }
+            Some(key_sources_lists)
+        } else {
+            None
+        };
+
+        let mut value_source_lists = FieldSourceLists::new();
+        let mut value_field_names = Vec::with_capacity(value_fields.len());
+        for value_field in value_fields {
+            value_source_lists.add_field(value_field.name.clone(), value_field.source);
+            value_field_names.push(value_field.name);
+        }
+
+        ensure_all_fields_in_schema(key_field_names, value_field_names.as_ref(), &schema)?;
+
         Ok(JsonLinesParser {
-            key_field_names,
-            value_field_names,
+            key_field_source_lists: key_source_lists,
+            value_field_source_lists: value_source_lists,
             column_paths,
             field_absence_is_error,
             schema,
@@ -1677,69 +1718,135 @@ impl JsonLinesParser {
 
     fn values_from_parsed_object(
         &self,
+        key: &JsonValue,
         payload: &JsonValue,
-        field_names: &[String],
+        source_lists: &FieldSourceLists,
     ) -> ValueFieldsWithErrors {
-        values_by_names_from_json(
-            payload,
-            field_names,
+        let mut fields_from_key_iter = values_by_names_from_json(
+            key,
+            source_lists.to_parse_from_key.as_slice(),
             &self.column_paths,
             self.field_absence_is_error,
             &self.schema,
-            &self.metadata_column_value,
         )
+        .into_iter();
+        let mut fields_from_payload_iter = values_by_names_from_json(
+            payload,
+            source_lists.to_parse_from_payload.as_slice(),
+            &self.column_paths,
+            self.field_absence_is_error,
+            &self.schema,
+        )
+        .into_iter();
+
+        let mut result = Vec::with_capacity(source_lists.sources_order.len());
+        for source in &source_lists.sources_order {
+            match source {
+                FieldSource::Key => result.push(fields_from_key_iter.next().unwrap()),
+                FieldSource::Payload => result.push(fields_from_payload_iter.next().unwrap()),
+                FieldSource::Metadata => result.push(Ok(self.metadata_column_value.clone())),
+            }
+        }
+
+        result
     }
 
     fn create_events_from_parsed_object(
         &self,
         data_event: DataEventType,
+        key: &JsonValue,
         payload: &JsonValue,
     ) -> Vec<ParsedEventWithErrors> {
-        let key = self.key_field_names.as_ref().map(|key_field_names| {
-            self.values_from_parsed_object(payload, key_field_names)
-                .into_iter()
-                .collect()
-        });
-        let values = self.values_from_parsed_object(payload, &self.value_field_names);
-        let event = ParsedEventWithErrors::new(self.session_type, data_event, key, values);
+        let event_key = self
+            .key_field_source_lists
+            .as_ref()
+            .map(|key_field_source_lists| {
+                self.values_from_parsed_object(key, payload, key_field_source_lists)
+                    .into_iter()
+                    .collect()
+            });
+        let event_values =
+            self.values_from_parsed_object(key, payload, &self.value_field_source_lists);
+        let event =
+            ParsedEventWithErrors::new(self.session_type, data_event, event_key, event_values);
         vec![event]
+    }
+
+    fn has_fields_from_key(&self) -> bool {
+        let needed_for_key = !self
+            .key_field_source_lists
+            .as_ref()
+            .is_none_or(|v| v.to_parse_from_key.is_empty());
+        let needed_for_value = !self.value_field_source_lists.to_parse_from_key.is_empty();
+        needed_for_key || needed_for_value
+    }
+
+    fn has_fields_from_payload(&self) -> bool {
+        let needed_for_key = !self
+            .key_field_source_lists
+            .as_ref()
+            .is_none_or(|v| v.to_parse_from_payload.is_empty());
+        let needed_for_value = !self
+            .value_field_source_lists
+            .to_parse_from_payload
+            .is_empty();
+        needed_for_key || needed_for_value
+    }
+
+    fn prepare_json(&mut self, raw_bytes: &[u8]) -> DynResult<JsonValue> {
+        let result = if let Some(decoder) = self.schema_registry_decoder.as_mut() {
+            match decoder.decode(Some(raw_bytes))? {
+                None => JsonValue::Null,
+                Some(decode_result) => decode_result.value,
+            }
+        } else {
+            match prepare_plaintext_string(raw_bytes)?.as_str() {
+                "" => JsonValue::Null,
+                line => serde_json::from_str(line)?,
+            }
+        };
+        Ok(result)
     }
 }
 
 impl Parser for JsonLinesParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let (data_event, raw_bytes) = match data {
-            RawBytes(event, raw_bytes) => (*event, raw_bytes),
-            KeyValue((_key, value)) => {
-                if let Some(raw_bytes) = value {
-                    (DataEventType::Insert, raw_bytes)
-                } else {
-                    return Err(ParseError::EmptyKafkaPayload.into());
-                }
+        let (data_event, raw_bytes_key, raw_bytes_payload) = match data {
+            RawBytes(event, raw_bytes) => (*event, vec![], raw_bytes.clone()),
+            KeyValue((key, value)) => {
+                let raw_bytes_key = key.clone().unwrap_or_default();
+                let raw_bytes_value = value.clone().unwrap_or_default();
+                (DataEventType::Insert, raw_bytes_key, raw_bytes_value)
             }
             Diff(_) | TokenizedEntries(..) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
             Empty => return Ok(vec![]),
         };
-        if raw_bytes.is_empty() {
+        if raw_bytes_payload.is_empty() && raw_bytes_key.is_empty() {
             return Ok(vec![]);
         }
 
-        let payload = if let Some(decoder) = self.schema_registry_decoder.as_mut() {
-            match decoder.decode(Some(raw_bytes))? {
-                None => return Ok(vec![]),
-                Some(decode_result) => decode_result.value,
+        let payload = if self.has_fields_from_payload() {
+            if prepare_plaintext_string(&raw_bytes_payload)
+                .as_ref()
+                .map(|s| s.as_str() == COMMIT_LITERAL)
+                .unwrap_or(false)
+            {
+                return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
             }
+            self.prepare_json(&raw_bytes_payload)?
         } else {
-            match prepare_plaintext_string(raw_bytes)?.as_str() {
-                "" => return Ok(vec![]),
-                COMMIT_LITERAL => return Ok(vec![ParsedEventWithErrors::AdvanceTime]),
-                line => serde_json::from_str(line)?,
-            }
+            JsonValue::Null
         };
 
-        Ok(self.create_events_from_parsed_object(data_event, &payload))
+        let key = if self.has_fields_from_key() {
+            self.prepare_json(&raw_bytes_key)?
+        } else {
+            JsonValue::Null
+        };
+
+        Ok(self.create_events_from_parsed_object(data_event, &key, &payload))
     }
 
     fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
@@ -1748,7 +1855,7 @@ impl Parser for JsonLinesParser {
     }
 
     fn column_count(&self) -> usize {
-        self.value_field_names.len()
+        self.value_field_source_lists.sources_order.len()
     }
 
     fn session_type(&self) -> SessionType {
@@ -1774,7 +1881,7 @@ impl TransparentParser {
         schema: HashMap<String, InnerSchemaField>,
         session_type: SessionType,
     ) -> Result<TransparentParser> {
-        ensure_all_fields_in_schema(key_field_names.as_ref(), &value_field_names, &schema)?;
+        ensure_all_fields_in_schema(key_field_names.as_deref(), &value_field_names, &schema)?;
         Ok(TransparentParser {
             key_field_names,
             value_field_names,

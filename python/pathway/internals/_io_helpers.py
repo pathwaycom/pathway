@@ -195,6 +195,7 @@ def _format_output_value_fields(table: Table) -> list[api.ValueField]:
         value_field = api.ValueField(
             column_name,
             column_data.dtype.to_engine(),
+            source=column_data.engine_field_source,
         )
         value_field.set_metadata(
             json.dumps(column_data.to_json_serializable_dict(), sort_keys=True)
@@ -209,11 +210,21 @@ def _form_value_fields(schema: type[schema.Schema]) -> list[api.ValueField]:
     default_values = schema.default_values()
     result = []
 
-    types = {name: dtype.to_engine() for name, dtype in schema._dtypes().items()}
-
+    columns = schema.columns()
     for f in schema.column_names():
-        dtype = types.get(f, api.PathwayType.ANY)
-        value_field = api.ValueField(f, dtype)
+        item = columns.get(f)
+        if item is None:
+            value_field = api.ValueField(
+                f,
+                api.PathwayType.ANY,
+                source=api.FieldSource.PAYLOAD,
+            )
+        else:
+            value_field = api.ValueField(
+                f,
+                item.dtype.to_engine(),
+                source=item.engine_field_source,
+            )
         if f in default_values:
             value_field.set_default(default_values[f])
         result.append(value_field)

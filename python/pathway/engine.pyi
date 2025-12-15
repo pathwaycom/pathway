@@ -931,9 +931,15 @@ class AwsS3Settings:
 class AzureBlobStorageSettings:
     def __init__(self, *args, **kwargs): ...
 
+class FieldSource(Enum):
+    KEY: FieldSource
+    PAYLOAD: FieldSource
+
 class ValueField:
     name: str
-    def __init__(self, name: str, type_: PathwayType): ...
+    def __init__(
+        self, name: str, type_: PathwayType, source: FieldSource = FieldSource.PAYLOAD
+    ): ...
     def set_default(self, *args, **kwargs): ...
     def set_metadata(self, *args, **kwargs): ...
 
