@@ -14,12 +14,12 @@ from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
 from pathway.xpacks.llm.document_store import (
     DocumentStore,
+    DocumentStoreClient,
     SlidesDocumentStore,
     _get_jmespath_filter,
 )
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.mcp_server import McpServable, McpServer
-from pathway.xpacks.llm.document_store import DocumentStoreClient
 from pathway.xpacks.llm.vector_store import (
     SlidesVectorStoreServer,
     VectorStoreServer,

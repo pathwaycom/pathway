@@ -45,10 +45,15 @@ def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:
         r.raise_for_status()
         assert r.text == '"TWO"', r.text
 
-    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
-    queries, response_writer = pw.io.http.rest_connector(
-        webserver=webserver, schema=InputSchema, delete_completed_queries=True
-    )
+    if isinstance(port, str):
+        queries, response_writer = pw.io.http.rest_connector(
+            host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=True
+        )
+    else:
+        webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+        queries, response_writer = pw.io.http.rest_connector(
+            webserver=webserver, schema=InputSchema, delete_completed_queries=True
+        )
     responses = logic(queries)
     response_writer(responses)
     pw.io.csv.write(queries, output_path)
@@ -208,28 +213,13 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> Non
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 
-    queries_dup, response_writer_dup = pw.io.http.rest_connector(
-        webserver=webserver, schema=InputSchema, delete_completed_queries=False
-    )
-    response_writer_dup(queries_dup.select(query_id=queries_dup.id, result=pw.this.v))
-
-    sum = queries.groupby(pw.this.k).reduce(
-        key=pw.this.k, sum=pw.reducers.sum(pw.this.v)
-    )
-    sum_dup = queries_dup.groupby(pw.this.k).reduce(
-        key=pw.this.k, sum=pw.reducers.sum(pw.this.v)
-    )
-
-    pw.io.csv.write(sum, output_path)
-    pw.io.csv.write(sum_dup, output_path)
-
-    with pytest.raises(OSError) as exc_info:
-        pw.run()
+    with pytest.raises(ValueError) as exc_info:
+        queries_dup, response_writer_dup = pw.io.http.rest_connector(
+            webserver=webserver, schema=InputSchema, delete_completed_queries=False
+        )
     error_message = str(exc_info.value)
-    assert (
-        "error while attempting to bind on address" in error_message
-        or "Address already in use" in error_message
-    )
+    assert "Added route will never be executed" in error_message
+    assert "already registered" in error_message
 
 
 def _test_server_two_endpoints(

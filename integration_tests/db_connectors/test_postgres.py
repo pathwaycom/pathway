@@ -72,13 +72,7 @@ def test_psql_output_snapshot_legacy(tmp_path, postgres):
             for test_item in test_items:
                 f.write(json.dumps(test_item) + "\n")
         table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
-        pw.io.postgres.write(
-            table,
-            POSTGRES_SETTINGS,
-            output_table,
-            output_table_type="snapshot",
-            primary_key=[table.name],
-        )
+        pw.io.postgres.write_snapshot(table, POSTGRES_SETTINGS, output_table, ["name"])
         run()
 
     test_items = [
@@ -496,12 +490,11 @@ def test_psql_external_diff_column_legacy(tmp_path, postgres):
             for test_item in test_items:
                 f.write(json.dumps(test_item) + "\n")
         table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
-        pw.io.postgres.write(
+        pw.io.postgres.write_snapshot(
             table,
             POSTGRES_SETTINGS,
             output_table,
-            output_table_type="snapshot",
-            primary_key=[table.name],
+            ["a"],
             _external_diff_column=table.external_diff,
         )
         run()
