@@ -47,7 +47,10 @@ def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:
 
     if isinstance(port, str):
         queries, response_writer = pw.io.http.rest_connector(
-            host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=True
+            host="127.0.0.1",
+            port=port,
+            schema=InputSchema,
+            delete_completed_queries=True,
         )
     else:
         webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)

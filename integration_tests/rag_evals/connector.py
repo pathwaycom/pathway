@@ -1,7 +1,4 @@
-import json
-
 import httpx
-import requests
 
 from pathway.xpacks.llm.document_store import DocumentStoreClient
 from pathway.xpacks.llm.question_answering import RAGClient, send_post_request
