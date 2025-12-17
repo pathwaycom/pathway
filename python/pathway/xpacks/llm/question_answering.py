@@ -20,10 +20,7 @@ from pathway.xpacks.llm.document_store import (
 )
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.mcp_server import McpServable, McpServer
-from pathway.xpacks.llm.vector_store import (
-    SlidesVectorStoreServer,
-    VectorStoreServer,
-)
+from pathway.xpacks.llm.vector_store import SlidesVectorStoreServer, VectorStoreServer
 
 if TYPE_CHECKING:
     from pathway.xpacks.llm.servers import QARestServer, QASummaryRestServer

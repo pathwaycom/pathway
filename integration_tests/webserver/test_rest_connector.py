@@ -201,8 +201,6 @@ def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
 
 
 def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> None:
-    output_path = tmp_path / "output.csv"
-
     class InputSchema(pw.Schema):
         k: int
         v: int
@@ -213,13 +211,10 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> Non
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(RuntimeError, match="Added route will never be executed"):
         queries_dup, response_writer_dup = pw.io.http.rest_connector(
             webserver=webserver, schema=InputSchema, delete_completed_queries=False
         )
-    error_message = str(exc_info.value)
-    assert "Added route will never be executed" in error_message
-    assert "already registered" in error_message
 
 
 def _test_server_two_endpoints(

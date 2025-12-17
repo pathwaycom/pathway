@@ -494,7 +494,7 @@ def test_psql_external_diff_column_legacy(tmp_path, postgres):
             table,
             POSTGRES_SETTINGS,
             output_table,
-            ["a"],
+            ["name"],
             _external_diff_column=table.external_diff,
         )
         run()

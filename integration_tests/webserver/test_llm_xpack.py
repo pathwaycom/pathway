@@ -17,10 +17,10 @@ from llama_index.retrievers.pathway import PathwayRetriever
 import pathway as pw
 from pathway.internals.udfs.caches import InMemoryCache
 from pathway.tests.utils import wait_result_with_checker
+from pathway.xpacks.llm.document_store import DocumentStoreClient
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer, RAGClient
 from pathway.xpacks.llm.tests.mocks import FakeChatModel, fake_embeddings_model
 from pathway.xpacks.llm.tests.utils import build_vector_store, create_build_rag_app
-from pathway.xpacks.llm.document_store import DocumentStoreClient
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 PATHWAY_HOST = "127.0.0.1"
