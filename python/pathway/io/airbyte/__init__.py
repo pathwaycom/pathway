@@ -181,6 +181,34 @@ mode. Please note that reusage Airbyte license is not supported at the moment.
     `pw.Json </developers/api-docs/pathway#pathway.Json>`_ containing the data read from
     the connector. The format of this data corresponds to the one used in the Airbyte.
 
+    Note:
+
+    The Airbyte connectors are typically available as Docker images and can technically
+    be executed as containers. However, we do not recommend running such connectors in
+    environments where the Docker image of a container is executed inside another Docker
+    container, for example, your deployment (a setup commonly referred to as Docker-in-Docker,
+    or DinD).
+
+    Running Docker inside a container is not a trivial configuration and requires using
+    a special Docker-in-Docker image and starting it in ``--privileged`` mode. Privileged
+    mode effectively removes most of the isolation guarantees provided by containers,
+    grants broad access to kernel interfaces, and makes container escape relatively easy.
+    As a result, any code executed in this setup must be considered fully trusted, which
+    defeats the primary security benefits of using Docker.
+
+    In addition, Docker-in-Docker breaks reliable resource isolation. The inner Docker
+    daemon is unaware of the actual CPU and memory limits imposed on the outer container,
+    leading to nested cgroups, incorrect resource accounting, unpredictable CPU throttling,
+    and seemingly random out-of-memory (OOM) terminations. These issues make the system
+    harder to reason about, debug, and operate in a stable manner.
+
+    For these reasons, we consider the use of Docker-in-Docker for running Airbyte
+    connectors a poor practice and do not provide a direct guidance for it. Instead, we
+    recommend either using the ``enforce_method="pypi"`` execution mode or a default, which runs
+    connectors as Python packages installed into a virtual environment without Docker-in-Docker,
+    or running connectors in a managed environment such as Google Cloud Platform (GCP),
+    where containers are executed with proper isolation and resource guarantees.
+
     Example:
 
     The simplest way to test this connector is to use
