@@ -130,7 +130,12 @@ class RAGFunctionPromptTemplate(FunctionPromptTemplate):
 
 
 @pw.udf
-def prompt_short_qa(context: str, query: str, additional_rules: str = "") -> str:
+def prompt_short_qa(
+    context: str,
+    query: str,
+    additional_rules: str = "",
+    information_not_found_response="No information found.",
+) -> str:
     """
     Generate a RAG prompt with given context.
 
@@ -153,7 +158,7 @@ def prompt_short_qa(context: str, query: str, additional_rules: str = "") -> str
         "Keep your answer concise and accurate. Make sure that it starts with an expression in standardized format. "
         "Only respond without any explanation, for example questions asking for date should be answered in strictly date format: `05 January 2011`. "  # noqa: E501
         "Yes or No questions should be responded with simple `Yes` or `No` and so on. "
-        "If question cannot be inferred from documents SAY `No information found`. "
+        f"If question cannot be inferred from documents SAY `{information_not_found_response}`. "
     )
 
     prompt += additional_rules + " "
@@ -321,7 +326,12 @@ def parse_score_json(text: str) -> float:
 
 
 @pw.udf
-def prompt_citing_qa(context: str, query: str, additional_rules: str = "") -> str:
+def prompt_citing_qa(
+    context: str,
+    query: str,
+    additional_rules: str = "",
+    information_not_found_response="No information found.",
+) -> str:
     """
     Generate RAG prompt that instructs the LLM to give citations with the answer.
 
@@ -352,7 +362,7 @@ def prompt_citing_qa(context: str, query: str, additional_rules: str = "") -> st
         "Only cite a source when you are explicitly referencing it. "
         "If exists, mention specific article/section header you use at the beginning of answer, such as '4.a Client has rights to...'. "  # noqa: E501
         "Article headers may or may not be in docs, dont mention it if there is none. "
-        "If question cannot be inferred from documents SAY `No information found`. "
+        f"If question cannot be inferred from documents SAY `{information_not_found_response}`. "
     )
 
     prompt += additional_rules + " "
