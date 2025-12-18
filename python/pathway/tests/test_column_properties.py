@@ -216,9 +216,9 @@ def test_rest_connector(delete_completed_queries: bool):
     class TestSchema(pw.Schema):
         a: int
 
+    webserver = io.http.PathwayWebserver(host="127.0.0.1", port=30000)
     table, response_writer = io.http.rest_connector(
-        host="127.0.0.1",
-        port=30000,  # server is not started, port number does not matter
+        webserver=webserver,
         schema=TestSchema,
         delete_completed_queries=delete_completed_queries,
     )
