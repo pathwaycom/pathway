@@ -7,6 +7,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.kafka.read` and `pw.io.redpanda.read` now allow each schema field to be specified as coming from either the message key or the message value.
+- Connector groups now support the specification of an idle duration. When this is set, if a source does not provide any data for the specified period of time, it will be excluded from the group until it produces data again.
+- It is now possible to assign priorities to sources within a connector group. When a priority is set, it ensures that at any moment, the source is not lagging behind any other source with a higher priority in terms of the tracked column.
+- Connector groups can now be used in the multiprocess runs.
 
 ## [0.27.1] - 2025-12-08
 

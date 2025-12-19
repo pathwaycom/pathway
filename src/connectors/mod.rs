@@ -3,7 +3,7 @@
 use adaptors::InputAdaptor;
 use crossbeam_channel::{self as channel, Sender, TryRecvError};
 use itertools::Itertools;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use scopeguard::guard;
 use std::cell::RefCell;
 use std::env;
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::Thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use timely::dataflow::operators::probe::Handle;
 
 pub mod adaptors;
@@ -38,7 +38,7 @@ use crate::engine::report_error::{
 };
 use crate::engine::{DataError, Key, Value};
 
-use crate::connectors::synchronization::ConnectorGroupAccessor;
+use crate::connectors::synchronization::{ConnectorGroupAccessor, EntrySendApproval};
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
@@ -107,6 +107,7 @@ pub struct Connector {
     current_frontier: OffsetAntichain,
     skip_all_errors: bool,
     error_logger: Rc<dyn LogError>,
+    group: Option<ConnectorGroupAccessor>,
     n_parse_attempts: usize,
     n_parse_errors_in_log: usize,
     backlog_tracker: BacklogTracker,
@@ -116,7 +117,11 @@ pub struct Connector {
 pub enum Entry {
     Snapshot(SnapshotEvent),
     RewindFinishSentinel(OffsetAntichain),
-    RealtimeEntries(Vec<ParsedEventWithErrors>, Offset),
+    RealtimeEntries(
+        Vec<ParsedEventWithErrors>,
+        Offset,
+        Option<Vec<EntrySendApproval>>,
+    ),
     RealtimeEvent(ReadResult),
     RealtimeParsingError(DynError),
 }
@@ -133,12 +138,11 @@ pub enum PersistenceMode {
 }
 
 impl PersistenceMode {
-    fn on_before_reading_snapshot(self, sender: &Sender<Entry>) {
+    fn on_before_reading_snapshot(self, sender: &Sender<Entry>, timestamp_at_start: Timestamp) {
         // In case of Batch replay we need to start with AdvanceTime to set a new timestamp
         if matches!(self, PersistenceMode::Batch) {
-            let timestamp = Timestamp::new_from_current_time();
             let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(
-                timestamp,
+                timestamp_at_start,
                 OffsetAntichain::new(),
             )));
             if let Err(e) = send_res {
@@ -210,6 +214,7 @@ impl Connector {
         num_columns: usize,
         skip_all_errors: bool,
         error_logger: Rc<dyn LogError>,
+        group: Option<ConnectorGroupAccessor>,
     ) -> Self {
         Connector {
             commit_duration,
@@ -218,6 +223,7 @@ impl Connector {
             current_frontier: OffsetAntichain::new(),
             skip_all_errors,
             error_logger,
+            group,
             n_parse_attempts: 0,
             n_parse_errors_in_log: 0,
             backlog_tracker: BacklogTracker::new(),
@@ -241,6 +247,7 @@ impl Connector {
         let current_minibatch_has_data =
             self.backlog_tracker.last_timestamp_with_data() == Some(self.current_timestamp);
 
+        let old_timestamp = self.current_timestamp;
         if self.current_timestamp < new_timestamp {
             self.current_timestamp = new_timestamp;
         } else if current_minibatch_has_data {
@@ -248,8 +255,26 @@ impl Connector {
             self.current_timestamp.0 += 2;
         }
 
+        if let Some(group) = &self.group {
+            self.current_timestamp = match group.forced_time_advancement() {
+                Some(ft) => {
+                    if ft > old_timestamp {
+                        ft
+                    } else {
+                        warn!("The forced time advancement tries to push the global time backwards: {ft} vs the current time {old_timestamp}");
+                        self.current_timestamp
+                    }
+                }
+                None => self.current_timestamp,
+            };
+            assert!(old_timestamp <= self.current_timestamp);
+        }
+
         input_session.advance_to(self.current_timestamp);
         input_session.flush();
+        if let Some(ref mut group) = self.group {
+            group.report_time_advancement(self.current_timestamp);
+        }
 
         self.current_timestamp
     }
@@ -332,7 +357,7 @@ impl Connector {
         sender: &Sender<Entry>,
         main_thread: &Thread,
         error_reporter: &(impl ReportError + 'static),
-        mut group: Option<&mut ConnectorGroupAccessor>,
+        mut group: Option<ConnectorGroupAccessor>,
     ) {
         let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
         let mut amt_send = 0;
@@ -356,13 +381,11 @@ impl Connector {
                                             let send_res = sender.send(Entry::RealtimeEntries(
                                                 take(&mut entries_for_sending),
                                                 offset.clone(),
+                                                Some(take(&mut approvals)),
                                             ));
                                             if send_res.is_err() {
                                                 disconnected = true;
                                                 break;
-                                            }
-                                            if !approvals.is_empty() {
-                                                group.report_entries_sent(take(&mut approvals));
                                             }
                                         }
                                         let retry_future = can_be_sent.expect_wait();
@@ -380,13 +403,14 @@ impl Connector {
                                 let send_res = sender.send(Entry::RealtimeEntries(
                                     take(&mut entries_for_sending),
                                     offset,
+                                    Some(take(&mut approvals)),
                                 ));
                                 if disconnected || send_res.is_err() {
                                     break;
                                 }
-                                group.report_entries_sent(take(&mut approvals));
                             } else {
-                                let send_res = sender.send(Entry::RealtimeEntries(entries, offset));
+                                let send_res =
+                                    sender.send(Entry::RealtimeEntries(entries, offset, None));
                                 if send_res.is_err() {
                                     break;
                                 }
@@ -434,6 +458,7 @@ impl Connector {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn read_snapshot(
         reader: &mut dyn Reader,
         persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
@@ -442,6 +467,7 @@ impl Connector {
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
         realtime_reader_needed: bool,
+        timestamp_at_start: Timestamp,
     ) -> Result<(), ReadError> {
         info!(
             "Enter read_snapshot method with reader {:?}",
@@ -449,7 +475,7 @@ impl Connector {
         );
         let mut frontier = OffsetAntichain::new();
         if snapshot_access.is_replay_allowed() {
-            persistence_mode.on_before_reading_snapshot(sender);
+            persistence_mode.on_before_reading_snapshot(sender, timestamp_at_start);
         }
         if let Some(persistent_storage) = persistent_storage {
             if let Some(persistent_id) = persistent_id {
@@ -535,8 +561,8 @@ impl Connector {
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
-        mut group: Option<ConnectorGroupAccessor>,
         max_backlog_size: Option<usize>,
+        timestamp_at_start: Timestamp,
     ) -> Result<StartedConnectorState, EngineError> {
         assert_eq!(self.num_columns, parser.column_count());
 
@@ -553,7 +579,7 @@ impl Connector {
         );
         let reader_name = reader.name(unique_name);
         let session_type = parser.session_type();
-        let in_connector_group = group.is_some();
+        let in_connector_group = self.group.is_some();
 
         let mut snapshot_writer = Self::snapshot_writer(
             reader.as_ref(),
@@ -563,6 +589,7 @@ impl Connector {
         )
         .map_err(|e| EngineError::SnapshotWriterError(Box::new(e)))?;
 
+        let realtime_reader_group = self.group.clone();
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
             .spawn_with_reporter(error_reporter, move |reporter| {
@@ -582,6 +609,7 @@ impl Connector {
                     persistence_mode,
                     snapshot_access,
                     realtime_reader_needed,
+                    timestamp_at_start,
                 )
                 .map_err(|e| EngineError::ReaderFailed(Box::new(e)))?;
                 if realtime_reader_needed {
@@ -591,7 +619,7 @@ impl Connector {
                         &sender,
                         &main_thread,
                         reporter,
-                        group.as_mut(),
+                        realtime_reader_group,
                     );
                 }
 
@@ -606,6 +634,7 @@ impl Connector {
         let cloned_connector_monitor = connector_monitor.clone();
         let mut commit_allowed = true;
         let mut deferred_events = Vec::new();
+        let mut idleness_started_at = Instant::now();
         let poller = Box::new(move || {
             let iteration_start = SystemTime::now();
             if matches!(persistence_mode, PersistenceMode::SpeedrunReplay)
@@ -698,11 +727,14 @@ impl Connector {
                         input_session.flush();
                         let new_timestamp_even = (new_timestamp.0 / 2) * 2; //use only even times (required by alt-neu)
                         let new_timestamp_even = Timestamp(new_timestamp_even);
+
+                        self.current_timestamp = new_timestamp_even;
                         input_session.advance_to(new_timestamp_even);
                         input_session.flush();
+
                         return ControlFlow::Continue(Some(iteration_start));
                     }
-                    Ok(entry) => {
+                    Ok(mut entry) => {
                         let need_to_defer_processing = match entry {
                             Entry::RealtimeEvent(ReadResult::NewSource(ref metadata)) => {
                                 // Deferring events is only necessary when the data source
@@ -723,10 +755,20 @@ impl Connector {
                             }) => in_connector_group && !commit_possibility.commit_allowed(),
                             _ => !deferred_events.is_empty(),
                         };
-                        deferred_events.push(entry);
                         if need_to_defer_processing {
+                            if let Entry::RealtimeEntries(_, _, Some(ref mut approvals)) =
+                                &mut entry
+                            {
+                                self
+                                    .group
+                                    .as_mut()
+                                    .expect("if approvals are dispatched there must be a synchronization group")
+                                    .report_entries_sent(take(approvals));
+                            }
+                            deferred_events.push(entry);
                             continue;
                         }
+                        deferred_events.push(entry);
                         for entry in take(&mut deferred_events) {
                             self.handle_input_entry(
                                 entry,
@@ -740,7 +782,24 @@ impl Connector {
                             );
                         }
                     }
-                    Err(TryRecvError::Empty) => return ControlFlow::Continue(next_commit_at),
+                    Err(TryRecvError::Empty) => {
+                        if let Some(idleness_reporter) = &mut self.group.as_mut() {
+                            if let Some(duration_to_consider_idle) = idleness_reporter.idle_duration
+                            {
+                                // If the only entry is `TryRecvError::Empty`, then the source is idle.
+                                let is_idle = n_entries_in_batch == 1;
+                                if is_idle {
+                                    let idle_duration_elapsed = idleness_started_at.elapsed();
+                                    if idle_duration_elapsed >= duration_to_consider_idle {
+                                        idleness_reporter.report_source_is_idle();
+                                    }
+                                } else {
+                                    idleness_started_at = Instant::now();
+                                }
+                            }
+                        }
+                        return ControlFlow::Continue(next_commit_at);
+                    }
                     Err(TryRecvError::Disconnected) => {
                         (*connector_monitor).borrow_mut().finish();
                         return ControlFlow::Break(());
@@ -799,9 +858,15 @@ impl Connector {
             Entry::RealtimeParsingError(e) => {
                 self.log_parse_error(e);
             }
-            Entry::RealtimeEntries(mut parsed_entries, offset) => {
+            Entry::RealtimeEntries(mut parsed_entries, offset, approvals) => {
                 if !*backfilling_finished {
                     parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
+                }
+
+                if let Some(group) = &self.group {
+                    if group.forced_time_advancement().is_some() {
+                        parsed_entries.insert(0, ParsedEventWithErrors::AdvanceTime);
+                    }
                 }
 
                 self.on_parsed_data(
@@ -819,6 +884,13 @@ impl Connector {
                     assert!(*backfilling_finished);
                     self.current_frontier
                         .advance_offset(offset_key, offset_value);
+                }
+
+                if let Some(approvals) = approvals {
+                    self.group
+                        .as_mut()
+                        .expect("if approvals are dispatched there must be a synchronization group")
+                        .report_entries_sent(approvals);
                 }
             }
             Entry::RewindFinishSentinel(restored_frontier) => {

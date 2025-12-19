@@ -4634,6 +4634,77 @@ def test_synchronization_group_errors(tmp_path):
             ],
             "expected_entries": 4,
         },
+        {
+            "source_1": [
+                {"k": 1, "v": "one"},
+                {"k": 2, "v": "two"},  # Has bigger priority, bigger entries won't pass
+            ],
+            "source_2": [
+                {"k": 1, "v": "ONE"},
+                {"k": 2, "v": "TWO"},
+                {"k": 3, "v": "THREE"},
+                {"k": 4, "v": "FOUR"},
+                {"k": 5, "v": "FIVE"},
+                {"k": 6, "v": "SIX"},
+                {"k": 7, "v": "SEVEN"},
+            ],
+            "expected_entries": 4,
+            "sync_params_1": {"priority": 1},
+        },
+        {
+            "source_1": [
+                {"k": 1, "v": "one"},
+                {"k": 2, "v": "two"},  # Becomes idle, then everything passes
+            ],
+            "source_2": [
+                {"k": 1, "v": "ONE"},
+                {"k": 2, "v": "TWO"},
+                {"k": 3, "v": "THREE"},
+                {"k": 4, "v": "FOUR"},
+                {"k": 5, "v": "FIVE"},
+                {"k": 6, "v": "SIX"},
+                {"k": 7, "v": "SEVEN"},
+            ],
+            "expected_entries": 9,
+            "sync_params_1": {
+                "priority": 1,
+                "idle_duration": datetime.timedelta(seconds=2),
+            },
+        },
+        {
+            "source_1": [
+                {"k": 0, "v": "zero"},
+                {"k": 100, "v": "hundreed"},
+            ],
+            "source_2": [
+                {"k": 0, "v": "ZERO"},
+                {"k": 1, "v": "ONE"},  # Has no priority to push global max, 100 passes
+            ],
+            "expected_entries": 4,
+            "sync_params_1": {"priority": 1},
+        },
+        {
+            "source_1": [
+                {"k": 0, "v": "zero"},
+                {"k": 100, "v": "hundreed"},
+            ],
+            "source_2": [
+                {"k": 0, "v": "ZERO"},
+                {"k": 1, "v": "ONE"},  # Has max priority hence pushes the global max
+            ],
+            "expected_entries": 3,
+        },
+        {
+            "source_1": [
+                {"k": 0, "v": "zero"},
+            ],
+            "source_2": [
+                {"k": 0, "v": "ZERO"},
+                {"k": 20, "v": "TWENTY"},  # Will be stuck without `idle_duration`
+            ],
+            "sync_params_1": {"idle_duration": datetime.timedelta(seconds=3)},
+            "expected_entries": 3,
+        },
     ],
 )
 @pytest.mark.parametrize("type_", ["Int", "Duration", "DateTimeUtc", "DateTimeNaive"])
@@ -4699,7 +4770,9 @@ def test_synchronization_group(tmp_path, plan, type_):
     table_1.promise_universes_are_disjoint(table_2)
     table_merged = table_1.concat(table_2)
     pw.io.register_input_synchronization_group(
-        table_1.k, table_2.k, max_difference=max_difference
+        pw.io.SynchronizedColumn(table_1.k, **plan.get("sync_params_1", {})),
+        pw.io.SynchronizedColumn(table_2.k, **plan.get("sync_params_2", {})),
+        max_difference=max_difference,
     )
     pw.io.csv.write(table_merged, output_path)
 
@@ -4713,8 +4786,15 @@ def test_synchronization_group(tmp_path, plan, type_):
     inputs_thread_2.start()
 
     wait_result_with_checker(
-        CsvLinesNumberChecker(output_path, plan["expected_entries"]), 30
+        CsvLinesNumberChecker(output_path, plan["expected_entries"]),
+        99,
+        double_check_interval=3.0,
     )
+    inputs_thread_1.join()
+    inputs_thread_2.join()
+
+    checker = CsvLinesNumberChecker(output_path, plan["expected_entries"])
+    assert checker()
 
 
 @needs_multiprocessing_fork
@@ -4780,7 +4860,7 @@ def test_synchronization_groups_respect_atomicity(tmp_path, plan):
     inputs_thread_2.start()
 
     wait_result_with_checker(
-        CsvLinesNumberChecker(output_path, plan["expected_entries"]), 30
+        CsvLinesNumberChecker(output_path, plan["expected_entries"]), 99
     )
 
 

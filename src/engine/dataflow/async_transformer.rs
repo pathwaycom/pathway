@@ -150,6 +150,7 @@ where
         parser.column_count(),
         graph.terminate_on_error,
         graph.create_error_logger()?.into(),
+        None,
     );
     let state = connector.run(
         reader,
@@ -172,7 +173,7 @@ where
         SnapshotAccess::Full,   // default value from connector_table
         graph.error_reporter.clone(),
         None,
-        None,
+        Timestamp::new_from_current_time(),
     )?;
 
     graph.pollers.push(state.poller);

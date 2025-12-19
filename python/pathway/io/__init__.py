@@ -34,7 +34,10 @@ from pathway.io import (
     sqlite,
 )
 from pathway.io._subscribe import OnChangeCallback, OnFinishCallback, subscribe
-from pathway.io._synchronization import register_input_synchronization_group
+from pathway.io._synchronization import (
+    SynchronizedColumn,
+    register_input_synchronization_group,
+)
 from pathway.io._utils import CsvParserSettings
 
 __all__ = [
@@ -74,4 +77,5 @@ __all__ = [
     "dynamodb",
     "kinesis",
     "mysql",
+    "SynchronizedColumn",
 ]

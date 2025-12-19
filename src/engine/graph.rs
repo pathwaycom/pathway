@@ -941,6 +941,7 @@ pub trait Graph {
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
         max_backlog_size: Option<usize>,
+        timestamp_at_start: Timestamp,
     ) -> Result<TableHandle>;
 
     fn output_table(
@@ -1587,6 +1588,7 @@ impl Graph for ScopedGraph {
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
         max_backlog_size: Option<usize>,
+        timestamp_at_start: Timestamp,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.connector_table(
@@ -1598,6 +1600,7 @@ impl Graph for ScopedGraph {
                 unique_name,
                 synchronization_group,
                 max_backlog_size,
+                timestamp_at_start,
             )
         })
     }

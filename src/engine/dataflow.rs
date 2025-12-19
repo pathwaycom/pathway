@@ -3888,6 +3888,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
         max_backlog_size: Option<usize>,
+        timestamp_at_start: Timestamp,
     ) -> Result<TableHandle> {
         let effective_persistent_id = effective_persistent_id(
             &mut self.persistence_wrapper,
@@ -3923,15 +3924,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 .get_worker_persistent_storage()
                 .is_some();
 
-        let group = if let Some(synchronization_group) = &synchronization_group {
-            Some(
+        let group = match synchronization_group {
+            Some(synchronization_group) if realtime_reader_needed => Some(
                 self.connector_synchronizer
                     .lock()
                     .unwrap()
                     .ensure_synchronization_group(synchronization_group, self.pollers.len())?,
-            )
-        } else {
-            None
+            ),
+            _ => None,
         };
 
         if realtime_reader_needed || persisted_table {
@@ -3950,6 +3950,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 parser.column_count(),
                 self.terminate_on_error,
                 self.create_error_logger()?.into(),
+                group,
             );
             let state = connector.run(
                 reader,
@@ -3984,8 +3985,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 persistence_mode,
                 snapshot_access,
                 self.error_reporter.clone(),
-                group,
                 max_backlog_size,
+                timestamp_at_start,
             )?;
 
             self.pollers.push(state.poller);
@@ -4529,7 +4530,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 self.config.clone(),
                 self.terminate_on_error,
                 self.current_error_log.clone(),
-                Arc::new(Mutex::new(ConnectorSynchronizer::new(false))), // doesn't matter since table creation is impossible in iterate
+                Arc::new(Mutex::new(ConnectorSynchronizer::new())), // doesn't matter since table creation is impossible in iterate
                 self.max_expression_batch_size,
             )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
@@ -5674,6 +5675,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _unique_name: Option<&UniqueName>,
         _synchronization_group: Option<&ConnectorGroupDescriptor>,
         _max_backlog_size: Option<usize>,
+        _timestamp_at_start: Timestamp,
     ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
     }
@@ -6365,6 +6367,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         unique_name: Option<&UniqueName>,
         synchronization_group: Option<&ConnectorGroupDescriptor>,
         max_backlog_size: Option<usize>,
+        timestamp_at_start: Timestamp,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().connector_table(
             reader,
@@ -6375,6 +6378,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             unique_name,
             synchronization_group,
             max_backlog_size,
+            timestamp_at_start,
         )
     }
 
@@ -6574,9 +6578,7 @@ where
     let (error_reporter, error_receiver) = ErrorReporter::create();
     let failed = Arc::new(AtomicBool::new(false));
     let failed_2 = failed.clone();
-    let is_multiprocessed = config.processes() > 1;
-    let connector_synchronizer =
-        Arc::new(Mutex::new(ConnectorSynchronizer::new(is_multiprocessed)));
+    let connector_synchronizer = Arc::new(Mutex::new(ConnectorSynchronizer::new()));
     let stats_monitor = Arc::new(Mutex::new(stats_monitor));
 
     let guards = execute(config.to_timely_config(), move |worker| {

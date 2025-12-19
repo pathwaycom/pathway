@@ -109,6 +109,7 @@ pub fn full_cycle_read(
         PersistenceMode::Batch,
         SnapshotAccess::Full,
         true,
+        Timestamp::new_from_current_time(),
     )
     .unwrap();
 
@@ -131,7 +132,7 @@ pub fn full_cycle_read(
     let mut rewind_finish_sentinel_seen = false;
     for entry in &result {
         match entry {
-            Entry::RealtimeEntries(events, (offset_key, offset_value)) => {
+            Entry::RealtimeEntries(events, (offset_key, offset_value), _) => {
                 assert!(rewind_finish_sentinel_seen);
                 frontier.advance_offset(offset_key.clone(), offset_value.clone());
 

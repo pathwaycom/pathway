@@ -689,6 +689,7 @@ def wait_result_with_checker(
     timeout_sec: float,
     *,
     step: float = 0.1,
+    double_check_interval: float | None = None,
     target: Callable[..., None] | None = run,
     processes: int = 1,
     first_port: int | None = None,
@@ -741,10 +742,18 @@ def wait_result_with_checker(
                     f"Correct result obtained after {elapsed:.1f} seconds",
                     file=sys.stderr,
                 )
+                if double_check_interval is not None:
+                    time.sleep(double_check_interval)
+                    succeeded = checker()
+                    if not succeeded:
+                        print("Double check failed.", file=sys.stderr)
                 break
 
             if target is not None and not any(handle.is_alive() for handle in handles):
-                print("All processes are done", file=sys.stderr)
+                print(
+                    f"All processes are done in {elapsed} seconds",
+                    file=sys.stderr,
+                )
                 assert all(handle.exitcode == 0 for handle in handles)
                 break
 

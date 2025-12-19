@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 
 from pathway.internals import api, dtype
@@ -14,8 +15,47 @@ _SUPPORTED_COLUMN_DTYPES = [
 ]
 
 
+@dataclasses.dataclass(frozen=True)
+class SynchronizedColumn:
+    """
+    Defines synchronization settings for a column within a synchronization group.
+
+    The purpose of such groups is to ensure that, at any moment, the values read
+    across the group of columns remain within a defined range relative to each other.
+    The size of this range and the set of tracked columns are configured using the
+    ``register_input_synchronization_group`` method.
+
+    There are two principal parameters for the tracking: the **priority** and the
+    **idle duration**.
+
+    **Priority** determines the order in which sources can contribute values. A value
+    from a source is only allowed if it does not exceed the maximum of values already
+    read from all sources with higher priority. By default, priority is ``0``. This
+    means that if unchanged, all sources are considered equal, and the synchronization
+    group ensures only that no source gets too far ahead of the others.
+
+    **Idle duration** specifies the time after which a source that remains idle
+    (produces no new data) will be excluded from the group. While excluded, the source
+    does not participate in priority checks and is not considered when verifying that
+    values stay within the allowed range. If the source later produces new data, it is
+    re-included in the synchronization group and resumes synchronization. This field is
+    optional. If not specified, the source will remain in the group even while idle,
+    and it may block values that try to advance too far compared to other sources.
+
+    Arguments:
+        column: Reference to the column that will participate in synchronization.
+        priority: The priority of this column when reading data. Defaults to ``0``.
+        idle_duration: Optional duration after which an idle source is temporarily
+            excluded from the group.
+    """
+
+    column: ColumnReference
+    priority: int = 0
+    idle_duration: datetime.timedelta | None = None
+
+
 def register_input_synchronization_group(
-    *columns: ColumnReference,
+    *columns: ColumnReference | SynchronizedColumn,
     max_difference: api.Value,
     name: str = "default",
 ):
@@ -49,8 +89,11 @@ def register_input_synchronization_group(
     Please note that all columns within the synchronization group must have the same type.
 
     Args:
-        columns: A list of columns that will be monitored and synchronized.
-            Each column must belong to a different table read from an input connector.
+        columns: A list of column references or ``SynchronizedColumn`` instances denoting
+            the set of columns that will be monitored and synchronized. If using a
+            ``ColumnReference``, the source is added with a priority ``0`` and without
+            idle duration. Each column must belong to a different table read from an
+            input connector.
         max_difference: The maximum allowed difference between the highest values
             in the tracked columns at any given time. Must be derived from subtracting values
             of two columns specified before.
@@ -95,12 +138,78 @@ def register_input_synchronization_group(
 
     This ensures that both topics are read in such a way that the difference between the
     maximum ``timestamp`` values at any moment does not exceed 600 seconds (10 minutes).
+    In other words, ``login_events`` and ``transactions`` will not get too far ahead of each other.
+
+    However, this may not be sufficient if you want to guarantee that, whenever a transaction
+    at a given timestamp is being processed, you have already seen all login events up to
+    that timestamp. To achieve this, you can use priorities.
+
+    By assigning a higher priority to ``login_events`` and a lower priority to ``transactions``,
+    you ensure that ``login_events`` always progresses ahead, so that all login events are read
+    before transactions reach the corresponding timestamps while the general stream is still in
+    sync and the login events are read only up to the globally-defined bound. The code
+    snippet would look as follows:
+
+    >>> from pathway.internals.parse_graph import G  # NODOCS
+    >>> G.clear()  # NODOCS
+    >>> login_events = pw.io.kafka.simple_read("kafka:8082", "logins", format="json", schema=InputSchema)  # NODOCS
+    >>> transactions = pw.io.kafka.simple_read(  # NODOCS
+    ...     "kafka:8082",  # NODOCS
+    ...     "transactions",  # NODOCS
+    ...     format="json",  # NODOCS
+    ...     schema=InputSchema  # NODOCS
+    ... )  # NODOCS
+    >>> pw.io.register_input_synchronization_group(
+    ...     pw.io.SynchronizedColumn(login_events.unix_timestamp, priority=1),
+    ...     pw.io.SynchronizedColumn(transactions.unix_timestamp, priority=0),
+    ...     max_difference=600,
+    ... )
+
+    The code above solves the problem where a transaction could be read before its
+    corresponding user login event appears. However, consider the opposite situation:
+    a user logs in and then performs a transaction.  In this case, transactions may be
+    forced to wait until new login events arrive with timestamps equal to or greater than
+    those of the transactions. Such waiting is unnecessary if you can guarantee that
+    all login events up to this point have already been read, and there is nothing else
+    to read.
+
+    To avoid this unnecessary delay, you can specify an ``idle_duration`` for the
+    ``login_events`` source. This tells the synchronization group that if
+    no new login events appear for a certain period (for example, 10 seconds),
+    the source can be temporarily considered idle. Once it is marked as idle,
+    transactions are allowed to continue even if no newer login events are available.
+    When new login events arrive, the source automatically becomes active again
+    and resumes synchronized reading.
+
+    The code snippet then looks as follows:
+
+    >>> from pathway.internals.parse_graph import G  # NODOCS
+    >>> G.clear()  # NODOCS
+    >>> login_events = pw.io.kafka.simple_read("kafka:8082", "logins", format="json", schema=InputSchema)  # NODOCS
+    >>> transactions = pw.io.kafka.simple_read(  # NODOCS
+    ...     "kafka:8082",  # NODOCS
+    ...     "transactions",  # NODOCS
+    ...     format="json",  # NODOCS
+    ...     schema=InputSchema  # NODOCS
+    ... )  # NODOCS
+    >>> import datetime
+    >>> pw.io.register_input_synchronization_group(
+    ...     pw.io.SynchronizedColumn(
+    ...         login_events.unix_timestamp,
+    ...         priority=1,
+    ...         idle_duration=datetime.timedelta(seconds=10),
+    ...     ),
+    ...     pw.io.SynchronizedColumn(transactions.unix_timestamp, priority=0),
+    ...     max_difference=600,
+    ... )
 
     Note:
 
-    If all data sources have a gap larger than ``max_difference``, the synchronization group
-    will wait until data from all sources arrives. Once all sources move past the gap,
-    the synchronization group will allow reading to proceed further.
+    If all data sources exceed the allowed ``max_difference`` relative to each other,
+    the synchronization group will wait until new data arrives from all sources.
+    Once all sources have values within the acceptable range, reading can proceed.
+    The sources can proceed quicker if the ``idle_duration`` is set in some: then the
+    synchronization group will not have to wait for their next read values.
 
     **Example scenario:**
     Consider a synchronization group with two data sources, both tracking a ``timestamp``
@@ -137,7 +246,16 @@ def register_input_synchronization_group(
         raise ValueError("The 'max_difference' can't be negative")
 
     column_types = set()
-    for column in columns:
+    for synchronized_column in columns:
+        if isinstance(synchronized_column, ColumnReference):
+            column = synchronized_column
+            priority = SynchronizedColumn.__dataclass_fields__["priority"].default
+            idle_duration = None
+        else:
+            column = synchronized_column.column
+            priority = synchronized_column.priority
+            idle_duration = synchronized_column.idle_duration
+
         column_types.add(column._column.dtype)
         _check_column_type(column, max_difference)
 
@@ -160,7 +278,9 @@ def register_input_synchronization_group(
             ):
                 continue
             is_table_found = True
-            group = api.ConnectorGroupDescriptor(name, column_idx, max_difference)
+            group = api.ConnectorGroupDescriptor(
+                name, column_idx, max_difference, priority, idle_duration
+            )
             if node.datasource.data_source_options.synchronization_group is not None:
                 raise ValueError(
                     "Only one column from a table can be used in a synchronization group"

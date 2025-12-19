@@ -16,49 +16,37 @@
 /// - `report_send(source_id, value)`: Reports that `value` has been sent from the given
 ///   `source_id`.
 ///
-/// Within the group, there is a `max_possible_value` threshold, which defines the maximum
-/// value that can be sent at a given time. If `can_entry_be_sent` checks a value lower than
-/// this threshold, it passes. Initially, `max_possible_value` may be unset.
+/// The synchronization algorithm operates with the following state for each source:
+/// - `last_reported_value` – the last value that was confirmed and sent.
+/// - `next_proposed_value` – a value submitted by the source but not yet confirmed.
+/// - `priority` – the priority of the source.
+/// - `is_idle` – indicates whether the source is temporarily inactive.
 ///
-/// The group also tracks the last sent values. The `report_send` method verifies whether
-/// the `max_possible_value` should be updated after sending a value, and updates it if needed.
+/// The key value is `max_possible_value`, which determines whether a value can be sent:
+/// - If a value from a source is <= `max_possible_value`
+/// - And all higher-priority sources have `last_reported_value`s that are not lagging behind,
+///   then the value is allowed to proceed.
 ///
-/// However, `max_possible_value` alone does not always determine whether data can be sent.
-/// For instance, at startup, it is unset, and multiple sources may be available.
-/// Therefore, `can_entry_be_sent` follows this algorithm:
+/// `max_possible_value` is recalculated:
+/// 1. After an attempt to add a new value (`next_proposed_value` updated).
+/// 2. After a confirmed entry (`last_reported_value` updated).
 ///
-/// The group maintains a `next_proposed_value` vector, which stores values seen by
-/// connectors and submitted to `can_entry_be_sent` but not yet approved. Once approved,
-/// they are removed (set to `None`).
+/// Recalculation of `max_possible_value`:
+/// 1. Only active sources (`is_idle == false`) are considered.
+/// 2. For each source, compute two values:
+///    - `last_reported_value + offset` if `last_reported_value` exists.
+///      This represents the maximum value that can be safely allowed based on what has already been confirmed for this source.
+///    - `next_proposed_value` if it exists.
+///      This is considered because it represents the next value that is expected to be produced by this source.
+/// 3. Take the maximum for each source.
+/// 4. Set `max_possible_value` as the minimum of all these maximums.
 ///
-/// Now, when an entry (`source_id`, `value`) arrives, two cases arise:
-///
-/// 1. **`max_possible_value` is undefined**:
-///    - Update `next_proposed_value` for this `source_id`, leading to two scenarios:
-///      - **Not all sources have `max_possible_value` set yet**: No streams can proceed.
-///        Some connectors may have earlier data that must be processed first.
-///        The connector must wait.
-///      - **All sources have `max_possible_value` defined**: Find the minimum
-///        `next_proposed_value`. This value, plus the allowed maximum difference, defines
-///        the new `max_possible_value`. Now, proceed to case 2.
-///
-/// 2. **`max_possible_value` is defined**:
-///    - If `value` matches the threshold, it is allowed.
-///    - Otherwise, to prevent deadlocks:
-///      - Consider two sources with integer data: `[1, 2, 21, 22]` and `[3, 4, 23, 24]`
-///        and a maximum allowed difference of `5`.
-///      - The system allows `{1, 2, 3, 4}` but then both sources are blocked because
-///        their next values exceed the allowed difference.
-///      - To fix this, `next_proposed_value` is updated for `source_id`. If all sources
-///        have a `next_proposed_value`, `max_possible_value` is recalculated using the
-///        minimum of these values plus `max_difference`.
-///
-/// The algorithm operates under these constraints:
-/// - If `can_entry_be_sent` returns `false` for a `source_id`, that source must not
-///   attempt further checks. Instead, it must retry with the same entry until approval
-///   (although this changes slightly for the sake of multithreaded connectors - see below).
-/// - `report_send` must be called only for entries that previously received a `true`
-///   response from `can_entry_be_sent`.
+/// Additional considerations:
+/// - `max_possible_value` must never contradict already confirmed entries.
+///   Therefore, `max_possible_value` is never updated to be less than the maximum of all `last_reported_value`s.
+///   This ensures consistency even if some sources are currently idle but have higher confirmed values.
+/// - If a lower-priority source exceeds `max_possible_value`, but a higher-priority source has a larger value,
+///   the group of highest-priority sources is used to recalculate the minimum from their `next_proposed_value`.
 ///
 /// ### Handling Multithreaded Connectors
 /// Some connectors (e.g., Kafka, NATS) are multithreaded, meaning multiple instances of
@@ -78,29 +66,19 @@
 /// Overall, with a minor adjustment, reading the multithreaded source is the same as
 /// reading the single-threaded one, however with a peculiarity that we don't know the exact
 /// order of events: it's up to the Kafka broker and reader, what to provide us next.
-///
-/// ### Optimizations
-/// Acquiring a mutex can be expensive, so we want to minimize how often it's done.
-/// To achieve this, each accessor caches a threshold value - `max_possible_value` - which
-/// represents the most recent upper bound received from the connector group.
-///
-/// If a value is below this cached threshold, it can be sent without needing to lock
-/// the mutex or inspect the shared structure again.
-///
-/// Similarly, the accessor uses this same threshold to avoid redundant reports: it
-/// only reports new values if they exceed the last value it reported for its source.
 use log::warn;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::mem::take;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::channel::oneshot;
 use futures::channel::oneshot::{Receiver as OneShotReceiver, Sender as OneShotSender};
 
 use crate::connectors::ParsedEventWithErrors;
 use crate::engine::error::DynResult;
-use crate::engine::Value;
+use crate::engine::{Timestamp, Value};
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -108,8 +86,8 @@ pub enum Error {
     #[error("window length differs for two definitions of the same synchronization group")]
     InconsistentWindowLength,
 
-    #[error("connector groups are not yet supported in multiprocess runs")]
-    MultiprocessingNotSupported,
+    #[error("the number of reader workers can't exceed {0}")]
+    WorkerSetTooLarge(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -157,6 +135,7 @@ pub struct WaitingSource {
     sender: Option<OneShotSender<()>>,
     requested_value: Value,
     source_id: usize,
+    priority: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -164,70 +143,314 @@ pub struct ConnectorGroupDescriptor {
     pub name: String,
     pub column_index: usize,
     pub max_difference: Value,
+    pub priority: u64,
+    pub idle_duration: Option<Duration>,
 }
 
 impl ConnectorGroupDescriptor {
-    pub fn new(name: String, column_index: usize, max_difference: Value) -> Self {
+    pub fn new(
+        name: String,
+        column_index: usize,
+        max_difference: Value,
+        priority: u64,
+        idle_duration: Option<Duration>,
+    ) -> Self {
         Self {
             name,
             column_index,
             max_difference,
+            priority,
+            idle_duration,
         }
+    }
+}
+
+type WorkerSetMask = u64;
+
+#[derive(Debug)]
+pub struct TrackedSource {
+    next_proposed_value: Option<Value>,
+    last_reported_value: Option<Value>,
+    number_of_reader_workers: usize,
+    priority: u64,
+
+    // The variables below conceptually represent HashSets of worker IDs.
+    // They are on the hot path: idleness is checked for every incoming event,
+    // and force-advancement state can be queried a comparable number of times
+    // when the max backlog size is limited.
+    //
+    // To avoid HashSet overhead on this hot path, we represent these sets as
+    // bitmasks instead.
+    //
+    // Currently, the number of workers is limited to 8. For future growth,
+    // we use a 64-bit value, allowing up to 64 workers. If this limit is ever
+    // exceeded, we fail fast by returning an error.
+    idle_reader_worker_mask: WorkerSetMask,
+    completed_force_advancement_mask: WorkerSetMask,
+
+    // A helper for checking the completeness of the sets.
+    full_worker_set_mask: WorkerSetMask,
+}
+
+impl TrackedSource {
+    fn new(priority: u64) -> Self {
+        Self {
+            next_proposed_value: None,
+            last_reported_value: None,
+            number_of_reader_workers: 0,
+            priority,
+            idle_reader_worker_mask: 0,
+            completed_force_advancement_mask: 0,
+            full_worker_set_mask: 0,
+        }
+    }
+
+    fn register_new_reader_worker(&mut self) -> Result<usize, Error> {
+        if u32::try_from(self.number_of_reader_workers).expect("the number of workers must fit u32")
+            == WorkerSetMask::BITS
+        {
+            return Err(Error::WorkerSetTooLarge(WorkerSetMask::BITS));
+        }
+
+        self.full_worker_set_mask += 1u64 << self.number_of_reader_workers;
+
+        self.number_of_reader_workers += 1;
+        Ok(self.number_of_reader_workers - 1)
+    }
+
+    fn set_next_proposed_value_from_waiters(
+        &mut self,
+        waiting_sources: &[WaitingSource],
+        source_id: usize,
+    ) {
+        self.next_proposed_value = waiting_sources
+            .iter()
+            .filter(|ws| ws.source_id == source_id)
+            .map(|ws| &ws.requested_value)
+            .min()
+            .cloned();
+    }
+
+    fn maybe_update_next_proposed_value(&mut self, candidate: &Value) {
+        if self
+            .next_proposed_value
+            .as_ref()
+            .is_none_or(|current| current > candidate)
+        {
+            self.next_proposed_value = Some(candidate.clone());
+        }
+    }
+
+    fn report_idle_reader_worker(&mut self, reader_worker_id: usize) {
+        self.idle_reader_worker_mask |= 1u64 << reader_worker_id;
+    }
+
+    fn report_active_reader_worker(&mut self, reader_worker_id: usize) {
+        self.idle_reader_worker_mask &= !(1u64 << reader_worker_id);
+    }
+
+    fn is_idle(&self) -> bool {
+        self.next_proposed_value.is_none()
+            && self.idle_reader_worker_mask == self.full_worker_set_mask
+    }
+
+    fn force_advancement_is_done_for_worker(&self, reader_worker_id: usize) -> bool {
+        (self.completed_force_advancement_mask & (1u64 << reader_worker_id)) != 0
+    }
+
+    fn clear_completed_force_advancements(&mut self) {
+        self.completed_force_advancement_mask = 0;
+    }
+
+    fn mark_completed_force_advancement(&mut self, reader_worker_id: usize) {
+        self.completed_force_advancement_mask |= 1u64 << reader_worker_id;
+    }
+
+    fn force_advancement_done_in_all_sources(&self) -> bool {
+        self.completed_force_advancement_mask == self.full_worker_set_mask
     }
 }
 
 #[derive(Debug)]
 pub struct ConnectorGroup {
     max_difference: Value,
-    next_proposed_value: Vec<Option<Value>>,
-    last_reported_value: Vec<Option<Value>>,
     max_possible_value: Option<Value>,
     waiting_sources: Vec<WaitingSource>,
     group_source_ids: HashMap<usize, usize>,
+    sources: Vec<TrackedSource>,
+    forced_time_advancement: Option<Timestamp>,
+    max_active_priority: u64,
 }
 
 impl ConnectorGroup {
     pub fn new(max_difference: Value) -> Self {
         Self {
             max_difference,
-            next_proposed_value: Vec::new(),
-            last_reported_value: Vec::new(),
             max_possible_value: None,
             waiting_sources: Vec::new(),
             group_source_ids: HashMap::new(),
+            sources: Vec::new(),
+            forced_time_advancement: None,
+            max_active_priority: u64::MIN,
         }
     }
 
-    pub fn register_new_source(&mut self, source_id: usize) -> usize {
-        let next_spare_id = self.next_proposed_value.len();
+    pub fn register_new_source(
+        &mut self,
+        source_id: usize,
+        priority: u64,
+    ) -> Result<(usize, usize), Error> {
+        let next_spare_id = self.sources.len();
         let group_source_id = self
             .group_source_ids
             .entry(source_id)
             .or_insert(next_spare_id);
         if *group_source_id == next_spare_id {
-            self.next_proposed_value.push(None);
-            self.last_reported_value.push(None);
+            self.sources.push(TrackedSource::new(priority));
         }
-        *group_source_id
+        let source_reader_worker_id =
+            self.sources[*group_source_id].register_new_reader_worker()?;
+
+        // All sources are initially active, hence updating.
+        self.max_active_priority = max(self.max_active_priority, priority);
+
+        Ok((*group_source_id, source_reader_worker_id))
     }
 
-    pub fn report_entry_sent(&mut self, entry: EntrySendApproval) {
-        if let Some(source_id) = entry.source_id {
-            // Since the entry is sent, the source doesn't currently propose any value
-            self.drop_next_proposed_value(source_id);
+    pub fn forced_time_advancement_for_source(
+        &self,
+        source_id: usize,
+        source_reader_worker_id: usize,
+    ) -> Option<Timestamp> {
+        if self.forced_time_advancement.is_none()
+            || self.sources[source_id].force_advancement_is_done_for_worker(source_reader_worker_id)
+        {
+            return None;
+        }
+        self.forced_time_advancement
+    }
 
+    pub fn report_time_advancement(
+        &mut self,
+        timestamp: &Timestamp,
+        source_id: usize,
+        source_reader_worker_id: usize,
+    ) {
+        if self.forced_time_advancement.as_ref() != Some(timestamp) {
+            for source in &mut self.sources {
+                source.clear_completed_force_advancements();
+            }
+            self.forced_time_advancement = Some(*timestamp);
+        }
+        self.sources[source_id].mark_completed_force_advancement(source_reader_worker_id);
+
+        let mut all_sources_advanced = true;
+        for source in &self.sources {
+            if !source.force_advancement_done_in_all_sources() {
+                all_sources_advanced = false;
+                break;
+            }
+        }
+
+        if all_sources_advanced {
+            self.forced_time_advancement = None;
+        }
+    }
+
+    pub fn report_source_is_idle(&mut self, source_id: usize, source_reader_worker_id: usize) {
+        self.sources[source_id].report_idle_reader_worker(source_reader_worker_id);
+        if self.sources[source_id].is_idle() && !self.sources.iter().all(TrackedSource::is_idle) {
+            self.update_max_possible_value();
+        }
+
+        self.max_active_priority = u64::MIN;
+        for source in &self.sources {
+            if !source.is_idle() && source.priority > self.max_active_priority {
+                self.max_active_priority = source.priority;
+            }
+        }
+    }
+
+    pub fn report_entry_sent(&mut self, entry: &EntrySendApproval) {
+        if let Some(source_id) = entry.source_id {
             // Update the last value reported by this source and possibly recalculate
             // the threshold for the max allowed value
-            self.update_last_reported_value(source_id, entry.value);
+            if self.sources[source_id]
+                .last_reported_value
+                .as_ref()
+                .is_none_or(|current| entry.value > *current)
+            {
+                self.sources[source_id].last_reported_value = Some(entry.value.clone());
+            }
+
+            // Pick the minimum about the remaining proposed values for this source.
+            self.sources[source_id]
+                .set_next_proposed_value_from_waiters(self.waiting_sources.as_slice(), source_id);
         }
     }
 
-    pub fn can_entry_be_sent(&mut self, source_id: usize, candidate: &Value) -> EntryCheckResponse {
+    // This version is needed to avoid Rust compilation which prevents some
+    // of the cases when &mut self is passed into another method.
+    pub fn higher_prioritized_source_is_behind_external(
+        sources: &[TrackedSource],
+        candidate: &Value,
+        source_priority: u64,
+    ) -> bool {
+        // An entry can be sent if there is no other source with the smaller
+        // `last_reported_value` that is behind.
+        for other_source in sources {
+            if other_source.is_idle() || other_source.priority <= source_priority {
+                continue;
+            }
+            match &other_source.last_reported_value {
+                None => return true,
+                Some(value) if value < candidate => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    pub fn higher_prioritized_source_is_behind(
+        &self,
+        candidate: &Value,
+        source_priority: u64,
+    ) -> bool {
+        Self::higher_prioritized_source_is_behind_external(
+            self.sources.as_slice(),
+            candidate,
+            source_priority,
+        )
+    }
+
+    pub fn can_entry_be_sent(
+        &mut self,
+        source_id: usize,
+        source_reader_worker_id: usize,
+        candidate: &Value,
+    ) -> EntryCheckResponse {
+        // A new value means that the source is no longer idle.
+        let source_was_already_active = !self.sources[source_id].is_idle();
+        self.sources[source_id].report_active_reader_worker(source_reader_worker_id);
+        let current_priority = self.sources[source_id].priority;
+
+        // If the source stops being idle, the max_active_priority needs to be
+        // recalculated.
+        if self.max_active_priority < current_priority {
+            self.max_active_priority = current_priority;
+        }
+
+        // The source now proposes the value `candidate`.
+        self.sources[source_id].maybe_update_next_proposed_value(candidate);
+
+        // Do a quick check for the hot path to avoid a potentially heavy invocation
+        // of `update_max_possible_value`.
         if let Some(max_possible_value) = &self.max_possible_value {
-            // The first case: there is already an interval of the allowed values
-            // We need to check if the candidate fits in this interval, and if so,
-            // it can be reported upstream
-            if candidate <= max_possible_value {
+            if source_was_already_active  // the set of active sources hasn't changed
+                && candidate <= max_possible_value  // the value is allowed even according to the current (stricter) state
+                && (current_priority == self.max_active_priority  // priority constraints are respected
+                    || !self.higher_prioritized_source_is_behind(candidate, current_priority))
+            {
                 return EntryCheckResponse::Approved(EntrySendApproval::new(
                     Some(source_id),
                     candidate.clone(),
@@ -235,26 +458,20 @@ impl ConnectorGroup {
             }
         }
 
-        // The candidate doesn't fit the current interval. It becomes a proposed
-        // value for the source. Note that in the multithreaded cases there can
-        // be several proposed values (from several timely workers), and the
-        // minimal must be taken into consideration
-        if self.next_proposed_value[source_id]
-            .as_ref()
-            .is_none_or(|current| current > candidate)
-        {
-            self.next_proposed_value[source_id] = Some(candidate.clone());
-        }
-
+        // It's possible that the threshold has been moved, so we recalculate it.
+        //
         // If all workers are stuck, each of them will have the NPV set.
         // The new allowed threshold must be computed as a minimum value
         // from the current NPVs.
-        let next_proposed_threshold = self.next_proposed_threshold();
-        if let Some(next_proposed_threshold) = next_proposed_threshold {
-            let new_max_possible_value = self.offset_by_max_difference(&next_proposed_threshold);
-            self.max_possible_value = Some(new_max_possible_value.clone());
-            Self::wake_waiting_sources(&mut self.waiting_sources, &new_max_possible_value);
-            if candidate <= &new_max_possible_value {
+        self.update_max_possible_value();
+
+        if let Some(max_possible_value) = &self.max_possible_value {
+            // If the value fits the allowed interval right now and can be doesn't
+            // break the hierarchy, it can be allowed.
+            if candidate <= max_possible_value
+                && (current_priority == self.max_active_priority
+                    || !self.higher_prioritized_source_is_behind(candidate, current_priority))
+            {
                 return EntryCheckResponse::Approved(EntrySendApproval::new(
                     Some(source_id),
                     candidate.clone(),
@@ -264,8 +481,13 @@ impl ConnectorGroup {
 
         // If it is impossible to let the value pass now, create an one-shot receiver that
         // will wake it up when the value is accepted.
-        let receiver =
-            Self::enqueue_waiting_source(&mut self.waiting_sources, candidate, source_id);
+        let receiver = Self::enqueue_waiting_source(
+            &mut self.waiting_sources,
+            candidate,
+            source_id,
+            self.sources[source_id].priority,
+        );
+
         EntryCheckResponse::Wait(receiver)
     }
 
@@ -276,12 +498,14 @@ impl ConnectorGroup {
         waiting_sources: &mut Vec<WaitingSource>,
         requested_value: &Value,
         source_id: usize,
+        priority: u64,
     ) -> OneShotReceiver<()> {
         let (sender, receiver) = oneshot::channel();
         waiting_sources.push(WaitingSource {
             sender: Some(sender),
             requested_value: requested_value.clone(),
             source_id,
+            priority,
         });
         receiver
     }
@@ -289,10 +513,19 @@ impl ConnectorGroup {
     // This method is called when the `max_possible_value` is advanced forward.
     // It wakes up the data sources that are waiting to send values, but are
     // suspended because the value didn't satisfy the threshold conditions
-    fn wake_waiting_sources(waiting_sources: &mut Vec<WaitingSource>, max_possible_value: &Value) {
+    fn wake_waiting_sources(
+        waiting_sources: &mut Vec<WaitingSource>,
+        max_possible_value: &Value,
+        sources: &[TrackedSource],
+    ) {
         for ws in waiting_sources.iter_mut() {
-            let wait_is_over = max_possible_value >= &ws.requested_value;
-            if wait_is_over {
+            let priority_is_respected = !Self::higher_prioritized_source_is_behind_external(
+                sources,
+                &ws.requested_value,
+                ws.priority,
+            );
+            let value_close_enough = max_possible_value >= &ws.requested_value;
+            if priority_is_respected && value_close_enough {
                 // If the source no longer needs to wait, notify it and drop the sender
                 let sender = take(&mut ws.sender).unwrap();
                 let send_res = sender.send(());
@@ -304,74 +537,128 @@ impl ConnectorGroup {
         waiting_sources.retain(|ws| ws.sender.is_some());
     }
 
-    // Drops the `next_proposed_value` for the source and wakes the smallest
-    // possible waiting sender for this source, if there is any
-    fn drop_next_proposed_value(&mut self, source_id: usize) {
-        self.next_proposed_value[source_id] = None;
-        let mut chosen_ws_ref: Option<&mut WaitingSource> = None;
-        for ws in &mut self.waiting_sources {
-            if ws.source_id != source_id {
+    fn update_max_possible_value(&mut self) {
+        let mut new_minimum = None;
+        let mut is_first_source = true;
+
+        // In any case, if a value `X` has ever been allowed (even in a currently
+        // idle source), the new threshold must be at least `X` in order
+        // not to break the invariant in which all last reported times are
+        // less or equal to the current boundary.
+        //
+        // Normally, it would have not required any extra care. However, it is
+        // possible that a source has been advanced far (possible, when it has the
+        // highest priority) and other sources are behind. Then, in any case, the
+        // other sources must be able to catch up with the factual processing time.
+        self.max_active_priority = u64::MIN;
+        let mut max_last_reported_value = None;
+        let mut all_next_proposed_values_are_set = true;
+
+        for source in &self.sources {
+            max_last_reported_value =
+                max(max_last_reported_value, source.last_reported_value.clone());
+            if source.is_idle() {
                 continue;
             }
-            if chosen_ws_ref
+
+            self.max_active_priority = max(self.max_active_priority, source.priority);
+
+            let bound_by_last_reported_value = source
+                .last_reported_value
                 .as_ref()
-                .is_none_or(|current| current.requested_value > ws.requested_value)
-            {
-                chosen_ws_ref = Some(ws);
+                .map(|x| self.offset_by_max_difference(x));
+            let next_proposed_value = &source.next_proposed_value;
+            if next_proposed_value.is_none() {
+                all_next_proposed_values_are_set = false;
             }
-        }
-        if let Some(chosen_ws_ref) = chosen_ws_ref {
-            let sender = take(&mut chosen_ws_ref.sender).unwrap();
-            let send_res = sender.send(());
-            if send_res.is_err() {
-                warn!("The reader wakeup receiver has been dropped.");
-            }
-            self.waiting_sources.retain(|ws| ws.sender.is_some());
-        }
-    }
 
-    // Update the last value reported by a data source
-    fn update_last_reported_value(&mut self, source_id: usize, value: Value) {
-        if let Some(last_reported_value) = &self.last_reported_value[source_id] {
-            if &value <= last_reported_value {
-                return;
-            }
-        }
-        if Some(self.offset_by_max_difference(&value)) <= self.max_possible_value {
-            self.last_reported_value[source_id] = Some(value);
-            return;
-        }
-        self.last_reported_value[source_id] = Some(value);
-
-        let mut new_minimum = None;
-        for source_idx in 0..self.last_reported_value.len() - 1 {
-            let last_reported_value = &self.last_reported_value[source_idx];
-            let next_proposed_value = &self.next_proposed_value[source_idx];
-            // There are two possibilities for the source: it can either have
-            // bigger last_reported_value, or it may wait with a greater
-            // `next_proposed_value`.
-            //
-            // If `next_proposed_value` is bigger, we take that. If it results
-            // in the advancement of the threshold up to this `next_proposed_value`,
-            // the source will be woken up and will be allowed to advance.
-            let source_threshold = max(last_reported_value, next_proposed_value);
-            if source_idx == 0 {
-                new_minimum = source_threshold.as_ref();
+            // The synchronization groups are done in an assumption that the time behaves
+            // in a monotonically increasing way. Therefore, to estimate the minimum element
+            // that may come from the source, we take either the current non-accepted proposition
+            // or the last element that had already been sent into the engine.
+            let source_threshold = max(bound_by_last_reported_value, next_proposed_value.clone());
+            if is_first_source {
+                new_minimum = source_threshold;
+                is_first_source = false;
             } else {
-                new_minimum = min(new_minimum, source_threshold.as_ref());
+                new_minimum = min(new_minimum, source_threshold);
             }
         }
 
-        if let Some(new_minimum) = new_minimum {
-            let new_max_possible_value = self.offset_by_max_difference(new_minimum);
-            if self.max_possible_value < Some(new_max_possible_value.clone()) {
-                self.max_possible_value = Some(new_max_possible_value);
-                Self::wake_waiting_sources(
-                    &mut self.waiting_sources,
-                    self.max_possible_value.as_ref().unwrap(),
-                );
+        let Some(mut new_threshold) = new_minimum else {
+            // If the `new_minimum` isn't defined, it means that there is a source
+            // from which we haven't yet seen anything. Therefore we wait for it
+            // and can't set the global threshold.
+            return;
+        };
+        if let Some(max_last_reported_value) = max_last_reported_value {
+            // As stated above, not to contradict previously allowed elements,
+            // we make sure that the new threshold allows the maximal one
+            // from them.
+            if max_last_reported_value > new_threshold {
+                new_threshold = max_last_reported_value;
             }
         }
+
+        let mut has_proposed_value_in_range = false;
+        for source in &self.sources {
+            if source.is_idle() {
+                continue;
+            }
+
+            if let Some(next_proposed_value) = &source.next_proposed_value {
+                if *next_proposed_value <= new_threshold
+                    && !self
+                        .higher_prioritized_source_is_behind(next_proposed_value, source.priority)
+                {
+                    has_proposed_value_in_range = true;
+                    break;
+                }
+            }
+        }
+
+        if all_next_proposed_values_are_set && !has_proposed_value_in_range {
+            // If all next_proposed_values are set, it means that all of them are
+            // unable to send a value. In the weighted case, we will most likely
+            // take the minimum among `next_proposed_value` - unless there was a
+            // combination of far-advanced sources going idle.
+            //
+            // But taking the minimum among `next_proposed_value` in this case may
+            // not be enough because the minimum may correspond to the less-priority
+            // source, which won't pass since it can't update the maximum when we have
+            // someone higher.
+            //
+            // So in this case, we need to take the minimum among the `next_proposed_value`
+            // for the group with the highest priority and use it - this will ensure that
+            // the high-pri source will advance and in its turn unblock others.
+            let mut min_next_proposed_value = None;
+            is_first_source = true;
+            for source in &self.sources {
+                if source.priority != self.max_active_priority || source.is_idle() {
+                    continue;
+                }
+                if is_first_source {
+                    min_next_proposed_value = source.next_proposed_value.as_ref();
+                    is_first_source = false;
+                } else {
+                    min_next_proposed_value =
+                        min(min_next_proposed_value, source.next_proposed_value.as_ref());
+                }
+            }
+
+            if let Some(min_next_proposed_value) = min_next_proposed_value {
+                new_threshold = max(new_threshold, min_next_proposed_value.clone());
+            }
+        }
+        self.max_possible_value = Some(new_threshold);
+
+        // The `max_possible_value` may be unchanged, but some sources with
+        // smaller priority may be become unlocked and proceed.
+        Self::wake_waiting_sources(
+            &mut self.waiting_sources,
+            self.max_possible_value.as_ref().unwrap(),
+            self.sources.as_slice(),
+        );
     }
 
     // Calculates the threshold value, if the maximum sent value is `value`
@@ -390,29 +677,33 @@ impl ConnectorGroup {
             _ => panic!("Unsupported type for sync group field"),
         }
     }
-
-    fn next_proposed_threshold(&self) -> Option<Value> {
-        self.next_proposed_value.iter().min().cloned()?
-    }
 }
 
 pub type SharedConnectorGroup = Arc<Mutex<ConnectorGroup>>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ConnectorGroupAccessor {
     group: SharedConnectorGroup,
     source_id: usize,
+    source_reader_worker_id: usize,
     target_value_idx: usize,
-    max_possible_value: Option<Value>,
+    pub idle_duration: Option<Duration>,
 }
 
 impl ConnectorGroupAccessor {
-    pub fn new(group: SharedConnectorGroup, source_id: usize, target_value_idx: usize) -> Self {
+    pub fn new(
+        group: SharedConnectorGroup,
+        source_id: usize,
+        source_reader_worker_id: usize,
+        target_value_idx: usize,
+        idle_duration: Option<Duration>,
+    ) -> Self {
         Self {
             group,
             source_id,
+            source_reader_worker_id,
             target_value_idx,
-            max_possible_value: None,
+            idle_duration,
         }
     }
 
@@ -424,14 +715,16 @@ impl ConnectorGroupAccessor {
             ParsedEventWithErrors::Insert((_, values))
             | ParsedEventWithErrors::Delete((_, values)) => self.extract_target_value(values),
         };
-        if Some(target_value) <= self.max_possible_value.as_ref() {
-            let approval = EntrySendApproval::new(Some(self.source_id), target_value.clone());
-            return EntryCheckResponse::Approved(approval);
-        }
-        self.group
-            .lock()
-            .unwrap()
-            .can_entry_be_sent(self.source_id, target_value)
+        self.group.lock().unwrap().can_entry_be_sent(
+            self.source_id,
+            self.source_reader_worker_id,
+            target_value,
+        )
+    }
+
+    pub fn report_source_is_idle(&mut self) {
+        let mut group = self.group.lock().unwrap();
+        group.report_source_is_idle(self.source_id, self.source_reader_worker_id);
     }
 
     pub fn report_entries_sent(&mut self, approvals: Vec<EntrySendApproval>) {
@@ -439,9 +732,26 @@ impl ConnectorGroupAccessor {
         // with just a single mutex acquisition
         let mut group = self.group.lock().unwrap();
         for approval in approvals {
-            group.report_entry_sent(approval);
+            group.report_entry_sent(&approval);
         }
-        self.max_possible_value = group.max_possible_value.clone();
+
+        // Do a potentially heavy invocation, but only once per batch.
+        group.update_max_possible_value();
+    }
+
+    pub fn report_time_advancement(&mut self, timestamp: Timestamp) {
+        self.group.lock().unwrap().report_time_advancement(
+            &timestamp,
+            self.source_id,
+            self.source_reader_worker_id,
+        );
+    }
+
+    pub fn forced_time_advancement(&self) -> Option<Timestamp> {
+        self.group
+            .lock()
+            .unwrap()
+            .forced_time_advancement_for_source(self.source_id, self.source_reader_worker_id)
     }
 
     fn extract_target_value<'a>(&self, parsed_row: &'a [DynResult<Value>]) -> &'a Value {
@@ -453,15 +763,14 @@ impl ConnectorGroupAccessor {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct ConnectorSynchronizer {
-    is_multiprocessed: bool,
     groups: HashMap<String, SharedConnectorGroup>,
 }
 
 impl ConnectorSynchronizer {
-    pub fn new(is_multiprocessed: bool) -> Self {
+    pub fn new() -> Self {
         Self {
-            is_multiprocessed,
             groups: HashMap::new(),
         }
     }
@@ -471,10 +780,6 @@ impl ConnectorSynchronizer {
         desc: &ConnectorGroupDescriptor,
         source_id: usize,
     ) -> Result<ConnectorGroupAccessor, Error> {
-        if self.is_multiprocessed {
-            return Err(Error::MultiprocessingNotSupported);
-        }
-
         let group = self
             .groups
             .entry(desc.name.clone())
@@ -486,12 +791,15 @@ impl ConnectorSynchronizer {
         if group_impl.max_difference != desc.max_difference {
             return Err(Error::InconsistentWindowLength);
         }
-        let group_source_id = group_impl.register_new_source(source_id);
+        let (group_source_id, source_reader_worker_id) =
+            group_impl.register_new_source(source_id, desc.priority)?;
 
         Ok(ConnectorGroupAccessor::new(
             group.clone(),
             group_source_id,
+            source_reader_worker_id,
             desc.column_index,
+            desc.idle_duration,
         ))
     }
 }

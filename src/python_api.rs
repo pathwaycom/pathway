@@ -1006,11 +1006,19 @@ struct PyConnectorGroupDescriptor(ConnectorGroupDescriptor);
 #[pymethods]
 impl PyConnectorGroupDescriptor {
     #[new]
-    fn new(name: String, column_index: usize, max_difference: Value) -> Self {
+    fn new(
+        name: String,
+        column_index: usize,
+        max_difference: Value,
+        priority: u64,
+        idle_duration: Option<std::time::Duration>,
+    ) -> Self {
         Self(ConnectorGroupDescriptor {
             name,
             column_index,
             max_difference,
+            priority,
+            idle_duration,
         })
     }
 }
@@ -2711,6 +2719,7 @@ pub struct Scope {
     license: Option<License>,
     graph: SendWrapper<ScopedGraph>,
     is_persisted: bool,
+    timestamp_at_start: Timestamp,
 
     // empty_universe: Lazy<Py<Universe>>,
     universes: GILProtected<RefCell<HashMap<UniverseHandle, Py<Universe>>>>,
@@ -2728,6 +2737,7 @@ impl Scope {
         event_loop: PyObject,
         license: Option<License>,
         is_persisted: bool,
+        timestamp_at_start: Timestamp,
     ) -> Self {
         Scope {
             parent,
@@ -2741,6 +2751,7 @@ impl Scope {
             unique_names: GILProtected::new(RefCell::new(HashSet::new())),
             event_loop,
             total_connectors: GILProtected::new(RefCell::new(0)),
+            timestamp_at_start,
         }
     }
 
@@ -2882,6 +2893,7 @@ impl Scope {
             unique_name.as_ref(),
             properties.borrow().synchronization_group.borrow().as_ref(),
             properties.borrow().max_backlog_size,
+            self_.borrow().timestamp_at_start,
         )?;
         Table::new(self_, table_handle)
     }
@@ -2912,6 +2924,7 @@ impl Scope {
                         self_.borrow().event_loop.clone_ref(py),
                         None,
                         false,
+                        Timestamp::new_from_current_time(),
                     ),
                 )?;
                 scope.borrow().graph.scoped(graph, || {
@@ -3953,6 +3966,7 @@ pub fn run_with_new_graph(
         }
     };
     let is_persisted = persistence_config.is_some();
+    let timestamp_at_start = Timestamp::new_from_current_time();
 
     let telemetry_config = EngineTelemetryConfig::create(
         &license,
@@ -3979,6 +3993,7 @@ pub fn run_with_new_graph(
                                 event_loop.clone_ref(py),
                                 Some(scope_license.clone()),
                                 is_persisted,
+                                timestamp_at_start,
                             ),
                         )?;
                         let tables: Vec<(PyRef<Table>, Vec<ColumnPath>)> =
@@ -5776,7 +5791,11 @@ impl DataStorage {
         Ok(seek_positions)
     }
 
-    fn construct_kafka_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_kafka_reader(
+        &self,
+        scope: &Scope,
+        properties: &ConnectorProperties,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let client_config = self.kafka_client_config()?;
 
         let consumer: BaseConsumer = client_config
@@ -5812,7 +5831,14 @@ impl DataStorage {
             watermarks,
             self.mode,
         );
-        Ok((Box::new(reader), self.parallel_readers.unwrap_or(256)))
+
+        Ok((
+            Box::new(reader),
+            std::cmp::min(
+                properties.max_parallel_readers(scope),
+                self.parallel_readers.unwrap_or(NO_PARALLEL_READERS_LIMIT),
+            ),
+        ))
     }
 
     fn construct_python_reader(
@@ -5908,6 +5934,7 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         scope: &Scope,
+        properties: &ConnectorProperties,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let topic: String = self.message_queue_fixed_topic()?.to_string();
@@ -5976,7 +6003,7 @@ impl DataStorage {
             nats::NatsPoller::Simple(subscriber)
         };
         let reader = NatsReader::new(runtime, poller, scope.worker_index(), topic);
-        Ok((Box::new(reader), 32))
+        Ok((Box::new(reader), properties.max_parallel_readers(scope)))
     }
 
     fn construct_iceberg_reader(
@@ -6097,7 +6124,7 @@ impl DataStorage {
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Kinesis reader: {e}")))?;
 
-        Ok((Box::new(reader), 32))
+        Ok((Box::new(reader), properties.max_parallel_readers(scope)))
     }
 
     fn construct_reader(
@@ -6110,11 +6137,11 @@ impl DataStorage {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(scope, data_format),
             "s3" => self.construct_s3_reader(scope, data_format),
-            "kafka" => self.construct_kafka_reader(),
+            "kafka" => self.construct_kafka_reader(scope, properties),
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
-            "nats" => self.construct_nats_reader(py, scope),
+            "nats" => self.construct_nats_reader(py, scope, properties),
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
@@ -6888,9 +6915,30 @@ impl ConnectorProperties {
     }
 }
 
+// Greater than any allowed worker number
+const NO_PARALLEL_READERS_LIMIT: usize = 256;
+
 impl ConnectorProperties {
     fn column_properties(&self) -> Vec<Arc<EngineColumnProperties>> {
         self.column_properties.iter().map(|p| p.0.clone()).collect()
+    }
+
+    fn max_parallel_readers(&self, scope: &Scope) -> usize {
+        if self.synchronization_group.is_some() {
+            // Synchronization groups rely on a mutex-guarded structure that must be queried
+            // after each read to ensure that values stay within the defined range.
+            // When reads occur from multiple processes, maintaining this synchronization
+            // would require inter-process communication to align the data streams
+            // across processes on the shared time dimension.
+            //
+            // To avoid such overhead, the number of parallel readers is limited
+            // to the number of workers in the first process. If this setup appears
+            // to be too slow, the initial reading stage can be replicated across
+            // multiple workers within the first process.
+            scope.worker_count() / scope.process_count()
+        } else {
+            NO_PARALLEL_READERS_LIMIT
+        }
     }
 }
 

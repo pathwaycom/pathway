@@ -25,7 +25,7 @@ fn start_two_equal_groups(
 
     // Now the second source's start is known, so it gets an approval and
     // the future for the first add wakes up
-    let second_add = group_2.can_entry_be_sent(&create_parsed_event(Value::Int(1)));
+    let second_add = group_2.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
     let approval = second_add.expect_approved();
     group_2.report_entries_sent(vec![approval]);
     assert!(sync_future.now_or_never().is_some());
@@ -39,25 +39,14 @@ fn start_two_equal_groups(
 }
 
 #[test]
-fn test_multiprocessed_runs_not_supported() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(true);
-    let desc = ConnectorGroupDescriptor {
-        name: "default".to_string(),
-        column_index: 0,
-        max_difference: Value::Int(10),
-    };
-    let group_add_result = sync.ensure_synchronization_group(&desc, 0);
-    assert_matches!(group_add_result, Err(Error::MultiprocessingNotSupported));
-    Ok(())
-}
-
-#[test]
 fn test_incompatible_max_difference() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(false);
+    let mut sync = ConnectorSynchronizer::new();
     let desc = ConnectorGroupDescriptor {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
     };
     let group_add_result = sync.ensure_synchronization_group(&desc, 0);
     assert_matches!(group_add_result, Ok(_));
@@ -66,6 +55,8 @@ fn test_incompatible_max_difference() -> eyre::Result<()> {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(11),
+        priority: 0,
+        idle_duration: None,
     };
     let group_add_result = sync.ensure_synchronization_group(&desc_2, 1);
 
@@ -74,12 +65,35 @@ fn test_incompatible_max_difference() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_synchronization_simple() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(false);
+fn test_too_many_workers() -> eyre::Result<()> {
+    let mut sync = ConnectorSynchronizer::new();
     let desc = ConnectorGroupDescriptor {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
+    };
+    for _ in 0..64 {
+        let group_add_result = sync.ensure_synchronization_group(&desc, 0);
+        assert_matches!(group_add_result, Ok(_));
+    }
+
+    let group_add_result = sync.ensure_synchronization_group(&desc, 0);
+    assert_matches!(group_add_result, Err(Error::WorkerSetTooLarge(64)));
+
+    Ok(())
+}
+
+#[test]
+fn test_synchronization_simple() -> eyre::Result<()> {
+    let mut sync = ConnectorSynchronizer::new();
+    let desc = ConnectorGroupDescriptor {
+        name: "default".to_string(),
+        column_index: 0,
+        max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
     };
     let mut group_1 = sync.ensure_synchronization_group(&desc, 0).unwrap();
     let mut group_2 = sync.ensure_synchronization_group(&desc, 1).unwrap();
@@ -117,11 +131,13 @@ fn test_synchronization_simple() -> eyre::Result<()> {
 
 #[test]
 fn test_synchronization_jump_through_the_gap() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(false);
+    let mut sync = ConnectorSynchronizer::new();
     let desc = ConnectorGroupDescriptor {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
     };
     let mut group_1 = sync.ensure_synchronization_group(&desc, 0).unwrap();
     let mut group_2 = sync.ensure_synchronization_group(&desc, 1).unwrap();
@@ -148,11 +164,13 @@ fn test_synchronization_jump_through_the_gap() -> eyre::Result<()> {
 
 #[test]
 fn test_synchronization_wait_for_advancement() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(false);
+    let mut sync = ConnectorSynchronizer::new();
     let desc = ConnectorGroupDescriptor {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
     };
     let mut group_1 = sync.ensure_synchronization_group(&desc, 0).unwrap();
     let mut group_2 = sync.ensure_synchronization_group(&desc, 1).unwrap();
@@ -192,18 +210,17 @@ fn test_synchronization_wait_for_advancement() -> eyre::Result<()> {
 
 #[test]
 fn test_synchronization_several_workers() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(false);
+    let mut sync = ConnectorSynchronizer::new();
     let desc = ConnectorGroupDescriptor {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
     };
     let mut group_1 = sync.ensure_synchronization_group(&desc, 0).unwrap();
     let mut group_2 = sync.ensure_synchronization_group(&desc, 1).unwrap();
     let group_1_repeated = sync.ensure_synchronization_group(&desc, 0).unwrap();
-
-    // The `source_id` is private, but `Debug` trait can be used to compare them
-    assert_eq!(format!("{group_1:?}"), format!("{:?}", group_1_repeated));
 
     start_two_equal_groups(&mut group_1, &mut group_2)?;
 
@@ -234,11 +251,13 @@ fn test_synchronization_several_workers() -> eyre::Result<()> {
 
 #[test]
 fn test_synchronization_several_workers_2() -> eyre::Result<()> {
-    let mut sync = ConnectorSynchronizer::new(false);
+    let mut sync = ConnectorSynchronizer::new();
     let desc = ConnectorGroupDescriptor {
         name: "default".to_string(),
         column_index: 0,
         max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
     };
     let mut group_1 = sync.ensure_synchronization_group(&desc, 0).unwrap();
     let mut group_2 = sync.ensure_synchronization_group(&desc, 1).unwrap();
@@ -263,12 +282,13 @@ fn test_synchronization_several_workers_2() -> eyre::Result<()> {
     group_2.report_entries_sent(vec![approval]);
     assert!(sync_future_10.now_or_never().is_some());
 
-    // Retry the ask for 10, get an approval, and send it. The future for 50 wakes up,
-    // the re-request is done, but without success yet.
+    // Retry the ask for 10, get an approval, and send it
     let second_add_retried = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(10)));
     let approval = second_add_retried.expect_approved();
     group_1.report_entries_sent(vec![approval]);
-    assert!(sync_future_50.now_or_never().is_some());
+
+    // Retry sending 50. No approval, since the value is out of the allowed window,
+    // and not all of the sources jump forward.
     let first_add_retry = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(50)));
     let mut sync_future_50 = first_add_retry.expect_wait();
     assert_matches!(sync_future_50.try_recv(), Ok(None));
@@ -289,6 +309,142 @@ fn test_synchronization_several_workers_2() -> eyre::Result<()> {
     // But the second group still can't advance to 200: what if the first group will have entries
     // that are small enough to pass, but not big enough to move the threshold up to 200
     assert!(sync_future_200.now_or_never().is_none());
+
+    Ok(())
+}
+
+#[test]
+fn test_synchronization_several_workers_3() -> eyre::Result<()> {
+    let mut sync = ConnectorSynchronizer::new();
+    let desc = ConnectorGroupDescriptor {
+        name: "default".to_string(),
+        column_index: 0,
+        max_difference: Value::Int(5),
+        priority: 0,
+        idle_duration: None,
+    };
+    let mut group_1 = sync.ensure_synchronization_group(&desc, 0).unwrap();
+    let mut group_2 = sync.ensure_synchronization_group(&desc, 1).unwrap();
+
+    // Both sources propose a value equal to zero, both advance.
+    let first_add = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
+    let sync_future_1 = first_add.expect_wait();
+    let second_add = group_2.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
+    let approval = second_add.expect_approved();
+    group_2.report_entries_sent(vec![approval]);
+    assert!(sync_future_1.now_or_never().is_some());
+
+    let first_add_retry = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
+    let approval = first_add_retry.expect_approved();
+    group_1.report_entries_sent(vec![approval]);
+
+    // The first source tries to send two values: 10 and 20. Both wait.
+    let third_add = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(10)));
+    let mut sync_future_3 = third_add.expect_wait();
+    let fourth_add = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(20)));
+    let mut sync_future_4 = fourth_add.expect_wait();
+
+    // Sending an entry to the second source, so that one of the futures can proceed.
+    let fifth_add = group_2.can_entry_be_sent(&create_parsed_event(Value::Int(10)));
+    let approval = fifth_add.expect_approved();
+    group_2.report_entries_sent(vec![approval]);
+    assert_matches!(sync_future_3.try_recv(), Ok(Some(())));
+    assert_matches!(sync_future_4.try_recv(), Ok(None));
+
+    let third_add_retry = group_1.can_entry_be_sent(&create_parsed_event(Value::Int(10)));
+    let approval = third_add_retry.expect_approved();
+    group_1.report_entries_sent(vec![approval]);
+
+    // Sending an entry to second source, and it must pass.
+    let sixth_add = group_2.can_entry_be_sent(&create_parsed_event(Value::Int(20)));
+    let approval = sixth_add.expect_approved();
+    group_2.report_entries_sent(vec![approval]);
+
+    Ok(())
+}
+
+#[test]
+fn test_synchronization_with_priorities() -> eyre::Result<()> {
+    let mut sync = ConnectorSynchronizer::new();
+    let desc_low_priority = ConnectorGroupDescriptor {
+        name: "default".to_string(),
+        column_index: 0,
+        max_difference: Value::Int(10),
+        priority: 0,
+        idle_duration: None,
+    };
+    let desc_high_priority = ConnectorGroupDescriptor {
+        name: "default".to_string(),
+        column_index: 0,
+        max_difference: Value::Int(10),
+        priority: 1,
+        idle_duration: None,
+    };
+
+    let mut group_low_priority = sync
+        .ensure_synchronization_group(&desc_low_priority, 0)
+        .unwrap();
+    let mut group_high_priority = sync
+        .ensure_synchronization_group(&desc_high_priority, 1)
+        .unwrap();
+
+    // The low-pri source proposes a value: 0. It has to wait because we don't know
+    // what the second source will start from
+    let first_add = group_low_priority.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
+    let mut sync_future_first = first_add.expect_wait();
+    assert_matches!(sync_future_first.try_recv(), Ok(None));
+
+    // The high-pri source proposes a value, also 0. Now both must be able to proceed.
+    let second_add = group_high_priority.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
+    let approval = second_add.expect_approved();
+    group_high_priority.report_entries_sent(vec![approval]);
+
+    // Retrying the low-pri source and proceeding.
+    let first_add_retry = group_low_priority.can_entry_be_sent(&create_parsed_event(Value::Int(0)));
+    let first_retry_approval = first_add_retry.expect_approved();
+    group_low_priority.report_entries_sent(vec![first_retry_approval]);
+
+    // The low-pri source tries to send a value that fits into the window, but fails
+    // because the higher-pri source is still at 0.
+    let third_add = group_low_priority.can_entry_be_sent(&create_parsed_event(Value::Int(1)));
+    let mut sync_future_third = third_add.expect_wait();
+    assert_matches!(sync_future_third.try_recv(), Ok(None));
+
+    // The low-pri source tries to send a value that fits into the window, even
+    // bigger than the previous one, but fails because the higher-pri source is still at 0.
+    let fourth_add = group_low_priority.can_entry_be_sent(&create_parsed_event(Value::Int(2)));
+    let mut sync_future_fourth = fourth_add.expect_wait();
+    assert_matches!(sync_future_fourth.try_recv(), Ok(None));
+
+    // The high-pri source sends a value that allows the first waiting value pass, but not
+    // the second one.
+    let fifth_add = group_high_priority.can_entry_be_sent(&create_parsed_event(Value::Int(1)));
+    let approval = fifth_add.expect_approved();
+    group_high_priority.report_entries_sent(vec![approval]);
+
+    // One future must be unblocked, another must still wait.
+    assert_matches!(sync_future_third.try_recv(), Ok(Some(())));
+    assert_matches!(sync_future_fourth.try_recv(), Ok(None));
+
+    let third_add_retry = group_low_priority.can_entry_be_sent(&create_parsed_event(Value::Int(1)));
+    assert_matches!(sync_future_fourth.try_recv(), Ok(None));
+
+    let third_retry_approval = third_add_retry.expect_approved();
+    group_low_priority.report_entries_sent(vec![third_retry_approval]);
+    assert_matches!(sync_future_fourth.try_recv(), Ok(None));
+
+    // Now the high-pri source sends an event again, after that the second waiting source may advance.
+    let sixth_add = group_high_priority.can_entry_be_sent(&create_parsed_event(Value::Int(2)));
+    let approval = sixth_add.expect_approved();
+    group_high_priority.report_entries_sent(vec![approval]);
+
+    // The remaining entry from a low-pri source advances.
+    assert_matches!(sync_future_fourth.try_recv(), Ok(Some(())));
+    let fourth_add_retry =
+        group_low_priority.can_entry_be_sent(&create_parsed_event(Value::Int(2)));
+
+    let fourth_retry_approval = fourth_add_retry.expect_approved();
+    group_low_priority.report_entries_sent(vec![fourth_retry_approval]);
 
     Ok(())
 }
