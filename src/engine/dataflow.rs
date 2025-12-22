@@ -2820,9 +2820,18 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 let without_retractions = join_left_right_without_persisted
                     .filter_out_forgetting()
                     .consolidate();
-                without_retractions
-                    .inner
-                    .inspect(|(_data, _time, diff)| assert!(*diff > 0));
+                let error_logger = self.create_error_logger()?;
+                let trace = table_properties.trace();
+                without_retractions.inner.inspect(
+                    move |((join_key, _left, _right), _time, diff)| {
+                        if *diff < 0 {
+                            error_logger.log_error_with_trace(
+                                DataError::ExpectedAppendOnly(*join_key).into(),
+                                &trace,
+                            );
+                        }
+                    },
+                );
 
                 if let Some(left_retractions) = left_retractions {
                     let left_side = without_retractions.map_named(

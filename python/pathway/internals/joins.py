@@ -157,9 +157,11 @@ class Joinable(TableLike, DesugaringContext):
             left_exactly_once: if you can guarantee that each row on the left side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
             right_exactly_once: if you can guarantee that each row on the right side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -224,9 +226,11 @@ class Joinable(TableLike, DesugaringContext):
             left_exactly_once: if you can guarantee that each row on the left side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
             right_exactly_once: if you can guarantee that each row on the right side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -291,9 +295,11 @@ class Joinable(TableLike, DesugaringContext):
             left_exactly_once: if you can guarantee that each row on the left side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
             right_exactly_once: if you can guarantee that each row on the right side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
 
         Remarks:
         args cannot contain id column from either of tables, \
@@ -378,9 +384,11 @@ class Joinable(TableLike, DesugaringContext):
             left_exactly_once: if you can guarantee that each row on the left side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
             right_exactly_once: if you can guarantee that each row on the right side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
 
         Remarks: args cannot contain id column from either of tables, \
         as the result table has id column with auto-generated ids; \
@@ -466,9 +474,11 @@ class Joinable(TableLike, DesugaringContext):
             left_exactly_once: if you can guarantee that each row on the left side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
             right_exactly_once: if you can guarantee that each row on the right side of the join will be
               joined at most once, then you can set this parameter to ``True``. Then each row after
               getting a match is removed from the join state. As a result, less memory is needed.
+              Works only for append-only tables.
 
         Remarks: args cannot contain id column from either of tables, \
             as the result table has id column with auto-generated ids; \
@@ -1184,9 +1194,11 @@ def join(
         left_exactly_once: if you can guarantee that each row on the left side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
         right_exactly_once: if you can guarantee that each row on the right side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
 
     Returns:
         JoinResult: an object on which `.select()` may be called to extract relevant
@@ -1249,9 +1261,11 @@ def join_inner(
         left_exactly_once: if you can guarantee that each row on the left side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
         right_exactly_once: if you can guarantee that each row on the right side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
 
     Returns:
         JoinResult: an object on which `.select()` may be called to extract relevant
@@ -1313,9 +1327,11 @@ def join_left(
         left_exactly_once: if you can guarantee that each row on the left side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
         right_exactly_once: if you can guarantee that each row on the right side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
 
     Remarks:
     args cannot contain id column from either of tables, \
@@ -1397,9 +1413,11 @@ def join_right(
         left_exactly_once: if you can guarantee that each row on the left side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
         right_exactly_once: if you can guarantee that each row on the right side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
 
     Remarks: args cannot contain id column from either of tables, \
     as the result table has id column with auto-generated ids; \
@@ -1483,9 +1501,11 @@ def join_outer(
         left_exactly_once: if you can guarantee that each row on the left side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
         right_exactly_once: if you can guarantee that each row on the right side of the join will be
             joined at most once, then you can set this parameter to ``True``. Then each row after
             getting a match is removed from the join state. As a result, less memory is needed.
+            Works only for append-only tables.
 
     Remarks: args cannot contain id column from either of tables, \
         as the result table has id column with auto-generated ids; \
