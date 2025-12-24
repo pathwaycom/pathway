@@ -88,7 +88,7 @@ impl TantivyIndex {
         Ok(ret_vec)
     }
 
-    fn add_one(&mut self, key: Key, data: String) -> DynResult<()> {
+    fn add_one(&mut self, key: Key, data: &str) -> DynResult<()> {
         let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
         self.writer.add_document(doc!(
             self.id_field => key_id,
@@ -111,7 +111,7 @@ impl NonFilteringExternalIndex<String, String> for TantivyIndex {
     fn add(&mut self, add_data: Vec<(Key, String)>) -> Vec<(Key, DynResult<()>)> {
         let ret = add_data
             .into_iter()
-            .map(|(key, data)| (key, self.add_one(key, data)))
+            .map(|(key, data)| (key, self.add_one(key, &data)))
             .collect();
 
         self.writer.commit().unwrap(); //TODO fix when clear how to report batch errors
