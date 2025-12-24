@@ -5458,3 +5458,20 @@ def test_forbidden_component():
             "./a.txt",
             schema=InputSchema,
         )
+
+
+def test_server_fail_on_duplicate_port(port: int) -> None:
+    class InputSchema(pw.Schema):
+        k: int
+        v: int
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+    queries, response_writer = pw.io.http.rest_connector(
+        webserver=webserver, schema=InputSchema, delete_completed_queries=False
+    )
+    response_writer(queries.select(query_id=queries.id, result=pw.this.v))
+
+    with pytest.raises(RuntimeError, match="Added route will never be executed"):
+        _, _ = pw.io.http.rest_connector(
+            webserver=webserver, schema=InputSchema, delete_completed_queries=False
+        )
