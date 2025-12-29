@@ -52,7 +52,7 @@ class Json:
     _value: JsonValue
 
     def __str__(self) -> str:
-        return _json.dumps(self.value)
+        return _json.dumps(self.value, ensure_ascii=False)
 
     def __float__(self) -> float:
         return float(self.value)  # type:ignore[arg-type]
@@ -96,7 +96,7 @@ class Json:
 
     @staticmethod
     def dumps(obj: Any) -> str:
-        return _json.dumps(obj, cls=_JsonEncoder)
+        return _json.dumps(obj, cls=_JsonEncoder, ensure_ascii=False)
 
     def as_int(self) -> int:
         """Returns Json value as an int if possible.

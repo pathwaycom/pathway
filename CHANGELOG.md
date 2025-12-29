@@ -11,6 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - It is now possible to assign priorities to sources within a connector group. When a priority is set, it ensures that at any moment, the source is not lagging behind any other source with a higher priority in terms of the tracked column.
 - Connector groups can now be used in the multiprocess runs.
 
+### Changed
+- **BREAKING**: The `__str__` and `dumps` methods in `pw.Json` no longer enforce the result to be an ASCII string. This way, the behavior of `pw.debug.compute_and_print` is now consistent with other output connectors.
+
 ## [0.27.1] - 2025-12-08
 
 ### Added
