@@ -37,11 +37,11 @@ impl BacklogTracker {
         }
     }
 
-    pub fn on_event(&mut self, timestamp: &Timestamp) {
+    pub fn on_event(&mut self, timestamp: Timestamp) {
         self.total_in_fly += 1;
         match self.backlog.back_mut() {
-            Some(entry) if entry.timestamp == *timestamp => entry.on_event(),
-            _ => self.backlog.push_back(BacklogEntry::new(*timestamp)),
+            Some(entry) if entry.timestamp == timestamp => entry.on_event(),
+            _ => self.backlog.push_back(BacklogEntry::new(timestamp)),
         }
     }
 

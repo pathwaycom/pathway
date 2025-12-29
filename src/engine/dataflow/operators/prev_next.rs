@@ -124,7 +124,7 @@ where
 // Takes an option key an an instance filter. If the key is present,
 // and belongs to the instance, returns Some(key), otherwise returns None.
 fn other_instance_to_none<K>(
-    instance_filter: (impl Fn(&K) -> bool + Sized),
+    instance_filter: impl Fn(&K) -> bool + Sized,
     maybe_key: Option<K>,
 ) -> Option<K> {
     if maybe_key.is_some() && instance_filter(maybe_key.as_ref().unwrap()) {
@@ -297,7 +297,7 @@ fn process_to_non_zero_next<
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     key: &K,
     time: &T,
-    instance_filter: (impl Fn(&K) -> bool + Sized),
+    instance_filter: impl Fn(&K) -> bool + Sized,
 ) -> Option<K>
 where
     K: Data,
@@ -372,7 +372,7 @@ fn get_non_zero_prev_next<
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     key: &K,
     time: &T,
-    instance_filter: (impl Fn(&K) -> bool + Sized),
+    instance_filter: impl Fn(&K) -> bool + Sized,
 ) -> (Option<K>, Option<K>, Option<K>)
 where
     K: Data,
@@ -382,8 +382,8 @@ where
     let prev = find_non_zero_prev(input_wrapper, key, time);
     let mut prev_prev = None;
 
-    if prev.is_some() {
-        prev_prev = find_non_zero_prev(input_wrapper, prev.as_ref().unwrap(), time);
+    if let Some(ref prev) = prev {
+        prev_prev = find_non_zero_prev(input_wrapper, prev, time);
     }
 
     let next = process_to_non_zero_next(
@@ -429,7 +429,7 @@ fn handle_delete<
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     time: &T,
     mut carry_entry: CarryEntry<K, T>,
-    instance_filter: (impl Fn(&K) -> bool + Sized),
+    instance_filter: impl Fn(&K) -> bool + Sized,
 ) -> CarryEntry<K, T>
 where
     K: Data,
@@ -451,7 +451,7 @@ where
         &instance_filter,
     );
 
-    if prev.is_some() {
+    if let Some(ref prev_value) = prev {
         //delete entry associated with key
         move_to_key_or_upper_bound(output_wrapper, key);
         rewind_zero_weight_val_forward(output_wrapper, time);
@@ -514,7 +514,7 @@ where
                         batch_builder,
                     );
                 }
-                if carry_entry.next.as_ref().unwrap() < prev.as_ref().unwrap() {
+                if carry_entry.next.as_ref().unwrap() < prev_value {
                     push_prev_replace(
                         output_wrapper,
                         carry_entry.next.as_ref().unwrap(),
@@ -578,7 +578,7 @@ fn handle_insert<
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     time: &T,
     carry_entry: CarryEntry<K, T>,
-    instance_filter: (impl Fn(&K) -> bool + Sized),
+    instance_filter: impl Fn(&K) -> bool + Sized,
 ) -> CarryEntry<K, T>
 where
     K: Data,
@@ -602,7 +602,7 @@ where
         &instance_filter,
     );
 
-    if prev.is_some() {
+    if let Some(ref prev_value) = prev {
         // push old, set new carried entry
         /*
             // P may be the same as P', but does not have to
@@ -639,7 +639,7 @@ where
             );
         }
 
-        move_to_key_or_upper_bound(input_wrapper, prev.as_ref().unwrap());
+        move_to_key_or_upper_bound(input_wrapper, prev_value);
         let weight = key_val_weight_up_to_time(input_wrapper, time);
         log::debug!(
             "bb.push_insert_replace key {:?}, val {:?}",
@@ -649,7 +649,7 @@ where
 
         push_insert_replace(
             output_wrapper,
-            prev.as_ref().unwrap(),
+            prev_value,
             &(prev_prev, Some(key.clone())),
             time,
             &weight.unwrap(),

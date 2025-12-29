@@ -413,7 +413,7 @@ where
     fn make_query_tuple(
         &self,
         query: &QueryEntry,
-    ) -> DynResult<(QueryType, usize, Option<Expression>)> {
+    ) -> DynResult<(QueryType, usize, Option<Expression<'_>>)> {
         let limit = if let Some(wrapped) = &query.limit {
             usize::try_from(wrapped.as_int()?)?
         } else {

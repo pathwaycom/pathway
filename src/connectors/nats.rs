@@ -123,9 +123,9 @@ pub trait WriteAccessor: Send {
         topic: String,
         headers: NatsHeaders,
         payload: Vec<u8>,
-    ) -> AccessorResult;
+    ) -> AccessorResult<'_>;
 
-    fn flush(&mut self) -> AccessorResult;
+    fn flush(&mut self) -> AccessorResult<'_>;
 }
 
 pub struct SimpleWriteAccessor {
@@ -144,7 +144,7 @@ impl WriteAccessor for SimpleWriteAccessor {
         topic: String,
         headers: NatsHeaders,
         payload: Vec<u8>,
-    ) -> AccessorResult {
+    ) -> AccessorResult<'_> {
         Box::pin(async {
             self.client
                 .publish_with_headers(topic, headers, payload.into())
@@ -153,7 +153,7 @@ impl WriteAccessor for SimpleWriteAccessor {
         })
     }
 
-    fn flush(&mut self) -> AccessorResult {
+    fn flush(&mut self) -> AccessorResult<'_> {
         Box::pin(async { self.client.flush().await.map_err(WriteError::NatsFlush) })
     }
 }
@@ -178,7 +178,7 @@ impl WriteAccessor for JetStreamWriteAccessor {
         topic: String,
         headers: NatsHeaders,
         payload: Vec<u8>,
-    ) -> AccessorResult {
+    ) -> AccessorResult<'_> {
         Box::pin(async {
             let ack_future = self
                 .jetstream
@@ -190,7 +190,7 @@ impl WriteAccessor for JetStreamWriteAccessor {
         })
     }
 
-    fn flush(&mut self) -> AccessorResult {
+    fn flush(&mut self) -> AccessorResult<'_> {
         Box::pin(async {
             for result in join_all(take(&mut self.ack_futures)).await {
                 let _ = result?;

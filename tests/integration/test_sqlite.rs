@@ -75,7 +75,7 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
     {
         assert_eq!(key, vec![Value::Int(1)]);
         assert_eq!(
-            values_map.to_pure_hashmap().map_err(|e| eyre!(e))?,
+            values_map.into_pure_hashmap().map_err(|e| eyre!(e))?,
             HashMap::from([
                 ("id".to_owned(), Value::Int(1)),
                 ("name".to_owned(), Value::String("Milk".into())),
@@ -93,7 +93,7 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
     {
         assert_eq!(key, vec![Value::Int(2)]);
         assert_eq!(
-            values_map.to_pure_hashmap().map_err(|e| eyre!(e))?,
+            values_map.into_pure_hashmap().map_err(|e| eyre!(e))?,
             HashMap::from([
                 ("id".to_owned(), Value::Int(2)),
                 ("name".to_owned(), Value::String("Bread".into())),

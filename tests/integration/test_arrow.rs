@@ -71,7 +71,7 @@ fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {
         MaintenanceMode::StreamOfChanges,
     )?;
     let buffer = AppendOnlyColumnBuffer::new(Arc::new(schema));
-    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
+    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None);
 
     for value in &values {
         writer.write(FormatterContext::new_single_payload(

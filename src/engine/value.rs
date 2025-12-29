@@ -58,7 +58,9 @@ impl Key {
             return Self::FOR_EMPTY_TUPLE;
         }
         let mut hasher = Hasher::default();
-        values.iter().for_each(|v| v.hash_into(&mut hasher));
+        for v in values {
+            v.hash_into(&mut hasher);
+        }
         Self::from_hasher(&hasher)
     }
 
@@ -105,7 +107,7 @@ impl ShardPolicy {
         }
     }
 
-    pub fn generate_key(&self, values: &[Value]) -> Key {
+    pub fn generate_key(self, values: &[Value]) -> Key {
         match self {
             Self::WholeKey => Key::for_values(values),
             Self::LastKeyColumn => {
@@ -684,7 +686,9 @@ impl HashInto for String {
 impl<T: HashInto> HashInto for [T] {
     fn hash_into(&self, hasher: &mut Hasher) {
         self.len().hash_into(hasher);
-        self.iter().for_each(|x| x.hash_into(hasher));
+        for x in self {
+            x.hash_into(hasher);
+        }
     }
 }
 

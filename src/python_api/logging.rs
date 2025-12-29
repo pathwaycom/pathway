@@ -20,7 +20,7 @@ struct OwnedMetadata {
 }
 
 impl OwnedMetadata {
-    fn as_metadata(&self) -> Metadata {
+    fn as_metadata(&self) -> Metadata<'_> {
         Metadata::builder()
             .level(self.level)
             .target(&self.target)

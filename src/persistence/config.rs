@@ -147,7 +147,7 @@ pub enum ReadersQueryPurpose {
 
 impl ReadersQueryPurpose {
     pub fn includes_worker(
-        &self,
+        self,
         other_worker_id: usize,
         worker_id: usize,
         total_workers: usize,
@@ -169,7 +169,7 @@ impl ReadersQueryPurpose {
         }
     }
 
-    pub fn truncate_at_end(&self) -> bool {
+    pub fn truncate_at_end(self) -> bool {
         match self {
             ReadersQueryPurpose::ReadSnapshot => true,
             ReadersQueryPurpose::ReconstructFrontier => false,
@@ -228,8 +228,8 @@ impl PersistenceManagerConfig {
                 );
                 Box::new(AzureKVStorage::new(
                     &storage_root_path,
-                    account.to_string(),
-                    container.to_string(),
+                    account.clone(),
+                    container.clone(),
                     credentials.clone(),
                 )?)
             }
@@ -283,8 +283,8 @@ impl PersistenceManagerConfig {
                 let snapshots_root_path = Self::cloud_snapshots_root_path(root_path);
                 let backend = Box::new(AzureKVStorage::new(
                     &snapshots_root_path,
-                    account.to_string(),
-                    container.to_string(),
+                    account.clone(),
+                    container.clone(),
                     credentials.clone(),
                 )?);
                 let assigned_snapshot_paths = self.assigned_cloud_snapshot_paths(
@@ -296,8 +296,8 @@ impl PersistenceManagerConfig {
                 for (_, path) in assigned_snapshot_paths {
                     let backend = AzureKVStorage::new(
                         &path,
-                        account.to_string(),
-                        container.to_string(),
+                        account.clone(),
+                        container.clone(),
                         credentials.clone(),
                     )?;
                     result.push(Box::new(backend));
@@ -361,8 +361,8 @@ impl PersistenceManagerConfig {
                 credentials,
             } => Ok(Box::new(AzureKVStorage::new(
                 &self.cloud_snapshot_path(root_path, persistent_id),
-                account.to_string(),
-                container.to_string(),
+                account.clone(),
+                container.clone(),
                 credentials.clone(),
             )?)),
             PersistentStorageConfig::Mock(_) => {

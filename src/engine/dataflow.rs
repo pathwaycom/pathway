@@ -62,7 +62,6 @@ use std::{env, slice};
 use arcstr;
 use arcstr::ArcStr;
 use crossbeam_channel::{bounded, never, select, Receiver, RecvError, Sender};
-use derivative::Derivative;
 use differential_dataflow::collection::concatenate;
 use differential_dataflow::difference::{Multiply, Semigroup};
 use differential_dataflow::hashable::Hashable;
@@ -943,25 +942,6 @@ impl<S: MaybeTotalScope, D: ExchangeData + Hashable> AssertDistinctBatch for Col
                 (data, time, DIFF_INSERTION)
             })
             .as_collection()
-    }
-}
-
-#[derive(Derivative, Debug, Clone, Serialize, Deserialize)]
-#[derivative(PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct KeyWith<T>(
-    Key,
-    #[derivative(
-        PartialEq = "ignore",
-        PartialOrd = "ignore",
-        Ord = "ignore",
-        Hash = "ignore"
-    )]
-    T,
-);
-
-impl<T> Shard for KeyWith<T> {
-    fn shard(&self) -> u64 {
-        self.0.shard()
     }
 }
 
@@ -3272,7 +3252,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountDistinctReducer {
             .distinct()
             .map_named(
                 "CountDistinctReducer::intermediate",
-                |(result_key, _values_hash)| (result_key),
+                |(result_key, _values_hash)| result_key,
             )
             .count()
             .map_named("CountDistinctReducer::reduce", |(key, count)| {
@@ -3391,7 +3371,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
         Ok(values
             .map_named(
                 "CountReducer::reduce::init",
-                |(_source_key, result_key, _values)| (result_key),
+                |(_source_key, result_key, _values)| result_key,
             )
             .maybe_persist(graph, "CountReducer::reduce")?
             .count()
@@ -4498,7 +4478,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                 sink_id.expect("undefined sink_id while using persistent storage"),
                                 time_processed,
                             )
-                            .map_err(Error::PersistentStorageError)
+                            .map_err(Error::PersistentStorage)
                             .unwrap_with_reporter(&error_reporter_3);
                     }
                 }
@@ -4781,8 +4761,9 @@ struct ImportedUniverse<O, I> {
 
 impl<'c, S: MaybeTotalScope, T> InnerUniverse for ImportedUniverse<S, Child<'c, S, T>>
 where
+    S: MaybeTotalScope,
     T: Refines<S::MaybeTotalTimestamp> + Lattice,
-    Child<'c, S, T>: MaybeTotalScope,
+    Child<'c, S, T>: MaybeTotalScope<MaybeTotalTimestamp = T>,
 {
     type Outer = S;
     type Inner = Child<'c, S, T>;
@@ -4918,8 +4899,9 @@ struct ImportedColumn<O, I> {
 
 impl<'c, S: MaybeTotalScope, T> InnerColumn for ImportedColumn<S, Child<'c, S, T>>
 where
+    S: MaybeTotalScope,
     T: Refines<S::MaybeTotalTimestamp> + Lattice,
-    Child<'c, S, T>: MaybeTotalScope,
+    Child<'c, S, T>: MaybeTotalScope<MaybeTotalTimestamp = T>,
 {
     type Outer = S;
     type Inner = Child<'c, S, T>;
@@ -4967,8 +4949,9 @@ struct IteratedColumn<O, I: MaybeTotalScope> {
 
 impl<'c, S: MaybeTotalScope, T> InnerColumn for IteratedColumn<S, Child<'c, S, T>>
 where
+    S: MaybeTotalScope,
     T: Refines<S::MaybeTotalTimestamp> + Lattice,
-    Child<'c, S, T>: MaybeTotalScope,
+    Child<'c, S, T>: MaybeTotalScope<MaybeTotalTimestamp = T>,
 {
     type Outer = S;
     type Inner = Child<'c, S, T>;
@@ -6639,7 +6622,7 @@ where
                     None
                 };
                 let progress_reporter_runner =
-                    maybe_run_reporter(&monitoring_level, &graph, stats_monitor_local);
+                    maybe_run_reporter(monitoring_level, &graph, stats_monitor_local);
                 let http_server_runner =
                     maybe_run_http_server_thread(with_http_server, &graph, config.process_id());
                 let graph = graph.0.into_inner();

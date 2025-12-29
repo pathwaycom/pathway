@@ -18,7 +18,7 @@ fn test_type_formatting(type_: Type, values: &[Value]) -> eyre::Result<()> {
 
     for value in values {
         let context = formatter
-            .format(&Key::random(), &[value.clone()], Timestamp(0), 1)
+            .format(&Key::random(), std::slice::from_ref(value), Timestamp(0), 1)
             .expect("formatter failed");
         assert_eq!(context.payloads.len(), 1);
         let document = context.payloads[0].clone().into_bson_document().unwrap();
@@ -69,9 +69,8 @@ fn test_type_formatting(type_: Type, values: &[Value]) -> eyre::Result<()> {
                     .collect();
                 let original_contents: Vec<bool> = t
                     .iter()
-                    .cloned()
                     .map(|x| match x {
-                        Value::Bool(b) => b,
+                        Value::Bool(b) => *b,
                         _ => unreachable!("only boolean arrays are supported in the array test"),
                     })
                     .collect();

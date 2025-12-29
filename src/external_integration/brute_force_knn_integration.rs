@@ -36,9 +36,9 @@ impl BruteForceKNNIndex {
         reserved_space: usize,
         auxiliary_space: usize,
         metric: BruteForceKnnMetricKind,
-    ) -> DynResult<BruteForceKNNIndex> {
+    ) -> BruteForceKNNIndex {
         let arr = Array2::default((reserved_space, dimensions));
-        Ok(BruteForceKNNIndex {
+        BruteForceKNNIndex {
             index_array: arr,
             current_size: 0,
             current_allocated: reserved_space,
@@ -47,7 +47,7 @@ impl BruteForceKNNIndex {
             dimensions,
             metric,
             key_to_id_mapper: KeyToU64IdMapper::new(),
-        })
+        }
     }
 
     fn fill_distances(
@@ -74,12 +74,12 @@ fn fill_cos_distances(
 ) {
     let index_sq_norms: Vec<f64> = index_arr
         .axis_iter(Axis(0))
-        .map(|row| (row.dot(&row)))
+        .map(|row| row.dot(&row))
         .collect();
 
     let query_sq_norms: Vec<f64> = query_arr
         .axis_iter(Axis(1))
-        .map(|col| (col.dot(&col)))
+        .map(|col| col.dot(&col))
         .collect();
 
     for (i, mut row) in dot_p.axis_iter_mut(Axis(0)).enumerate() {
@@ -96,11 +96,11 @@ fn fill_l2sq_distances(
 ) {
     let index_sq_norms: Vec<f64> = index_arr
         .axis_iter(Axis(0))
-        .map(|row| (row.dot(&row)))
+        .map(|row| row.dot(&row))
         .collect();
     let query_sq_norms: Vec<f64> = query_arr
         .axis_iter(Axis(1))
-        .map(|col| (col.dot(&col)))
+        .map(|col| col.dot(&col))
         .collect();
 
     for (i, mut row) in dot_p.axis_iter_mut(Axis(0)).enumerate() {
@@ -268,7 +268,7 @@ impl ExternalIndexFactory for BruteForceKNNIndexFactory {
             self.reserved_space,
             self.auxiliary_space,
             self.metric,
-        )?;
+        );
         Ok(Box::new(DerivedFilteredSearchIndex::new(Box::new(u_index))))
     }
 }

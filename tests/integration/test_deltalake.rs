@@ -61,12 +61,12 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         MaintenanceMode::StreamOfChanges,
     )?;
     let buffer = AppendOnlyColumnBuffer::new(Arc::new(schema));
-    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
+    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None);
     let mut formatter = IdentityFormatter::new(None);
 
     for value in values {
         let context = formatter
-            .format(&Key::random(), &[value.clone()], Timestamp(0), 1)
+            .format(&Key::random(), std::slice::from_ref(value), Timestamp(0), 1)
             .expect("formatter failed");
         writer.write(context)?;
     }
@@ -544,7 +544,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
         let schema =
             construct_arrow_schema(&value_fields, &batch_writer, MaintenanceMode::Snapshot)?;
         let buffer = SnapshotColumnBuffer::new(Vec::new(), Arc::new(schema))?;
-        let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
+        let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None);
         let mut formatter = IdentityFormatter::new(None);
 
         let context = formatter
@@ -614,7 +614,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
         assert_eq!(existing_table.len(), 1);
         SnapshotColumnBuffer::new(existing_table, Arc::new(schema))?
     };
-    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None)?;
+    let mut writer = LakeWriter::new(Box::new(batch_writer), Box::new(buffer), None);
     let mut formatter = IdentityFormatter::new(None);
 
     let context = formatter
