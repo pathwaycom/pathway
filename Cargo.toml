@@ -83,7 +83,7 @@ qdrant-client = "1.15.0"
 questdb-rs = "4.0.5"
 rand = "0.9.1"
 rayon = "1.10.0"
-rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
+rdkafka = { version = "0.37.0", features = ["ssl-vendored", "cmake-build", "zstd","gssapi"] }
 regex = "1.11.1"
 reqwest = { version = "0.12.15", features = ["blocking", "json"] }
 rumqttc = { version = "0.24.0", features = ["url", "use-native-tls"] }
