@@ -14,7 +14,7 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
-    "aiohttp >= 3.8.4",
+    "aiohttp >= 3.10.11",
     "click >= 8.1",
     "geopy >= 2.4.0",
     "h3 >= 4",
