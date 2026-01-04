@@ -1,8 +1,8 @@
 <div align="center">
   <a href="https://pathway.com/">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://pathway.com/logo-dark.svg">
-      <img src="https://pathway.com/logo-light.svg">
+      <source media="(prefers-color-scheme: dark)" srcset="https://pathway.com/logo-light.svg">
+      <img src="https://pathway.com/logo-dark.svg">
     </picture>
   </a>
   <br /><br />
