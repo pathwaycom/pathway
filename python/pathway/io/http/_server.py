@@ -111,7 +111,7 @@ class EndpointExamples:
                 schema to their values in the example.
 
         Returns:
-            None
+            EndpointExamples: The current instance, allowing method chaining.
         """
         if id in self.examples_by_id:
             raise ValueError(f"Duplicate example id: {id}")
