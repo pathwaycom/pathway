@@ -361,7 +361,7 @@ def prompt_citing_qa(
         "Every answer should include at least one source citation. "
         "Only cite a source when you are explicitly referencing it. "
         "If exists, mention specific article/section header you use at the beginning of answer, such as '4.a Client has rights to...'. "  # noqa: E501
-        "Article headers may or may not be in docs, don't mention it if there is none. "
+        "Article headers may or may not be in docs, dont mention it if there is none. "
         f"If question cannot be inferred from documents SAY `{information_not_found_response}`. "
     )
 

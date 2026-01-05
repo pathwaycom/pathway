@@ -392,7 +392,7 @@ def read(
     >>> lake_path = getfixture("tmp_path") / "local-lake"  # NODOCS
     >>> pw.io.deltalake.write(output_table, lake_path)
 
-    Now the producer code can be run with a simple ``pw.run``:
+    Now the producer code can be run with with a simple ``pw.run``:
 
     >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
