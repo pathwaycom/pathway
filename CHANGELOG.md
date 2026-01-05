@@ -13,6 +13,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - **BREAKING**: The `__str__` and `dumps` methods in `pw.Json` no longer enforce the result to be an ASCII string. This way, the behavior of `pw.debug.compute_and_print` is now consistent with other output connectors.
+- The window functions now internally use deterministic UDFs, where possible.
 
 ## [0.27.1] - 2025-12-08
 
