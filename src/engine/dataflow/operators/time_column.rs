@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use super::utils::batch_by_time;
 use super::{ArrangeWithTypes, ArrangeWithTypesSharded};

@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 """Methods and classes for testing and declaring relations between keysets (universes).
 
 Typical use:

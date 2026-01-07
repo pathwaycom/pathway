@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 pub mod external_index;
 pub mod gradual_broadcast;

@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::non_canonical_partial_ord_impl)] // False positive with Derivative

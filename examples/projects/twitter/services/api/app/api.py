@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 """Thin fastapi endpoint querying postgres database and answering requests from frontend."""
 

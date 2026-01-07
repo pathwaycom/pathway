@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 pub mod brute_force_knn_integration;
 pub mod qdrant_integration;

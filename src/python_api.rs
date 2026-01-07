@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]

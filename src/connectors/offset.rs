@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use base64::Engine;
 use pyo3::exceptions::PyValueError;

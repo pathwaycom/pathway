@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use itertools::Itertools;
 use ndarray::{s, Array2, ArrayView2, Axis};

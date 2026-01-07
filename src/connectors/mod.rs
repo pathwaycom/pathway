@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use adaptors::InputAdaptor;
 use crossbeam_channel::{self as channel, Sender, TryRecvError};

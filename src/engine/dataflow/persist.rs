@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 use std::cmp::Reverse;
 use std::collections::{hash_map::Entry, BinaryHeap, HashMap};
 use std::hash::Hash;

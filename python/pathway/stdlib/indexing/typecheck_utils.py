@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 from typing import Tuple
 
 import pathway.internals as pw

@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

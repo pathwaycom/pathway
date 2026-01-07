@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;

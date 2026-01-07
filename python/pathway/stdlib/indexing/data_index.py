@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 # TODO: adjust so that it can be extended to cover H3index
 from abc import ABC, abstractmethod

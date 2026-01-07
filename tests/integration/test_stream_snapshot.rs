@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use super::helpers::create_persistence_manager;
 use super::helpers::get_entries_in_receiver;

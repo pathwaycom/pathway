@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 #![deny(unsafe_op_in_unsafe_fn)]
 

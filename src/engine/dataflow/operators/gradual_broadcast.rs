@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use crate::engine::dataflow::maybe_total::MaybeTotalScope;
 use crate::engine::dataflow::shard::Shard;

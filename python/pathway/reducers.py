@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 """Reducers are used in `reduce` to compute the aggregated results obtained by a `groupby`.
 
 Typical use:
