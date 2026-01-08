@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.28.0] - 2026-01-08
+
 ### Added
 - `pw.io.kafka.read` and `pw.io.redpanda.read` now allow each schema field to be specified as coming from either the message key or the message value.
 - Connector groups now support the specification of an idle duration. When this is set, if a source does not provide any data for the specified period of time, it will be excluded from the group until it produces data again.
