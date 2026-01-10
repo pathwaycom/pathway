@@ -766,6 +766,278 @@ class CohereChat(BaseChat):
         return _check_model_accepts_arg(self.model, "cohere", arg_name)
 
 
+class BedrockChat(BaseChat):
+    """Pathway wrapper for AWS Bedrock Chat services using the Converse API.
+
+    Supports models like Claude (Anthropic), Llama, Titan, Mistral, and others
+    available on Amazon Bedrock.
+
+    The ``capacity``, ``retry_strategy``, and ``cache_strategy`` need to be specified
+    during object construction. AWS credentials can be provided explicitly or will be
+    loaded from environment variables (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``)
+    or IAM roles when running on AWS infrastructure.
+
+    Args:
+        capacity: Maximum number of concurrent operations allowed.
+            Defaults to None, indicating no specific limit.
+        retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to `ExponentialBackoffRetryStrategy`.
+        cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided. Defaults to None.
+        model_id: The Bedrock model ID to use (e.g., "anthropic.claude-3-sonnet-20240229-v1:0",
+            "meta.llama3-70b-instruct-v1:0", "amazon.titan-text-premier-v1:0").
+        region_name: AWS region where Bedrock is deployed (e.g., "us-east-1").
+            Can also be set via ``AWS_DEFAULT_REGION`` environment variable.
+        aws_access_key_id: Optional AWS access key ID. If not provided, will use
+            default credential chain.
+        aws_secret_access_key: Optional AWS secret access key.
+        aws_session_token: Optional AWS session token for temporary credentials.
+        async_mode: Either "batch_async" or "fully_async". Defaults to "batch_async".
+        max_tokens: Maximum number of tokens to generate. Defaults to 1024.
+        temperature: Sampling temperature (0.0 to 1.0).
+        top_p: Top-p sampling parameter.
+        stop_sequences: List of sequences that will stop generation.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import llms
+    >>> chat = llms.BedrockChat(
+    ...     model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+    ...     region_name="us-east-1"
+    ... )  # doctest: +SKIP
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt
+    ... Hello, how are you?
+    ... ''')  # doctest: +SKIP
+    >>> r = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt)))  # doctest: +SKIP
+    """
+
+    # Role constants for message handling
+    ROLE_USER = "user"
+    ROLE_ASSISTANT = "assistant"
+    ROLE_SYSTEM = "system"
+    _SUPPORTED_ROLES = {ROLE_USER, ROLE_ASSISTANT, ROLE_SYSTEM}
+
+    @staticmethod
+    def _convert_messages_to_bedrock_format(messages: list[dict]) -> list[dict]:
+        """Convert OpenAI-style messages to AWS Bedrock Converse API format."""
+        bedrock_messages = []
+        for msg in messages:
+            role = msg.get("role", BedrockChat.ROLE_USER)
+            content = msg.get("content", "")
+
+            # Validate role
+            if role not in BedrockChat._SUPPORTED_ROLES:
+                raise ValueError(
+                    f"Unsupported message role: '{role}'. "
+                    f"Expected one of: {BedrockChat._SUPPORTED_ROLES}"
+                )
+
+            # System messages are handled separately in Bedrock
+            if role == BedrockChat.ROLE_SYSTEM:
+                continue
+
+            # Bedrock uses "user" and "assistant" roles directly
+            # No transformation needed for these roles
+
+            # Handle content - can be string or list of content blocks
+            if isinstance(content, str):
+                bedrock_content = [{"text": content}]
+            elif isinstance(content, list):
+                bedrock_content = []
+                for item in content:
+                    if isinstance(item, str):
+                        bedrock_content.append({"text": item})
+                    elif isinstance(item, dict):
+                        if item.get("type") == "text":
+                            bedrock_content.append({"text": item.get("text", "")})
+                        elif item.get("type") == "image_url":
+                            # Handle image content if needed
+                            bedrock_content.append({"text": "[Image content]"})
+            else:
+                bedrock_content = [{"text": str(content)}]
+
+            bedrock_messages.append({"role": role, "content": bedrock_content})
+
+        return bedrock_messages
+
+    @staticmethod
+    def _extract_system_prompt(messages: list[dict]) -> list[dict] | None:
+        """Extract system prompts from messages for Bedrock's system parameter."""
+        system_prompts = []
+        for msg in messages:
+            if msg.get("role") == BedrockChat.ROLE_SYSTEM:
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    system_prompts.append({"text": content})
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, str):
+                            system_prompts.append({"text": item})
+                        elif isinstance(item, dict) and item.get("type") == "text":
+                            system_prompts.append({"text": item.get("text", "")})
+
+        return system_prompts if system_prompts else None
+
+    def __init__(
+        self,
+        capacity: int | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
+        cache_strategy: udfs.CacheStrategy | None = None,
+        model_id: str | None = None,
+        *,
+        region_name: str | None = None,
+        aws_access_key_id: str | None = None,
+        aws_secret_access_key: str | None = None,
+        aws_session_token: str | None = None,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
+        **bedrock_kwargs,
+    ):
+        with optional_imports("xpack-llm"):
+            import aioboto3  # noqa:F401
+
+        executor = _prepare_executor(
+            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
+        )
+        super().__init__(
+            executor=executor,
+            cache_strategy=cache_strategy,
+        )
+
+        self.kwargs.update(bedrock_kwargs)
+        if model_id is not None:
+            self.kwargs["model_id"] = model_id
+
+        self.region_name = region_name
+        self.aws_access_key_id = aws_access_key_id
+        self.aws_secret_access_key = aws_secret_access_key
+        self.aws_session_token = aws_session_token
+        self._session = None
+
+    @property
+    def model(self) -> str | None:
+        return self.kwargs.get("model_id")
+
+    async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
+        import aioboto3
+
+        messages_decoded = _prepare_messages(messages)
+
+        kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
+        verbose = kwargs.pop("verbose", False)
+
+        model_id = kwargs.pop("model_id", None)
+        if model_id is None:
+            raise ValueError(
+                "`model_id` parameter is missing in `BedrockChat`. "
+                "Please provide the model ID either in the constructor or in the function call."
+            )
+
+        msg_id = str(uuid.uuid4())[-8:]
+
+        event = {
+            "_type": "bedrock_chat_request",
+            "model_id": model_id,
+            "id": msg_id,
+            "messages": _prep_message_log(messages_decoded, verbose),
+        }
+        logger.info(json.dumps(event, ensure_ascii=False))
+
+        # Convert messages to Bedrock format
+        bedrock_messages = self._convert_messages_to_bedrock_format(messages_decoded)
+        system_prompts = self._extract_system_prompt(messages_decoded)
+
+        # Build inference configuration
+        inference_config = {}
+        if "max_tokens" in kwargs:
+            inference_config["maxTokens"] = kwargs.pop("max_tokens")
+        else:
+            inference_config["maxTokens"] = 1024  # Default
+
+        if "temperature" in kwargs:
+            inference_config["temperature"] = kwargs.pop("temperature")
+        if "top_p" in kwargs:
+            inference_config["topP"] = kwargs.pop("top_p")
+        if "stop_sequences" in kwargs:
+            inference_config["stopSequences"] = kwargs.pop("stop_sequences")
+
+        # Create session and client
+        session = aioboto3.Session(
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
+            aws_session_token=self.aws_session_token,
+            region_name=self.region_name,
+        )
+
+        async with session.client("bedrock-runtime") as client:
+            converse_kwargs = {
+                "modelId": model_id,
+                "messages": bedrock_messages,
+                "inferenceConfig": inference_config,
+            }
+
+            if system_prompts:
+                converse_kwargs["system"] = system_prompts
+
+            response = await client.converse(**converse_kwargs)
+
+        # Extract response content
+        output = response.get("output", {})
+        message = output.get("message", {})
+        content_blocks = message.get("content", [])
+
+        response_text = None
+        for block in content_blocks:
+            if "text" in block:
+                response_text = block["text"]
+                break
+
+        if response_text is not None:
+            event = {
+                "_type": "bedrock_chat_response",
+                "response": (
+                    response_text
+                    if verbose
+                    else response_text[: min(50, len(response_text))] + "..."
+                ),
+                "id": msg_id,
+            }
+            logger.info(json.dumps(event, ensure_ascii=False))
+
+        return response_text
+
+    def __call__(self, messages: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """Sends messages to AWS Bedrock and returns response.
+
+        Args:
+            messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+                to Bedrock
+            **kwargs: override for defaults set in the constructor
+        """
+        return super().__call__(messages, **kwargs)
+
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        """Check whether the LLM accepts the argument during the inference.
+        If ``model_id`` is not set, return ``False``.
+
+        Args:
+            arg_name: Argument name to be checked.
+        """
+        # Bedrock Converse API supports these common parameters
+        supported_args = {
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "stop_sequences",
+            "top_k",  # Some models support this
+        }
+        return arg_name in supported_args
+
+
 @pw.udf
 def prompt_chat_single_qa(question: str) -> pw.Json:
     """

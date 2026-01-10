@@ -125,3 +125,99 @@ def test_mixed_call_args(model, call_arg):
             assert llm._accepts_call_arg(call_arg) is False
         elif llm.model == "claude-3-5-sonnet":
             assert llm._accepts_call_arg(call_arg)
+
+
+# ===== BedrockChat Tests =====
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["anthropic.claude-3-sonnet-20240229-v1:0", "meta.llama3-70b-instruct-v1:0", None],
+)
+@pytest.mark.parametrize(
+    "retry_strategy",
+    [ExponentialBackoffRetryStrategy(max_retries=6, backoff_factor=2.5), None],
+)
+@pytest.mark.parametrize(
+    "cache_strategy",
+    [DiskCache(), None],
+)
+def test_bedrock_chat_init(model_id, retry_strategy, cache_strategy):
+    llm = llms.BedrockChat(
+        model_id=model_id,
+        region_name="us-east-1",
+        retry_strategy=retry_strategy,
+        cache_strategy=cache_strategy,
+    )
+
+    assert llm is not None
+    assert llm.kwargs is not None
+    assert llm.executor is not None
+
+    if cache_strategy is None:
+        assert llm.cache_strategy is None
+    else:
+        assert llm.cache_strategy is not None
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["anthropic.claude-3-sonnet-20240229-v1:0", "amazon.titan-text-premier-v1:0", None],
+)
+def test_bedrock_model_field(model_id):
+    llm = llms.BedrockChat(model_id=model_id, region_name="us-east-1")
+
+    if model_id is None:
+        assert llm.model is None
+    else:
+        assert model_id == llm.model
+
+
+def test_bedrock_empty_init_kwargs():
+    llm = llms.BedrockChat(model_id=None, region_name="us-east-1")
+
+    assert "model_id" not in llm.kwargs
+    assert llm.model is None
+
+
+BEDROCK_VALID_ARGS = ["max_tokens", "temperature", "top_p", "stop_sequences"]
+BEDROCK_INVALID_ARGS = ["made_up_arg", "logit_bias"]
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["anthropic.claude-3-sonnet-20240229-v1:0", None],
+)
+@pytest.mark.parametrize("call_arg", [*BEDROCK_VALID_ARGS, *BEDROCK_INVALID_ARGS])
+def test_bedrock_call_args(model_id, call_arg):
+    llm = llms.BedrockChat(model_id=model_id, region_name="us-east-1")
+
+    # BedrockChat always returns based on supported_args, model_id doesn't affect it
+    assert llm._accepts_call_arg(call_arg) is (call_arg in BEDROCK_VALID_ARGS)
+
+
+@pytest.mark.parametrize(
+    "region_name",
+    ["us-east-1", "eu-west-1", None],
+)
+def test_bedrock_region_config(region_name):
+    llm = llms.BedrockChat(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        region_name=region_name,
+    )
+
+    assert llm.region_name == region_name
+
+
+def test_bedrock_aws_credentials():
+    llm = llms.BedrockChat(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        region_name="us-east-1",
+        aws_access_key_id="test_key",
+        aws_secret_access_key="test_secret",
+        aws_session_token="test_token",
+    )
+
+    assert llm.aws_access_key_id == "test_key"
+    assert llm.aws_secret_access_key == "test_secret"
+    assert llm.aws_session_token == "test_token"
