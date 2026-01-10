@@ -62,3 +62,97 @@ def test_openai_context_no_truncation(model: str, strategy: str):
     assert len(processed_text) == 400
     assert "A" in processed_text
     assert "B" in processed_text
+
+
+# ===== BedrockEmbedder Tests =====
+
+from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["amazon.titan-embed-text-v2:0", "amazon.titan-embed-text-v1", None],
+)
+@pytest.mark.parametrize(
+    "retry_strategy",
+    [ExponentialBackoffRetryStrategy(max_retries=6, backoff_factor=2.5), None],
+)
+@pytest.mark.parametrize(
+    "cache_strategy",
+    [DiskCache(), None],
+)
+def test_bedrock_embedder_init(model_id, retry_strategy, cache_strategy):
+    embedder = embedders.BedrockEmbedder(
+        model_id=model_id,
+        region_name="us-east-1",
+        retry_strategy=retry_strategy,
+        cache_strategy=cache_strategy,
+    )
+
+    assert embedder is not None
+    assert embedder.kwargs is not None
+    assert embedder.executor is not None
+
+    if cache_strategy is None:
+        assert embedder.cache_strategy is None
+    else:
+        assert embedder.cache_strategy is not None
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "amazon.titan-embed-text-v2:0",
+        "cohere.embed-english-v3",
+        "cohere.embed-multilingual-v3",
+    ],
+)
+def test_bedrock_embedder_model_id(model_id):
+    embedder = embedders.BedrockEmbedder(model_id=model_id, region_name="us-east-1")
+
+    assert embedder.kwargs.get("model_id") == model_id
+
+
+def test_bedrock_embedder_default_model():
+    embedder = embedders.BedrockEmbedder(region_name="us-east-1")
+
+    assert embedder.kwargs.get("model_id") == "amazon.titan-embed-text-v2:0"
+
+
+@pytest.mark.parametrize(
+    "region_name",
+    ["us-east-1", "eu-west-1", "ap-northeast-1", None],
+)
+def test_bedrock_embedder_region_config(region_name):
+    embedder = embedders.BedrockEmbedder(
+        model_id="amazon.titan-embed-text-v2:0",
+        region_name=region_name,
+    )
+
+    assert embedder.region_name == region_name
+
+
+def test_bedrock_embedder_aws_credentials():
+    embedder = embedders.BedrockEmbedder(
+        model_id="amazon.titan-embed-text-v2:0",
+        region_name="us-east-1",
+        aws_access_key_id="test_key",
+        aws_secret_access_key="test_secret",
+        aws_session_token="test_token",
+    )
+
+    assert embedder.aws_access_key_id == "test_key"
+    assert embedder.aws_secret_access_key == "test_secret"
+    assert embedder.aws_session_token == "test_token"
+
+
+def test_bedrock_embedder_extra_kwargs():
+    embedder = embedders.BedrockEmbedder(
+        model_id="amazon.titan-embed-text-v2:0",
+        region_name="us-east-1",
+        dimensions=512,
+        normalize=True,
+    )
+
+    assert embedder.kwargs.get("dimensions") == 512
+    assert embedder.kwargs.get("normalize") is True
