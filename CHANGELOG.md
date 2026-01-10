@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
+- `pw.xpacks.llm.llms.BedrockChat` - Native AWS Bedrock chat integration using the Converse API. Supports Claude, Llama, Titan, Mistral, and other Bedrock models.
+- `pw.xpacks.llm.embedders.BedrockEmbedder` - Native AWS Bedrock embedding integration supporting Amazon Titan and Cohere embedding models.
 
 ## [0.28.0] - 2026-01-08
 
