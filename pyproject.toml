@@ -74,7 +74,8 @@ xpack-llm-local = [  # requirements that allow local ML inference
     "transformers >= 4.42.0, <= 4.49.0",  # >= 4.50.2, this can be updated after docling updates
 ]
 xpack-llm-docs = [
-    "docling >= 2.27, < 3.0.0",
+    "docling >= 2.27, < 2.67.0",
+    "docling-core >= 2.55, < 2.58.0",
     "python-docx >= 1.1.2",
     "unstructured[all-docs] ~= 0.18.1",
     "pdf2image",
