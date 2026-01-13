@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::error;
 use std::borrow::Cow;
 use std::future::{Future, IntoFuture};
 use std::mem::take;
@@ -224,7 +224,6 @@ impl Writer for NatsWriter {
                 };
                 let payload = payload.into_raw_bytes()?;
                 let effective_topic = self.topic.get_for_posting(&data.values)?;
-                info!("Before publishing");
                 self.accessor
                     .publish_with_headers(effective_topic, headers, payload)
                     .await?;

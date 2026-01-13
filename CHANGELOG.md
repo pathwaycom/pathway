@@ -5,8 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.kafka.read` now includes message headers in the parsed metadata. The headers are available at the top level of the metadata in the `headers` array. Each element of the array is a pair consisting of a string header name and a base64-encoded header value. If the header is null, the corresponding value is also null.
+
 ### Changed
 - Most Python dependencies are now imported only if the related capabilities are used by a program.
+- **BREAKING**: Output connectors no longer wrap string header values in double quotes when sending them to Kafka or NATS. The string values are forwarded as-is. The `None` value is handled differently: in Kafka, it is serialized as a header without a value, while in NATS it becomes the string `"None"`.
 
 ## [0.28.0] - 2026-01-08
 

@@ -278,11 +278,11 @@ pub trait Parser: Send {
 #[derive(Debug, Clone)]
 pub struct PreparedMessageHeader {
     key: String,
-    value: Vec<u8>,
+    value: Option<Vec<u8>>,
 }
 
 impl PreparedMessageHeader {
-    pub fn new(key: impl Into<String>, value: Vec<u8>) -> Self {
+    pub fn new(key: impl Into<String>, value: Option<Vec<u8>>) -> Self {
         Self {
             key: key.into(),
             value,
@@ -380,17 +380,19 @@ impl FormatterContext {
         let mut headers = Vec::with_capacity(header_fields.len() + 2);
         headers.push(PreparedMessageHeader::new(
             "pathway_time",
-            self.time.to_string().as_bytes().to_vec(),
+            Some(self.time.to_string().as_bytes().to_vec()),
         ));
         headers.push(PreparedMessageHeader::new(
             "pathway_diff",
-            self.diff.to_string().as_bytes().to_vec(),
+            Some(self.diff.to_string().as_bytes().to_vec()),
         ));
         for (name, position) in header_fields {
-            let value: Vec<u8> = match (&self.values[*position], encode_bytes) {
-                (Value::Bytes(b), false) => (*b).to_vec(),
-                (Value::Bytes(b), true) => base64encoder.encode(b).into(),
-                (other, _) => (*other.to_string().as_bytes()).to_vec(),
+            let value: Option<Vec<u8>> = match (&self.values[*position], encode_bytes) {
+                (Value::Bytes(b), false) => Some((*b).to_vec()),
+                (Value::Bytes(b), true) => Some(base64encoder.encode(b).into()),
+                (Value::String(s), _) => Some(s.as_bytes().to_vec()),
+                (Value::None, _) => None,
+                (other, _) => Some((*other.to_string().as_bytes()).to_vec()),
             };
             headers.push(PreparedMessageHeader::new(name, value));
         }
@@ -403,7 +405,7 @@ impl FormatterContext {
         for header in raw_headers {
             kafka_headers = kafka_headers.insert(KafkaHeader {
                 key: &header.key,
-                value: Some(&header.value),
+                value: header.value.as_ref(),
             });
         }
         kafka_headers
@@ -413,11 +415,13 @@ impl FormatterContext {
         let raw_headers = self.construct_message_headers(header_fields, true);
         let mut nats_headers = NatsHeaders::new();
         for header in raw_headers {
-            nats_headers.insert(
-                header.key,
-                String::from_utf8(header.value)
-                    .expect("all prepared headers must be UTF-8 serializable"),
-            );
+            let header_value = if let Some(header_value) = header.value {
+                String::from_utf8(header_value)
+                    .expect("all prepared headers must be UTF-8 serializable")
+            } else {
+                Value::None.to_string()
+            };
+            nats_headers.insert(header.key, header_value);
         }
         nats_headers
     }
