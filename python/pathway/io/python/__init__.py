@@ -9,8 +9,6 @@ from queue import Queue
 from typing import Any, Iterable, Literal, final
 
 import pandas as pd
-import panel as pn
-from IPython.display import display
 
 from pathway.internals import Table, api, datasource
 from pathway.internals.api import Pointer, PythonConnectorEventType, SessionType
@@ -487,6 +485,10 @@ class InteractiveCsvPlayer(ConnectorSubject):
 
     def __init__(self, csv_file="") -> None:
         super().__init__()
+
+        import panel as pn
+        from IPython.display import display
+
         self.q = queue.Queue()
 
         self.df = pd.read_csv(csv_file)

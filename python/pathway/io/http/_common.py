@@ -1,11 +1,14 @@
 # Copyright © 2026 Pathway
 
+from __future__ import annotations
+
 import json
 import random
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import requests
+if TYPE_CHECKING:
+    import requests
 
 import pathway as pw
 
@@ -80,6 +83,8 @@ class Sender:
         data: Any | None = None,
         stream: bool = False,
     ) -> requests.Response:
+        import requests
+
         headers = headers or {}
         if "User-Agent" not in headers:
             headers["User-Agent"] = f"pathway/{pw.__version__}"

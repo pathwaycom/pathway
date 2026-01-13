@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- Most Python dependencies are now imported only if the related capabilities are used by a program.
+
 ## [0.28.0] - 2026-01-08
 
 ### Added

@@ -11,8 +11,6 @@ import time
 from os import PathLike, fspath
 from typing import Any, Iterable, Literal
 
-from deltalake import DeltaTable
-
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import (
     AwsS3Settings,
@@ -213,6 +211,8 @@ class TableOptimizer:
         self.optimizer_thread.start()
 
     def _perform_compression(self) -> bool:
+        from deltalake import DeltaTable
+
         if self.table_path is not None:
             try:
                 _ = DeltaTable(self.table_path)
@@ -473,6 +473,8 @@ def read(
 def _read_table_schema_from_metadata(
     uri: str, storage_options: dict[str, str] | None
 ) -> type[Schema]:
+    from deltalake import DeltaTable
+
     table = DeltaTable(uri, storage_options=storage_options)
     schema = table.schema()
     table_schema = {}
