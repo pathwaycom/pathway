@@ -58,6 +58,7 @@ xpack-llm = [
     "litellm ~= 1.44, < 1.77.3",
     "cohere ~= 5.1",
     "tiktoken >= 0.5",
+    "aioboto3 >= 13.0.0",
     "langchain >= 0.2.0, < 0.4.0",
     "langchain_community >= 0.2.0, < 0.4.0",
     "llama-index-core >= 0.10.0, < 0.13.0",
@@ -108,7 +109,8 @@ tests = [
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
     "fpdf",
-    "paddlepaddle >= 3.2.0, < 4.0.0" # required by paddleocr
+    "paddlepaddle >= 3.2.0, < 4.0.0", # required by paddleocr
+    "aioboto3 >= 13.0.0"
 ]
 airbyte = [
     "google-cloud-run",

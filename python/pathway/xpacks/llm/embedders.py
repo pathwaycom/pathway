@@ -3,6 +3,7 @@
 Pathway embedder UDFs.
 """
 import asyncio
+import json
 import logging
 from typing import Any, Literal
 
@@ -19,6 +20,7 @@ __all__ = [
     "LiteLLMEmbedder",
     "SentenceTransformerEmbedder",
     "GeminiEmbedder",
+    "BedrockEmbedder",
 ]
 
 
@@ -86,7 +88,7 @@ class BaseEmbedder(pw.UDF):
 
 
 def _split_batched_kwargs(
-    kwargs: dict[str, list[Any]]
+    kwargs: dict[str, list[Any]],
 ) -> tuple[dict[str, Any], dict[str, list[Any]]]:
     constant_kwargs = {}
     per_row_kwargs = {}
@@ -600,4 +602,154 @@ class GeminiEmbedder(BaseEmbedder):
 
         response = genai.embed_content(model, content=[input], **kwargs)
         embedding = response["embedding"][0]
+        return np.array(embedding)
+
+
+class BedrockEmbedder(BaseEmbedder):
+    """Pathway wrapper for AWS Bedrock Embedding services (see
+    `Titan Embeddings docs <https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html>`_).
+
+    Supports Amazon Titan embeddings and other embedding models available on Bedrock.
+
+    The ``capacity``, ``retry_strategy``, and ``cache_strategy`` need to be specified
+    during object construction. AWS credentials can be provided explicitly or will be
+    loaded from environment variables (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``)
+    or IAM roles when running on AWS infrastructure.
+
+    Args:
+        capacity: Maximum number of concurrent operations allowed.
+            Defaults to ``None``, indicating no specific limit.
+        retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to ``ExponentialBackoffRetryStrategy``.
+        cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid ``CacheStrategy`` should be provided. Defaults to ``None``.
+        model_id: The Bedrock embedding model ID to use. Defaults to
+            ``"amazon.titan-embed-text-v2:0"``. Other options include:
+            - ``"amazon.titan-embed-text-v1"``
+            - ``"cohere.embed-english-v3"``
+            - ``"cohere.embed-multilingual-v3"``
+        region_name: AWS region where Bedrock is deployed (e.g., ``"us-east-1"``).
+            Can also be set via ``AWS_DEFAULT_REGION`` environment variable.
+        aws_access_key_id: Optional AWS access key ID. If not provided, will use
+            default credential chain.
+        aws_secret_access_key: Optional AWS secret access key.
+        aws_session_token: Optional AWS session token for temporary credentials.
+        dimensions: Output embedding dimensions (only supported by some models like
+            Titan V2). If not specified, uses model default.
+        normalize: Whether to normalize the embedding vector (only supported by
+            some models).
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import embedders
+    >>> embedder = embedders.BedrockEmbedder(
+    ...     model_id="amazon.titan-embed-text-v2:0",
+    ...     region_name="us-east-1"
+    ... )  # doctest: +SKIP
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt
+    ... Hello world
+    ... ''')  # doctest: +SKIP
+    >>> t.select(ret=embedder(pw.this.txt))  # doctest: +SKIP
+    <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
+        cache_strategy: udfs.CacheStrategy | None = None,
+        model_id: str | None = "amazon.titan-embed-text-v2:0",
+        region_name: str | None = None,
+        aws_access_key_id: str | None = None,
+        aws_secret_access_key: str | None = None,
+        aws_session_token: str | None = None,
+        **bedrock_kwargs,
+    ):
+        with optional_imports("xpack-llm"):
+            import aioboto3  # noqa:F401
+
+        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        super().__init__(
+            executor=executor,
+            cache_strategy=cache_strategy,
+        )
+
+        self.kwargs = dict(bedrock_kwargs)
+        if model_id is not None:
+            self.kwargs["model_id"] = model_id
+
+        self._session = aioboto3.Session(
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+            region_name=region_name,
+        )
+
+    async def __wrapped__(self, input: str, **kwargs) -> np.ndarray:
+        """Embed the text using AWS Bedrock.
+
+        Args:
+            input: mandatory, the string to embed.
+            **kwargs: optional parameters, if unset defaults from the constructor
+              will be taken.
+        """
+
+        kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
+
+        model_id = kwargs.pop("model_id", None)
+        if model_id is None:
+            raise ValueError(
+                "`model_id` parameter is missing in `BedrockEmbedder`. "
+                "Please provide the model ID either in the constructor or in the function call."
+            )
+
+        # Build request body based on model type
+        request_body: dict[str, Any] = {}
+        if "titan" in model_id.lower():
+            # Amazon Titan embedding format
+            request_body = {"inputText": input}
+            if "dimensions" in kwargs:
+                request_body["dimensions"] = kwargs.pop("dimensions")
+            if "normalize" in kwargs:
+                request_body["normalize"] = kwargs.pop("normalize")
+        elif "cohere" in model_id.lower():
+            # Cohere embedding format
+            request_body = {
+                "texts": [input],
+                "input_type": kwargs.pop("input_type", "search_document"),
+            }
+            if "truncate" in kwargs:
+                request_body["truncate"] = kwargs.pop("truncate")
+        else:
+            # Generic format - try Titan-style
+            request_body = {"inputText": input}
+
+        async with self._session.client("bedrock-runtime") as client:
+            response = await client.invoke_model(
+                modelId=model_id,
+                body=json.dumps(request_body),
+                contentType="application/json",
+                accept="application/json",
+            )
+
+            # Read and parse response
+            response_body = await response["body"].read()
+            result = json.loads(response_body)
+
+        # Extract embedding based on model type
+        if "titan" in model_id.lower():
+            embedding = result.get("embedding", [])
+        elif "cohere" in model_id.lower():
+            embeddings = result.get("embeddings", [[]])
+            embedding = embeddings[0] if embeddings else []
+        else:
+            # Try common response formats
+            embedding = result.get("embedding", result.get("embeddings", [[]])[0])
+
         return np.array(embedding)
