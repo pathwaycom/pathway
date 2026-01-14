@@ -3,6 +3,7 @@
 Pathway embedder UDFs.
 """
 import asyncio
+import json
 import logging
 from typing import Any, Literal
 
@@ -605,7 +606,7 @@ class GeminiEmbedder(BaseEmbedder):
 
 
 class BedrockEmbedder(BaseEmbedder):
-    """Pathway wrapper for AWS Bedrock Embedding services.
+    """Pathway wrapper for AWS Bedrock Embedding services (see `Titan Embeddings docs <https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html>`_).
 
     Supports Amazon Titan embeddings and other embedding models available on Bedrock.
 
@@ -616,17 +617,17 @@ class BedrockEmbedder(BaseEmbedder):
 
     Args:
         capacity: Maximum number of concurrent operations allowed.
-            Defaults to None, indicating no specific limit.
+            Defaults to ``None``, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to `ExponentialBackoffRetryStrategy`.
+            Defaults to ``ExponentialBackoffRetryStrategy``.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided. Defaults to None.
+            a valid ``CacheStrategy`` should be provided. Defaults to ``None``.
         model_id: The Bedrock embedding model ID to use. Defaults to
-            "amazon.titan-embed-text-v2:0". Other options include:
-            - "amazon.titan-embed-text-v1"
-            - "cohere.embed-english-v3"
-            - "cohere.embed-multilingual-v3"
-        region_name: AWS region where Bedrock is deployed (e.g., "us-east-1").
+            ``"amazon.titan-embed-text-v2:0"``. Other options include:
+            - ``"amazon.titan-embed-text-v1"``
+            - ``"cohere.embed-english-v3"``
+            - ``"cohere.embed-multilingual-v3"``
+        region_name: AWS region where Bedrock is deployed (e.g., ``"us-east-1"``).
             Can also be set via ``AWS_DEFAULT_REGION`` environment variable.
         aws_access_key_id: Optional AWS access key ID. If not provided, will use
             default credential chain.
@@ -681,10 +682,12 @@ class BedrockEmbedder(BaseEmbedder):
         if model_id is not None:
             self.kwargs["model_id"] = model_id
 
-        self.region_name = region_name
-        self.aws_access_key_id = aws_access_key_id
-        self.aws_secret_access_key = aws_secret_access_key
-        self.aws_session_token = aws_session_token
+        self._session = aioboto3.Session(
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+            region_name=region_name,
+        )
 
     async def __wrapped__(self, input: str, **kwargs) -> np.ndarray:
         """Embed the text using AWS Bedrock.
@@ -695,7 +698,6 @@ class BedrockEmbedder(BaseEmbedder):
               will be taken.
         """
         import aioboto3
-        import json as json_module
 
         kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
@@ -728,25 +730,17 @@ class BedrockEmbedder(BaseEmbedder):
             # Generic format - try Titan-style
             request_body = {"inputText": input}
 
-        # Create session and client
-        session = aioboto3.Session(
-            aws_access_key_id=self.aws_access_key_id,
-            aws_secret_access_key=self.aws_secret_access_key,
-            aws_session_token=self.aws_session_token,
-            region_name=self.region_name,
-        )
-
-        async with session.client("bedrock-runtime") as client:
+        async with self._session.client("bedrock-runtime") as client:
             response = await client.invoke_model(
                 modelId=model_id,
-                body=json_module.dumps(request_body),
+                body=json.dumps(request_body),
                 contentType="application/json",
                 accept="application/json",
             )
 
             # Read and parse response
             response_body = await response["body"].read()
-            result = json_module.loads(response_body)
+            result = json.loads(response_body)
 
         # Extract embedding based on model type
         if "titan" in model_id.lower():

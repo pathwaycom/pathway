@@ -10,7 +10,7 @@ import pytest
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm import embedders
-
+from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
 
 @pytest.mark.skip(reason="fails on CI for lack of api keys")
 def test_oai_vs_llm():
@@ -66,8 +66,6 @@ def test_openai_context_no_truncation(model: str, strategy: str):
 
 # ===== BedrockEmbedder Tests =====
 
-from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
-
 
 @pytest.mark.parametrize(
     "model_id",
@@ -117,33 +115,6 @@ def test_bedrock_embedder_default_model():
     embedder = embedders.BedrockEmbedder(region_name="us-east-1")
 
     assert embedder.kwargs.get("model_id") == "amazon.titan-embed-text-v2:0"
-
-
-@pytest.mark.parametrize(
-    "region_name",
-    ["us-east-1", "eu-west-1", "ap-northeast-1", None],
-)
-def test_bedrock_embedder_region_config(region_name):
-    embedder = embedders.BedrockEmbedder(
-        model_id="amazon.titan-embed-text-v2:0",
-        region_name=region_name,
-    )
-
-    assert embedder.region_name == region_name
-
-
-def test_bedrock_embedder_aws_credentials():
-    embedder = embedders.BedrockEmbedder(
-        model_id="amazon.titan-embed-text-v2:0",
-        region_name="us-east-1",
-        aws_access_key_id="test_key",
-        aws_secret_access_key="test_secret",
-        aws_session_token="test_token",
-    )
-
-    assert embedder.aws_access_key_id == "test_key"
-    assert embedder.aws_secret_access_key == "test_secret"
-    assert embedder.aws_session_token == "test_token"
 
 
 def test_bedrock_embedder_extra_kwargs():

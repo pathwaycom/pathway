@@ -194,30 +194,3 @@ def test_bedrock_call_args(model_id, call_arg):
 
     # BedrockChat always returns based on supported_args, model_id doesn't affect it
     assert llm._accepts_call_arg(call_arg) is (call_arg in BEDROCK_VALID_ARGS)
-
-
-@pytest.mark.parametrize(
-    "region_name",
-    ["us-east-1", "eu-west-1", None],
-)
-def test_bedrock_region_config(region_name):
-    llm = llms.BedrockChat(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-        region_name=region_name,
-    )
-
-    assert llm.region_name == region_name
-
-
-def test_bedrock_aws_credentials():
-    llm = llms.BedrockChat(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-        region_name="us-east-1",
-        aws_access_key_id="test_key",
-        aws_secret_access_key="test_secret",
-        aws_session_token="test_token",
-    )
-
-    assert llm.aws_access_key_id == "test_key"
-    assert llm.aws_secret_access_key == "test_secret"
-    assert llm.aws_session_token == "test_token"

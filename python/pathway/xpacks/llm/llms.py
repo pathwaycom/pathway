@@ -767,7 +767,7 @@ class CohereChat(BaseChat):
 
 
 class BedrockChat(BaseChat):
-    """Pathway wrapper for AWS Bedrock Chat services using the Converse API.
+    """Pathway wrapper for AWS Bedrock Chat services using the `Converse API <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html>`_.
 
     Supports models like Claude (Anthropic), Llama, Titan, Mistral, and others
     available on Amazon Bedrock.
@@ -779,22 +779,22 @@ class BedrockChat(BaseChat):
 
     Args:
         capacity: Maximum number of concurrent operations allowed.
-            Defaults to None, indicating no specific limit.
+            Defaults to ``None``, indicating no specific limit.
         retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to `ExponentialBackoffRetryStrategy`.
+            Defaults to ``ExponentialBackoffRetryStrategy``.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided. Defaults to None.
-        model_id: The Bedrock model ID to use (e.g., "anthropic.claude-3-sonnet-20240229-v1:0",
-            "meta.llama3-70b-instruct-v1:0", "amazon.titan-text-premier-v1:0").
-        region_name: AWS region where Bedrock is deployed (e.g., "us-east-1").
+            a valid ``CacheStrategy`` should be provided. Defaults to ``None``.
+        model_id: The Bedrock model ID to use (e.g., ``"anthropic.claude-3-sonnet-20240229-v1:0"``,
+            ``"meta.llama3-70b-instruct-v1:0"``, ``"amazon.titan-text-premier-v1:0"``).
+        region_name: AWS region where Bedrock is deployed (e.g., ``"us-east-1"``).
             Can also be set via ``AWS_DEFAULT_REGION`` environment variable.
         aws_access_key_id: Optional AWS access key ID. If not provided, will use
             default credential chain.
         aws_secret_access_key: Optional AWS secret access key.
         aws_session_token: Optional AWS session token for temporary credentials.
-        async_mode: Either "batch_async" or "fully_async". Defaults to "batch_async".
-        max_tokens: Maximum number of tokens to generate. Defaults to 1024.
-        temperature: Sampling temperature (0.0 to 1.0).
+        async_mode: Either ``"batch_async"`` or ``"fully_async"``. Defaults to ``"batch_async"``.
+        max_tokens: Maximum number of tokens to generate. Defaults to ``1024``.
+        temperature: Sampling temperature (``0.0`` to ``1.0``).
         top_p: Top-p sampling parameter.
         stop_sequences: List of sequences that will stop generation.
 
@@ -911,11 +911,12 @@ class BedrockChat(BaseChat):
         if model_id is not None:
             self.kwargs["model_id"] = model_id
 
-        self.region_name = region_name
-        self.aws_access_key_id = aws_access_key_id
-        self.aws_secret_access_key = aws_secret_access_key
-        self.aws_session_token = aws_session_token
-        self._session = None
+        self._session = aioboto3.Session(
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+            region_name=region_name,
+        )
 
     @property
     def model(self) -> str | None:
@@ -965,15 +966,8 @@ class BedrockChat(BaseChat):
         if "stop_sequences" in kwargs:
             inference_config["stopSequences"] = kwargs.pop("stop_sequences")
 
-        # Create session and client
-        session = aioboto3.Session(
-            aws_access_key_id=self.aws_access_key_id,
-            aws_secret_access_key=self.aws_secret_access_key,
-            aws_session_token=self.aws_session_token,
-            region_name=self.region_name,
-        )
 
-        async with session.client("bedrock-runtime") as client:
+        async with self._session.client("bedrock-runtime") as client:
             converse_kwargs = {
                 "modelId": model_id,
                 "messages": bedrock_messages,
