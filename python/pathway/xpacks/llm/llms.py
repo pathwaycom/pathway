@@ -767,7 +767,8 @@ class CohereChat(BaseChat):
 
 
 class BedrockChat(BaseChat):
-    """Pathway wrapper for AWS Bedrock Chat services using the `Converse API <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html>`_.
+    """Pathway wrapper for AWS Bedrock Chat services using the
+    `Converse API <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html>`_.
 
     Supports models like Claude (Anthropic), Llama, Titan, Mistral, and others
     available on Amazon Bedrock.
@@ -923,7 +924,6 @@ class BedrockChat(BaseChat):
         return self.kwargs.get("model_id")
 
     async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
-        import aioboto3
 
         messages_decoded = _prepare_messages(messages)
 
@@ -965,7 +965,6 @@ class BedrockChat(BaseChat):
             inference_config["topP"] = kwargs.pop("top_p")
         if "stop_sequences" in kwargs:
             inference_config["stopSequences"] = kwargs.pop("stop_sequences")
-
 
         async with self._session.client("bedrock-runtime") as client:
             converse_kwargs = {

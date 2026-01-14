@@ -8,9 +8,10 @@ import os
 import pytest
 
 import pathway as pw
+from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm import embedders
-from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
+
 
 @pytest.mark.skip(reason="fails on CI for lack of api keys")
 def test_oai_vs_llm():

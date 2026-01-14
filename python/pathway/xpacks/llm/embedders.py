@@ -606,7 +606,8 @@ class GeminiEmbedder(BaseEmbedder):
 
 
 class BedrockEmbedder(BaseEmbedder):
-    """Pathway wrapper for AWS Bedrock Embedding services (see `Titan Embeddings docs <https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html>`_).
+    """Pathway wrapper for AWS Bedrock Embedding services (see
+    `Titan Embeddings docs <https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html>`_).
 
     Supports Amazon Titan embeddings and other embedding models available on Bedrock.
 
@@ -697,7 +698,6 @@ class BedrockEmbedder(BaseEmbedder):
             **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
-        import aioboto3
 
         kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
