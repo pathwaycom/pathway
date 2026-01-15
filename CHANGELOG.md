@@ -4,11 +4,11 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
-- `pw.xpacks.llm.llms.BedrockChat` - Native AWS Bedrock chat integration using the Converse API. Supports Claude, Llama, Titan, Mistral, and other Bedrock models.
-- `pw.xpacks.llm.embedders.BedrockEmbedder` - Native AWS Bedrock embedding integration supporting Amazon Titan and Cohere embedding models.
 
 ### Added
 - `pw.io.kafka.read` now includes message headers in the parsed metadata. The headers are available at the top level of the metadata in the `headers` array. Each element of the array is a pair consisting of a string header name and a base64-encoded header value. If the header is null, the corresponding value is also null.
+- `pw.xpacks.llm.llms.BedrockChat` - Native AWS Bedrock chat integration using the Converse API. Supports Claude, Llama, Titan, Mistral, and other Bedrock models.
+- `pw.xpacks.llm.embedders.BedrockEmbedder` - Native AWS Bedrock embedding integration supporting Amazon Titan and Cohere embedding models.
 
 ### Changed
 - Most Python dependencies are now imported only if the related capabilities are used by a program.
@@ -25,6 +25,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **BREAKING**: The `__str__` and `dumps` methods in `pw.Json` no longer enforce the result to be an ASCII string. This way, the behavior of `pw.debug.compute_and_print` is now consistent with other output connectors.
 - The window functions now internally use deterministic UDFs, where possible.
+- The detection logic for the append-only Python connectors has been improved, syntactic analysis has been put in place.
 
 ## [0.27.1] - 2025-12-08
 

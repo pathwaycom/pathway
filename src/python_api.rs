@@ -2128,6 +2128,15 @@ impl PyPythonConnectorEventType {
     pub const DELETE: PythonConnectorEventType = PythonConnectorEventType::Delete;
     #[classattr]
     pub const EXTERNAL_OFFSET: PythonConnectorEventType = PythonConnectorEventType::ExternalOffset;
+
+    #[getter]
+    fn name(&self) -> &str {
+        match self.0 {
+            PythonConnectorEventType::Insert => "INSERT",
+            PythonConnectorEventType::Delete => "DELETE",
+            PythonConnectorEventType::ExternalOffset => "EXTERNAL_OFFSET",
+        }
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "DebeziumDBType")]

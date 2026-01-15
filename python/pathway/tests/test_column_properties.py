@@ -178,6 +178,10 @@ def test_python_connector_append_only():
         def run(self):
             pass
 
+        @property
+        def _deletions_enabled(self) -> bool:
+            return True
+
     class TestSubject2(io.python.ConnectorSubject):
         def run(self):
             pass
