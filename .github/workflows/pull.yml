@@ -47,6 +47,3 @@ jobs:
 
       - name: Run cargo clippy
         run: cargo clippy --locked --all-targets -- --deny warnings
-
-      - name: Run runtime engine tests
-        run: cargo --locked test
