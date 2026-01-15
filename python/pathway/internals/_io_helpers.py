@@ -1,13 +1,10 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
 import dataclasses
 import datetime
 import json
-
-import boto3
-import boto3.session
 
 from pathway.internals import api, schema
 from pathway.internals.table import Table
@@ -90,6 +87,8 @@ class AwsS3Settings:
 
             # the crate we use on the Rust-engine side can't detect the location
             # of a bucket, so it's done on the Python side
+            import boto3
+
             s3_client = boto3.client("s3")
             location_response = s3_client.get_bucket_location(Bucket=bucket)
 
@@ -115,6 +114,8 @@ class AwsS3Settings:
         # DeltaLake underlying AWS S3 library may fail to deduce the credentials, so
         # we use boto3 to do that, which is more reliable
         # Related github issue: https://github.com/delta-io/delta-rs/issues/854
+        import boto3.session
+
         session = boto3.session.Session()
         creds = session.get_credentials()
         if creds.access_key is not None and creds.secret_key is not None:

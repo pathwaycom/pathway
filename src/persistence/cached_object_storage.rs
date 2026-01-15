@@ -877,7 +877,7 @@ impl CachedObjectStorage {
         self.metadata_snapshot.contains_key(uri)
     }
 
-    pub fn get_iter(&self) -> Iter<Uri, FileLikeMetadata> {
+    pub fn get_iter(&self) -> Iter<'_, Uri, FileLikeMetadata> {
         self.metadata_snapshot.iter()
     }
 

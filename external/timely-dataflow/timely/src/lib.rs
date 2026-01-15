@@ -57,8 +57,9 @@
 
 #![forbid(missing_docs)]
 
-// Required for deriving `Abomonation`. Note: the associated crate has not been updated in 5 years and triggers warnings starting with Rust 1.85.
-#![allow(non_local_definitions)]
+// Disabling warnings since we try to keep the forks as close to the original, while the
+// suggestions are applied for the principal framework library.
+#![allow(warnings)]
 
 #[macro_use]
 extern crate abomonation_derive;

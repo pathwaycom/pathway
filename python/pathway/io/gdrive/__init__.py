@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
@@ -15,12 +15,10 @@ from dataclasses import dataclass
 from enum import Enum
 from os import PathLike, fspath
 from queue import Queue
-from typing import Any, Literal, NewType
+from typing import TYPE_CHECKING, Any, Literal, NewType
 
-from google.oauth2.service_account import Credentials as ServiceCredentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+if TYPE_CHECKING:
+    from google.oauth2.service_account import Credentials as ServiceCredentials
 
 import pathway as pw
 from pathway.internals import api
@@ -123,6 +121,8 @@ class _GDriveClient:
         file_name_pattern: list | str | None = None,
         list_objects_strategy: _ListObjectsStrategy | None = None,
     ) -> None:
+        from googleapiclient.discovery import build
+
         self.root = root
         self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
@@ -297,6 +297,8 @@ class _GDriveClient:
         return result
 
     def _get(self, file_id: str) -> GDriveFile | None:
+        from googleapiclient.errors import HttpError
+
         try:
             file = (
                 self.drive.files()
@@ -331,6 +333,9 @@ class _GDriveClient:
             return self.drive.files().get_media(fileId=file_id)
 
     def download(self, file: GDriveFile) -> bytes | None:
+        from googleapiclient.errors import HttpError
+        from googleapiclient.http import MediaIoBaseDownload
+
         is_symlink = file.get("size") is None
         is_too_large = (
             self.object_size_limit is not None
@@ -465,6 +470,8 @@ class _GDriveSubject(ConnectorSubject):
         return self._mode == "streaming"
 
     def run(self) -> None:
+        from googleapiclient.errors import HttpError
+
         client = _GDriveClient(
             self._root,
             self._credentials_factory(),
@@ -583,6 +590,8 @@ def read(
         raise ValueError(f"Unrecognized connector mode: {mode}")
 
     def credentials_factory() -> ServiceCredentials:
+        from google.oauth2.service_account import Credentials as ServiceCredentials
+
         return ServiceCredentials.from_service_account_file(
             fspath(service_user_credentials_file)
         )

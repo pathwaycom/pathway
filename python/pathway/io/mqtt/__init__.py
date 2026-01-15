@@ -264,7 +264,7 @@ def write(
     ...     value=table.owner,
     ... )
 
-    Finally, if you'd like the topic to be dynamic and depend on the the owner of the pet,
+    Finally, if you'd like the topic to be dynamic and depend on the owner of the pet,
     you can specify this column definition as the topic:
 
     >>> pw.io.mqtt.write(

@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 import dataclasses
 import json
@@ -60,7 +60,10 @@ class KafkaTestContext:
         self._admin.delete_topics(topics=[name])
 
     def send(
-        self, message: str | tuple[str | bytes | None, str | bytes | None], topic=None
+        self,
+        message: str | tuple[str | bytes | None, str | bytes | None],
+        topic: str | None = None,
+        headers: list[tuple[str, bytes]] | None = None,
     ) -> None:
         topic = topic or self._input_topic
 
@@ -74,15 +77,24 @@ class KafkaTestContext:
         if isinstance(value, str):
             value = value.encode()
 
-        self._producer.send(topic, key=key, value=value)
+        self._producer.send(
+            topic,
+            key=key,
+            value=value,
+            headers=headers,
+        )
 
     def set_input_topic_partitions(self, num_partitions: int):
         self._delete_topic(self._input_topic)
         self._create_topic(self._input_topic, num_partitions)
 
-    def fill(self, messages: Iterable[str | tuple[str, str]]) -> None:
+    def fill(
+        self,
+        messages: Iterable[str | tuple[str, str]],
+        headers: list[tuple[str, bytes]] | None = None,
+    ) -> None:
         for msg in messages:
-            self.send(msg)
+            self.send(msg, headers=headers)
         self._producer.flush()
 
     def read_topic(self, topic, poll_timeout_ms: int = 1000) -> list[ConsumerRecord]:

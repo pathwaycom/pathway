@@ -160,7 +160,7 @@ mod python_conversions {
 
 impl OriginalOrRetraction for Timestamp {
     fn is_original(&self) -> bool {
-        self.0 % 2 == 0
+        self.0.is_multiple_of(2)
     }
 }
 

@@ -286,7 +286,7 @@ pw.run()
 # %% [markdown]
 # ## Jupyter Notebooks & Streaming Data in Production
 #
-# Congratulations! You have succesfully built a live data streaming pipeline with useful data visualisations and real-time alerts, right from a Jupyter notebook 😄
+# Congratulations! You have successfully built a live data streaming pipeline with useful data visualisations and real-time alerts, right from a Jupyter notebook 😄
 #
 # This is just a taste of what is possible. If you're interested in diving deeper and building a production-grade data science pipeline all the way from data exploration to deployment, you may want to check out the full-length [From Jupyter to Deploy](/developers/user-guide/deployment/from-jupyter-to-deploy) tutorial.
 #

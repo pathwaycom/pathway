@@ -71,10 +71,10 @@
 //! of the new and old counts of the old and new degrees of the affected node).
 
 #![forbid(missing_docs)]
-#![allow(array_into_iter)]
 
-// Required for deriving `Abomonation`. Note: the associated crate has not been updated in 5 years and triggers warnings starting with Rust 1.85.
-#![allow(non_local_definitions)]
+// Disabling warnings since we try to keep the forks as close to the original, while the
+// suggestions are applied for the principal framework library.
+#![allow(warnings)]
 
 use std::fmt::Debug;
 

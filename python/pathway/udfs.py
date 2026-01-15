@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 """Methods and classes for controlling the behavior of UDFs (User-Defined Functions) in Pathway.
 
 Typical use:

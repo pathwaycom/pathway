@@ -42,15 +42,6 @@ async def _ready_client(
     raise TimeoutError(f"Server at {base_url} did not become ready in {timeout_s}s")
 
 
-@pytest.fixture
-def tcp_port() -> int:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
 @pytest.mark.asyncio
 async def test_list_mcp_tools(tcp_port):
     def pipeline():

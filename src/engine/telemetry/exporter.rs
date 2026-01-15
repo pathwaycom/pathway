@@ -42,6 +42,9 @@ GROUP BY m.worker_id, m.operator_id, m.timestamp;
 
 CREATE INDEX IF NOT EXISTS ix_metrics_operator_ts_name
 ON Metrics (worker_id, operator_id, timestamp, name);
+
+CREATE INDEX IF NOT EXISTS idx_metrics_name_timestamp ON Metrics(name, timestamp);
+
 COMMIT;
 ";
 

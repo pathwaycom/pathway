@@ -1,9 +1,9 @@
 [package]
 name = "pathway"
-version = "0.27.1"
+version = "0.28.0"
 edition = "2021"
 publish = false
-rust-version = "1.88"
+rust-version = "1.92"
 license = "BUSL-1.1"
 
 [lib]
@@ -98,7 +98,7 @@ serde_with = "3.12.0"
 smallvec = { version = "1.15.0", features = ["union", "const_generics"] }
 syn = { version = "2.0.101", features = ["default", "full", "visit", "visit-mut"] } # Hack to keep features unified between normal and build deps
 sysinfo = "0.35.1"
-tantivy = "0.22.0"
+tantivy = "0.22.1"  # Note: don't bump this dependency before the RAG integration test failure is investigated
 tempfile = "3.20.0"
 thiserror = "1.0.63"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }

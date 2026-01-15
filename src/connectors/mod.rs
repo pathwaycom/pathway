@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use adaptors::InputAdaptor;
 use crossbeam_channel::{self as channel, Sender, TryRecvError};
@@ -587,7 +587,7 @@ impl Connector {
             persistent_storage.as_ref(),
             snapshot_access,
         )
-        .map_err(|e| EngineError::SnapshotWriterError(Box::new(e)))?;
+        .map_err(|e| EngineError::SnapshotWriter(Box::new(e)))?;
 
         let realtime_reader_group = self.group.clone();
         let input_thread_handle = thread::Builder::new()
@@ -997,7 +997,7 @@ impl Connector {
                         continue;
                     }
                     Self::on_insert(key.expect("No key"), values, input_session);
-                    self.backlog_tracker.on_event(&self.current_timestamp);
+                    self.backlog_tracker.on_event(self.current_timestamp);
                 }
                 ParsedEvent::Delete((_, values)) => {
                     if matches!(session_type, SessionType::Native)
@@ -1007,7 +1007,7 @@ impl Connector {
                         continue;
                     }
                     Self::on_remove(key.expect("No key"), values, input_session);
-                    self.backlog_tracker.on_event(&self.current_timestamp);
+                    self.backlog_tracker.on_event(self.current_timestamp);
                 }
                 ParsedEvent::AdvanceTime => {
                     let time_advanced = self.advance_time(input_session);

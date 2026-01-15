@@ -1,4 +1,4 @@
-/// Copyright © 2025 Pathway
+/// Copyright © 2026 Pathway
 ///
 /// `AsyncTransformer` allows for fully asynchronous computation on the python side.
 /// Computation results are returned to the engine in a later (or equal) time

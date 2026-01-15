@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 """k-approximate nearest neighbor search (and classification) via LSH.
 
@@ -148,7 +148,7 @@ def knn_lsh_generic_classifier_train(
     data += data.select(buckets=pw.apply(lsh_projection, data.data))
     # Fix "UserWarning: Object in (<table1>.buckets)[8] is of type numpy.ndarray
     # but its number of dimensions is not known." when calling unpack_col with ndarray.
-    # pw.cast not working and unpack_col doesnt take pw.apply so I used pw.apply separately.
+    # pw.cast not working and unpack_col doesn't take pw.apply so I used pw.apply separately.
     buckets_list = data.select(buckets=pw.apply(list, data.buckets))
     data += unpack_col(buckets_list.buckets, *band_col_names)
 

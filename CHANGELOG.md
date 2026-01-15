@@ -6,10 +6,27 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- Pathway Web Dashboard providing user-friendly interface for monitoring Pathway pipelines in real time with interactive graph plotting and latency/memory metrics.
+- `pw.io.kafka.read` now includes message headers in the parsed metadata. The headers are available at the top level of the metadata in the `headers` array. Each element of the array is a pair consisting of a string header name and a base64-encoded header value. If the header is null, the corresponding value is also null.
+- `pw.xpacks.llm.llms.BedrockChat` - Native AWS Bedrock chat integration using the Converse API. Supports Claude, Llama, Titan, Mistral, and other Bedrock models.
+- `pw.xpacks.llm.embedders.BedrockEmbedder` - Native AWS Bedrock embedding integration supporting Amazon Titan and Cohere embedding models.
+
+### Changed
+- Most Python dependencies are now imported only if the related capabilities are used by a program.
+- **BREAKING**: Output connectors no longer wrap string header values in double quotes when sending them to Kafka or NATS. The string values are forwarded as-is. The `None` value is handled differently: in Kafka, it is serialized as a header without a value, while in NATS it becomes the string `"None"`.
+
+## [0.28.0] - 2026-01-08
+
+### Added
 - `pw.io.kafka.read` and `pw.io.redpanda.read` now allow each schema field to be specified as coming from either the message key or the message value.
 - Connector groups now support the specification of an idle duration. When this is set, if a source does not provide any data for the specified period of time, it will be excluded from the group until it produces data again.
 - It is now possible to assign priorities to sources within a connector group. When a priority is set, it ensures that at any moment, the source is not lagging behind any other source with a higher priority in terms of the tracked column.
 - Connector groups can now be used in the multiprocess runs.
+
+### Changed
+- **BREAKING**: The `__str__` and `dumps` methods in `pw.Json` no longer enforce the result to be an ASCII string. This way, the behavior of `pw.debug.compute_and_print` is now consistent with other output connectors.
+- The window functions now internally use deterministic UDFs, where possible.
+- The detection logic for the append-only Python connectors has been improved, syntactic analysis has been put in place.
 
 ## [0.27.1] - 2025-12-08
 

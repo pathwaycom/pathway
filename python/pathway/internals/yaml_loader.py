@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 # mypy: disallow-untyped-defs, extra-checks, disallow-any-generics, warn-return-any
 

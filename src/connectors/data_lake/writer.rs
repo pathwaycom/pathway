@@ -18,8 +18,8 @@ impl LakeWriter {
         batch_writer: Box<dyn LakeBatchWriter>,
         buffer: Box<dyn ColumnBuffer>,
         min_commit_frequency: Option<Duration>,
-    ) -> Result<Self, WriteError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             batch_writer,
             buffer,
             min_commit_frequency,
@@ -27,7 +27,7 @@ impl LakeWriter {
             // before the first commit, the time should be
             // measured from the moment of the start
             last_commit_at: Instant::now(),
-        })
+        }
     }
 }
 

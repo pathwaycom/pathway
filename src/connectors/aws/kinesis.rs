@@ -32,22 +32,22 @@ use crate::retry::RetryConfig;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("List shards error, error details: {0:?}")]
-    ListShardsError(#[from] SdkError<ListShardsError, AwsHttpResponse>),
+    ListShards(#[from] SdkError<ListShardsError, AwsHttpResponse>),
 
     #[error("List streams error, error details: {0:?}")]
-    ListStreamsError(#[from] SdkError<ListStreamsError, AwsHttpResponse>),
+    ListStreams(#[from] SdkError<ListStreamsError, AwsHttpResponse>),
 
     #[error("Describe stream error, error details: {0:?}")]
-    DescribeStreamSummaryError(#[from] SdkError<DescribeStreamSummaryError, AwsHttpResponse>),
+    DescribeStreamSummary(#[from] SdkError<DescribeStreamSummaryError, AwsHttpResponse>),
 
     #[error("Get shard iterator error, error details: {0:?}")]
-    GetShardIteratorError(#[from] SdkError<GetShardIteratorError, AwsHttpResponse>),
+    GetShardIterator(#[from] SdkError<GetShardIteratorError, AwsHttpResponse>),
 
     #[error("Get shard records error, error details: {0:?}")]
-    GetShardRecordsError(#[from] SdkError<GetRecordsError, AwsHttpResponse>),
+    GetShardRecords(#[from] SdkError<GetRecordsError, AwsHttpResponse>),
 
     #[error("Put records error, error details: {0:?}")]
-    PutRecordsError(#[from] SdkError<PutRecordsError, AwsHttpResponse>),
+    PutRecords(#[from] SdkError<PutRecordsError, AwsHttpResponse>),
 
     #[error("Iterator not found for shard {0}")]
     IteratorNotFound(String),
@@ -212,7 +212,11 @@ impl ShardSet {
                 // Update, case 1: we've read everything we could.
                 let iteration_elapsed = self.last_updated_at.elapsed();
                 if iteration_elapsed < self.round_robin_duration {
-                    std::thread::sleep(self.round_robin_duration - iteration_elapsed);
+                    std::thread::sleep(
+                        self.round_robin_duration
+                            .checked_sub(iteration_elapsed)
+                            .unwrap(),
+                    );
                 }
                 update_is_needed = true;
             } else if self.had_full_round_robin
@@ -318,7 +322,7 @@ impl KinesisReader {
         let response = iterator_builder
             .send()
             .await
-            .map_err(Error::GetShardIteratorError)?;
+            .map_err(Error::GetShardIterator)?;
         let iterator = response
             .shard_iterator()
             .ok_or(Error::IteratorNotFound(shard_id.to_string()))?
@@ -347,7 +351,7 @@ impl Reader for KinesisReader {
         let mut shard_closing_offsets: HashMap<String, String> = HashMap::new();
         for shard in &self.operated_set.assigned_shards {
             if let Some(last_record_id) = &shard.last_record_id {
-                shard_closing_offsets.insert(shard.shard_id.clone(), last_record_id.to_string());
+                shard_closing_offsets.insert(shard.shard_id.clone(), last_record_id.clone());
             }
         }
 
@@ -365,7 +369,7 @@ impl Reader for KinesisReader {
                 continue;
             };
             self.shard_offsets
-                .insert(shard_id.to_string(), offset.to_string());
+                .insert(shard_id.to_string(), offset.clone());
             if let Some(closing_offset) = shard_closing_offsets.get(shard_id.as_str()) {
                 if closing_offset == offset {
                     self.operated_set
@@ -577,7 +581,7 @@ impl KinesisWriter {
                         .stream_name(stream_name)
                         .send()
                         .await
-                        .map_err(Error::DescribeStreamSummaryError)?;
+                        .map_err(Error::DescribeStreamSummary)?;
                     let stream_status = stream
                         .stream_description_summary()
                         .ok_or(Error::StreamDoesntExist(stream_name.clone()))?
@@ -595,7 +599,7 @@ impl KinesisWriter {
                         .limit(1)
                         .send()
                         .await
-                        .map_err(Error::ListStreamsError)?;
+                        .map_err(Error::ListStreams)?;
                 }
             }
             Ok::<_, Error>(())

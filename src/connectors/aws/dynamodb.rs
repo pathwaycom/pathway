@@ -35,16 +35,16 @@ pub const N_SEND_ATTEMPTS: usize = 5;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Create table error, error details: {0:?}")]
-    CreateTableError(#[from] SdkError<CreateTableError, AwsHttpResponse>),
+    CreateTable(#[from] SdkError<CreateTableError, AwsHttpResponse>),
 
     #[error("Delete table error, error details: {0:?}")]
-    DeleteTableError(#[from] SdkError<DeleteTableError, AwsHttpResponse>),
+    DeleteTable(#[from] SdkError<DeleteTableError, AwsHttpResponse>),
 
     #[error("Describe table error, error details: {0:?}")]
-    DescribeTableError(#[from] SdkError<DescribeTableError, AwsHttpResponse>),
+    DescribeTable(#[from] SdkError<DescribeTableError, AwsHttpResponse>),
 
     #[error("Batch write error, error details: {0:?}")]
-    BatchWriteError(#[from] SdkError<BatchWriteItemError, AwsHttpResponse>),
+    BatchWrite(#[from] SdkError<BatchWriteItemError, AwsHttpResponse>),
 }
 
 pub struct DynamoDBWriter {

@@ -1,16 +1,18 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
+import ast
+import inspect
 import json
 import queue
+import textwrap
 import threading
 import time
 import warnings
 from abc import ABC, abstractmethod
+from functools import cached_property
 from queue import Queue
-from typing import Any, Iterable, Literal, final
+from typing import Any, Callable, Iterable, Literal, final
 
 import pandas as pd
-import panel as pn
-from IPython.display import display
 
 from pathway.internals import Table, api, datasource
 from pathway.internals.api import Pointer, PythonConnectorEventType, SessionType
@@ -319,9 +321,11 @@ class ConnectorSubject(ABC):
     def _session_type(self) -> SessionType:
         return SessionType.NATIVE
 
-    @property
+    @cached_property
     def _deletions_enabled(self) -> bool:
-        return True
+        return self._session_type == SessionType.UPSERT or _are_deletions_reachable(
+            self
+        )
 
 
 def _create_python_datasource(
@@ -367,6 +371,138 @@ def _create_python_datasource(
         datasource_name=subject._datasource_name,
         append_only=not subject._deletions_enabled,
     )
+
+
+def _are_deletions_reachable(subject) -> bool:
+    """
+    Heuristically detect, if the Python connector uses deletions. It may still have
+    false-negatives, but should suffice for the most common cases.
+
+    If the user wants to override the behavior, it's still possible with a manual
+    override of `_deletions_enabled` method.
+
+    Limitations:
+    - Only detects direct calls: self._buffer.put((PythonConnectorEventType.DELETE, ...))
+    - May miss aliased or dynamic calls
+    - Returns False on parsing errors
+    """
+
+    if not hasattr(subject, "run") or not callable(subject.run):
+        return False
+
+    class BufferPutDeleteVisitor(ast.NodeVisitor):
+        SELF_IDENTIFIER: str = "self"
+        BUFFER_NAME: str = "_buffer"
+        PUT_METHOD_NAME: str = "put"
+
+        def __init__(self):
+            self.calls = set()
+            self.uses_removal_api = False
+
+        def visit_Call(self, node: ast.Call):
+            if self._is_deletion_put(node):
+                self.uses_removal_api = True
+                return
+
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == self.SELF_IDENTIFIER
+            ):
+                self.calls.add(node.func.attr)
+
+            self.generic_visit(node)
+
+        def _is_deletion_put(self, node: ast.Call) -> bool:
+            try:
+                # self._buffer.put(...)
+                if not (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == self.PUT_METHOD_NAME
+                ):
+                    return False
+
+                buf = node.func.value
+                if not (
+                    isinstance(buf, ast.Attribute)
+                    and isinstance(buf.value, ast.Name)
+                    and buf.value.id == self.SELF_IDENTIFIER
+                    and buf.attr == self.BUFFER_NAME
+                ):
+                    return False
+
+                # args[0] exists and is a tuple
+                if not node.args:
+                    return False
+
+                first = node.args[0]
+                if not isinstance(first, ast.Tuple) or not first.elts:
+                    return False
+
+                # first element == PythonConnectorEventType.DELETE
+                elt = first.elts[0]
+                if not isinstance(elt, ast.Attribute):
+                    return False
+
+                if isinstance(elt.value, ast.Name):
+                    maybe_enum_name = elt.value.id
+                elif isinstance(elt.value, ast.Attribute):
+                    maybe_enum_name = elt.value.attr
+                else:
+                    return False
+                maybe_enum_variant = elt.attr
+
+                return (
+                    maybe_enum_name == PythonConnectorEventType.__name__
+                    and maybe_enum_variant == PythonConnectorEventType.DELETE.name
+                )
+            except (AttributeError, IndexError):
+                return False
+
+    def get_method_ast(method: Callable) -> ast.stmt | None:
+        try:
+            src = inspect.getsource(method)
+            tree = ast.parse(textwrap.dedent(src))
+            return tree.body[0] if tree.body else None
+        except (OSError, TypeError, SyntaxError):
+            return None
+
+    def is_removal_api_found(
+        method: Callable, class_methods: dict[str, Callable], visited: set[Callable]
+    ) -> bool:
+        if method in visited:
+            return False
+
+        visited.add(method)
+
+        maybe_tree = get_method_ast(method)
+        if maybe_tree is None:
+            return False
+        visitor = BufferPutDeleteVisitor()
+        visitor.visit(maybe_tree)
+
+        if visitor.uses_removal_api:
+            return True
+
+        for name in visitor.calls:
+            if name in class_methods:
+                if is_removal_api_found(class_methods[name], class_methods, visited):
+                    return True
+
+        return False
+
+    methods = {}
+    for name in dir(subject):
+        if name == "_deletions_enabled":
+            continue
+        try:
+            subject_method = getattr(subject, name)
+            if callable(subject_method):
+                methods[name] = subject_method
+        except AttributeError:
+            continue
+
+    return is_removal_api_found(subject.run, methods, visited=set())
 
 
 @check_arg_types
@@ -487,6 +623,10 @@ class InteractiveCsvPlayer(ConnectorSubject):
 
     def __init__(self, csv_file="") -> None:
         super().__init__()
+
+        import panel as pn
+        from IPython.display import display
+
         self.q = queue.Queue()
 
         self.df = pd.read_csv(csv_file)

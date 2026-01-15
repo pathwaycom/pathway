@@ -1,15 +1,16 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.datasets import fetch_openml
 
 from pathway.debug import table_from_pandas
 
 
 def load_mnist_sample(sample_size=70000):
+    from sklearn.datasets import fetch_openml
+
     X, y = fetch_openml("mnist_784", version=1, return_X_y=True, as_frame=False)
     X = X / 255.0
     X_sample = X[:70000]

@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 import base64
 import datetime
@@ -118,7 +118,33 @@ def test_kafka_static_mode(tmp_path, kafka_context):
 
 @pytest.mark.flaky(reruns=3)
 def test_kafka_message_metadata(tmp_path, kafka_context):
-    kafka_context.fill(["foo", "bar"])
+    test_kafka_foo_message_headers = [
+        ("X-Sender-ID", b"pathway-integration-test"),
+        ("X-Trace-ID", b"a8acf0a5-009f-4035-9aca-834bc85929f9"),
+        ("X-Trace-ID", b"7a21cee9-c081-4d64-add1-06e2e5e592d6"),
+        ("X-Origin", b""),
+        ("X-Signature", bytes([0, 255, 128, 10])),
+    ]
+    test_kafka_bar_message_headers = [
+        ("X-Sender-ID", b"pathway-integration-test"),
+        ("X-Trace-ID", b"ee6e3017-d77f-43d9-abf6-c33bd51e27ef"),
+        ("X-Trace-ID", b"092565ae-aa1e-406c-a53f-d2c4d6f2397c"),
+        ("X-Trace-ID", b"1d0ae9e7-8cac-40d8-9072-3d1a919a2fef"),
+        ("X-Origin", b"Server"),
+        ("X-Signature", bytes([0, 255, 128, 10, 17])),
+    ]
+
+    def check_headers(parsed: list[list[str]], original: list[tuple[str, bytes]]):
+        decoded_headers = []
+        for key, value in parsed:
+            decoded_value = base64.b64decode(value)
+            decoded_headers.append((key, decoded_value))
+        decoded_headers.sort()
+        original.sort()
+        assert decoded_headers == original
+
+    kafka_context.fill(["foo"], headers=test_kafka_foo_message_headers)
+    kafka_context.fill(["bar"], headers=test_kafka_bar_message_headers)
 
     table = pw.io.kafka.read(
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
@@ -142,7 +168,90 @@ def test_kafka_message_metadata(tmp_path, kafka_context):
             assert "offset" in metadata
             offsets.add(metadata["offset"])
 
+            assert "headers" in metadata
+            headers = metadata["headers"]
+            if data["data"] == "foo":
+                check_headers(headers, test_kafka_foo_message_headers)
+            elif data["data"] == "bar":
+                check_headers(headers, test_kafka_bar_message_headers)
+            else:
+                raise ValueError(f"unknown message data: {data['data']}")
+
     assert len(offsets) == 2
+
+
+# Python client for Kafka doesn't allow null header body, while it's still allowed
+# by the protocol. Hence we test it, but differently.
+def test_null_header(tmp_path, kafka_context):
+    output_path = tmp_path / "output.jsonl"
+    kafka_context.fill(
+        [
+            json.dumps({"k": 0, "hdr": "foo"}),
+            json.dumps(
+                {"k": 1, "hdr": None}
+            ),  # We output this as a header having no value
+            json.dumps({"k": 2, "hdr": "bar"}),
+        ]
+    )
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        hdr: str | None
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="json",
+        mode="static",
+        schema=InputSchema,
+    )
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.output_topic,
+        format="json",
+        headers=[pw.this.hdr],
+    )
+    pw.run()
+    G.clear()
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.output_topic,
+        format="json",
+        mode="static",
+        schema=InputSchema,
+        with_metadata=True,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    n_rows = 0
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            key = data["k"]
+            metadata = data["_metadata"]
+            headers = [
+                h for h in metadata["headers"] if not h[0].startswith("pathway_")
+            ]
+            assert len(headers) == 1
+            header_key, header_value = headers[0]
+            header_value = (
+                base64.b64decode(header_value) if header_value is not None else None
+            )
+            assert header_key == "hdr"
+            if key == 0:
+                assert header_value == b"foo"
+            elif key == 1:
+                assert header_value is None
+            elif key == 2:
+                assert header_value == b"bar"
+            else:
+                raise ValueError(f"unknown key: {key}")
+            n_rows += 1
+
+    assert n_rows == 3
 
 
 @pytest.mark.parametrize("with_metadata", [False, True])
@@ -773,7 +882,7 @@ def test_kafka_json_key(tmp_path, kafka_context):
         for header_key, header_value in message.headers:
             headers[header_key] = header_value
         assert headers["k"] == str(value["k"]).encode("utf-8")
-        assert headers["v"] == f'"{value["v"]}"'.encode("utf-8")
+        assert headers["v"] == value["v"].encode("utf-8")
 
 
 @pytest.mark.parametrize("output_format", ["json", "plaintext"])

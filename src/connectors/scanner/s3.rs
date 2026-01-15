@@ -296,7 +296,7 @@ impl S3Scanner {
         seen_object_keys: &mut HashSet<String>,
     ) -> Result<(), ReadError> {
         let object_lists: Vec<S3ListBucketResult> = execute_with_retries(
-            || self.bucket.list(self.objects_prefix.to_string(), None),
+            || self.bucket.list(self.objects_prefix.clone(), None),
             RetryConfig::default(),
             MAX_S3_RETRIES,
         )

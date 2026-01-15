@@ -247,7 +247,7 @@ impl DeltaBatchWriter {
         for field in schema_fields {
             let mut metadata = Vec::new();
             if let Some(field_metadata) = &field.metadata {
-                metadata.push((PATHWAY_COLUMN_META_FIELD, field_metadata.to_string()));
+                metadata.push((PATHWAY_COLUMN_META_FIELD, field_metadata.clone()));
             }
             struct_fields.push(
                 DeltaTableStructField::new(
@@ -298,9 +298,9 @@ impl DeltaBatchWriter {
                 let arrow_metadata = column
                     .metadata()
                     .iter()
-                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .map(|(key, value)| (key.clone(), value.to_string()))
                     .collect();
-                (name.to_string(), arrow_metadata)
+                (name.clone(), arrow_metadata)
             })
             .collect();
 
@@ -320,9 +320,9 @@ impl DeltaBatchWriter {
         let mut defined_user_columns = HashSet::new();
         for user_column in user_schema {
             let name = &user_column.name;
-            defined_user_columns.insert(name.to_string());
+            defined_user_columns.insert(name.clone());
             let Some(schema_column) = existing_schema.get(name) else {
-                outside_existing_schema.push(name.to_string());
+                outside_existing_schema.push(name.clone());
                 has_error = true;
                 continue;
             };
@@ -338,7 +338,7 @@ impl DeltaBatchWriter {
         }
         for schema_column in existing_schema.keys() {
             if !defined_user_columns.contains(schema_column) {
-                missing_in_user_schema.push(schema_column.to_string());
+                missing_in_user_schema.push(schema_column.clone());
                 has_error = true;
             }
         }
@@ -619,7 +619,7 @@ pub fn read_delta_table<S: std::hash::BuildHasher>(
 
         for record_batch in results {
             for value_map in columns_into_pathway_values(&record_batch, column_types) {
-                match value_map.to_pure_hashmap() {
+                match value_map.into_pure_hashmap() {
                     Ok(map) => entries.push(map),
                     Err(e) if n_errors < MAX_ENTRY_PARSING_ERRORS => {
                         warn!("Entry doesn't match expected schema: {e}");
@@ -789,6 +789,7 @@ impl DeltaTableReader {
             }
         }
 
+        #[allow(clippy::unnecessary_unwrap)]
         if !is_append_only && version_at_threshold.is_some() {
             *current_version = version_at_threshold.unwrap();
         } else if let Some(last_version_below_threshold) = last_version_below_threshold {
@@ -895,7 +896,7 @@ impl DeltaTableReader {
                                 .ok_or_else(|| {
                                     Box::new(ConversionError::new(
                                         format!("{value:?}"),
-                                        column.to_string(),
+                                        column.clone(),
                                         Type::Bytes,
                                         None,
                                     ))
@@ -1126,13 +1127,13 @@ impl DeltaTableReader {
             };
             let Some(serialized_value) = value else {
                 if expected_type.is_optional() {
-                    parsed_values.insert(key.to_string(), Ok(Value::None));
+                    parsed_values.insert(key.clone(), Ok(Value::None));
                 } else {
                     parsed_values.insert(
-                        key.to_string(),
+                        key.clone(),
                         Err(Box::new(ConversionError::new(
                             "None".to_string(),
-                            key.to_string(),
+                            key.clone(),
                             expected_type.clone(),
                             None,
                         ))),
@@ -1141,7 +1142,7 @@ impl DeltaTableReader {
                 continue;
             };
             let parsed_value = match expected_type.unoptionalize() {
-                Type::String => Some(Value::String(serialized_value.to_string().into())),
+                Type::String => Some(Value::String(serialized_value.clone().into())),
                 Type::Int => serialized_value.parse::<i64>().map(Value::Int).ok(),
                 Type::Float => serialized_value
                     .parse::<f64>()
@@ -1169,13 +1170,13 @@ impl DeltaTableReader {
                 _ => None,
             };
             if let Some(parsed_value) = parsed_value {
-                parsed_values.insert(key.to_string(), Ok(parsed_value));
+                parsed_values.insert(key.clone(), Ok(parsed_value));
             } else {
                 parsed_values.insert(
-                    key.to_string(),
+                    key.clone(),
                     Err(Box::new(ConversionError::new(
-                        serialized_value.to_string(),
-                        key.to_string(),
+                        serialized_value.clone(),
+                        key.clone(),
                         expected_type.clone(),
                         None,
                     ))),

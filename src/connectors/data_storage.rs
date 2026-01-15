@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use base64::Engine;
 use pyo3::exceptions::PyValueError;
@@ -179,7 +179,7 @@ impl ValuesMap {
         self.map.remove(key);
     }
 
-    pub fn to_pure_hashmap(self) -> DynResult<HashMap<String, Value>> {
+    pub fn into_pure_hashmap(self) -> DynResult<HashMap<String, Value>> {
         self.map
             .into_iter()
             .map(|(key, value)| Ok((key, value?)))
@@ -422,7 +422,7 @@ pub enum StorageType {
 
 impl StorageType {
     pub fn merge_two_frontiers(
-        &self,
+        self,
         lhs: &OffsetAntichain,
         rhs: &OffsetAntichain,
     ) -> OffsetAntichain {
@@ -601,7 +601,7 @@ where
 
     fn name(&self, unique_name: Option<&UniqueName>) -> String {
         if let Some(unique_name) = unique_name {
-            unique_name.to_string()
+            unique_name.clone()
         } else {
             let desc = self.short_description();
             desc.split("::").last().unwrap().replace("Builder", "")
@@ -1093,7 +1093,7 @@ pub enum ConnectorMode {
 }
 
 impl ConnectorMode {
-    pub fn is_polling_enabled(&self) -> bool {
+    pub fn is_polling_enabled(self) -> bool {
         match self {
             ConnectorMode::Static => false,
             ConnectorMode::Streaming => true,
@@ -1146,7 +1146,7 @@ impl ReaderBuilder for PythonReaderBuilder {
 
     fn name(&self, unique_name: Option<&UniqueName>) -> String {
         if let Some(unique_name) = unique_name {
-            unique_name.to_string()
+            unique_name.clone()
         } else {
             let desc = self.short_description();
             desc.split("::").last().unwrap().replace("Builder", "")
@@ -1489,7 +1489,7 @@ pub enum TableWriterInitMode {
 
 impl TableWriterInitMode {
     pub fn initialize(
-        &self,
+        self,
         table_name: &str,
         value_fields: &[ValueField],
         key_field_names: Option<&[String]>,
@@ -1500,7 +1500,7 @@ impl TableWriterInitMode {
         match self {
             TableWriterInitMode::Default => return Ok(()),
             TableWriterInitMode::Replace | TableWriterInitMode::CreateIfNotExists => {
-                if self == &TableWriterInitMode::Replace {
+                if self == TableWriterInitMode::Replace {
                     Self::drop_table_if_exists(table_name, &mut execute_query)?;
                 }
                 Self::create_table_if_not_exists(
@@ -1744,7 +1744,7 @@ impl Writer for PsqlWriter {
             transaction
                 .execute(&query, params.as_slice())
                 .map_err(|error| WriteError::PsqlQueryFailed {
-                    query: query.to_string(),
+                    query: query.clone(),
                     error,
                 })?;
         }
@@ -2368,6 +2368,7 @@ impl Writer for MqttWriter {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 pub enum QuestDBAtColumnPolicy {
     UseNow,
     UsePathwayTime,
@@ -2595,8 +2596,8 @@ impl SqlQueryTemplate {
                 .collect();
             let deletion = format!("DELETE FROM {table_name} WHERE {}", tokens.join(" AND "));
             Ok(SqlQueryTemplate::Snapshot {
-                insertion: insertion.to_string(),
-                deletion: deletion.to_string(),
+                insertion: insertion.clone(),
+                deletion: deletion.clone(),
                 primary_key_indices,
             })
         } else {
@@ -2622,7 +2623,7 @@ impl SqlQueryTemplate {
                 value_fields
                     .iter()
                     .position(|vf| vf.name == *name)
-                    .ok_or_else(|| WriteError::FieldNotFound(name.to_string()))
+                    .ok_or_else(|| WriteError::FieldNotFound(name.clone()))
             })
             .collect::<Result<_, _>>()?;
         primary_key_indices.sort_unstable();
@@ -2647,9 +2648,9 @@ impl SqlQueryTemplate {
 
     fn build_query(&self, diff: isize) -> String {
         match self {
-            Self::StreamOfChanges(query) => query.to_string(),
-            Self::Snapshot { insertion, .. } if diff > 0 => insertion.to_string(),
-            Self::Snapshot { deletion, .. } if diff < 0 => deletion.to_string(),
+            Self::StreamOfChanges(query) => query.clone(),
+            Self::Snapshot { insertion, .. } if diff > 0 => insertion.clone(),
+            Self::Snapshot { deletion, .. } if diff < 0 => deletion.clone(),
             Self::Snapshot { .. } => unreachable!(),
         }
     }

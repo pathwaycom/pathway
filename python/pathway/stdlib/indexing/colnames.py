@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 # using constants with names is only workaround that will reduce
 # amount of time next person will spend figuring out some special column names that are

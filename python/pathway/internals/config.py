@@ -159,7 +159,9 @@ def set_license_key(key: str | None) -> None:
 
 
 def set_monitoring_config(
-    *, server_endpoint: str | None = None, detailed_metrics_dir: str | None = None
+    *,
+    server_endpoint: str | None = None,
+    detailed_metrics_dir: str | os.PathLike | None = None,
 ) -> None:
     """Sets the monitoring server endpoint.
     Requires a valid Pathway Scale license key.
@@ -183,7 +185,9 @@ def set_monitoring_config(
     """
     config = get_pathway_config()
     config.monitoring_server = server_endpoint
-    config.detailed_metrics_dir = detailed_metrics_dir
+    config.detailed_metrics_dir = (
+        str(detailed_metrics_dir) if detailed_metrics_dir is not None else None
+    )
 
 
 __all__ = [

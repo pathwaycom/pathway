@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
@@ -7,10 +7,6 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Literal
-
-from fs.base import FS
-from fs.errors import ResourceNotFound as FSResourceNotFound
-from fs.walk import Walker
 
 from pathway.internals import api
 from pathway.internals.runtime_type_check import check_arg_types
@@ -40,6 +36,8 @@ class _PyFilesystemSubject(ConnectorSubject):
         self.stored_modify_times = {}
 
     def run(self):
+        from fs.errors import ResourceNotFound as FSResourceNotFound
+
         while True:
             start_time = time.time()
 
@@ -119,6 +117,8 @@ class _PyFilesystemSubject(ConnectorSubject):
         deleted_paths = []
         existing_paths = set()
 
+        from fs.walk import Walker
+
         walker = Walker()
         for path in walker.files(self.source, path=self.path):
             existing_paths.add(path)
@@ -141,7 +141,7 @@ class _PyFilesystemSubject(ConnectorSubject):
 @check_arg_types
 @trace_user_frame
 def read(
-    source: FS,
+    source,
     *,
     path: str = "",
     refresh_interval: float = 30,

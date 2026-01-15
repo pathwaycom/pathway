@@ -1,6 +1,7 @@
-# Copyright © 2025 Pathway
+# Copyright © 2026 Pathway
 
 import json
+import uuid
 
 import pytest
 
@@ -13,6 +14,10 @@ QDRANT_URL = "http://qdrant:6334"
 
 def make_list(vector_as_str: str) -> list[float]:
     return [float(x) for x in vector_as_str.split(",")]
+
+
+def unique_table_name_suffix() -> str:
+    return str(uuid.uuid4()).replace("-", "")
 
 
 class InputSchema(pw.Schema):
@@ -48,7 +53,7 @@ def test_basic_search():
 
     index_factory = ExternalIndexFactory.qdrant_factory(
         url=QDRANT_URL,
-        collection_name="test_basic",
+        collection_name=f"test_basic_{unique_table_name_suffix()}",
         vector_size=3,
     )
 
@@ -98,7 +103,7 @@ def test_with_deletions():
 
     index_factory = ExternalIndexFactory.qdrant_factory(
         url=QDRANT_URL,
-        collection_name="test_deletions",
+        collection_name=f"test_deletions_{unique_table_name_suffix()}",
         vector_size=3,
     )
 
@@ -161,7 +166,7 @@ def test_filter():
 
     index_factory = ExternalIndexFactory.qdrant_factory(
         url=QDRANT_URL,
-        collection_name="test_filter",
+        collection_name=f"test_filter_{unique_table_name_suffix()}",
         vector_size=3,
     )
 

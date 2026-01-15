@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 # TODO: adjust so that it can be extended to cover H3index
 from abc import ABC, abstractmethod
@@ -433,7 +433,7 @@ class DataIndex:
         when the IDs match (exactly one row per match plus one row per query with no matches).
 
         The index answers according to the current state of the data structure and does not
-        revisit old answers. To to work properly, the ``inner_index`` has to be an instance
+        revisit old answers. To work properly, the ``inner_index`` has to be an instance
         of ``InnerIndex`` supporting ``query`` (all predefined indices support it, this is an
         information for third party extensions).
 

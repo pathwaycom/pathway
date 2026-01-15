@@ -1,4 +1,4 @@
-# Copyright © 2025 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 

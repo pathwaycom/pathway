@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 # This is part of the tutorial https://pathway.com/developers/user-guide/from-jupyter-to-deploy
 

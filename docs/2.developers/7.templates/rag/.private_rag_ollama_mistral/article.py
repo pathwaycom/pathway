@@ -192,7 +192,7 @@ print("Embedding dimension:", embedding_dimension)
 # )
 # -
 
-# #### 4. Local LLM Deployement
+# #### 4. Local LLM Deployment
 # Due to its size and performance we decided to run the `Mistral 7B` Local Language Model. We deploy it as a service running on GPU, using `Ollama`.
 #
 # In order to run local LLM, refer to these steps:

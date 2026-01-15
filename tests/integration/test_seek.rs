@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use super::helpers::{
     create_persistence_manager, full_cycle_read, new_csv_filesystem_reader, new_filesystem_reader,

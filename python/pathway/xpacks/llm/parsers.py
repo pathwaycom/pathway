@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 """
 A library for document parsers: functions that take raw bytes and return a list of text

@@ -7,7 +7,6 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, Literal
 
-import requests
 import yaml
 
 from pathway.internals.schema import Schema
@@ -27,6 +26,8 @@ JITTER = 0.2
 
 
 def _pip_package_exists(name: str) -> bool:
+    import requests
+
     url = f"https://pypi.org/pypi/{name}/json"
     sleep_duraion = 1.0
     for _ in range(N_PYPI_REQUESTS):

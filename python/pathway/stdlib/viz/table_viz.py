@@ -1,9 +1,9 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
+from __future__ import annotations
 
 import os
 
 import pandas as pd
-import panel as pn
 
 import pathway as pw
 from pathway.internals import api, parse_graph
@@ -12,9 +12,6 @@ from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table_subscription import subscribe as internal_subscribe
 from pathway.internals.trace import trace_user_frame
-
-if os.environ.get("PATHWAY_INTERACTIVE", "1") == "1":
-    pn.extension("tabulator")
 
 
 def _repr_mimebundle_(self: pw.Table, include, exclude):
@@ -25,7 +22,7 @@ def _repr_mimebundle_(self: pw.Table, include, exclude):
 @trace_user_frame
 def show(
     self: pw.Table, *, snapshot=True, include_id=True, short_pointers=True, sorters=None
-) -> pn.Column:
+):
     """
     Allows for displaying table visually in e.g. jupyter. If the table
     depends only on the bounded data sources, the table preview will be generated right away.
@@ -44,10 +41,15 @@ def show(
     Example:
 
     >>> import pathway as pw
-    >>> table_viz = pw.debug.table_from_pandas(pd.DataFrame({"a":[1,2,3],"b":[3,1,2]})).show()
-    >>> type(table_viz)
+    >>> table_viz = pw.debug.table_from_pandas(pd.DataFrame({"a":[1,2,3],"b":[3,1,2]})).show()  # doctest: +SKIP
+    >>> type(table_viz)  # doctest: +SKIP
     <class 'panel.layout.base.Column'>
     """
+
+    import panel as pn
+
+    if os.environ.get("PATHWAY_INTERACTIVE", "1") == "1":
+        pn.extension("tabulator")
 
     col_names = []
     if include_id:

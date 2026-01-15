@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import json
 import logging
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from google.cloud import bigquery
-from google.oauth2.service_account import Credentials as ServiceCredentials
+if TYPE_CHECKING:
+    from google.oauth2.service_account import Credentials as ServiceCredentials
 
 from pathway.internals.api import Pointer, Table
 from pathway.internals.config import _check_entitlements
@@ -18,6 +20,8 @@ class _OutputBuffer:
     def __init__(
         self, dataset_name: str, table_name: str, credentials: ServiceCredentials
     ) -> None:
+        from google.cloud import bigquery
+
         self._client = bigquery.Client(credentials=credentials)
         self._table_ref = self._client.dataset(dataset_name).table(table_name)
         self._buffer: list[dict] = []
@@ -105,8 +109,9 @@ to obtain them.
     ...     service_user_credentials_file="./credentials.json"
     ... )
     """
-
     _check_entitlements("bigquery")
+    from google.oauth2.service_account import Credentials as ServiceCredentials
+
     credentials = ServiceCredentials.from_service_account_file(
         service_user_credentials_file
     )

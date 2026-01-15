@@ -99,7 +99,7 @@ input = pw.demo.generate_custom_stream(
 )
 
 # %% [markdown]
-# To track the maximum value, we could write `input.groupby().reduce(max=pw.reducers.max(input.value))`. Here we want to keep track also *when* this maximum occured, therefore we use the `argmax_rows` utility function.
+# To track the maximum value, we could write `input.groupby().reduce(max=pw.reducers.max(input.value))`. Here we want to keep track also *when* this maximum occurred, therefore we use the `argmax_rows` utility function.
 
 # %%
 reduced = pw.utils.filtering.argmax_rows(input, what=input.value)
@@ -128,7 +128,7 @@ def accept_larger_max(new_max: float, prev_max: float) -> bool:
 result = pw.stateful.deduplicate(reduced, col=reduced.value, acceptor=accept_larger_max)
 
 # %% [markdown]
-# Now we can send the alerts to e.g. Slack. We can do it similarily as in the [realtime log monitoring tutorial](/developers/templates/etl/realtime-log-monitoring#scenario-2-sending-the-alert-to-slack) by using `pw.io.subscribe`.
+# Now we can send the alerts to e.g. Slack. We can do it similarly as in the [realtime log monitoring tutorial](/developers/templates/etl/realtime-log-monitoring#scenario-2-sending-the-alert-to-slack) by using `pw.io.subscribe`.
 #
 # Here, for testing purposes, instead of sending an alert, we will store the accepted maxima in the list.
 
@@ -147,7 +147,7 @@ def send_alert(key, row, time, is_addition):
 pw.io.subscribe(result, send_alert)
 
 # %% [markdown]
-# Let's run the program. Since the stream we defined is bounded (and we set high `input_rate` in the `generate_custom_stream`), the call to `pw.run` will finish quickly. Hovever, in most usecases, you will be streaming data (e.g. from kafka) indefinitely.
+# Let's run the program. Since the stream we defined is bounded (and we set high `input_rate` in the `generate_custom_stream`), the call to `pw.run` will finish quickly. However, in most usecases, you will be streaming data (e.g. from kafka) indefinitely.
 
 # %%
 pw.run(monitoring_level=pw.MonitoringLevel.NONE)
