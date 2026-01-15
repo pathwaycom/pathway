@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import pickle
 from collections import defaultdict, deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import networkx as nx
+if TYPE_CHECKING:
+    import networkx as nx
+
 import numpy as np
 
 import pathway as pw

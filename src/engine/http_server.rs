@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::env;
 use std::sync::Arc;
@@ -33,11 +33,7 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
         let input_latency_ms: Gauge = Gauge::default();
         input_latency_ms.set(
             if let Some(latency) = stats_owned.input_stats.latency(now) {
-                if let Ok(latency_converted) = i64::try_from(latency) {
-                    latency_converted
-                } else {
-                    i64::MAX
-                }
+                i64::try_from(latency).unwrap_or(i64::MAX)
             } else {
                 -1
             },
@@ -51,11 +47,7 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
         let output_latency_ms: Gauge = Gauge::default();
         output_latency_ms.set(
             if let Some(latency) = stats_owned.output_stats.latency(now) {
-                if let Ok(latency_converted) = i64::try_from(latency) {
-                    latency_converted
-                } else {
-                    i64::MAX
-                }
+                i64::try_from(latency).unwrap_or(i64::MAX)
             } else {
                 -1
             },
@@ -90,11 +82,7 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
         for (operator_name, operator_stats) in &stats_owned.operators_stats {
             let gauge: Gauge = Gauge::default();
             gauge.set(if let Some(latency) = operator_stats.latency(now) {
-                if let Ok(latency_converted) = i64::try_from(latency) {
-                    latency_converted
-                } else {
-                    i64::MAX
-                }
+                i64::try_from(latency).unwrap_or(i64::MAX)
             } else {
                 -1
             });

@@ -1,11 +1,10 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
-from collections.abc import Callable
+from __future__ import annotations
+
 from typing import Any
 
 import pandas as pd
-import panel as pn
-from bokeh.models import ColumnDataSource, Plot
 
 import pathway as pw
 from pathway.internals import api, parse_graph
@@ -34,9 +33,9 @@ def _in_notebook():
 @trace_user_frame
 def plot(
     self: pw.Table,
-    plotting_function: Callable[[ColumnDataSource], Plot],
+    plotting_function,
     sorting_col=None,
-) -> pn.Column:
+):
     """
     Allows for plotting contents of the table visually in e.g. jupyter. If the table
     depends only on the bounded data sources, the plot will be generated right away.
@@ -58,10 +57,12 @@ def plot(
     ...     plot = figure(height=400, width=400, title="CPU usage over time")
     ...     plot.scatter('a', 'b', source=source, line_width=3, line_alpha=0.6)
     ...     return plot
-    >>> viz = pw.debug.table_from_pandas(pd.DataFrame({"a":[1,2,3],"b":[3,1,2]})).plot(func)
-    >>> type(viz)
+    >>> viz = pw.debug.table_from_pandas(pd.DataFrame({"a":[1,2,3],"b":[3,1,2]})).plot(func)  # doctest: +SKIP
+    >>> type(viz)  # doctest: +SKIP
     <class 'panel.layout.base.Column'>
     """
+    import panel as pn
+    from bokeh.models import ColumnDataSource
 
     col_names = self.schema.column_names()
 

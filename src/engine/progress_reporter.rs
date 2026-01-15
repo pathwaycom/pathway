@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -81,30 +81,28 @@ impl Drop for Runner {
 }
 
 pub fn maybe_run_reporter(
-    monitoring_level: &MonitoringLevel,
+    monitoring_level: MonitoringLevel,
     graph: &dyn Graph,
     stats_monitor: Option<PyObject>,
 ) -> Option<Runner> {
-    if *monitoring_level != MonitoringLevel::None && stats_monitor.is_some() {
-        let stats_shared = Arc::new(ArcSwapOption::from(None));
-        let progress_reporter_runner = Runner::run(
-            PROGRESS_REPORTING_PERIOD,
-            &stats_shared,
-            stats_monitor.unwrap(),
-        );
+    if monitoring_level != MonitoringLevel::None {
+        if let Some(stats_monitor) = stats_monitor {
+            let stats_shared = Arc::new(ArcSwapOption::from(None));
+            let progress_reporter_runner =
+                Runner::run(PROGRESS_REPORTING_PERIOD, &stats_shared, stats_monitor);
 
-        graph
-            .attach_prober(
-                Box::new(move |prober_stats| stats_shared.store(Some(Arc::new(prober_stats)))),
-                *monitoring_level == MonitoringLevel::All,
-                true,
-            )
-            .expect("Failed to start progress reporter");
+            graph
+                .attach_prober(
+                    Box::new(move |prober_stats| stats_shared.store(Some(Arc::new(prober_stats)))),
+                    monitoring_level == MonitoringLevel::All,
+                    true,
+                )
+                .expect("Failed to start progress reporter");
 
-        Some(progress_reporter_runner)
-    } else {
-        None
+            return Some(progress_reporter_runner);
+        }
     }
+    None
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]

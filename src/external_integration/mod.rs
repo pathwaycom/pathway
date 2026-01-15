@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 pub mod brute_force_knn_integration;
 pub mod qdrant_integration;
@@ -413,7 +413,7 @@ where
     fn make_query_tuple(
         &self,
         query: &QueryEntry,
-    ) -> DynResult<(QueryType, usize, Option<Expression>)> {
+    ) -> DynResult<(QueryType, usize, Option<Expression<'_>>)> {
         let limit = if let Some(wrapped) = &query.limit {
             usize::try_from(wrapped.as_int()?)?
         } else {

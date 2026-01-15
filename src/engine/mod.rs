@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 // too sensitive for `Box<dyn FnMut(...)>`
 #![allow(clippy::type_complexity)]

@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
@@ -76,3 +76,12 @@ def credentials_dir() -> Path:
 @pytest.fixture
 def serialization_tester():
     return SerializationTestHelper()
+
+
+@pytest.fixture
+def tcp_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]

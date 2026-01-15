@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 import pytest
 
@@ -177,6 +177,10 @@ def test_python_connector_append_only():
     class TestSubject1(io.python.ConnectorSubject):
         def run(self):
             pass
+
+        @property
+        def _deletions_enabled(self) -> bool:
+            return True
 
     class TestSubject2(io.python.ConnectorSubject):
         def run(self):

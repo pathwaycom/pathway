@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use crate::env::{parse_env_var, parse_env_var_required, Error as EnvError};
 use log::warn;

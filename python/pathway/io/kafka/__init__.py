@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
@@ -94,7 +94,11 @@ def read(
             an optional field ``timestamp_millis`` denoting the UNIX timestamp of a record
             in milliseconds, if available. It will also contain fields ``topic``, ``partition``
             and ``offset`` denoting the topic, partition and offset respectively, that
-            correspond to the Kafka message that produced this row.
+            correspond to the Kafka message that produced this row. Finally, the top level of
+            this column's JSON will contain a ``headers`` array. Each element will be a pair
+            consisting of a string (the header name) and an optional base64-encoded string
+            (the header value). The header value is present only if the header body is
+            non-empty; otherwise it is ``null``.
         start_from_timestamp_ms: If defined, the read starts from entries with the given
             timestamp in the past, specified in milliseconds.
         parallel_readers: number of copies of the reader to work in parallel. In case

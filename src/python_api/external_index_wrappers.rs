@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use pyo3::{prelude::*, IntoPyObjectExt};
 
@@ -161,7 +161,7 @@ impl PyExternalIndexQuery {
     }
 }
 
-/// Used for choosing the metric used in the USearchKnn index.
+/// Used for choosing the metric used in the `USearchKnn` index.
 /// As these correspond to values of `MetricKind` from the usearch crate,
 /// you can find more information about them in the
 /// `usearch documentation <https://docs.rs/usearch/latest/usearch/ffi/struct.MetricKind.html>`_.
@@ -216,7 +216,7 @@ impl<'py> IntoPyObject<'py> for USearchMetricKind {
     }
 }
 
-/// Used for choosing the metric used in the BruteForceKnn index.
+/// Used for choosing the metric used in the `BruteForceKnn` index.
 ///
 /// Attributes:
 ///   L2SQ: Squared Euclidean distance.

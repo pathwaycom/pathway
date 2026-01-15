@@ -332,15 +332,15 @@ impl ConnectorGroup {
 
     pub fn report_time_advancement(
         &mut self,
-        timestamp: &Timestamp,
+        timestamp: Timestamp,
         source_id: usize,
         source_reader_worker_id: usize,
     ) {
-        if self.forced_time_advancement.as_ref() != Some(timestamp) {
+        if self.forced_time_advancement != Some(timestamp) {
             for source in &mut self.sources {
                 source.clear_completed_force_advancements();
             }
-            self.forced_time_advancement = Some(*timestamp);
+            self.forced_time_advancement = Some(timestamp);
         }
         self.sources[source_id].mark_completed_force_advancement(source_reader_worker_id);
 
@@ -741,7 +741,7 @@ impl ConnectorGroupAccessor {
 
     pub fn report_time_advancement(&mut self, timestamp: Timestamp) {
         self.group.lock().unwrap().report_time_advancement(
-            &timestamp,
+            timestamp,
             self.source_id,
             self.source_reader_worker_id,
         );

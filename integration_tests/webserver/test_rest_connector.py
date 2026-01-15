@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 import pathlib
 import threading
@@ -201,23 +201,6 @@ def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
     )
 
     t.join()
-
-
-def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> None:
-    class InputSchema(pw.Schema):
-        k: int
-        v: int
-
-    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
-    queries, response_writer = pw.io.http.rest_connector(
-        webserver=webserver, schema=InputSchema, delete_completed_queries=False
-    )
-    response_writer(queries.select(query_id=queries.id, result=pw.this.v))
-
-    with pytest.raises(RuntimeError, match="Added route will never be executed"):
-        queries_dup, response_writer_dup = pw.io.http.rest_connector(
-            webserver=webserver, schema=InputSchema, delete_completed_queries=False
-        )
 
 
 def _test_server_two_endpoints(

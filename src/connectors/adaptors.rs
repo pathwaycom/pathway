@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 use std::collections::HashMap;
 
 use differential_dataflow::collection::AsCollection;
@@ -44,6 +44,7 @@ pub struct UpsertSession<Timestamp: TimelyTimestamp + Lattice + TotalOrder> {
 }
 
 impl<Timestamp: TimelyTimestamp + Lattice + TotalOrder> UpsertSession<Timestamp> {
+    #[allow(clippy::wrong_self_convention)] // allowing to be consistent between implementations
     pub fn to_collection<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>>(
         &mut self,
         scope: &mut S,

@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

@@ -1,7 +1,10 @@
-import logging
-from typing import Any, Iterable
+from __future__ import annotations
 
-from google.cloud import pubsub_v1  # type: ignore
+import logging
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from google.cloud import pubsub_v1  # type: ignore
 
 import pathway.internals.dtype as dt
 from pathway.internals.api import Pointer

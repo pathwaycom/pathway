@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -20,7 +20,7 @@ struct OwnedMetadata {
 }
 
 impl OwnedMetadata {
-    fn as_metadata(&self) -> Metadata {
+    fn as_metadata(&self) -> Metadata<'_> {
         Metadata::builder()
             .level(self.level)
             .target(&self.target)

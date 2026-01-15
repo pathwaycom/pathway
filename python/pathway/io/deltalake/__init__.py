@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ import threading
 import time
 from os import PathLike, fspath
 from typing import Any, Iterable, Literal
-
-from deltalake import DeltaTable
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import (
@@ -213,6 +211,8 @@ class TableOptimizer:
         self.optimizer_thread.start()
 
     def _perform_compression(self) -> bool:
+        from deltalake import DeltaTable
+
         if self.table_path is not None:
             try:
                 _ = DeltaTable(self.table_path)
@@ -392,7 +392,7 @@ def read(
     >>> lake_path = getfixture("tmp_path") / "local-lake"  # NODOCS
     >>> pw.io.deltalake.write(output_table, lake_path)
 
-    Now the producer code can be run with with a simple ``pw.run``:
+    Now the producer code can be run with a simple ``pw.run``:
 
     >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
@@ -473,6 +473,8 @@ def read(
 def _read_table_schema_from_metadata(
     uri: str, storage_options: dict[str, str] | None
 ) -> type[Schema]:
+    from deltalake import DeltaTable
+
     table = DeltaTable(uri, storage_options=storage_options)
     schema = table.schema()
     table_schema = {}

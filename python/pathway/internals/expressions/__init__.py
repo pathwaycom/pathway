@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from pathway.internals.expressions.date_time import DateTimeNamespace
 from pathway.internals.expressions.numerical import NumericalNamespace

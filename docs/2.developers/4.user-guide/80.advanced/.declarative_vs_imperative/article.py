@@ -34,7 +34,7 @@
 # ```
 # we would expect three "finished" chunks: `(0,1,2)`, `(3,4,5,6)`, `(7,8)` and one unfinished chunk `(9,...)`.
 #
-# One way to do this would be imperative style: go through rows one-by-one in order storing current chunk in a state and emiting it whenever `flag` is equal to True, while clearing the state.
+# One way to do this would be imperative style: go through rows one-by-one in order storing current chunk in a state and emitting it whenever `flag` is equal to True, while clearing the state.
 # Even though, its not recommended approach, let's see how to code it in Pathway.
 
 # %%
@@ -100,7 +100,7 @@ pw.debug.compute_and_print_update_stream(split_by_flag_imperative(t))
 # %% [markdown]
 # Instead of manually managing state and control flow, Pathway allows you to define such logic using declarative constructs like `sort`, `iterate`, `groupby`. The result is a clear and concise pipeline that emits chunks of event times splitting the flag, showcasing the power and readability of declarative data processing.
 #
-# In the following, we tell Pathway to propagate the starting time of each chunk across the rows. This is done by declaring a simple local rule: take the starting time of a chunk from previous row or use current event time. This rule is then iterated until fixed-point, so that the information is spreaded until all rows know the starting time of their chunk.
+# In the following, we tell Pathway to propagate the starting time of each chunk across the rows. This is done by declaring a simple local rule: take the starting time of a chunk from previous row or use current event time. This rule is then iterated until fixed-point, so that the information is spread until all rows know the starting time of their chunk.
 #
 # Then we can just group rows by starting time of the chunk to get a table of chunks.
 

@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 import asyncio
 import copy
@@ -111,7 +111,7 @@ class EndpointExamples:
                 schema to their values in the example.
 
         Returns:
-            None
+            EndpointExamples: The current instance, allowing method chaining.
         """
         if id in self.examples_by_id:
             raise ValueError(f"Duplicate example id: {id}")

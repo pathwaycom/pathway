@@ -29,6 +29,7 @@ const LICENSE_ALGORITHM: &str = "base64+ed25519";
 #[derive(Clone, Copy)]
 pub struct ResourceLimit(pub Resource, pub u64);
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub enum License {
     LicenseKey(String),
@@ -130,7 +131,7 @@ pub enum Error {
     #[error("offline license not allowed")]
     OfflineLicenseNotAllowed,
     #[error("unable to validate license: {0}")]
-    LicenseValidationError(String),
+    LicenseValidation(String),
     #[error("unable to validate license: malformed license")]
     MalformedLicense,
 }
@@ -198,13 +199,13 @@ impl KeygenLicenseChecker {
                     let _ = write!(report, "\nSource: {source_inner}");
                     source = source_inner.source();
                 }
-                Error::LicenseValidationError(report)
+                Error::LicenseValidation(report)
             })?;
 
         if response.status().is_success() {
             let result = response
                 .json::<ValidationResponse>()
-                .map_err(|_| Error::LicenseValidationError("malformed response".to_string()))?;
+                .map_err(|_| Error::LicenseValidation("malformed response".to_string()))?;
             if result.valid {
                 Ok(result)
             } else {
@@ -212,7 +213,7 @@ impl KeygenLicenseChecker {
             }
         } else {
             let status = response.status();
-            Err(Error::LicenseValidationError(
+            Err(Error::LicenseValidation(
                 status.canonical_reason().unwrap_or("Unknown error").into(),
             ))
         }
@@ -274,7 +275,7 @@ fn deserialize_signed_license(public_key: &str, license: &str) -> DynResult<serd
 #[cached]
 fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
     let lic = deserialize_signed_license(PUBLIC_KEY, &license.clone())
-        .map_err(|e| Error::LicenseValidationError(e.to_string()))?;
+        .map_err(|e| Error::LicenseValidation(e.to_string()))?;
 
     let included = lic["included"].as_array().ok_or(Error::MalformedLicense)?;
 
@@ -348,7 +349,7 @@ pub fn read_license_to_string(license_key_or_path: Option<String>) -> Result<Str
     if let Some(key_or_path) = license_key_or_path {
         let key_or_path = key_or_path.trim();
         if let Some(file_path) = key_or_path.strip_prefix("file://") {
-            fs::read_to_string(file_path).map_err(|e| Error::LicenseValidationError(e.to_string()))
+            fs::read_to_string(file_path).map_err(|e| Error::LicenseValidation(e.to_string()))
         } else {
             Ok(key_or_path.to_string())
         }

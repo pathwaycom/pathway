@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
@@ -2128,6 +2128,15 @@ impl PyPythonConnectorEventType {
     pub const DELETE: PythonConnectorEventType = PythonConnectorEventType::Delete;
     #[classattr]
     pub const EXTERNAL_OFFSET: PythonConnectorEventType = PythonConnectorEventType::ExternalOffset;
+
+    #[getter]
+    fn name(&self) -> &str {
+        match self.0 {
+            PythonConnectorEventType::Insert => "INSERT",
+            PythonConnectorEventType::Delete => "DELETE",
+            PythonConnectorEventType::ExternalOffset => "EXTERNAL_OFFSET",
+        }
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "DebeziumDBType")]
@@ -2772,7 +2781,7 @@ impl Scope {
                 .unique_names
                 .get(py)
                 .borrow_mut()
-                .insert((*unique_name).to_string());
+                .insert((*unique_name).clone());
             if !is_unique_id {
                 return Err(PyValueError::new_err(format!(
                     "Unique name '{unique_name}' used more than once"
@@ -3911,12 +3920,12 @@ fn capture_table_data(
     Ok(table_data)
 }
 
-pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<DataRow>> {
+pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> Vec<DataRow> {
     let mut combined_table_data = Vec::new();
     for single_table_data in table_data {
         combined_table_data.extend(take(&mut *single_table_data.lock().unwrap()));
     }
-    Ok(combined_table_data)
+    combined_table_data
 }
 
 #[pyfunction]
@@ -4030,10 +4039,10 @@ pub fn run_with_new_graph(
             captured_tables[i].push(table);
         }
     }
-    captured_tables
+    Ok(captured_tables
         .into_iter()
         .map(make_captured_table)
-        .collect()
+        .collect())
 }
 
 #[pyfunction]
@@ -4181,7 +4190,7 @@ impl AwsS3Settings {
 
     fn final_bucket_name(&self, deduced_name: Option<&str>) -> PyResult<String> {
         if let Some(bucket_name) = &self.bucket_name {
-            Ok(bucket_name.to_string())
+            Ok(bucket_name.clone())
         } else if let Some(bucket_name) = deduced_name {
             Ok(bucket_name.to_string())
         } else {
@@ -4328,16 +4337,13 @@ impl ElasticSearchAuth {
                 let password = self.password.as_ref().ok_or_else(|| {
                     PyValueError::new_err("For basic auth password should be specified")
                 })?;
-                Ok(ESCredentials::Basic(
-                    username.to_string(),
-                    password.to_string(),
-                ))
+                Ok(ESCredentials::Basic(username.clone(), password.clone()))
             }
             "bearer" => {
                 let bearer = self.bearer.as_ref().ok_or_else(|| {
                     PyValueError::new_err("For bearer auth bearer should be specified")
                 })?;
-                Ok(ESCredentials::Bearer(bearer.to_string()))
+                Ok(ESCredentials::Bearer(bearer.clone()))
             }
             "apikey" => {
                 let apikey_id = self.apikey_id.as_ref().ok_or_else(|| {
@@ -4346,10 +4352,7 @@ impl ElasticSearchAuth {
                 let apikey = self.apikey.as_ref().ok_or_else(|| {
                     PyValueError::new_err("For API Key auth apikey should be specified")
                 })?;
-                Ok(ESCredentials::ApiKey(
-                    apikey_id.to_string(),
-                    apikey.to_string(),
-                ))
+                Ok(ESCredentials::ApiKey(apikey_id.clone(), apikey.clone()))
             }
             _ => Err(PyValueError::new_err("Unsupported type of auth")),
         }
@@ -4523,24 +4526,25 @@ pub struct DataStorage {
     iceberg_catalog: Option<IcebergCatalogSettings>,
 }
 
+#[allow(clippy::doc_markdown)]
 /// Specifies the type of persistence used by Pathway.
 ///
-///   Attributes:
+/// Attributes:
 ///     PERSISTING: Persists all data and state necessary to fully restore the computation.
 ///     UDF_CACHING: Only the results of UDFs, for which `cache_strategy` is set, are persisted, however, the data
-///       needs to be read again by the input connectors.
-///       
-///       Note:
-///       ``pw.PersistenceMode.UDF_CACHING`` currently works either when the File System
-///       is used as the backend for persistent storage, or, if another backend is used, a
-///       temporary directory will be created for writing the cache. In the latter case,
-///       persistence guarantees are not provided.
-///       By default, ``pw.PersistenceMode.UDF_CACHING`` does not persist data from input
-///       sources. This means that if the program restarts, it will re-read all input streams
-///       from the beginning. However, this behavior can be overridden by assigning names
-///       to specific input sources. If an input connector has a name parameter, the input
-///       stream for this source will also be persisted. Upon restart, the program will
-///       resume reading from the point where it previously stopped.
+///         needs to be read again by the input connectors.
+///
+/// Notes:
+///     ``pw.PersistenceMode.UDF_CACHING`` currently works either when the File System
+///     is used as the backend for persistent storage, or, if another backend is used, a
+///     temporary directory will be created for writing the cache. In the latter case,
+///     persistence guarantees are not provided.
+///     By default, ``pw.PersistenceMode.UDF_CACHING`` does not persist data from input
+///     sources. This means that if the program restarts, it will re-read all input streams
+///     from the beginning. However, this behavior can be overridden by assigning names
+///     to specific input sources. If an input connector has a name parameter, the input
+///     stream for this source will also be persisted. Upon restart, the program will
+///     resume reading from the point where it previously stopped.
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
 pub struct PyPersistenceMode(PersistenceMode);
 
@@ -4951,9 +4955,9 @@ impl PySchemaRegistrySettings {
 
 impl PySchemaRegistrySettings {
     fn create_settings(self) -> PyResult<SchemaRegistrySettings> {
-        let mut builder = SchemaRegistrySettings::new_builder(self.urls[0].to_string());
+        let mut builder = SchemaRegistrySettings::new_builder(self.urls[0].clone());
         for url in &self.urls[1..] {
-            builder.add_url(url.to_string());
+            builder.add_url(url.clone());
         }
 
         if let Some(token_authorization) = &self.token_authorization {
@@ -5172,24 +5176,24 @@ impl DataStorage {
         );
 
         if let Some(access_key) = &s3_settings.access_key {
-            storage_options.insert("AWS_ACCESS_KEY_ID".to_string(), access_key.to_string());
+            storage_options.insert("AWS_ACCESS_KEY_ID".to_string(), access_key.clone());
         }
         if let Some(secret_access_key) = &s3_settings.secret_access_key {
             storage_options.insert(
                 "AWS_SECRET_ACCESS_KEY".to_string(),
-                secret_access_key.to_string(),
+                secret_access_key.clone(),
             );
         }
         if let Some(session_token) = &s3_settings.session_token {
-            storage_options.insert("AWS_SESSION_TOKEN".to_string(), session_token.to_string());
+            storage_options.insert("AWS_SESSION_TOKEN".to_string(), session_token.clone());
         }
         if let Some(profile) = &s3_settings.profile {
-            storage_options.insert("AWS_PROFILE".to_string(), profile.to_string());
+            storage_options.insert("AWS_PROFILE".to_string(), profile.clone());
         }
 
         if let s3::Region::Custom { endpoint, region } = &s3_settings.region {
             if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
-                storage_options.insert("AWS_ENDPOINT_URL".to_string(), endpoint.to_string());
+                storage_options.insert("AWS_ENDPOINT_URL".to_string(), endpoint.clone());
             } else {
                 storage_options.insert(
                     "AWS_ENDPOINT_URL".to_string(),
@@ -5199,7 +5203,7 @@ impl DataStorage {
             storage_options.insert("AWS_ALLOW_HTTP".to_string(), "True".to_string());
             storage_options.insert("AWS_STORAGE_ALLOW_HTTP".to_string(), "True".to_string());
             if region != endpoint {
-                storage_options.insert("AWS_REGION".to_string(), region.to_string());
+                storage_options.insert("AWS_REGION".to_string(), region.clone());
             }
         } else {
             storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
@@ -5324,7 +5328,7 @@ impl IcebergCatalogSettings {
             .ok_or(PyValueError::new_err(format!(
                 "expected parameter: '{name}'"
             )))?
-            .to_string())
+            .clone())
     }
 
     fn insert_if_some(
@@ -5619,7 +5623,7 @@ impl DataStorage {
                     "Either 'topic' or 'topic_name_index' must be defined, but not both",
                 ))
             } else {
-                Ok(MessageQueueTopic::Fixed(topic.to_string()))
+                Ok(MessageQueueTopic::Fixed(topic.clone()))
             }
         } else if let Some(topic_name_index) = self.topic_name_index {
             Ok(MessageQueueTopic::Dynamic(topic_name_index))
@@ -5826,7 +5830,7 @@ impl DataStorage {
         }
         let reader = KafkaReader::new(
             consumer,
-            topic.to_string(),
+            topic.clone(),
             seek_positions,
             watermarks,
             self.mode,
@@ -5937,7 +5941,7 @@ impl DataStorage {
         properties: &ConnectorProperties,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
-        let topic: String = self.message_queue_fixed_topic()?.to_string();
+        let topic: String = self.message_queue_fixed_topic()?.clone();
         let runtime = create_async_tokio_runtime()?;
         let connector_index = *scope.total_connectors.get(py).borrow();
         let readers_group_name = format!("pathway-reader-{connector_index}");
@@ -6060,7 +6064,7 @@ impl DataStorage {
     fn construct_mqtt_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let settings = self.mqtt_settings()?;
-        let topic: String = self.message_queue_fixed_topic()?.to_string();
+        let topic: String = self.message_queue_fixed_topic()?.clone();
         let connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
         let (client, mut connection) =
@@ -6117,7 +6121,7 @@ impl DataStorage {
         let reader = KinesisReader::new(
             runtime,
             client,
-            topic.to_string(),
+            topic.clone(),
             scope.worker_index(),
             scope.worker_count(),
             refresh_duration,
@@ -6338,10 +6342,7 @@ impl DataStorage {
             Box::new(batch_writer),
             buffer,
             self.min_commit_frequency.map(time::Duration::from_millis),
-        )
-        .map_err(|e| {
-            PyIOError::new_err(format!("Unable to start data lake output connector: {e}"))
-        })?;
+        );
         Ok(Box::new(writer))
     }
 
@@ -6398,10 +6399,7 @@ impl DataStorage {
             Box::new(batch_writer),
             Box::new(buffer),
             self.min_commit_frequency.map(time::Duration::from_millis),
-        )
-        .map_err(|e| {
-            PyIOError::new_err(format!("Unable to start data lake output connector: {e}"))
-        })?;
+        );
         Ok(Box::new(writer))
     }
 

@@ -1,5 +1,3 @@
-import requests
-
 from pathway.internals.column import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
@@ -29,6 +27,7 @@ def send_alerts(alerts: ColumnReference, slack_channel_id: str, slack_token: str
     ... ''')
     >>> pw.io.slack.send_alerts(t.alert, slack_channel_id, slack_token)
     """
+    import requests
 
     def send_slack_alert(key, row, time, is_addition):
         if not is_addition:

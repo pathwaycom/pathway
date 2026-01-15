@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use super::utils::batch_by_time;
 use super::{ArrangeWithTypes, ArrangeWithTypesSharded};
@@ -283,12 +283,10 @@ fn move_cursor_to_key<
     step_to_next: bool,
 ) {
     input_wrapper.cursor.rewind_keys(input_wrapper.storage);
-    if key.is_some() {
-        input_wrapper
-            .cursor
-            .seek_key(input_wrapper.storage, key.unwrap());
+    if let Some(key) = key {
+        input_wrapper.cursor.seek_key(input_wrapper.storage, key);
         let found = input_wrapper.cursor.get_key(input_wrapper.storage);
-        if step_to_next && found.is_some() && found == key {
+        if step_to_next && found.is_some() && found == Some(key) {
             input_wrapper.cursor.step_key(input_wrapper.storage);
         }
     }
@@ -404,7 +402,9 @@ where
                             {
                                 let release_threshold_column_time =
                                     release_threshold_column_times.get(instance);
-                                if release_threshold_column_time.is_some() {
+                                if let Some(release_threshold_column_time_value) =
+                                    release_threshold_column_time
+                                {
                                     let mut last_arrangement_key = None;
                                     move_cursor_to_key(
                                         &mut input_wrapper,
@@ -419,8 +419,7 @@ where
                                         //if threshold is larger than current 'now', all subsequent entries
                                         //will have too large threshold to be emitted
                                         if tk.instance != *instance
-                                            || &tk.time
-                                                > release_threshold_column_time.as_ref().unwrap()
+                                            || &tk.time > release_threshold_column_time_value
                                         {
                                             break;
                                         }
@@ -457,36 +456,38 @@ where
                         input_arrangement.trace.set_logical_compaction(frontier);
                         input_arrangement.trace.set_physical_compaction(frontier);
                     } else {
-                        if flush_on_end && maybe_cap.is_some() {
-                            let (mut cursor, storage) = input_arrangement.trace.cursor();
-                            let mut input_wrapper = CursorStorageWrapper {
-                                cursor: &mut cursor,
-                                storage: &storage,
-                            };
+                        if flush_on_end {
+                            if let Some(ref cap) = maybe_cap {
+                                let (mut cursor, storage) = input_arrangement.trace.cursor();
+                                let mut input_wrapper = CursorStorageWrapper {
+                                    cursor: &mut cursor,
+                                    storage: &storage,
+                                };
 
-                            for instance in release_threshold_column_times.instances() {
-                                move_cursor_to_key(
-                                    &mut input_wrapper,
-                                    last_arrangement_keys
-                                        .get(instance)
-                                        .or_else(|| first_in_instance.get(instance)),
-                                    last_arrangement_keys.contains_key(instance),
-                                );
-
-                                while input_wrapper.cursor.key_valid(input_wrapper.storage) {
-                                    let tk = input_wrapper.cursor.key(input_wrapper.storage);
-                                    if tk.instance != *instance {
-                                        break;
-                                    }
-                                    push_key_values_to_output(
+                                for instance in release_threshold_column_times.instances() {
+                                    move_cursor_to_key(
                                         &mut input_wrapper,
-                                        output,
-                                        maybe_cap.as_ref().unwrap(),
-                                        &tk.key,
-                                        Some(&maybe_cap.as_ref().unwrap().time().clone()),
+                                        last_arrangement_keys
+                                            .get(instance)
+                                            .or_else(|| first_in_instance.get(instance)),
+                                        last_arrangement_keys.contains_key(instance),
                                     );
 
-                                    input_wrapper.cursor.step_key(input_wrapper.storage);
+                                    while input_wrapper.cursor.key_valid(input_wrapper.storage) {
+                                        let tk = input_wrapper.cursor.key(input_wrapper.storage);
+                                        if tk.instance != *instance {
+                                            break;
+                                        }
+                                        push_key_values_to_output(
+                                            &mut input_wrapper,
+                                            output,
+                                            cap,
+                                            &tk.key,
+                                            Some(&cap.time().clone()),
+                                        );
+
+                                        input_wrapper.cursor.step_key(input_wrapper.storage);
+                                    }
                                 }
                             }
                         }

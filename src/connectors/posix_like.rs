@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use log::{error, info, warn};
 use std::borrow::Cow;

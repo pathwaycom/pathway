@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 use std::str::FromStr;
@@ -168,19 +168,19 @@ impl DateTimeNaive {
         }
     }
 
-    pub fn to_utc_from_timezone(&self, timezone: &str) -> DataResult<DateTimeUtc> {
+    pub fn to_utc_from_timezone(self, timezone: &str) -> DataResult<DateTimeUtc> {
         let naive_local = self.as_chrono_datetime();
         to_utc_from_timezone::<FixedOffset>(naive_local, timezone)
             .or_else(|_err| to_utc_from_timezone::<Tz>(naive_local, timezone))
     }
 
     #[must_use]
-    pub fn round(&self, duration: Duration) -> DateTimeNaive {
+    pub fn round(self, duration: Duration) -> DateTimeNaive {
         Self::new(self.get_rounded_timestamp(duration))
     }
 
     #[must_use]
-    pub fn truncate(&self, duration: Duration) -> DateTimeNaive {
+    pub fn truncate(self, duration: Duration) -> DateTimeNaive {
         Self::new(self.get_truncated_timestamp(duration))
     }
 
@@ -271,19 +271,19 @@ impl DateTimeUtc {
         }
     }
 
-    pub fn to_naive_in_timezone(&self, timezone: &str) -> DataResult<DateTimeNaive> {
+    pub fn to_naive_in_timezone(self, timezone: &str) -> DataResult<DateTimeNaive> {
         let naive_utc = self.as_chrono_datetime();
         to_naive_in_timezone::<FixedOffset>(naive_utc, timezone)
             .or_else(|_err| to_naive_in_timezone::<Tz>(naive_utc, timezone))
     }
 
     #[must_use]
-    pub fn round(&self, duration: Duration) -> DateTimeUtc {
+    pub fn round(self, duration: Duration) -> DateTimeUtc {
         Self::new(self.get_rounded_timestamp(duration))
     }
 
     #[must_use]
-    pub fn truncate(&self, duration: Duration) -> DateTimeUtc {
+    pub fn truncate(self, duration: Duration) -> DateTimeUtc {
         Self::new(self.get_truncated_timestamp(duration))
     }
 
@@ -360,7 +360,7 @@ impl Duration {
         Self { duration }
     }
 
-    pub fn is_zero(&self) -> bool {
+    pub fn is_zero(self) -> bool {
         self.duration == 0
     }
 
@@ -374,35 +374,35 @@ impl Duration {
         chrono::Duration::nanoseconds(self.duration)
     }
 
-    pub fn nanoseconds(&self) -> i64 {
+    pub fn nanoseconds(self) -> i64 {
         self.as_chrono_duration().num_nanoseconds().unwrap()
     }
 
-    pub fn microseconds(&self) -> i64 {
+    pub fn microseconds(self) -> i64 {
         self.as_chrono_duration().num_microseconds().unwrap()
     }
 
-    pub fn milliseconds(&self) -> i64 {
+    pub fn milliseconds(self) -> i64 {
         self.as_chrono_duration().num_milliseconds()
     }
 
-    pub fn seconds(&self) -> i64 {
+    pub fn seconds(self) -> i64 {
         self.as_chrono_duration().num_seconds()
     }
 
-    pub fn minutes(&self) -> i64 {
+    pub fn minutes(self) -> i64 {
         self.as_chrono_duration().num_minutes()
     }
 
-    pub fn hours(&self) -> i64 {
+    pub fn hours(self) -> i64 {
         self.as_chrono_duration().num_hours()
     }
 
-    pub fn days(&self) -> i64 {
+    pub fn days(self) -> i64 {
         self.as_chrono_duration().num_days()
     }
 
-    pub fn weeks(&self) -> i64 {
+    pub fn weeks(self) -> i64 {
         self.as_chrono_duration().num_weeks()
     }
 

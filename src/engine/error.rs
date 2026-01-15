@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::any::Any;
 use std::error;
@@ -108,7 +108,7 @@ pub enum Error {
     ExtractFromValueNotSupportedForKey,
 
     #[error("persistence backend failed: {0}")]
-    PersistentStorageError(#[from] PersistenceBackendError),
+    PersistentStorage(#[from] PersistenceBackendError),
 
     #[error(transparent)]
     Other(DynError),
@@ -121,7 +121,7 @@ pub enum Error {
     },
 
     #[error("snapshot writer failed: {0}")]
-    SnapshotWriterError(#[source] Box<WriteError>),
+    SnapshotWriter(#[source] Box<WriteError>),
 
     #[error("reader failed: {0:?}")]
     ReaderFailed(#[source] Box<ReadError>),

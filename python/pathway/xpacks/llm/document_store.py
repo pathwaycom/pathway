@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 """
 Pathway Document Store for processing and indexing documents.
 
@@ -727,7 +727,7 @@ class DocumentStoreClient:
         return_status: bool = False,
     ):
         """
-        Fetch information on documents in the the vector store.
+        Fetch information on documents in the vector store.
 
         Args:
             metadata_filter: optional string representing the metadata filtering query

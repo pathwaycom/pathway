@@ -1,4 +1,4 @@
-// Copyright © 2024 Pathway
+// Copyright © 2026 Pathway
 
 use std::any::type_name;
 use std::borrow::Cow;
@@ -24,7 +24,6 @@ use base64::engine::general_purpose::STANDARD as base64encoder;
 use base64::Engine;
 use bincode::ErrorKind as BincodeError;
 use itertools::Itertools;
-use log::error;
 use mongodb::bson::{
     bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents,
     Bson as BsonValue, DateTime as BsonDateTime, Document as BsonDocument,
@@ -279,11 +278,11 @@ pub trait Parser: Send {
 #[derive(Debug, Clone)]
 pub struct PreparedMessageHeader {
     key: String,
-    value: Vec<u8>,
+    value: Option<Vec<u8>>,
 }
 
 impl PreparedMessageHeader {
-    pub fn new(key: impl Into<String>, value: Vec<u8>) -> Self {
+    pub fn new(key: impl Into<String>, value: Option<Vec<u8>>) -> Self {
         Self {
             key: key.into(),
             value,
@@ -381,17 +380,19 @@ impl FormatterContext {
         let mut headers = Vec::with_capacity(header_fields.len() + 2);
         headers.push(PreparedMessageHeader::new(
             "pathway_time",
-            self.time.to_string().as_bytes().to_vec(),
+            Some(self.time.to_string().as_bytes().to_vec()),
         ));
         headers.push(PreparedMessageHeader::new(
             "pathway_diff",
-            self.diff.to_string().as_bytes().to_vec(),
+            Some(self.diff.to_string().as_bytes().to_vec()),
         ));
         for (name, position) in header_fields {
-            let value: Vec<u8> = match (&self.values[*position], encode_bytes) {
-                (Value::Bytes(b), false) => (*b).to_vec(),
-                (Value::Bytes(b), true) => base64encoder.encode(b).into(),
-                (other, _) => (*other.to_string().as_bytes()).to_vec(),
+            let value: Option<Vec<u8>> = match (&self.values[*position], encode_bytes) {
+                (Value::Bytes(b), false) => Some((*b).to_vec()),
+                (Value::Bytes(b), true) => Some(base64encoder.encode(b).into()),
+                (Value::String(s), _) => Some(s.as_bytes().to_vec()),
+                (Value::None, _) => None,
+                (other, _) => Some((*other.to_string().as_bytes()).to_vec()),
             };
             headers.push(PreparedMessageHeader::new(name, value));
         }
@@ -404,7 +405,7 @@ impl FormatterContext {
         for header in raw_headers {
             kafka_headers = kafka_headers.insert(KafkaHeader {
                 key: &header.key,
-                value: Some(&header.value),
+                value: header.value.as_ref(),
             });
         }
         kafka_headers
@@ -414,11 +415,13 @@ impl FormatterContext {
         let raw_headers = self.construct_message_headers(header_fields, true);
         let mut nats_headers = NatsHeaders::new();
         for header in raw_headers {
-            nats_headers.insert(
-                header.key,
-                String::from_utf8(header.value)
-                    .expect("all prepared headers must be UTF-8 serializable"),
-            );
+            let header_value = if let Some(header_value) = header.value {
+                String::from_utf8(header_value)
+                    .expect("all prepared headers must be UTF-8 serializable")
+            } else {
+                Value::None.to_string()
+            };
+            nats_headers.insert(header.key, header_value);
         }
         nats_headers
     }
@@ -1378,7 +1381,7 @@ fn values_by_names_from_json(
             if let Some(value) = payload.pointer(path) {
                 parse_value_from_json(value, dtype).ok_or_else(|| {
                     ParseError::FailedToParseFromJson {
-                        field_name: value_field.to_string(),
+                        field_name: value_field.clone(),
                         payload: value.clone(),
                         type_: dtype.clone(),
                     }
@@ -1388,8 +1391,8 @@ fn values_by_names_from_json(
                 Ok(default.clone())
             } else if field_absence_is_error {
                 Err(ParseError::FailedToExtractJsonField {
-                    field_name: value_field.to_string(),
-                    path: Some(path.to_string()),
+                    field_name: value_field.clone(),
+                    path: Some(path.clone()),
                     payload: payload.clone(),
                 }
                 .into())
@@ -1402,7 +1405,7 @@ fn values_by_names_from_json(
             if value_specified_in_json {
                 parse_value_from_json(&payload[&value_field], dtype).ok_or_else(|| {
                     ParseError::FailedToParseFromJson {
-                        field_name: value_field.to_string(),
+                        field_name: value_field.clone(),
                         payload: payload[&value_field].clone(),
                         type_: dtype.clone(),
                     }
@@ -1412,7 +1415,7 @@ fn values_by_names_from_json(
                 Ok(default.clone())
             } else if field_absence_is_error {
                 Err(ParseError::FailedToExtractJsonField {
-                    field_name: value_field.to_string(),
+                    field_name: value_field.clone(),
                     path: None,
                     payload: payload.clone(),
                 }
@@ -1455,7 +1458,7 @@ impl DebeziumMessageParser {
         let prepared_value: JsonValue = {
             if let JsonValue::String(serialized_json) = &value {
                 let Ok(prepared_value) = serde_json::from_str::<JsonValue>(serialized_json) else {
-                    return Err(ParseError::FailedToParseJson(serialized_json.to_string()));
+                    return Err(ParseError::FailedToParseJson(serialized_json.clone()));
                 };
                 prepared_value
             } else {
@@ -1597,7 +1600,7 @@ impl Parser for DebeziumMessageParser {
                 }
                 "u" => self.parse_update(&change_key["payload"], &change_payload["payload"]),
                 "d" => self.parse_delete(&change_key["payload"], &change_payload["payload"]),
-                _ => Err(ParseError::UnsupportedDebeziumOperation(op.to_string()).into()),
+                _ => Err(ParseError::UnsupportedDebeziumOperation(op.clone()).into()),
             },
             _ => Err(ParseError::DebeziumFormatViolated(
                 DebeziumFormatError::OperationFieldMissing,
@@ -1688,7 +1691,7 @@ impl JsonLinesParser {
                     .iter()
                     .find(|vf| vf.name == *key_field_name)
                     .map_or(FieldSource::Payload, |vf| vf.source);
-                key_sources_lists.add_field(key_field_name.to_string(), source);
+                key_sources_lists.add_field(key_field_name.clone(), source);
             }
             Some(key_sources_lists)
         } else {
@@ -2007,7 +2010,7 @@ impl JsonLinesFormatter {
         });
         let json_payload_map = json_payload.as_object_mut().unwrap();
         for (key, value) in zip(value_field_names.iter(), values) {
-            json_payload_map.insert(key.to_string(), serialize_value_to_json(value)?);
+            json_payload_map.insert(key.clone(), serialize_value_to_json(value)?);
         }
         encoder.encode(&json_payload)
     }

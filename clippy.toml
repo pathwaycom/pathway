@@ -1,3 +1,6 @@
+# we do not export a Rust API yet
+avoid-breaking-exported-api = false
+
 [[disallowed-methods]]
 path = "differential_dataflow::operators::Count::count"
 reason = "use crate::dataflow::operators::MaybeTotal::count instead"
@@ -45,6 +48,3 @@ reason = "use differential_dataflow::operators::join::JoinCore::join_core instea
 [[disallowed-methods]]
 path = "differential_dataflow::operators::join::Join::semijoin"
 reason = "use differential_dataflow::operators::join::JoinCore::join_core instead"
-
-# we do not export a Rust API yet
-avoid-breaking-exported-api = false

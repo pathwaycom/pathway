@@ -1,8 +1,9 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
 import datetime
+import json
 import pathlib
 import re
 from typing import Any, Optional
@@ -1308,3 +1309,31 @@ def test_json_convert_non_json(method):
         match=".*can only be applied to JSON columns, but column has type <class 'int'>.",
     ):
         input.select(result=method(pw.this.data))
+
+
+def test_json_serialize_parse():
+    base_unicode_value = "żółć"
+    base = {"data": base_unicode_value}
+
+    initial_json = pw.Json(base)
+    serialized = pw.Json.dumps(initial_json)
+    roundtrip_json = pw.Json.parse(serialized)
+    assert roundtrip_json["data"] == pw.Json(base_unicode_value)
+
+    serialized_ensure_ascii = json.dumps(base, ensure_ascii=True)
+    roundtrip_json_old_format = pw.Json.parse(serialized_ensure_ascii)
+    assert roundtrip_json_old_format["data"] == pw.Json(base_unicode_value)
+
+
+def test_json_doesnt_enforce_ascii(capsys):
+    class InputSchema(pw.Schema):
+        data: pw.Json
+
+    rows = [
+        ({"data": "szczęśliwość"},),
+    ]
+    table = pw.debug.table_from_rows(schema=InputSchema, rows=rows)
+    pw.debug.compute_and_print(table, include_id=False)
+
+    captured = capsys.readouterr()
+    assert '{"data": "szczęśliwość"}' in captured.out

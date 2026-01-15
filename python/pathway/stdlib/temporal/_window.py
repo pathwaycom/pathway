@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 from __future__ import annotations
 
@@ -342,18 +342,17 @@ class _SlidingWindow(Window):
         assign_windows = self._window_assignment_function(key_dtype)
 
         target = table.with_columns(
-            _pw_window=pw.apply_with_type(
+            _pw_window=pw.udf(
                 assign_windows,
-                dt.List(
+                return_type=dt.List(
                     dt.Tuple(
                         eval_type(instance),  # type: ignore
                         key_dtype,
                         key_dtype,
                     )
                 ),
-                instance,
-                key,
-            ),
+                deterministic=True,
+            )(instance, key),
             _pw_key=key,
         )
         target = target.flatten(target._pw_window, origin_id="_pw_original_id")
@@ -462,9 +461,11 @@ class _SlidingWindow(Window):
         assign_windows = self._window_assignment_function(time_expression_dtype)
 
         left_window = left.with_columns(
-            _pw_window=pw.apply_with_type(
-                assign_windows, _pw_window_dtype, None, left_time_expression
-            )
+            _pw_window=pw.udf(
+                assign_windows,
+                return_type=_pw_window_dtype,
+                deterministic=True,
+            )(None, left_time_expression)
         )
         left_window = left_window.flatten(left_window._pw_window)
 
@@ -474,9 +475,11 @@ class _SlidingWindow(Window):
         )
 
         right_window = right.with_columns(
-            _pw_window=pw.apply_with_type(
-                assign_windows, _pw_window_dtype, None, right_time_expression
-            )
+            _pw_window=pw.udf(
+                assign_windows,
+                return_type=_pw_window_dtype,
+                deterministic=True,
+            )(None, right_time_expression)
         )
         right_window = right_window.flatten(right_window._pw_window)
 

@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 import logging
 import os
@@ -301,6 +301,33 @@ def spawn_from_env():
         os.execl(sys.executable, sys.executable, sys.argv[0], *args)
     else:
         logging.warning("PATHWAY_SPAWN_ARGS variable is unspecified, exiting...")
+
+
+@cli.command()
+@click.option(
+    "--detailed-metrics-dir",
+    type=str,
+    default=".",
+    help="directory in which metrics are stored",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8088,
+)
+def web_dashboard(detailed_metrics_dir, port):
+    click.echo(f"Starting Pathway Web Dashboard on port {port}...")
+    env = os.environ.copy()
+    env["PATHWAY_DETAILED_METRICS_DIR"] = detailed_metrics_dir
+    command = [
+        "uvicorn",
+        "pathway.web_dashboard.dashboard:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+    ]
+    subprocess.run(command, env=env)
 
 
 @cli.group()

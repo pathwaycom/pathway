@@ -1,1 +1,1 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway

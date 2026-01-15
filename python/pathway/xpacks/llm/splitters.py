@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2026 Pathway
 
 """
 A library of text spliiters - routines which slit a long text into smaller chunks.
