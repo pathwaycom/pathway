@@ -46,7 +46,11 @@ dependencies = [
     "google-cloud-bigquery ~= 3.29.0",
     "pydantic ~= 2.9",
     "gitpython >= 3.1.43",
-    "deltalake >= 0.17.0, < 0.18.0"
+    "deltalake >= 0.17.0, < 0.18.0",
+    "sqlalchemy >= 2.0.43",
+    "sqlmodel >= 0.0.24",
+    "fastapi >= 0.116.1",
+    "uvicorn >= 0.29.0"
 ]
 
 [project.optional-dependencies]

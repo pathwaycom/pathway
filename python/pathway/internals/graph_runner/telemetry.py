@@ -21,7 +21,6 @@ import json
 import logging
 import sys
 from contextlib import contextmanager
-from dataclasses import asdict
 from functools import cached_property
 from typing import Any
 
@@ -183,7 +182,13 @@ def _serialize_graph(graph: ParseGraph) -> str:
         if node.trace.user_frame is None:
             continue
 
-        user_frame = asdict(node.trace.user_frame)
+        user_frame = {
+            "user_frame_function": node.trace.user_frame.function,
+            "user_frame_filename": node.trace.user_frame.filename,
+            "user_frame_line": node.trace.user_frame.line,
+            "user_frame_line_number": node.trace.user_frame.line_number,
+        }
+
         parent = f"{node.trace.user_frame.filename}:{node.trace.user_frame.line_number}"
         grandparent = node.trace.user_frame.function
 
