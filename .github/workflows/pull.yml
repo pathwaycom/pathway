@@ -26,7 +26,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install black mypy flake8 typos
+          pip install "black==24.10.0" flake8 typos
 
       - name: Run Black
         run: black --check python/
