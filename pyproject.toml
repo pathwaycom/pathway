@@ -135,6 +135,15 @@ airbyte = [
 [project.scripts]
 pathway = "pathway.cli:main"
 
+[tool.black]
+required-version = "24"
+line-length = 88
+exclude = '''/(
+    | docs
+    | target
+)/'''
+target-version = ["py310", "py311"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "pathway.engine"

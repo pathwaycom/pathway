@@ -4,7 +4,7 @@ use log::error;
 use rand::{rng, Rng};
 
 const DEFAULT_SLEEP_INITIAL_DURATION: Duration = Duration::from_secs(1);
-const DEFAULT_SLEEP_BACKOFF_FACTOR: f64 = 1.2;
+const DEFAULT_SLEEP_BACKOFF_FACTOR: f64 = 1.3;
 const DEFAULT_JITTER: Duration = Duration::from_millis(800);
 
 #[allow(clippy::module_name_repetitions)]
