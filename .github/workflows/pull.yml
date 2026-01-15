@@ -34,6 +34,9 @@ jobs:
       - name: Run flake8
         run: flake8
 
+      - name: Run mypy
+        run: mypy .
+
       # --- Rust Setup ---
       - name: Set up Rust ${{ matrix.rust-version }}
         uses: actions-rs/toolchain@v1
