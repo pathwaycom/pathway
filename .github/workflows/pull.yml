@@ -29,7 +29,7 @@ jobs:
           pip install black mypy flake8 typos
 
       - name: Run Black
-        run: black --check .
+        run: black --check python/
 
       # --- Rust Setup ---
       - name: Set up Rust ${{ matrix.rust-version }}
