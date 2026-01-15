@@ -45,5 +45,11 @@ jobs:
       - name: Run cargo fmt (dry-run)
         run: cargo fmt -- --check
 
+      - name: Run cargo sort (dry-run)
+        run: cargo --locked sort --check --check-format
+
       - name: Run cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets -- --deny warnings
+
+      - name: Run runtime engine tests
+        run: cargo --locked test
