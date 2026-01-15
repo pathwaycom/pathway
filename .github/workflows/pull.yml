@@ -40,7 +40,7 @@ jobs:
 
       - name: Install Rust tools
         run: |
-          rustup component add clippy rustfmt
+          rustup component add clippy rustfmt sort
 
       - name: Run cargo fmt (dry-run)
         run: cargo fmt -- --check
