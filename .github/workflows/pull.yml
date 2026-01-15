@@ -1,0 +1,49 @@
+name: CI Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-and-check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11]
+        rust-version: [1.92.0]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # --- Python Setup ---
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black mypy flake8 typos
+
+      - name: Run Black
+        run: black --check .
+
+      # --- Rust Setup ---
+      - name: Set up Rust ${{ matrix.rust-version }}
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust-version }}
+          override: true
+
+      - name: Install Rust tools
+        run: |
+          rustup component add clippy rustfmt
+
+      - name: Run cargo fmt (dry-run)
+        run: cargo fmt -- --check
+
+      - name: Run cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
