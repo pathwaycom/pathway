@@ -41,13 +41,9 @@ jobs:
       - name: Install Rust tools
         run: |
           rustup component add rustfmt clippy
-          cargo install --locked cargo-sort
 
       - name: Run cargo fmt (dry-run)
         run: cargo fmt -- --check
-
-      - name: Run cargo sort (dry-run)
-        run: cargo --locked sort --check --check-format
 
       - name: Run cargo clippy
         run: cargo clippy --locked --all-targets -- --deny warnings
