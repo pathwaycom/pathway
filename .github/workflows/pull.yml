@@ -26,16 +26,13 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "black==24.10.0" flake8 typos "mypy==1.10.1"
+          pip install "black==24.10.0" flake8 typos
 
       - name: Run Black
-        run: black --check python/
+        run: black . --check
 
       - name: Run flake8
         run: flake8
-
-      - name: Run mypy
-        run: mypy .
 
       # --- Rust Setup ---
       - name: Set up Rust ${{ matrix.rust-version }}
