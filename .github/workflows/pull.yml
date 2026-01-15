@@ -31,6 +31,9 @@ jobs:
       - name: Run Black
         run: black --check python/
 
+      - name: Run flake8
+        run: flake8
+
       # --- Rust Setup ---
       - name: Set up Rust ${{ matrix.rust-version }}
         uses: actions-rs/toolchain@v1
