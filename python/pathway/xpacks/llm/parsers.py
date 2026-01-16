@@ -9,7 +9,9 @@ from __future__ import annotations
 import inspect
 import io
 import logging
+import os
 import re
+import tempfile
 import warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -1305,3 +1307,65 @@ class PaddleOCRParser(pw.UDF):
             docs = [(concatenated_text, {"page_number": 0})]
 
         return docs
+
+
+class AudioParser(pw.UDF):
+    """
+    Parse audio using OpenAI's Whisper API.
+
+    Args:
+        model: Whisper model to use (default: "whisper-1").
+        api_key: OpenAI API key.
+        base_url: OpenAI Base URL.
+        capacity: Maximum number of concurrent operations.
+        retry_strategy: Strategy for retries.
+        cache_strategy: Caching strategy.
+        **kwargs: Additional arguments for `audio.transcriptions.create`.
+    """
+
+    def __init__(
+        self,
+        model: str = "whisper-1",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        capacity: int | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
+        **kwargs,
+    ):
+        with optional_imports("xpack-llm"):
+            import openai
+
+        executor = _prepare_executor(
+            capacity=capacity, retry_strategy=retry_strategy
+        )
+        super().__init__(executor=executor, cache_strategy=cache_strategy)
+
+        self.client = openai.AsyncOpenAI(
+            api_key=api_key, base_url=base_url, max_retries=0
+        )
+        self.model = model
+        self.kwargs = kwargs
+
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        # openai.audio.transcriptions.create requires a file-like object with a name
+        # or a path. We use a temporary file.
+        # We default to .mp3 extension as it's widely supported/compressed.
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+            tmp_file.write(contents)
+            tmp_path = tmp_file.name
+
+        try:
+            with open(tmp_path, "rb") as audio_file:
+                transcript = await self.client.audio.transcriptions.create(
+                    model=self.model,
+                    file=audio_file,
+                    **self.kwargs
+                )
+            # The response type depends on response_format, but default is object with .text
+            text = getattr(transcript, "text", str(transcript))
+            return [(text, {})]
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
