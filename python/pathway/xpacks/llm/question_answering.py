@@ -644,8 +644,15 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         if self.query_transformer_prompt is not None:
             pw_ai_queries = pw_ai_queries.with_columns(
-                prompt=self.query_transformer_prompt(pw.this.prompt)
+                rewrite_prompt=self.query_transformer_prompt(pw.this.prompt)
             )
+            pw_ai_queries += pw_ai_queries.select(
+                prompt=self.llm(
+                    llms.prompt_chat_single_qa(pw.this.rewrite_prompt),
+                    model=pw.this.model,
+                )
+            )
+            pw_ai_queries = pw_ai_queries.await_futures()
 
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
