@@ -26,10 +26,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
 
       - name: Git checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: License files
         run: |
@@ -74,7 +74,7 @@ jobs:
           target: universal2-apple-darwin
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-${{ matrix.os }}
           path: target/wheels/
@@ -92,11 +92,11 @@ jobs:
     steps:
       - name: Set up Python ${{ matrix.python-version }}
         if: ${{ matrix.os != 'selfhosted-macOS'}}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-${{ matrix.os }}
           path: target/wheels/
