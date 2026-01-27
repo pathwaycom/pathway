@@ -17,6 +17,7 @@ import aiohttp_cors
 import yaml
 from aiohttp import web
 from aiohttp.web_middlewares import normalize_path_middleware
+from aiohttp_cors import CorsConfig
 
 import pathway.internals as pw
 import pathway.io as io
@@ -524,6 +525,7 @@ class PathwayWebserver(PathwayServer):
             ]
         )
         self._registered_routes = {}
+        self._cors: CorsConfig | None
         if with_cors:
             self._cors = aiohttp_cors.setup(self._app)
         else:

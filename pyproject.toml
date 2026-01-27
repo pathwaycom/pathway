@@ -135,6 +135,15 @@ airbyte = [
 [project.scripts]
 pathway = "pathway.cli:main"
 
+[tool.black]
+required-version = "24"
+line-length = 88
+exclude = '''/(
+    | docs
+    | target
+)/'''
+target-version = ["py310", "py311"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "pathway.engine"
@@ -148,3 +157,13 @@ check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
+
+[tool.isort]
+profile = "black"
+skip = [
+    "target",
+    "docs",
+    "third_party",
+]
+known_first_party = ["pathway"]
+combine_as_imports = true
