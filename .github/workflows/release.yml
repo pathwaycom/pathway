@@ -135,28 +135,28 @@ jobs:
 
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-arch64
           path: ./target/wheels/
 
       - name: Upload artifact
         if: ${{ matrix.os == 'ubuntu-22.04' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-x86-x64
           path: ./target/wheels/
 
       - name: Upload artifact
         if: ${{ matrix.os == 'selfhosted-macOS' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-macOS
           path: ./target/wheels/
 
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: CHANGELOG.md
           path: CHANGELOG.md
@@ -180,7 +180,7 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-x86-x64
           path: ./wheels/
@@ -220,13 +220,13 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{ matrix.os == 'selfhosted-macOS' }}
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         with:
           name: pathway-arch64
@@ -288,22 +288,22 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-x86-x64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-arch64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: CHANGELOG.md
           path: .

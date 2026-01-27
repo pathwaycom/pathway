@@ -74,7 +74,7 @@ jobs:
           target: universal2-apple-darwin
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-${{ matrix.os }}
           path: target/wheels/
@@ -96,7 +96,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-${{ matrix.os }}
           path: target/wheels/
