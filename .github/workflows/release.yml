@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   schedule:
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 jobs:
@@ -57,7 +57,7 @@ jobs:
         uses: actions/setup-python@v5
 
       - name: Git checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: License files
         run: |
@@ -179,7 +179,7 @@ jobs:
       - name: Create dir for wheels
         run: |
           mkdir -p wheels
-            
+
       - uses: actions/download-artifact@v5
         with:
           name: pathway-x86-x64
@@ -229,7 +229,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         with:
-          name:  pathway-arch64
+          name: pathway-arch64
           path: ./wheels/
 
       - name: Install and verify ${{ matrix.os }} package
@@ -271,7 +271,7 @@ jobs:
       - start-runner
     name: Publish package
     strategy:
-     fail-fast: false
+      fail-fast: false
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -323,7 +323,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
-          packages-dir: './wheels/'
+          packages-dir: "./wheels/"
 
       - name: Publish package to s3
         uses: prewk/s3-cp-action@v2
@@ -369,7 +369,7 @@ jobs:
           aws_access_key_id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws_secret_access_key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
           source: pip-index.html
-          dest:  ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
+          dest: ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
 
   stop-runner:
     name: Stop self-hosted EC2 runner
