@@ -168,3 +168,58 @@ def test_invalid_prompt_template_raises_error(prompt: str):
 
     assert "context" in err_msg
     assert "query" in err_msg
+
+
+def test_base_rag_with_query_transformer_identity():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    class TrueIdentityChat(llms.BaseChat):
+        def _accepts_call_arg(self, arg_name: str) -> bool:
+            return False
+
+        async def __wrapped__(self, messages: list[dict] | pw.Json, model: str) -> str:
+            return messages[0]["content"].as_str()
+
+    @pw.udf
+    def identity_rewrite(q: str) -> str:
+        return q
+
+    rag = BaseRAGQuestionAnswerer(
+        TrueIdentityChat(),
+        vector_server,
+        prompt_template=_prompt_template,
+        summarize_template=_summarize_template,
+        search_topk=1,
+        query_transformer_prompt=identity_rewrite,
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", False),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+
+    casted_table = answer_output.select(
+        result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"])
+    )
+
+    assert_table_equality(
+        casted_table,
+        pw.debug.table_from_markdown(
+            """
+            result
+            foo
+            """
+        ),
+    )

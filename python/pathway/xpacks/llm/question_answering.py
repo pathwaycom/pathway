@@ -456,6 +456,8 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             Either string template, callable or a pw.udf function is expected.
             Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
+        query_transformer_prompt: Optional UDF applied to the incoming query before retrieval or prompting,
+            which allows implementing custom query rewriting, expansion, or normalization logic.
         context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
@@ -516,6 +518,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         *,
         default_llm_name: str | None = None,
         prompt_template: str | Callable[[str, str], str] | pw.UDF = prompts.prompt_qa,
+        query_transformer_prompt: pw.UDF | None = None,
         context_processor: (
             BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
         ) = SimpleContextProcessor(),
@@ -535,6 +538,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self._init_schemas(default_llm_name)
 
         self.prompt_udf = _get_RAG_prompt_udf(prompt_template)
+        self.query_transformer_prompt = query_transformer_prompt
 
         if isinstance(context_processor, BaseContextProcessor):
             self.docs_to_context_transformer = context_processor.as_udf()
@@ -637,6 +641,18 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     @pw.table_transformer
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
+
+        if self.query_transformer_prompt is not None:
+            pw_ai_queries = pw_ai_queries.with_columns(
+                rewrite_prompt=self.query_transformer_prompt(pw.this.prompt)
+            )
+            pw_ai_queries += pw_ai_queries.select(
+                prompt=self.llm(
+                    llms.prompt_chat_single_qa(pw.this.rewrite_prompt),
+                    model=pw.this.model,
+                )
+            )
+            pw_ai_queries = pw_ai_queries.await_futures()
 
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
@@ -840,6 +856,8 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
             For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
             when information is not found.
+        query_transformer_prompt: Optional UDF applied to the incoming query before retrieval or prompting,
+            which allows implementing custom query rewriting, expansion, or normalization logic.
         no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
@@ -896,6 +914,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         prompt_template: (
             str | Callable[[str, str], str] | pw.UDF
         ) = prompts.prompt_qa_geometric_rag,
+        query_transformer_prompt: pw.UDF | None = None,
         no_answer_string: str = "No information found.",
         context_processor: (
             BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
@@ -909,6 +928,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             llm,
             indexer,
             default_llm_name=default_llm_name,
+            query_transformer_prompt=query_transformer_prompt,
             summarize_template=summarize_template,
             context_processor=context_processor,
         )
