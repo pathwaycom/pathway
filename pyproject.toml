@@ -92,6 +92,9 @@ xpack-llm-docs = [
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
 ]
+leann = [
+    "leann >= 0.1.0",
+]
 all = [
     "pathway[sql]",
     "pathway[xpack-llm]",
@@ -99,6 +102,7 @@ all = [
     "pathway[xpack-llm-docs]",
     "pathway[xpack-sharepoint]",
     "pathway[airbyte]",
+    "pathway[leann]",
 ]
 tests = [
     "pytest >= 8.0.0, < 9.0.0",
