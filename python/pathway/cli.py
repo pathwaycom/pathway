@@ -76,9 +76,8 @@ def spawn_program(
                 os.fspath(requirements_path),
             ]
             pip_handle = subprocess.run(
-                " ".join(command),
+                command,
                 stderr=subprocess.STDOUT,
-                shell=True,
             )
             if pip_handle.returncode != 0:
                 process_stdout = pip_handle.stdout.decode("utf-8")

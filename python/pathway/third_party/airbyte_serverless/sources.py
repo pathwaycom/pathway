@@ -109,7 +109,7 @@ class DockerAirbyteSource(ExecutableAirbyteSource):
         )
         self.executable = (
             f"docker run --rm -i --volume {self.temp_dir}:{self.temp_dir_for_executable} "
-            f"{prepared_env_vars} {self.docker_image}"
+            f"{prepared_env_vars} {shlex.quote(self.docker_image)}"
         )
 
     @property
@@ -155,9 +155,8 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
         pip_path = os.fspath(self._venv_path / "bin" / "pip")
         for n_attempt in range(MAX_PIP_INSTALL_ATTEMPTS):
             process = subprocess.run(
-                f"{pip_path} install airbyte-{connector}",
+                [pip_path, "install", f"airbyte-{connector}"],
                 stderr=subprocess.STDOUT,
-                shell=True,
             )
             if process.returncode != 0:
                 result_stdout = process.stdout.decode("utf-8") if process.stdout else ""
