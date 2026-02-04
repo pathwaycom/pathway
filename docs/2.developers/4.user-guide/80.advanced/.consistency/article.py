@@ -168,7 +168,7 @@ pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 # %% [markdown]
 # You can observe that Pathway processed all the events intended to be simultaneous at the same time, and the sum of operations always equals 0.
 #
-# # Persistency guarantees
+# ## Persistency guarantees
 #
 # Pathway persists intermediate results recording the state of inputs with each saved datum. When restarted from a checkpoint, the saved state is loaded into memory first. Then all inputs are replayed starting at times recorded in the checkpoint. To avoid data loss, all streaming inputs should be buffered into a persistent message queue which allows multiple reads to recent items, such as a topic in Apache Kafka.
 #
