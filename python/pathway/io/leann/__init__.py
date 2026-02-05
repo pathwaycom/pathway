@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 _LEANN_INSTALL_ERROR_MESSAGE = (
     "LEANN connector requires the `leann` package. "
-    "Please install it with: `pip install pathway[leann]` or `pip install leann`"
+    "Please visit https://github.com/yichuan-w/LEANN and follow the "
+    "installation instructions there."
 )
 
 
@@ -34,7 +35,6 @@ class _LeannObserver(ConnectorObserver):
         embedding_mode: str | None,
         embedding_model: str | None,
         embedding_options: dict | None,
-        rebuild_on_time_end: bool,
     ):
         self.index_path = Path(index_path)
         self.text_column = text_column
@@ -43,7 +43,6 @@ class _LeannObserver(ConnectorObserver):
         self.embedding_mode = embedding_mode
         self.embedding_model = embedding_model
         self.embedding_options = embedding_options or {}
-        self.rebuild_on_time_end = rebuild_on_time_end
         # Store documents as {Pointer: {"text": str, "metadata": dict}}
         self.documents: dict[Pointer, dict[str, Any]] = {}
         self._dirty = False
@@ -73,7 +72,7 @@ class _LeannObserver(ConnectorObserver):
                 self._dirty = True
 
     def on_time_end(self, time: int) -> None:
-        if self.rebuild_on_time_end and self._dirty:
+        if self._dirty:
             self._build_index()
             self._dirty = False
 
@@ -129,17 +128,17 @@ def write(
     *,
     metadata_columns: list[str] | None = None,
     backend_name: Literal["hnsw", "diskann"] = "hnsw",
-    embedding_mode: str | None = None,
+    embedding_mode: Literal["sentence-transformers", "openai", "mlx", "ollama"] | None = None,
     embedding_model: str | None = None,
     embedding_options: dict | None = None,
-    rebuild_on_time_end: bool = False,
     name: str | None = None,
 ) -> None:
     """
-    Write table data to a LEANN vector index.
+    Write table data to a `LEANN <https://github.com/yichuan-w/LEANN>`_ vector index.
 
     LEANN is a storage-efficient vector database that uses graph-based selective
     recomputation to achieve 97% storage reduction compared to traditional solutions.
+    The index is rebuilt after each minibatch when there are pending changes.
 
     Args:
         table: The Pathway table to index.
@@ -151,7 +150,6 @@ def write(
             "mlx", or "ollama".
         embedding_model: Specific embedding model name (e.g., "facebook/contriever").
         embedding_options: Additional embedding config (api_key, base_url, etc.).
-        rebuild_on_time_end: If True, rebuild index after each minibatch.
         name: Unique name for this connector instance.
 
     Returns:
@@ -160,7 +158,8 @@ def write(
     Note:
         - Rows with empty or null text are skipped with a warning logged.
         - Existing index files are overwritten on each build.
-        - LEANN requires the ``leann`` package: ``pip install pathway[leann]``
+        - LEANN requires the ``leann`` package. Please visit
+          https://github.com/yichuan-w/LEANN for installation instructions.
         - metadata_columns are collected but not yet indexed (pending LEANN API support).
 
     Example:
@@ -172,8 +171,8 @@ def write(
     ...     title: str
     ...     author: str
     >>>
-    >>> table = pw.io.csv.read("./documents.csv", schema=DocumentSchema)
-    >>> pw.io.leann.write(
+    >>> table = pw.io.csv.read("./documents.csv", schema=DocumentSchema)  # doctest: +SKIP
+    >>> pw.io.leann.write(  # doctest: +SKIP
     ...     table,
     ...     index_path="./my_index.leann",
     ...     text_column="content",
@@ -181,7 +180,7 @@ def write(
     ...     backend_name="hnsw",
     ...     embedding_model="facebook/contriever",
     ... )
-    >>> pw.run()
+    >>> pw.run()  # doctest: +SKIP
     """
     _check_leann_available()
 
@@ -196,7 +195,6 @@ def write(
         embedding_mode=embedding_mode,
         embedding_model=embedding_model,
         embedding_options=embedding_options,
-        rebuild_on_time_end=rebuild_on_time_end,
     )
     python_write(table, observer, name=name)
 

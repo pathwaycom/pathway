@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 from unittest import mock
 
 import pytest
@@ -12,17 +13,16 @@ from pathway.io.leann import _LeannObserver
 class TestLeannObserver:
     """Unit tests for the _LeannObserver class."""
 
-    def test_on_change_addition(self):
+    def test_on_change_addition(self, tmp_path: pathlib.Path):
         """Test that additions are properly tracked."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         # Create a mock Pointer
@@ -35,17 +35,16 @@ class TestLeannObserver:
         assert observer.documents[key]["text"] == "Hello world"
         assert observer._dirty is True
 
-    def test_on_change_deletion(self):
+    def test_on_change_deletion(self, tmp_path: pathlib.Path):
         """Test that deletions are properly tracked."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         key = mock.MagicMock()
@@ -64,17 +63,16 @@ class TestLeannObserver:
         assert key not in observer.documents
         assert observer._dirty is True
 
-    def test_on_change_deletion_nonexistent_key(self):
+    def test_on_change_deletion_nonexistent_key(self, tmp_path: pathlib.Path):
         """Test that deleting a nonexistent key doesn't set dirty flag."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         key = mock.MagicMock()
@@ -85,17 +83,16 @@ class TestLeannObserver:
         assert key not in observer.documents
         assert observer._dirty is False  # No actual change occurred
 
-    def test_on_change_skips_empty_text(self):
+    def test_on_change_skips_empty_text(self, tmp_path: pathlib.Path):
         """Test that rows with empty text are skipped."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         key = mock.MagicMock()
@@ -124,17 +121,16 @@ class TestLeannObserver:
         assert observer._skipped_count == 4
         assert observer._dirty is False
 
-    def test_on_change_with_metadata(self):
+    def test_on_change_with_metadata(self, tmp_path: pathlib.Path):
         """Test that metadata columns are extracted."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="content",
             metadata_columns=["title", "author"],
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         key = mock.MagicMock()
@@ -146,17 +142,16 @@ class TestLeannObserver:
         assert observer.documents[key]["metadata"]["title"] == "My Title"
         assert observer.documents[key]["metadata"]["author"] == "Author Name"
 
-    def test_on_time_end_with_rebuild_enabled(self):
-        """Test that index is rebuilt on time_end when rebuild_on_time_end=True."""
+    def test_on_time_end_rebuilds_when_dirty(self, tmp_path: pathlib.Path):
+        """Test that index is rebuilt on time_end when there are pending changes."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=True,
         )
 
         key = mock.MagicMock()
@@ -167,38 +162,16 @@ class TestLeannObserver:
             mock_build.assert_called_once()
             assert observer._dirty is False
 
-    def test_on_time_end_with_rebuild_disabled(self):
-        """Test that index is NOT rebuilt on time_end when rebuild_on_time_end=False."""
-        observer = _LeannObserver(
-            index_path="/tmp/test.leann",
-            text_column="text",
-            metadata_columns=None,
-            backend_name="hnsw",
-            embedding_mode=None,
-            embedding_model=None,
-            embedding_options=None,
-            rebuild_on_time_end=False,
-        )
-
-        key = mock.MagicMock()
-        observer.on_change(key, {"text": "Hello"}, time=0, is_addition=True)
-
-        with mock.patch.object(observer, "_build_index") as mock_build:
-            observer.on_time_end(time=0)
-            mock_build.assert_not_called()
-            assert observer._dirty is True
-
-    def test_on_end_builds_index_when_dirty(self):
+    def test_on_end_builds_index_when_dirty(self, tmp_path: pathlib.Path):
         """Test that on_end builds the index when there are pending changes."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         key = mock.MagicMock()
@@ -208,18 +181,17 @@ class TestLeannObserver:
             observer.on_end()
             mock_build.assert_called_once()
 
-    def test_on_end_skips_build_when_not_dirty_and_index_exists(self):
+    def test_on_end_skips_build_when_not_dirty_and_index_exists(self, tmp_path: pathlib.Path):
         """Test that on_end skips build when not dirty and index already exists."""
         with mock.patch("pathlib.Path.exists", return_value=True):
             observer = _LeannObserver(
-                index_path="/tmp/test.leann",
+                index_path=tmp_path / "test.leann",
                 text_column="text",
                 metadata_columns=None,
                 backend_name="hnsw",
                 embedding_mode=None,
                 embedding_model=None,
                 embedding_options=None,
-                rebuild_on_time_end=False,
             )
             # Not dirty (no changes)
             observer._dirty = False
@@ -228,17 +200,16 @@ class TestLeannObserver:
                 observer.on_end()
                 mock_build.assert_not_called()
 
-    def test_build_index_skips_when_no_documents(self):
+    def test_build_index_skips_when_no_documents(self, tmp_path: pathlib.Path):
         """Test that _build_index skips when there are no documents."""
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode=None,
             embedding_model=None,
             embedding_options=None,
-            rebuild_on_time_end=False,
         )
 
         # No documents added - mock the leann import
@@ -247,17 +218,17 @@ class TestLeannObserver:
             observer._build_index()
             mock_leann_module.LeannBuilder.assert_not_called()
 
-    def test_build_index_with_documents(self):
+    def test_build_index_with_documents(self, tmp_path: pathlib.Path):
         """Test that _build_index properly creates the LEANN index."""
+        index_path = tmp_path / "test_build.leann"
         observer = _LeannObserver(
-            index_path="/tmp/test_build.leann",
+            index_path=index_path,
             text_column="text",
             metadata_columns=None,
             backend_name="hnsw",
             embedding_mode="sentence-transformers",
             embedding_model="facebook/contriever",
             embedding_options={"device": "cpu"},
-            rebuild_on_time_end=False,
         )
 
         # Add some documents
@@ -287,7 +258,7 @@ class TestLeannObserver:
             assert mock_builder.add_text.call_count == 2
 
             # Check build_index was called
-            mock_builder.build_index.assert_called_once_with("/tmp/test_build.leann")
+            mock_builder.build_index.assert_called_once_with(str(index_path))
 
 
 class TestLeannWrite:
@@ -300,19 +271,18 @@ class TestLeannWrite:
         assert callable(write)
         assert write.__name__ == "write"
 
-    def test_observer_initialization_via_write_params(self):
+    def test_observer_initialization_via_write_params(self, tmp_path: pathlib.Path):
         """Test that _LeannObserver is initialized with correct parameters."""
         # Instead of calling write() directly (which has beartype issues in tests),
         # we test that _LeannObserver can be created with the expected parameters
         observer = _LeannObserver(
-            index_path="/tmp/test.leann",
+            index_path=tmp_path / "test.leann",
             text_column="content",
             metadata_columns=["title"],
             backend_name="diskann",
             embedding_mode="openai",
             embedding_model="text-embedding-3-small",
             embedding_options={"api_key": "test-key"},
-            rebuild_on_time_end=True,
         )
 
         assert observer.text_column == "content"
@@ -321,7 +291,6 @@ class TestLeannWrite:
         assert observer.embedding_mode == "openai"
         assert observer.embedding_model == "text-embedding-3-small"
         assert observer.embedding_options == {"api_key": "test-key"}
-        assert observer.rebuild_on_time_end is True
 
     def test_check_leann_available_raises_on_missing_package(self):
         """Test that _check_leann_available raises ImportError when leann is missing."""
