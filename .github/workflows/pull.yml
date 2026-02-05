@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+env:
+  PYTHON_VERSION: "3.11"
+  RUST_TOOLCHAIN: "1.92.0"
+
+jobs:
+  python-black:
+    name: 🐍 black
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: python -m pip install --upgrade pip && pip install "black>=24,<25"
+      - run: black . --check
+
+  python-flake8:
+    name: 🐍 flake8
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: python -m pip install --upgrade pip && pip install "flake8>=7,<8"
+      - run: flake8
+
+  python-mypy:
+    name: 🐍 mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install mypy
+        run: python -m pip install --upgrade "pip<25.0" && pip install "mypy>=1.10.0,<1.11.0"
+      - name: Sync dependencies
+        run: |
+          python ./.github/ci/get-dependencies.py
+          pip install -r requirements.txt
+      - name: Install type stubs
+        run: |
+          pip install \
+            types-pytz \
+            types-PyYAML \
+            types-requests \
+            types-simplejson \
+            types-protobuf \
+            types-python-dateutil \
+            pandas-stubs
+      - name: Run mypy
+        run: mypy .
+
+  python-isort:
+    name: 🐍 isort
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: python -m pip install --upgrade pip && pip install "isort>5,<6"
+      - run: isort --check .
+
+  cargo-fmt:
+    name: 🦀 cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+      - run: rustup component add rustfmt
+      - run: cargo fmt -- --check
+
+  cargo-clippy:
+    name: 🦀 cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+      - run: rustup component add clippy
+      - run: cargo clippy --locked --all-targets -- --deny warnings
+
+  cargo-test:
+    name: 🦀 cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          override: true
+      - run: cargo test --locked

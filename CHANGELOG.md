@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.leann.write` connector for writing Pathway tables to LEANN vector indices. LEANN uses graph-based selective recomputation to achieve 97% storage reduction compared to traditional vector databases.
+- `pw.io.kafka.read` and `pw.io.kafka.write` connectors now support OAUTHBEARER authentication.
 
 ## [0.29.0] - 2026-01-22
 

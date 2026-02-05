@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   schedule:
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 jobs:
@@ -57,7 +57,7 @@ jobs:
         uses: actions/setup-python@v5
 
       - name: Git checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: License files
         run: |
@@ -92,9 +92,15 @@ jobs:
           command: build
           args: --release --strip
           manylinux: auto
-          container: "quay.io/pypa/manylinux2014_x86_64:2025.03.23-1"
+          container: "quay.io/pypa/manylinux_2_28_x86_64:2026.02.01-1"
+          before-script-linux: |
+            dnf install -y \
+              perl-core \
+              llvm \
+              llvm-devel \
+              clang \
+              clang-devel
           sccache: true
-          before-script-linux: yum install -y perl-core
 
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'selfhosted-macOS'}}
@@ -127,36 +133,41 @@ jobs:
           command: build
           args: --release --strip
           manylinux: 2_28
-          container: "quay.io/pypa/manylinux_2_28_aarch64:2025.03.23-1"
-          sccache: true
+          container: "quay.io/pypa/manylinux_2_28_aarch64:2026.02.01-1"
           before-script-linux: |
-            yum install -y perl-core
+            dnf install -y \
+              perl-core \
+              llvm \
+              llvm-devel \
+              clang \
+              clang-devel
             python3 -m ensurepip
+          sccache: true
 
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-arch64
           path: ./target/wheels/
 
       - name: Upload artifact
         if: ${{ matrix.os == 'ubuntu-22.04' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-x86-x64
           path: ./target/wheels/
 
       - name: Upload artifact
         if: ${{ matrix.os == 'selfhosted-macOS' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-macOS
           path: ./target/wheels/
 
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: CHANGELOG.md
           path: CHANGELOG.md
@@ -179,8 +190,8 @@ jobs:
       - name: Create dir for wheels
         run: |
           mkdir -p wheels
-            
-      - uses: actions/download-artifact@v5
+
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-x86-x64
           path: ./wheels/
@@ -220,16 +231,16 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{ matrix.os == 'selfhosted-macOS' }}
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         with:
-          name:  pathway-arch64
+          name: pathway-arch64
           path: ./wheels/
 
       - name: Install and verify ${{ matrix.os }} package
@@ -271,7 +282,7 @@ jobs:
       - start-runner
     name: Publish package
     strategy:
-     fail-fast: false
+      fail-fast: false
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -288,22 +299,22 @@ jobs:
         run: |
           mkdir -p wheels
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-x86-x64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-arch64
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-macOS
           path: ./wheels/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: CHANGELOG.md
           path: .
@@ -323,7 +334,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
-          packages-dir: './wheels/'
+          packages-dir: "./wheels/"
 
       - name: Publish package to s3
         uses: prewk/s3-cp-action@v2
@@ -369,7 +380,7 @@ jobs:
           aws_access_key_id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws_secret_access_key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
           source: pip-index.html
-          dest:  ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
+          dest: ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
 
   stop-runner:
     name: Stop self-hosted EC2 runner

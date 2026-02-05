@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: 'select runner'
+        description: "select runner"
         type: string
         required: true
 concurrency:
@@ -29,7 +29,7 @@ jobs:
         uses: actions/setup-python@v5
 
       - name: Git checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: License files
         run: |
@@ -57,9 +57,15 @@ jobs:
           command: build
           args: --release --strip
           manylinux: auto
-          container: "quay.io/pypa/manylinux2014_x86_64:2025.03.23-1"
+          container: "quay.io/pypa/manylinux_2_28_x86_64:2026.02.01-1"
+          before-script-linux: |
+            dnf install -y \
+              perl-core \
+              llvm \
+              llvm-devel \
+              clang \
+              clang-devel
           sccache: true
-          before-script-linux: yum install -y perl-core
 
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'selfhosted-macOS'}}
@@ -74,7 +80,7 @@ jobs:
           target: universal2-apple-darwin
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pathway-${{ matrix.os }}
           path: target/wheels/
@@ -96,7 +102,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: pathway-${{ matrix.os }}
           path: target/wheels/

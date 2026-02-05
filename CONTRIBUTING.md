@@ -8,11 +8,11 @@ to make contributions to the Pathway project. Please be sure to also read our [c
 * Use the [Issue Tracker](https://github.com/pathwaycom/pathway/issues) to
   report bugs, crashes, performance issues, etc... Please include as much detail
   as possible.
-  
-* [Discussions](https://github.com/pathwaycom/pathway/discussions) is a great
-  venue to ask questions, start a design discussion, or post an RFC.
 
 * [Discord](https://discord.com/invite/pathway) is our main gathering place - jump in and ask us anything!
+
+* [Our forum](https://discord.com/channels/1042405378304004156/1044276516290314381) is a great
+  venue to ask questions, start a design discussion, or post an RFC.
 
 ## Contributing Code
 

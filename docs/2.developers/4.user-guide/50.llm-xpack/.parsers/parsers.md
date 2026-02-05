@@ -20,18 +20,31 @@ Here is a table listing all available parsers and some details about them:
 
 | Name               | Data | Description |
 |--------------------|------|-------------|
-| Utf8Parser         | Text | Decodes text encoded in UTF-8. |
-| UnstructuredParser | Text + tables | Leverages Unstructured library to parse various document types. |
 | DoclingParser      | PDF + tables + images | Utilizes docling library to extract structured content from PDFs, including images. |
-| PypdfParser        | PDF  | Uses pypdf library to extract text from PDFs with optional text cleanup. |
 | ImageParser        | Image| Transforms images into textual descriptions and extracts structured information. |
+| PaddleOCR          | PDF + tables + images | Utilizes the PaddleOCR library to extract structured content from PDFs and images. |
+| PypdfParser        | PDF  | Uses pypdf library to extract text from PDFs with optional text cleanup. |
 | SlideParser        | Slide| Extracts information from PPTX and PDF slide decks using vision-based LLMs. |
-
+| UnstructuredParser | Text + tables | Leverages Unstructured library to parse various document types. |
+| Utf8Parser         | Text | Decodes text encoded in UTF-8. |
 
 
 ## Utf8Parser
 
 [`Utf8Parser`](/developers/api-docs/pathway-xpacks-llm/parsers#pathway.xpacks.llm.parsers.Utf8Parser) is a simple parser designed to decode text encoded in UTF-8. It ensures that raw byte-encoded content is converted into a readable string format for further processing in a RAG pipeline.
+
+
+## PaddleOCR
+[`PaddleOCRParser`](/developers/api-docs/pathway-xpacks-llm/parsers/#pathway.xpacks.llm.parsers.PaddleOCRParser) is a parser that relies on the [PaddleOCR](https://aistudio.baidu.com/paddleocr) library.
+It requires the `paddlepaddle` package. The version depends on your hardware.
+If you want to run the OCR on CPU, you can install it with the following pip command: `pip install paddlepaddle>=3.2.0`
+For GPU support, follow the instructions on the [official site](https://www.paddlepaddle.org.cn/en/install/quick).
+
+The `PaddleOCRParser` uses a Paddle pipeline object to perform the parsing/OCR.
+Currently, `PaddleOCR` and `PPStructureV3` pipelines are supported.
+By default, it uses a `PPStructureV3` pipeline.
+
+More details on how to use the PaddleOCRParser in the [associated blog post](/blog/paddleocr/).
 
 
 ## UnstructuredParser

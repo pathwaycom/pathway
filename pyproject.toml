@@ -115,7 +115,6 @@ tests = [
     "fpdf",
     "paddlepaddle >= 3.2.0, < 3.3.0", # required by paddleocr
     "paddlex >= 3.0.0, <= 3.3.8",  # pinning the latest working version, then the format changes
-    "paddlepaddle >= 3.2.0, < 4.0.0", # required by paddleocr
     "aioboto3 >= 13.0.0",
 ]
 airbyte = [
@@ -135,6 +134,15 @@ airbyte = [
 [project.scripts]
 pathway = "pathway.cli:main"
 
+[tool.black]
+required-version = "24"
+line-length = 88
+exclude = '''/(
+    | docs
+    | target
+)/'''
+target-version = ["py310", "py311"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "pathway.engine"
@@ -148,3 +156,13 @@ check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
+
+[tool.isort]
+profile = "black"
+skip = [
+    "target",
+    "docs",
+    "third_party",
+]
+known_first_party = ["pathway"]
+combine_as_imports = true
