@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use mongodb::bson::Document as BsonDocument;
 use ndarray::{arr1, ArrayD};
 use ordered_float::OrderedFloat;
 use serde_json::json;
@@ -12,91 +13,107 @@ use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Timestam
 
 const TEST_FIELD: &str = "field";
 
+fn check_formatted_value(type_: &Type, value: &Value, document: &BsonDocument) {
+    match (&type_, value) {
+        (&Type::Bool, Value::Bool(b)) => assert_eq!(*b, document.get_bool(TEST_FIELD).unwrap()),
+        (&Type::Int, Value::Int(i)) => assert_eq!(*i, document.get_i64(TEST_FIELD).unwrap()),
+        (&Type::Float, Value::Float(f)) => {
+            assert_eq!(*f, document.get_f64(TEST_FIELD).unwrap())
+        }
+        (&Type::String, Value::String(s)) => {
+            assert_eq!(*s, document.get_str(TEST_FIELD).unwrap())
+        }
+        (&Type::Bytes, Value::Bytes(b)) => assert_eq!(
+            &b.to_vec(),
+            document.get_binary_generic(TEST_FIELD).unwrap()
+        ),
+        (&Type::Pointer, Value::Pointer(p)) => {
+            assert_eq!(&p.to_string(), document.get_str(TEST_FIELD).unwrap())
+        }
+        (&Type::DateTimeNaive, Value::DateTimeNaive(dt)) => assert_eq!(
+            dt.timestamp_milliseconds(),
+            document
+                .get_datetime(TEST_FIELD)
+                .unwrap()
+                .timestamp_millis()
+        ),
+        (&Type::DateTimeUtc, Value::DateTimeUtc(dt)) => assert_eq!(
+            dt.timestamp_milliseconds(),
+            document
+                .get_datetime(TEST_FIELD)
+                .unwrap()
+                .timestamp_millis()
+        ),
+        (&Type::Duration, Value::Duration(d)) => {
+            assert_eq!(d.milliseconds(), document.get_i64(TEST_FIELD).unwrap())
+        }
+        (&Type::Json, Value::Json(_)) => {
+            let raw_str = document.get_str(TEST_FIELD).unwrap();
+            let parsed_json: serde_json::Value = serde_json::from_str(raw_str).unwrap();
+            assert_eq!(Value::from(parsed_json), value.clone());
+        }
+        (&Type::Tuple(_), Value::Tuple(t)) => {
+            let document_contents: Vec<bool> = document
+                .get_array(TEST_FIELD)
+                .expect("only boolean arrays are supported in the array test")
+                .iter()
+                .map(|x| x.as_bool().unwrap())
+                .collect();
+            let original_contents: Vec<bool> = t
+                .iter()
+                .map(|x| match x {
+                    Value::Bool(b) => *b,
+                    _ => unreachable!("only boolean arrays are supported in the array test"),
+                })
+                .collect();
+            assert_eq!(original_contents, document_contents);
+        }
+        (&Type::Array(_, _), Value::IntArray(a)) => {
+            let document_contents: Vec<i64> = document
+                .get_array(TEST_FIELD)
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect();
+            let original_contents: Vec<i64> = a.iter().copied().collect();
+            assert_eq!(original_contents, document_contents);
+        }
+        (&Type::Array(_, _), Value::FloatArray(a)) => {
+            let document_contents: Vec<f64> = document
+                .get_array(TEST_FIELD)
+                .unwrap()
+                .iter()
+                .map(|x| x.as_f64().unwrap())
+                .collect();
+            let original_contents: Vec<f64> = a.iter().copied().collect();
+            assert_eq!(original_contents, document_contents);
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn test_type_formatting(type_: Type, values: &[Value]) -> eyre::Result<()> {
     let value_fields = vec![TEST_FIELD.to_string()];
-    let mut formatter = BsonFormatter::new(value_fields);
+    let formatter_with_specials = BsonFormatter::new(value_fields.clone(), true);
+    let formatter_without_specials = BsonFormatter::new(value_fields, false);
+    let mut formatters = [
+        (formatter_with_specials, true),
+        (formatter_without_specials, false),
+    ];
 
     for value in values {
-        let context = formatter
-            .format(&Key::random(), std::slice::from_ref(value), Timestamp(0), 1)
-            .expect("formatter failed");
-        assert_eq!(context.payloads.len(), 1);
-        let document = context.payloads[0].clone().into_bson_document().unwrap();
-        match (&type_, value) {
-            (&Type::Bool, Value::Bool(b)) => assert_eq!(*b, document.get_bool(TEST_FIELD).unwrap()),
-            (&Type::Int, Value::Int(i)) => assert_eq!(*i, document.get_i64(TEST_FIELD).unwrap()),
-            (&Type::Float, Value::Float(f)) => {
-                assert_eq!(*f, document.get_f64(TEST_FIELD).unwrap())
+        for (ref mut formatter, is_with_specials) in formatters.iter_mut() {
+            let context = formatter
+                .format(&Key::random(), std::slice::from_ref(value), Timestamp(0), 1)
+                .expect("formatter failed");
+            assert_eq!(context.payloads.len(), 1);
+            let document = context.payloads[0].clone().into_bson_document().unwrap();
+            check_formatted_value(&type_, value, &document);
+            if *is_with_specials {
+                assert_eq!(document.len(), 3); // value, time, diff
+            } else {
+                assert_eq!(document.len(), 1); // only value
             }
-            (&Type::String, Value::String(s)) => {
-                assert_eq!(*s, document.get_str(TEST_FIELD).unwrap())
-            }
-            (&Type::Bytes, Value::Bytes(b)) => assert_eq!(
-                &b.to_vec(),
-                document.get_binary_generic(TEST_FIELD).unwrap()
-            ),
-            (&Type::Pointer, Value::Pointer(p)) => {
-                assert_eq!(&p.to_string(), document.get_str(TEST_FIELD).unwrap())
-            }
-            (&Type::DateTimeNaive, Value::DateTimeNaive(dt)) => assert_eq!(
-                dt.timestamp_milliseconds(),
-                document
-                    .get_datetime(TEST_FIELD)
-                    .unwrap()
-                    .timestamp_millis()
-            ),
-            (&Type::DateTimeUtc, Value::DateTimeUtc(dt)) => assert_eq!(
-                dt.timestamp_milliseconds(),
-                document
-                    .get_datetime(TEST_FIELD)
-                    .unwrap()
-                    .timestamp_millis()
-            ),
-            (&Type::Duration, Value::Duration(d)) => {
-                assert_eq!(d.milliseconds(), document.get_i64(TEST_FIELD).unwrap())
-            }
-            (&Type::Json, Value::Json(_)) => {
-                let raw_str = document.get_str(TEST_FIELD).unwrap();
-                let parsed_json: serde_json::Value = serde_json::from_str(raw_str).unwrap();
-                assert_eq!(Value::from(parsed_json), value.clone());
-            }
-            (&Type::Tuple(_), Value::Tuple(t)) => {
-                let document_contents: Vec<bool> = document
-                    .get_array(TEST_FIELD)
-                    .expect("only boolean arrays are supported in the array test")
-                    .iter()
-                    .map(|x| x.as_bool().unwrap())
-                    .collect();
-                let original_contents: Vec<bool> = t
-                    .iter()
-                    .map(|x| match x {
-                        Value::Bool(b) => *b,
-                        _ => unreachable!("only boolean arrays are supported in the array test"),
-                    })
-                    .collect();
-                assert_eq!(original_contents, document_contents);
-            }
-            (&Type::Array(_, _), Value::IntArray(a)) => {
-                let document_contents: Vec<i64> = document
-                    .get_array(TEST_FIELD)
-                    .unwrap()
-                    .iter()
-                    .map(|x| x.as_i64().unwrap())
-                    .collect();
-                let original_contents: Vec<i64> = a.iter().copied().collect();
-                assert_eq!(original_contents, document_contents);
-            }
-            (&Type::Array(_, _), Value::FloatArray(a)) => {
-                let document_contents: Vec<f64> = document
-                    .get_array(TEST_FIELD)
-                    .unwrap()
-                    .iter()
-                    .map(|x| x.as_f64().unwrap())
-                    .collect();
-                let original_contents: Vec<f64> = a.iter().copied().collect();
-                assert_eq!(original_contents, document_contents);
-            }
-            _ => unreachable!(),
         }
     }
 
@@ -212,10 +229,18 @@ fn test_format_float_array() -> eyre::Result<()> {
 #[test]
 fn test_unsupported_type() -> eyre::Result<()> {
     let value_fields = vec![TEST_FIELD.to_string()];
-    let mut formatter = BsonFormatter::new(value_fields);
+    let mut formatter = BsonFormatter::new(value_fields, true);
 
     let context = formatter.format(&Key::random(), &[Value::Error], Timestamp(0), 1);
     assert!(context.is_err());
 
     Ok(())
+}
+
+#[test]
+fn test_format_without_specials() -> eyre::Result<()> {
+    test_type_formatting(
+        Type::String,
+        &[Value::String("abc".into()), Value::String("".into())],
+    )
 }

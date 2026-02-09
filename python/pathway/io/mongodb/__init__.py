@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Literal
 
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -10,6 +10,7 @@ from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
+from pathway.io._utils import SNAPSHOT_OUTPUT_TABLE_TYPE
 
 
 @check_arg_types
@@ -20,19 +21,34 @@ def write(
     connection_string: str,
     database: str,
     collection: str,
+    output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
     max_batch_size: int | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
-    """Writes ``table``'s stream of updates to a MongoDB table.
+    """Writes ``table`` to a MongoDB table.
+
+    The output table supports two formats, controlled by the ``output_table_type``
+    parameter.
+
+    The ``stream_of_changes`` format provides a complete history of all modifications
+    applied to the table. Each entry contains the full data row along with two
+    additional fields: ``time`` and ``diff``. The ``time`` field identifies the
+    transactional minibatch in which the change occurred, while ``diff`` describes
+    the nature of the change: ``diff = 1`` indicates that the row was inserted into
+    the Pathway table, and ``diff = -1`` indicates that the row was removed. Row
+    updates are represented as two events within the same transactional minibatch:
+    first the old version of the row with ``diff = -1``, followed by the new version
+    with ``diff = 1``. This format is used by default.
+
+    The ``snapshot`` format maintains the current state of the Pathway table in the
+    output. The table's primary key is stored in the ``_id`` field. When a change
+    occurs, no additional metadata fields are added; instead, the engine locates the
+    corresponding row by ``_id`` and applies the update directly. As a result, the
+    output table always reflects the latest state of the Pathway table.
 
     If the specified database or table doesn't exist, it will be created during the
     first write.
-
-    The entries in the resulting table will have two additional fields: ``time``
-    and ``diff``. In particular, ``time`` is a processing time of a row
-    and ``diff`` shows the nature of the change: ``1`` means a row was added and ``-1``
-    means a row was deleted.
 
     **Note:** Since MongoDB
     `stores DateTime in milliseconds <https://www.mongodb.com/docs/manual/reference/bson-types/#date>`_,
@@ -46,6 +62,8 @@ def write(
 for the details.
         database: The name of the database to update.
         collection: The name of the collection to write to.
+        output_table_type: The type of the output table, defining whether a current snapshot
+            or a history of modifications must be maintained.
         max_batch_size: The maximum number of entries to insert in one batch.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
@@ -180,25 +198,68 @@ for the details.
     For more advanced setups, such as replica sets, authentication, or custom
     read/write concerns, refer to the official MongoDB documentation on
     `connection strings <https://www.mongodb.com/docs/manual/reference/connection-string/>`_
+
+    Note that if you do not need the full history of modifications, you can use the
+    ``snapshot`` output table type. In this case, the connector configuration would
+    look as follows:
+
+    >>> pw.io.mongodb.write(
+    ...     pet_owners,
+    ...     connection_string="mongodb://127.0.0.1:27017/",
+    ...     database="pathway-test",
+    ...     collection="pet-owners",
+    ...     output_table_type="snapshot",
+    ... )
+
+    The resulting output will be as follows:
+
+    .. code-block:: rst
+
+        [
+            {
+                _id: ObjectId('67180150d94db90697c07853'),
+                age: Long('9'),
+                owner: 'Bob',
+                pet: 'cat',
+            },
+            {
+                _id: ObjectId('67180150d94db90697c07854'),
+                age: Long('8'),
+                owner: 'Alice',
+                pet: 'cat',
+            },
+            {
+                _id: ObjectId('67180150d94db90697c07855'),
+                age: Long('10'),
+                owner: 'Alice',
+                pet: 'dog',
+            }
+        ]
     """
+    is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
     data_storage = api.DataStorage(
         storage_type="mongodb",
         connection_string=connection_string,
         database=database,
         table_name=collection,
         max_batch_size=max_batch_size,
+        snapshot_maintenance_on_output=is_snapshot_mode,
     )
     data_format = api.DataFormat(
         format_type="bson",
         key_field_names=[],
         value_fields=_format_output_value_fields(table),
+        with_special_fields=not is_snapshot_mode,
     )
 
+    datasink_type = (
+        "snapshot" if output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE else "sink"
+    )
     table.to(
         datasink.GenericDataSink(
             data_storage,
             data_format,
-            datasink_name="mongodb.sink",
+            datasink_name=f"mongodb.{datasink_type}",
             unique_name=name,
             sort_by=sort_by,
         )

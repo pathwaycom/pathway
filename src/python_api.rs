@@ -39,6 +39,7 @@ use iceberg::{Catalog as IcebergCatalog, CatalogBuilder};
 use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
+use mongodb::Namespace as MongoNamespace;
 use mysql::Pool as MysqlConnectionPool;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
@@ -5014,6 +5015,7 @@ pub struct DataFormat {
     external_diff_column_index: Option<usize>,
     timestamp_unit: Option<String>,
     message_queue_key_field: Option<String>,
+    with_special_fields: bool,
 }
 
 #[pymethods]
@@ -5236,6 +5238,7 @@ impl DataFormat {
         external_diff_column_index = None,
         timestamp_unit = None,
         message_queue_key_field = None,
+        with_special_fields = true,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -5257,6 +5260,7 @@ impl DataFormat {
         external_diff_column_index: Option<usize>,
         timestamp_unit: Option<String>,
         message_queue_key_field: Option<String>,
+        with_special_fields: bool,
     ) -> Self {
         DataFormat {
             format_type,
@@ -5277,6 +5281,7 @@ impl DataFormat {
             external_diff_column_index,
             timestamp_unit,
             message_queue_key_field,
+            with_special_fields,
         }
     }
 
@@ -6430,9 +6435,17 @@ impl DataStorage {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
             .map_err(|e| PyIOError::new_err(format!("Failed to connect to MongoDB: {e}")))?;
+
+        let ns = MongoNamespace::new(self.database()?, self.table_name()?);
         let database = client.database(self.database()?);
         let collection = database.collection(self.table_name()?);
-        let writer = MongoWriter::new(collection, self.max_batch_size);
+        let writer = MongoWriter::new(
+            ns,
+            client,
+            collection,
+            self.max_batch_size,
+            self.snapshot_maintenance_on_output,
+        );
         Ok(Box::new(writer))
     }
 
@@ -6780,7 +6793,8 @@ impl DataFormat {
                 Ok(Box::new(formatter))
             }
             "bson" => {
-                let formatter = BsonFormatter::new(self.value_field_names(py));
+                let formatter =
+                    BsonFormatter::new(self.value_field_names(py), self.with_special_fields);
                 Ok(Box::new(formatter))
             }
             _ => Err(PyValueError::new_err("Unknown data format")),

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
 SNAPSHOT_MODE_NAME = "streaming_with_deletions"  # deprecated
+SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 
 METADATA_COLUMN_NAME = "_metadata"
 MESSAGE_QUEUE_KEY_COLUMN_NAME = "key"

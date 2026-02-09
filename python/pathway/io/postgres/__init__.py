@@ -11,9 +11,11 @@ from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import get_column_index, init_mode_from_str
-
-_SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
+from pathway.io._utils import (
+    SNAPSHOT_OUTPUT_TABLE_TYPE,
+    get_column_index,
+    init_mode_from_str,
+)
 
 
 def _connection_string_from_settings(settings: dict):
@@ -160,7 +162,7 @@ def write(
     ... )
     """
 
-    is_snapshot_mode = output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE
+    is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
@@ -200,7 +202,7 @@ def write(
     )
 
     datasink_type = (
-        "snapshot" if output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE else "sink"
+        "snapshot" if output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE else "sink"
     )
     table.to(
         datasink.GenericDataSink(

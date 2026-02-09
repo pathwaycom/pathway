@@ -56,8 +56,8 @@ use crate::connectors::aws::dynamodb::Error as AwsDynamoDBError;
 use crate::connectors::aws::kinesis::Error as AwsKinesisError;
 use crate::connectors::aws::kinesis::KinesisReader;
 use crate::connectors::data_format::{
-    create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
-    COMMIT_LITERAL,
+    create_bincoded_value, serialize_value_to_bson, serialize_value_to_json, FormatterContext,
+    FormatterError, COMMIT_LITERAL,
 };
 use crate::connectors::data_lake::buffering::IncorrectSnapshotError;
 use crate::connectors::metadata::{KafkaMetadata, SQLiteMetadata, SourceMetadata};
@@ -91,7 +91,13 @@ use elasticsearch::{BulkParts, Elasticsearch};
 use glob::PatternError as GlobPatternError;
 use mongodb::bson::Document as BsonDocument;
 use mongodb::error::Error as MongoError;
-use mongodb::sync::Collection as MongoCollection;
+use mongodb::options::{
+    DeleteOneModel as MongoDeleteOneModel, UpdateOneModel as MongoUpdateOneModel,
+    WriteModel as MongoWriteModel,
+};
+use mongodb::{
+    sync::Client as MongoClient, sync::Collection as MongoCollection, Namespace as MongoNamespace,
+};
 use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
@@ -2127,26 +2133,132 @@ impl Reader for SqliteReader {
     }
 }
 
+#[derive(Debug)]
+enum BufferedMongoEvent {
+    Insert {
+        value: BsonDocument,
+    },
+    Upsert {
+        key: BsonDocument,
+        value: BsonDocument,
+    },
+    Delete {
+        key: BsonDocument,
+    },
+}
+
+const MONGODB_SET_PARAMETER: &str = "$set";
+const MONGODB_PRIMARY_KEY_NAME: &str = "_id";
+
 pub struct MongoWriter {
+    namespace: MongoNamespace,
+    client: MongoClient,
     collection: MongoCollection<BsonDocument>,
-    buffer: Vec<BsonDocument>,
+    buffer: HashMap<Key, BufferedMongoEvent>,
+    snapshot_mode: bool,
     max_batch_size: Option<usize>,
 }
 
 impl MongoWriter {
-    pub fn new(collection: MongoCollection<BsonDocument>, max_batch_size: Option<usize>) -> Self {
+    pub fn new(
+        namespace: MongoNamespace,
+        client: MongoClient,
+        collection: MongoCollection<BsonDocument>,
+        max_batch_size: Option<usize>,
+        snapshot_mode: bool,
+    ) -> Self {
         Self {
+            namespace,
+            client,
             collection,
             max_batch_size,
-            buffer: Vec::new(),
+            snapshot_mode,
+            buffer: HashMap::new(),
         }
+    }
+
+    fn flush_stream_of_changes(&mut self) -> Result<(), WriteError> {
+        let prepared_buffer: Vec<_> = self
+            .buffer
+            .values_mut()
+            .map(|entry| match entry {
+                BufferedMongoEvent::Insert { value } => value,
+                other => unreachable!(
+                    "Unexpected type of buffered entry for a stream of changes mode: {other:?}"
+                ),
+            })
+            .collect();
+        let command = self.collection.insert_many(prepared_buffer);
+        let _ = command.run()?;
+        Ok(())
+    }
+
+    fn flush_snapshot(&mut self) -> Result<(), WriteError> {
+        let prepared_buffer: Vec<_> = self
+            .buffer
+            .values_mut()
+            .map(|entry| match entry {
+                BufferedMongoEvent::Upsert { key, value } => {
+                    let mut update_payload = BsonDocument::new();
+                    update_payload.insert(MONGODB_SET_PARAMETER, value);
+
+                    MongoWriteModel::UpdateOne(
+                        MongoUpdateOneModel::builder()
+                            .namespace(self.namespace.clone())
+                            .filter(take(key))
+                            .update(update_payload)
+                            .upsert(true)
+                            .build(),
+                    )
+                }
+                BufferedMongoEvent::Delete { key } => MongoWriteModel::DeleteOne(
+                    MongoDeleteOneModel::builder()
+                        .namespace(self.namespace.clone())
+                        .filter(take(key))
+                        .build(),
+                ),
+                other @ BufferedMongoEvent::Insert { .. } => {
+                    unreachable!("Unexpected type of buffered entry for a snapshot mode: {other:?}")
+                }
+            })
+            .collect();
+
+        let command = self.client.bulk_write(prepared_buffer);
+        let _ = command.run()?;
+        Ok(())
     }
 }
 
 impl Writer for MongoWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         for payload in data.payloads {
-            self.buffer.push(payload.into_bson_document()?);
+            if self.snapshot_mode {
+                let mut key = BsonDocument::new();
+                let _ = key.insert(
+                    MONGODB_PRIMARY_KEY_NAME,
+                    serialize_value_to_bson(&Value::Pointer(data.key))?,
+                );
+                if data.diff == 1 {
+                    self.buffer.insert(
+                        data.key,
+                        BufferedMongoEvent::Upsert {
+                            key,
+                            value: payload.into_bson_document()?,
+                        },
+                    );
+                } else {
+                    self.buffer
+                        .entry(data.key)
+                        .or_insert(BufferedMongoEvent::Delete { key });
+                }
+            } else {
+                self.buffer.insert(
+                    data.key,
+                    BufferedMongoEvent::Insert {
+                        value: payload.into_bson_document()?,
+                    },
+                );
+            }
         }
         if let Some(max_batch_size) = self.max_batch_size {
             if self.buffer.len() >= max_batch_size {
@@ -2160,9 +2272,15 @@ impl Writer for MongoWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let command = self.collection.insert_many(take(&mut self.buffer));
-        let _ = command.run()?;
-        Ok(())
+
+        let result = if self.snapshot_mode {
+            self.flush_snapshot()
+        } else {
+            self.flush_stream_of_changes()
+        };
+        self.buffer.clear();
+
+        result
     }
 
     fn name(&self) -> String {

@@ -25,6 +25,7 @@ from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
+    SNAPSHOT_OUTPUT_TABLE_TYPE,
     _get_unique_name,
     _prepare_s3_connection_settings,
     internal_connector_mode,
@@ -34,7 +35,6 @@ from pathway.io.minio import MinIOSettings
 from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
 _PATHWAY_COLUMN_META_FIELD = "pathway.column.metadata"
-_SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 _DELTA_LOG_REL_PATH = "_delta_log"
 _LAST_CHECKPOINT_BLOCK_NAME = "_last_checkpoint"
 _CHECKPOINT_EXTENSION = ".checkpoint.parquet"
@@ -618,7 +618,7 @@ def write(
         ),
         min_commit_frequency=min_commit_frequency,
         partition_columns=prepared_partition_columns,
-        snapshot_maintenance_on_output=output_table_type == _SNAPSHOT_OUTPUT_TABLE_TYPE,
+        snapshot_maintenance_on_output=output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE,
         delta_optimizer_rule=(table_optimizer.engine_rule if table_optimizer else None),
     )
     data_format = api.DataFormat(

@@ -2119,7 +2119,7 @@ impl Formatter for IdentityFormatter {
     }
 }
 
-fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
+pub fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
     match value {
         Value::None => Ok(BsonValue::Null),
         Value::Int(i) => Ok(bson!(i)),
@@ -2174,11 +2174,15 @@ fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
 
 pub struct BsonFormatter {
     value_field_names: Vec<String>,
+    with_special_fields: bool,
 }
 
 impl BsonFormatter {
-    pub fn new(value_field_names: Vec<String>) -> Self {
-        Self { value_field_names }
+    pub fn new(value_field_names: Vec<String>, with_special_fields: bool) -> Self {
+        Self {
+            value_field_names,
+            with_special_fields,
+        }
     }
 }
 
@@ -2194,18 +2198,20 @@ impl Formatter for BsonFormatter {
         for (key, value) in zip(self.value_field_names.iter(), values) {
             let _ = document.insert(key, serialize_value_to_bson(value)?);
         }
-        let _ = document.insert(
-            SPECIAL_FIELD_DIFF,
-            BsonValue::Int64(diff.try_into().expect("diff can only be +1 or -1")),
-        );
-        let _ = document.insert(
-            SPECIAL_FIELD_TIME,
-            BsonValue::Int64(
-                time.0
-                    .try_into()
-                    .expect("timestamp is not expected to exceed int64 type"),
-            ),
-        );
+        if self.with_special_fields {
+            let _ = document.insert(
+                SPECIAL_FIELD_DIFF,
+                BsonValue::Int64(diff.try_into().expect("diff can only be +1 or -1")),
+            );
+            let _ = document.insert(
+                SPECIAL_FIELD_TIME,
+                BsonValue::Int64(
+                    time.0
+                        .try_into()
+                        .expect("timestamp is not expected to exceed int64 type"),
+                ),
+            );
+        }
         Ok(FormatterContext::new_single_payload(
             document,
             *key,

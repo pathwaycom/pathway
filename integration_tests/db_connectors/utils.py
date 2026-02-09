@@ -256,6 +256,13 @@ class MongoDBContext:
         table_name = f'mongodb_{str(uuid.uuid4()).replace("-", "")}'
         return table_name
 
+    def get_full_collection(
+        self, collection_name: str
+    ) -> list[dict[str, str | int | bool | float]]:
+        db = self.client[MONGODB_BASE_NAME]
+        collection = db[collection_name]
+        return [i for i in collection.find()]  # cast to list
+
     def get_collection(
         self, collection_name: str, field_names: list[str]
     ) -> list[dict[str, str | int | bool | float]]:
