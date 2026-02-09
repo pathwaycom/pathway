@@ -501,13 +501,13 @@ where
                 carry = (P, (PP,N)),  push (P', (_PP', K'))
             */
             if !carry_entry.is_empty() {
-                if carry_entry.key.is_some() {
-                    move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
+                if let Some(ref carry_entry_key) = carry_entry.key {
+                    move_to_key_or_upper_bound(input_wrapper, carry_entry_key);
                     let weight = key_val_weight_up_to_time(input_wrapper, time);
                     log::debug!("pushing carry entry {carry_entry:?}",);
                     push_insert_replace(
                         output_wrapper,
-                        &carry_entry.key.clone().unwrap(),
+                        &carry_entry_key.clone(),
                         &(carry_entry.prev, carry_entry.next.clone()),
                         &carry_entry.time.unwrap(),
                         &weight.unwrap(),
@@ -615,28 +615,34 @@ where
         */
 
         //normalize carry_entry, to get rid of some cases to consider
-
-        if carry_entry.key.is_some() && !carry_entry.key.eq(&prev) {
-            move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
-            let weight = key_val_weight_up_to_time(input_wrapper, time);
-            push_insert_replace(
-                output_wrapper,
-                carry_entry.key.as_ref().unwrap(),
-                &(carry_entry.prev, carry_entry.next.clone()),
-                carry_entry.time.as_ref().unwrap(),
-                &weight.unwrap(),
-                batch_builder,
-            );
+        match carry_entry.key {
+            Some(ref carry_entry_key) if !carry_entry.key.eq(&prev) => {
+                move_to_key_or_upper_bound(input_wrapper, carry_entry_key);
+                let weight = key_val_weight_up_to_time(input_wrapper, time);
+                push_insert_replace(
+                    output_wrapper,
+                    carry_entry_key,
+                    &(carry_entry.prev, carry_entry.next.clone()),
+                    carry_entry.time.as_ref().unwrap(),
+                    &weight.unwrap(),
+                    batch_builder,
+                );
+            }
+            _ => {}
         }
+
         //if next of carried entry is less than prev, we need fix prev of key from carry-entry-next
-        if carry_entry.next.is_some() && carry_entry.next.lt(&prev) {
-            push_prev_replace(
-                output_wrapper,
-                &carry_entry.next.unwrap(),
-                carry_entry.key.as_ref(),
-                &carry_entry.time.unwrap(),
-                batch_builder,
-            );
+        match carry_entry.next {
+            Some(ref carry_entry_next) if carry_entry.next.lt(&prev) => {
+                push_prev_replace(
+                    output_wrapper,
+                    carry_entry_next,
+                    carry_entry.key.as_ref(),
+                    &carry_entry.time.unwrap(),
+                    batch_builder,
+                );
+            }
+            _ => {}
         }
 
         move_to_key_or_upper_bound(input_wrapper, prev_value);
@@ -739,12 +745,12 @@ fn handle_one_instance<
     }
     log::debug!("final carry {carry_entry:?}");
     if !carry_entry.is_empty() {
-        if carry_entry.key.is_some() {
-            move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
+        if let Some(ref carry_entry_key) = carry_entry.key {
+            move_to_key_or_upper_bound(input_wrapper, carry_entry_key);
             let weight = key_val_weight_up_to_time(input_wrapper, time);
             push_insert_replace(
                 output_wrapper,
-                carry_entry.key.as_ref().unwrap(),
+                carry_entry_key,
                 &(carry_entry.prev, carry_entry.next.clone()),
                 carry_entry.time.as_ref().unwrap(),
                 &weight.unwrap(),
@@ -752,13 +758,12 @@ fn handle_one_instance<
             );
         }
 
-        if carry_entry.next.is_some() {
-            let key_to_fix = carry_entry.next.unwrap();
-            move_to_key_or_upper_bound(output_wrapper, &key_to_fix);
+        if let Some(carry_entry_next) = carry_entry.next {
+            move_to_key_or_upper_bound(output_wrapper, &carry_entry_next);
             rewind_zero_weight_val_forward(output_wrapper, time);
             push_prev_replace(
                 output_wrapper,
-                &key_to_fix,
+                &carry_entry_next,
                 carry_entry.key.as_ref(),
                 carry_entry.time.as_ref().unwrap(),
                 batch_builder,
