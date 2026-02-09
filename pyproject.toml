@@ -47,6 +47,7 @@ dependencies = [
     "pydantic ~= 2.9",
     "gitpython >= 3.1.43",
     "deltalake >= 0.17.0, < 0.18.0",
+    "setuptools < 82.0.0",
     "sqlalchemy >= 2.0.43",
     "sqlmodel >= 0.0.24",
     "fastapi >= 0.116.1",
