@@ -29,6 +29,7 @@ pub mod nats;
 pub mod offset;
 pub mod posix_like;
 pub mod scanner;
+pub mod sqlite;
 pub mod synchronization;
 
 use crate::connectors::monitoring::ConnectorMonitor;
