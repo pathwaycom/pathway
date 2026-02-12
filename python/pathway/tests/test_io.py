@@ -3589,10 +3589,10 @@ def test_streaming_from_deltalake(tmp_path, with_backfilling_thresholds):
             data = [{"k": idx, "v": "a" * idx}]
             df = pd.DataFrame(data).set_index("k")
             write_deltalake(lake_path, df, mode="append")
-            time.sleep(1.0)
+            wait_result_with_checker(
+                CsvLinesNumberChecker(output_path, idx + 1), 30, target=None
+            )
 
-    t = threading.Thread(target=create_new_versions, args=(1, 10))
-    t.start()
     if with_backfilling_thresholds:
         backfilling_thresholds = [
             api.BackfillingThreshold(field="k", comparison_op=">=", threshold=0),
@@ -3608,7 +3608,19 @@ def test_streaming_from_deltalake(tmp_path, with_backfilling_thresholds):
             lake_path, schema=InputSchema, autocommit_duration_ms=10
         )
     pw.io.csv.write(table, output_path)
-    wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 30)
+
+    stream_thread = ExceptionAwareThread(target=create_new_versions, args=(1, 10))
+    pathway_process = multiprocessing.Process(target=run)
+    try:
+        stream_thread.start()
+        pathway_process.start()
+
+        # Wait for the scenario to complete
+        stream_thread.join()
+    finally:
+        # Finish Pathway process in any case
+        pathway_process.terminate()
+        pathway_process.join()
 
 
 @needs_multiprocessing_fork
@@ -5547,3 +5559,25 @@ def test_python_subject_deletions_enabled_defaults():
     assert not SimpleSubjectWontParse()._deletions_enabled
 
     assert not pw.io.python._are_deletions_reachable(str)
+
+
+def test_worker_count_scaling_error(tmp_path):
+    table = pw.io.plaintext.read(tmp_path)
+    pw.io.null.write(table)
+    with pytest.raises(
+        ValueError,
+        match="Programs with worker scaling must only be executed via `pathway spawn`",
+    ):
+        pw.run(
+            persistence_config=pw.persistence.Config(
+                backend=pw.persistence.Backend.filesystem(tmp_path),
+                worker_scaling_enabled=True,
+            )
+        )
+
+
+def test_worker_count_scaling_factors():
+    from pathway.cli import DOWNSCALING_FACTOR, UPSCALING_FACTOR
+
+    assert UPSCALING_FACTOR > 1.0
+    assert DOWNSCALING_FACTOR < 1.0

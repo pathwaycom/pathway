@@ -36,6 +36,7 @@ use crate::engine::reduce::{
 };
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
+use crate::engine::workload_tracker::{Advice as ScalingAdvice, WorkloadTracker};
 use crate::persistence::config::PersistenceManagerOuterConfig;
 use crate::persistence::tracker::{RequiredPersistenceMode, SharedWorkerPersistentStorage};
 use crate::persistence::{IntoPersistentId, PersistenceTime, UniqueName};
@@ -52,11 +53,12 @@ use std::iter::once;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::process::exit;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{Builder, JoinHandle};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use std::{env, slice};
 
 use arcstr;
@@ -157,6 +159,9 @@ const DIFF_INSERTION: isize = 1;
 const DIFF_DELETION: isize = -1;
 const OUTPUT_RETRIES: usize = 5;
 const ERROR_LOG_FLUSH_PERIOD: Duration = Duration::from_secs(1);
+
+const EXIT_CODE_DOWNSCALE: i32 = 10; // SIGUSR1
+const EXIT_CODE_UPSCALE: i32 = 12; // SIGUSR2
 
 #[derive(Clone, Debug)]
 struct ErrorReporter {
@@ -6573,6 +6578,15 @@ where
     let connector_synchronizer = Arc::new(Mutex::new(ConnectorSynchronizer::new()));
     let stats_monitor = Arc::new(Mutex::new(stats_monitor));
 
+    let scaling_allowed = persistence_config
+        .as_ref()
+        .is_some_and(|config| config.worker_scaling_enabled);
+    let workload_tracking_window = persistence_config
+        .as_ref()
+        .map_or(Duration::ZERO, |config| config.workload_tracking_window);
+    let downscaling_allowed = scaling_allowed && config.is_downscaling_possible();
+    let upscaling_allowed = scaling_allowed && config.is_upscaling_possible();
+
     let guards = execute(config.to_timely_config(), move |worker| {
         catch_unwind(AssertUnwindSafe(|| {
             if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
@@ -6642,6 +6656,7 @@ where
                 )
             });
 
+            let mut workload_tracker = WorkloadTracker::new(workload_tracking_window);
             loop {
                 if failed.load(Ordering::SeqCst) {
                     resume_unwind(Box::new("other worker panicked"));
@@ -6692,8 +6707,29 @@ where
                     flushers.clear();
                 }
 
-                if !worker.step_or_park(next_step_duration) {
+                let started_at = Instant::now();
+                let step_stats = worker.step_or_park(next_step_duration);
+                if !step_stats.has_more_work {
                     break;
+                }
+
+                if let Some(next_step_duration) = next_step_duration {
+                    let advice = workload_tracker.add_point(
+                        started_at,
+                        started_at.elapsed(),
+                        step_stats.compute_duration,
+                        next_step_duration,
+                    );
+
+                    if downscaling_allowed && advice == ScalingAdvice::ScaleDown {
+                        info!("The current number of workers is too high, restarting...");
+                        exit(EXIT_CODE_DOWNSCALE);
+                    }
+
+                    if upscaling_allowed && advice == ScalingAdvice::ScaleUp {
+                        info!("The current number of workers isn't enough, restarting...");
+                        exit(EXIT_CODE_UPSCALE);
+                    }
                 }
             }
 

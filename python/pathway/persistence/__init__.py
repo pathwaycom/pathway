@@ -120,9 +120,28 @@ class Config:
 
     Args:
         backend: persistence backend configuration.
-        snapshot_interval_ms: the desired duration between snapshot updates in \
-milliseconds.
-        persistence_mode: sets the persistence mode. See :py:class:`pathway.PersistenceMode` for more details.
+        snapshot_interval_ms: the desired duration between snapshot updates in
+            milliseconds.
+        persistence_mode: Can be set to one of the following values.
+            ``pw.PersistenceMode.PERSISTING``: the default value and means that all data
+            will be persisted. When this parameter is specified, or when it is omitted,
+            and the configuration is passed to ``pw.run``, no additional actions are
+            required to persist the state of your program. Alternatively, you can use
+            ``pw.PersistenceMode.UDF_CACHING`` meaning that only user-defined function (UDF)
+            calls will be cached. The cache stores the mapping from function input parameters to
+            their results, so if a function is called again with the same inputs,
+            the cached result is returned.
+            ``pw.PersistenceMode.OPERATOR_PERSISTING``: the most efficient persistence mechanism,
+            performing persistence only over the state of internal operators, neither
+            preserving the input nor performing any recomputation on it.
+        worker_scaling_enabled: Enables dynamic scaling of worker processes. When enabled, the program may
+            increase or decrease the number of workers and restart itself with the new
+            configuration if the pipeline remains overloaded or underloaded for a sustained
+            period of time. Note that dynamic scaling requires the program to be started
+            using ``pathway spawn``.
+        workload_tracking_window_ms: Specifies the time window (in milliseconds) used to evaluate
+            pipeline load when worker scaling is enabled. The load condition (overload or underload)
+            must persist throughout this entire window before a scaling decision is made.
     """
 
     backend: Backend
@@ -131,15 +150,17 @@ milliseconds.
     snapshot_access: api.SnapshotAccess = api.SnapshotAccess.FULL
     persistence_mode: api.PersistenceMode = api.PersistenceMode.PERSISTING
     continue_after_replay: bool = True
+    worker_scaling_enabled: bool = False
+    workload_tracking_window_ms: int = 120000
 
     @classmethod
     def simple_config(
         cls,
         backend: Backend,
-        snapshot_interval_ms=0,
-        snapshot_access=api.SnapshotAccess.FULL,
-        persistence_mode=api.PersistenceMode.PERSISTING,
-        continue_after_replay=True,
+        snapshot_interval_ms: int = 0,
+        snapshot_access: api.SnapshotAccess = api.SnapshotAccess.FULL,
+        persistence_mode: api.PersistenceMode = api.PersistenceMode.PERSISTING,
+        continue_after_replay: bool = True,
     ):
         """
         Construct config from a single instance of the ``Backend`` class, using this
@@ -191,6 +212,8 @@ milliseconds.
             snapshot_access=self.snapshot_access,
             persistence_mode=self.persistence_mode,
             continue_after_replay=self.continue_after_replay,
+            worker_scaling_enabled=self.worker_scaling_enabled,
+            workload_tracking_window_ms=self.workload_tracking_window_ms,
         )
 
     def on_before_run(self):

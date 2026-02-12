@@ -74,6 +74,14 @@ impl Config {
         }
     }
 
+    pub fn is_downscaling_possible(&self) -> bool {
+        self.processes() > 1
+    }
+
+    pub fn is_upscaling_possible(&self) -> bool {
+        (self.processes() + 1) * self.threads <= MAX_WORKERS
+    }
+
     pub fn process_id(&self) -> usize {
         self.process_id
     }

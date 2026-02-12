@@ -4619,6 +4619,8 @@ pub struct PersistenceConfig {
     snapshot_access: SnapshotAccess,
     persistence_mode: PersistenceMode,
     continue_after_replay: bool,
+    worker_scaling_enabled: bool,
+    workload_tracking_window: ::std::time::Duration,
 }
 
 #[pymethods]
@@ -4631,6 +4633,8 @@ impl PersistenceConfig {
         snapshot_access = SnapshotAccess::Full,
         persistence_mode = PersistenceMode::Batch,
         continue_after_replay = true,
+        worker_scaling_enabled = false,
+        workload_tracking_window_ms = 120_000,
     ))]
     fn new(
         snapshot_interval_ms: u64,
@@ -4638,6 +4642,8 @@ impl PersistenceConfig {
         snapshot_access: SnapshotAccess,
         persistence_mode: PersistenceMode,
         continue_after_replay: bool,
+        worker_scaling_enabled: bool,
+        workload_tracking_window_ms: u64,
     ) -> Self {
         Self {
             snapshot_interval: ::std::time::Duration::from_millis(snapshot_interval_ms),
@@ -4645,18 +4651,35 @@ impl PersistenceConfig {
             snapshot_access,
             persistence_mode,
             continue_after_replay,
+            worker_scaling_enabled,
+            workload_tracking_window: ::std::time::Duration::from_millis(
+                workload_tracking_window_ms,
+            ),
         }
     }
 }
 
+const PATHWAY_RUN_ID_ENV_VAR: &str = "PATHWAY_RUN_ID";
+
 impl PersistenceConfig {
     fn prepare(self) -> PyResult<PersistenceManagerOuterConfig> {
+        if self.worker_scaling_enabled {
+            let is_pathway_spawn = ::std::env::var(PATHWAY_RUN_ID_ENV_VAR).is_ok();
+            if !is_pathway_spawn {
+                return Err(PyValueError::new_err(
+                    "Programs with worker scaling must only be executed via `pathway spawn`",
+                ));
+            }
+        }
+
         Ok(PersistenceManagerOuterConfig::new(
             self.snapshot_interval,
             self.backend.construct_persistent_storage_config()?,
             self.snapshot_access,
             self.persistence_mode,
             self.continue_after_replay,
+            self.worker_scaling_enabled,
+            self.workload_tracking_window,
         ))
     }
 }

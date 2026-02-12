@@ -8,12 +8,19 @@ import sys
 import tempfile
 import uuid
 import venv
-from typing import NoReturn, Tuple
+from dataclasses import dataclass
+from typing import Iterable, NoReturn, Tuple
 
 import click
 
 import pathway as pw
 from pathway.optional_import import optional_imports
+
+EXIT_CODE_DOWNSCALE = 10  # SIGUSR1
+EXIT_CODE_UPSCALE = 12  # SIGUSR2
+
+UPSCALING_FACTOR = 2.0  # Must be > 1
+DOWNSCALING_FACTOR = 0.5  # Must be < 1
 
 
 def plural(n, singular, plural):
@@ -29,6 +36,84 @@ def get_temporary_paths(
     repository_path = temp_root_path / "repository"
     venv_path = temp_root_path / "venv"
     return (repository_path, venv_path)
+
+
+@dataclass
+class ProcessHandlesState:
+    has_working_process: bool = False
+    needs_downscaling: bool = False
+    needs_upscaling: bool = False
+    has_process_with_error: bool = False
+
+
+def create_process_handles(
+    *,
+    processes: int,
+    threads: int,
+    first_port: int,
+    run_id: str,
+    env_base: dict[str, str],
+    program: str,
+    arguments: Iterable[str],
+) -> list[subprocess.Popen]:
+    processes_str = plural(processes, "process", "processes")
+    workers_str = plural(processes * threads, "total worker", "total workers")
+    click.echo(f"Preparing {processes_str} ({workers_str})", err=True)
+
+    process_handles = []
+    for process_id in range(processes):
+        env = env_base.copy()
+        env["PATHWAY_THREADS"] = str(threads)
+        env["PATHWAY_PROCESSES"] = str(processes)
+        env["PATHWAY_FIRST_PORT"] = str(first_port)
+        env["PATHWAY_PROCESS_ID"] = str(process_id)
+        env["PATHWAY_RUN_ID"] = str(run_id)
+        env["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
+        handle = subprocess.Popen([program] + list(arguments), env=env)
+        process_handles.append(handle)
+    return process_handles
+
+
+def wait_for_process_handles(
+    process_handles: list[subprocess.Popen],
+    timeout: float,
+) -> ProcessHandlesState:
+    result = ProcessHandlesState()
+    for _ in range(2):
+        # A process may finish by requesting scaling, but do so after we have already
+        # checked its exit status. At the same time, another process may terminate with
+        # exit code 1, indicating a failure to communicate with the process that requested
+        # scaling. In that case, only the latter exit code would be observed, causing the
+        # program to terminate due to an error.
+        #
+        # To prevent this, once an error is detected, we must first verify that no scaling
+        # request was issued by the second pass.
+
+        for handle in process_handles:
+            try:
+                maybe_exit_code = handle.wait(timeout)
+            except subprocess.TimeoutExpired:
+                result.has_working_process = True
+                continue
+            if maybe_exit_code == EXIT_CODE_DOWNSCALE:
+                result.needs_downscaling = True
+            elif maybe_exit_code == EXIT_CODE_UPSCALE:
+                result.needs_upscaling = True
+            elif maybe_exit_code != 0:
+                result.has_process_with_error = True
+
+        if not result.has_process_with_error:
+            # If there is no process with an error, then a retry described above is redundant
+            # and can be avoided.
+            break
+
+    return result
+
+
+def terminate_process_handles(process_handles: list[subprocess.Popen]):
+    for handle in process_handles:
+        handle.terminate()
+        handle.wait()
 
 
 def checkout_repository(
@@ -85,39 +170,53 @@ def spawn_program(
                 raise RuntimeError("Failed to install dependencies")
         os.chdir(repository_path)
 
-    processes_str = plural(processes, "process", "processes")
-    workers_str = plural(processes * threads, "total worker", "total workers")
-    click.echo(f"Preparing {processes_str} ({workers_str})", err=True)
-    run_id = uuid.uuid4()
+    run_id = str(uuid.uuid4())
     process_handles = []
     try:
-        for process_id in range(processes):
-            env = env_base.copy()
-            env["PATHWAY_THREADS"] = str(threads)
-            env["PATHWAY_PROCESSES"] = str(processes)
-            env["PATHWAY_FIRST_PORT"] = str(first_port)
-            env["PATHWAY_PROCESS_ID"] = str(process_id)
-            env["PATHWAY_RUN_ID"] = str(run_id)
-            env["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
-            handle = subprocess.Popen([program] + list(arguments), env=env)
-            process_handles.append(handle)
-        has_process_with_error = False
-        while not has_process_with_error:
-            has_working_process = False
-            for handle in process_handles:
-                try:
-                    maybe_exit_code = handle.wait(1.0)
-                except subprocess.TimeoutExpired:
-                    has_working_process = True
-                    continue
-                if maybe_exit_code != 0:
-                    has_process_with_error = True
-            if not has_working_process:
+        process_handles = create_process_handles(
+            processes=processes,
+            threads=threads,
+            first_port=first_port,
+            run_id=run_id,
+            program=program,
+            arguments=arguments,
+            env_base=env_base,
+        )
+        handles_state = ProcessHandlesState()
+        while not handles_state.has_process_with_error:
+            handles_state = wait_for_process_handles(process_handles, timeout=1.0)
+
+            if handles_state.needs_upscaling or handles_state.needs_downscaling:
+                handles_state.has_process_with_error = False
+                terminate_process_handles(process_handles)
+
+                old_process_number = processes
+                if handles_state.needs_upscaling:  # Upscaling has bigger priority
+                    processes = int(processes * UPSCALING_FACTOR)
+                    if processes == old_process_number:
+                        processes += 1
+                elif handles_state.needs_downscaling:
+                    processes = int(processes * DOWNSCALING_FACTOR)
+                    if processes == old_process_number:
+                        processes -= 1
+                    processes = max(processes, 1)
+                click.echo(
+                    f"Updating the processes number from {old_process_number} to {processes}"
+                )
+
+                process_handles = create_process_handles(
+                    processes=processes,
+                    threads=threads,
+                    first_port=first_port,
+                    run_id=run_id,
+                    program=program,
+                    arguments=arguments,
+                    env_base=env_base,
+                )
+            elif not handles_state.has_working_process:
                 break
     finally:
-        for handle in process_handles:
-            handle.terminate()
-            handle.wait()
+        terminate_process_handles(process_handles)
     sys.exit(max(handle.returncode for handle in process_handles))
 
 

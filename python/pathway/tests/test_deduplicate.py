@@ -1,6 +1,7 @@
 # Copyright © 2026 Pathway
 
 import pathlib
+import time
 from unittest import mock
 
 import pytest
@@ -377,8 +378,21 @@ def test_deduplicate_keeps_state_with_regular_persistence(tmp_path: pathlib.Path
         def acceptor(new_value, old_value) -> bool:
             return new_value >= old_value + 2
 
-        table = pw.demo.range_stream(
-            nb_rows, offset=offset, input_rate=25, autocommit_duration_ms=10
+        class InputSchema(pw.Schema):
+            value: float
+
+        class StreamSubject(pw.io.python.ConnectorSubject):
+            def run(self):
+                for index in range(offset, offset + nb_rows):
+                    self.next_json({"value": index})
+                    # Make sure that the data can't be batched
+                    time.sleep(0.01)
+                    self.commit()
+
+        table = pw.io.python.read(
+            StreamSubject(),
+            schema=InputSchema,
+            format="json",
         )
         result = table.deduplicate(value=pw.this.value, acceptor=acceptor)
 

@@ -262,7 +262,12 @@ impl Connector {
                     if ft > old_timestamp {
                         ft
                     } else {
-                        warn!("The forced time advancement tries to push the global time backwards: {ft} vs the current time {old_timestamp}");
+                        warn!(
+                            "The forced time advancement tries to push the global time backwards: \
+                            {} vs the current time {}. \
+                            Group source ID: {}. Reader ID within the source: {}",
+                            ft, old_timestamp, group.source_id, group.source_reader_worker_id
+                        );
                         self.current_timestamp
                     }
                 }

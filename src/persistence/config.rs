@@ -93,6 +93,8 @@ pub struct PersistenceManagerOuterConfig {
     snapshot_access: SnapshotAccess,
     persistence_mode: PersistenceMode,
     continue_after_replay: bool,
+    pub worker_scaling_enabled: bool,
+    pub workload_tracking_window: Duration,
 }
 
 impl PersistenceManagerOuterConfig {
@@ -102,6 +104,8 @@ impl PersistenceManagerOuterConfig {
         snapshot_access: SnapshotAccess,
         persistence_mode: PersistenceMode,
         continue_after_replay: bool,
+        worker_scaling_enabled: bool,
+        workload_tracking_window: Duration,
     ) -> Self {
         Self {
             snapshot_interval,
@@ -109,6 +113,8 @@ impl PersistenceManagerOuterConfig {
             snapshot_access,
             persistence_mode,
             continue_after_replay,
+            worker_scaling_enabled,
+            workload_tracking_window,
         }
     }
 
@@ -120,6 +126,11 @@ impl PersistenceManagerOuterConfig {
         if matches!(self.persistence_mode, PersistenceMode::OperatorPersisting) {
             license
                 .check_entitlements(["full-persistence"])
+                .map_err(DynError::from)?;
+        }
+        if self.worker_scaling_enabled {
+            license
+                .check_entitlements(["worker-count-scaling"])
                 .map_err(DynError::from)?;
         }
         Ok(())

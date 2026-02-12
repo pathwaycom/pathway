@@ -684,8 +684,8 @@ pub type SharedConnectorGroup = Arc<Mutex<ConnectorGroup>>;
 #[derive(Clone, Debug)]
 pub struct ConnectorGroupAccessor {
     group: SharedConnectorGroup,
-    source_id: usize,
-    source_reader_worker_id: usize,
+    pub source_id: usize,
+    pub source_reader_worker_id: usize,
     target_value_idx: usize,
     pub idle_duration: Option<Duration>,
 }

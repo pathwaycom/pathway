@@ -206,6 +206,17 @@ pub trait AsWorker : Scheduler {
     fn logging(&self) -> Option<crate::logging::TimelyLogger> { self.log_register().get("timely") }
 }
 
+/// Contains statistics from `step_or_park` method.
+#[derive(Debug)]
+pub struct WorkerStepStats {
+    /// Denotes if more computational steps are needed.
+    pub has_more_work: bool,
+
+    /// Contains the duration spent on computation, excluding
+    /// time spent during possible thread parking.
+    pub compute_duration: Duration,
+}
+
 /// A `Worker` is the entry point to a timely dataflow computation. It wraps a `Allocate`,
 /// and has a list of dataflows that it manages.
 pub struct Worker<A: Allocate> {
@@ -299,7 +310,7 @@ impl<A: Allocate> Worker<A> {
     ///     worker.step();
     /// });
     /// ```
-    pub fn step(&mut self) -> bool {
+    pub fn step(&mut self) -> WorkerStepStats {
         self.step_or_park(Some(Duration::from_secs(0)))
     }
 
@@ -330,7 +341,7 @@ impl<A: Allocate> Worker<A> {
     ///     worker.step_or_park(Some(Duration::from_secs(1)));
     /// });
     /// ```
-    pub fn step_or_park(&mut self, duration: Option<Duration>) -> bool {
+    pub fn step_or_park(&mut self, duration: Option<Duration>) -> WorkerStepStats {
 
         {   // Process channel events. Activate responders.
             let mut allocator = self.allocator.borrow_mut();
@@ -367,7 +378,7 @@ impl<A: Allocate> Worker<A> {
             (x, y) => x.or(y),
         };
 
-        if delay != Some(Duration::new(0,0)) {
+        let compute_duration = if delay != Some(Duration::new(0,0)) {
 
             // Log parking and flush log.
             if let Some(l) = self.logging().as_mut() {
@@ -381,8 +392,12 @@ impl<A: Allocate> Worker<A> {
 
             // Log return from unpark.
             self.logging().as_mut().map(|l| l.log(crate::logging::ParkEvent::unpark()));
+
+            // Nothing happens, the thread was parked all the time
+            Duration::ZERO
         }
         else {   // Schedule active dataflows.
+            let computation_started_at = Instant::now();
 
             let active_dataflows = &mut self.active_dataflows;
             self.activations
@@ -404,12 +419,17 @@ impl<A: Allocate> Worker<A> {
                     }
                 }
             }
-        }
+
+            computation_started_at.elapsed()
+        };
 
         // Clean up, indicate if dataflows remain.
         self.logging.borrow_mut().flush();
         self.allocator.borrow_mut().release();
-        !self.dataflows.borrow().is_empty()
+        WorkerStepStats {
+            has_more_work: !self.dataflows.borrow().is_empty(),
+            compute_duration
+        }
     }
 
     /// Calls `self.step()` as long as `func` evaluates to true.

@@ -271,6 +271,8 @@ pub fn create_persistence_manager(
                 SnapshotAccess::Full,
                 PersistenceMode::Batch,
                 true,
+                false,
+                Duration::ZERO,
             )
             .into_inner(0, 1),
         )
