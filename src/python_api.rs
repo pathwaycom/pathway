@@ -6354,7 +6354,11 @@ impl DataStorage {
         let index_name = elasticsearch_client_params.index_name.clone();
         let max_batch_size = self.max_batch_size;
 
-        let writer = ElasticSearchWriter::new(client, index_name, max_batch_size);
+        let writer = ElasticSearchWriter::new(client, index_name, max_batch_size).map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "Failed to create async runtime for ElasticSearch writer: {e}"
+            ))
+        })?;
         Ok(Box::new(writer))
     }
 

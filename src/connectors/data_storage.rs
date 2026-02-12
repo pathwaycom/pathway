@@ -47,7 +47,6 @@ use rumqttc::{
     Incoming as MqttIncoming, Outgoing as MqttOutgoing, Packet as MqttPacket,
 };
 
-use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::aws::dynamodb::Error as AwsDynamoDBError;
 use crate::connectors::aws::kinesis::Error as AwsKinesisError;
 use crate::connectors::aws::kinesis::KinesisReader;
@@ -80,7 +79,6 @@ use async_nats::client::PublishError as NatsPublishError;
 use async_nats::error::Error as NatsError;
 use async_nats::jetstream::context::PublishErrorKind as JetStreamPublishError;
 use bincode::ErrorKind as BincodeError;
-use elasticsearch::{BulkParts, Elasticsearch};
 use glob::PatternError as GlobPatternError;
 use mongodb::bson::Document as BsonDocument;
 use mongodb::error::Error as MongoError;
@@ -107,6 +105,7 @@ pub use super::data_lake::delta::{
 };
 pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
+pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{PsqlWriter, SslError};
@@ -1485,68 +1484,6 @@ impl Writer for KafkaWriter {
 
     fn retriable(&self) -> bool {
         true
-    }
-
-    fn single_threaded(&self) -> bool {
-        false
-    }
-}
-
-pub struct ElasticSearchWriter {
-    client: Elasticsearch,
-    index_name: String,
-    max_batch_size: Option<usize>,
-
-    docs_buffer: Vec<Vec<u8>>,
-}
-
-impl ElasticSearchWriter {
-    pub fn new(client: Elasticsearch, index_name: String, max_batch_size: Option<usize>) -> Self {
-        ElasticSearchWriter {
-            client,
-            index_name,
-            max_batch_size,
-            docs_buffer: Vec::new(),
-        }
-    }
-}
-
-impl Writer for ElasticSearchWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
-            self.docs_buffer.push(b"{\"index\": {}}".to_vec());
-            self.docs_buffer.push(payload.into_raw_bytes()?);
-        }
-
-        if let Some(max_batch_size) = self.max_batch_size {
-            if self.docs_buffer.len() / 2 >= max_batch_size {
-                self.flush(true)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        if self.docs_buffer.is_empty() {
-            return Ok(());
-        }
-        create_async_tokio_runtime()?.block_on(async {
-            self.client
-                .bulk(BulkParts::Index(&self.index_name))
-                .body(take(&mut self.docs_buffer))
-                .send()
-                .await
-                .map_err(WriteError::Elasticsearch)?
-                .error_for_status_code()
-                .map_err(WriteError::Elasticsearch)?;
-
-            Ok(())
-        })
-    }
-
-    fn name(&self) -> String {
-        format!("ElasticSearch({})", self.index_name)
     }
 
     fn single_threaded(&self) -> bool {
