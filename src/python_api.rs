@@ -4,6 +4,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use crate::async_runtime::create_async_tokio_runtime;
+use crate::connectors::postgres::{create_psql_client, SslMode};
 use crate::engine::graph::{
     ErrorLogHandle, ExportedTable, JoinExactlyOnce, OperatorProperties, SubscribeCallbacks,
     SubscribeCallbacksBuilder, SubscribeConfig,
@@ -44,7 +45,6 @@ use mysql::Pool as MysqlConnectionPool;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
-use postgres::{Client, NoTls};
 use pyo3::exceptions::{
     PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
     PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
@@ -643,6 +643,21 @@ impl<'py> IntoPyObject<'py> for ConnectorMode {
     type Error = PyErr;
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         PyConnectorMode(self).into_bound_py_any(py)
+    }
+}
+
+impl<'py> FromPyObject<'py> for SslMode {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PySslMode>>()?.0)
+    }
+}
+
+impl<'py> IntoPyObject<'py> for SslMode {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        PySslMode(self).into_bound_py_any(py)
     }
 }
 
@@ -2116,6 +2131,25 @@ impl PySessionType {
     pub const NATIVE: SessionType = SessionType::Native;
     #[classattr]
     pub const UPSERT: SessionType = SessionType::Upsert;
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "SslMode")]
+pub struct PySslMode(SslMode);
+
+#[pymethods]
+impl PySslMode {
+    #[classattr]
+    pub const DISABLE: SslMode = SslMode::Disable;
+    #[classattr]
+    pub const ALLOW: SslMode = SslMode::Allow;
+    #[classattr]
+    pub const PREFER: SslMode = SslMode::Prefer;
+    #[classattr]
+    pub const REQUIRE: SslMode = SslMode::Require;
+    #[classattr]
+    pub const VERIFY_CA: SslMode = SslMode::VerifyCa;
+    #[classattr]
+    pub const VERIFY_FULL: SslMode = SslMode::VerifyFull;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PythonConnectorEventType")]
@@ -4525,6 +4559,8 @@ pub struct DataStorage {
     js_stream_name: Option<String>,
     durable_consumer_name: Option<String>,
     iceberg_catalog: Option<IcebergCatalogSettings>,
+    ssl_mode: SslMode,
+    ssl_cert_path: Option<String>,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5083,6 +5119,8 @@ impl DataStorage {
         js_stream_name = None,
         durable_consumer_name = None,
         iceberg_catalog = None,
+        ssl_mode = SslMode::Prefer,
+        ssl_cert_path = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5125,6 +5163,8 @@ impl DataStorage {
         js_stream_name: Option<String>,
         durable_consumer_name: Option<String>,
         iceberg_catalog: Option<IcebergCatalogSettings>,
+        ssl_mode: SslMode,
+        ssl_cert_path: Option<String>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5165,6 +5205,8 @@ impl DataStorage {
             js_stream_name,
             durable_consumer_name,
             iceberg_catalog,
+            ssl_mode,
+            ssl_cert_path,
         }
     }
 
@@ -6262,7 +6304,11 @@ impl DataStorage {
         data_format: &DataFormat,
     ) -> PyResult<Box<dyn Writer>> {
         let connection_string = self.connection_string()?;
-        let storage = match Client::connect(connection_string, NoTls) {
+        let storage = match create_psql_client(
+            connection_string,
+            self.ssl_mode,
+            self.ssl_cert_path.clone(),
+        ) {
             Ok(client) => PsqlWriter::new(
                 client,
                 self.max_batch_size,
@@ -6278,7 +6324,7 @@ impl DataStorage {
             })?,
             Err(e) => {
                 return Err(PyIOError::new_err(format!(
-                    "Failed to establish PostgreSQL connection: {e:?}"
+                    "Failed to establish PostgreSQL connection: {e}"
                 )))
             }
         };
@@ -7249,6 +7295,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyExpressionData>()?;
     m.add_class::<PathwayType>()?;
     m.add_class::<PyConnectorMode>()?;
+    m.add_class::<PySslMode>()?;
     m.add_class::<PySessionType>()?;
     m.add_class::<PyPythonConnectorEventType>()?;
     m.add_class::<PyDebeziumDBType>()?;

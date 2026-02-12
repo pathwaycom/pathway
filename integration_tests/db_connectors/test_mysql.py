@@ -4,13 +4,25 @@ import re
 
 import pandas as pd
 import pytest
-from utils import MYSQL_CONNECTION_STRING, MYSQL_DB_NAME, SimpleObject
+from utils import (
+    MYSQL_CONNECTION_STRING,
+    MYSQL_DB_NAME,
+    SimpleObject,
+    is_mysql_reachable,
+)
 
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
 
+# FIXME: the mysql Docker container used in the integration tests is unstable and
+# sometimes is unavailable, even though the healthcheck passes
+xfail_if_mysql_failed_to_start = pytest.mark.xfail(
+    not is_mysql_reachable(), reason="mysql has failed to start"
+)
 
+
+@xfail_if_mysql_failed_to_start
 @pytest.mark.parametrize("output_table_type", ["stream_of_changes", "snapshot"])
 @pytest.mark.parametrize("init_mode", ["default", "create_if_not_exists", "replace"])
 def test_outputs(output_table_type, init_mode, mysql):
@@ -98,6 +110,7 @@ def test_outputs(output_table_type, init_mode, mysql):
         ]
 
 
+@xfail_if_mysql_failed_to_start
 @pytest.mark.parametrize("are_types_optional", [False, True])
 @pytest.mark.parametrize("init_mode", ["create_if_not_exists", "replace"])
 def test_different_types_schema_and_serialization(init_mode, are_types_optional, mysql):
@@ -223,6 +236,7 @@ def test_different_types_schema_and_serialization(init_mode, are_types_optional,
             assert column_props.is_nullable == are_types_optional, column_name
 
 
+@xfail_if_mysql_failed_to_start
 def test_output_snapshot_overwrite_by_key(mysql):
     words = ["one", "two", "three", "one", "four", "two", "one", "one", "two", "four"]
 
@@ -254,6 +268,7 @@ def test_output_snapshot_overwrite_by_key(mysql):
     assert external_schema["count"].type_name == "bigint"
 
 
+@xfail_if_mysql_failed_to_start
 def test_mysql_overwrites_old_snapshot(mysql):
     table_name = mysql.random_table_name()
 
@@ -312,6 +327,7 @@ def test_mysql_overwrites_old_snapshot(mysql):
     ]
 
 
+@xfail_if_mysql_failed_to_start
 def test_mysql_composite_snapshot_key(mysql):
     table_name = mysql.random_table_name()
 
@@ -357,6 +373,7 @@ def test_mysql_composite_snapshot_key(mysql):
     ]
 
 
+@xfail_if_mysql_failed_to_start
 @pytest.mark.parametrize("malfomed_primary_key", [None, []])
 def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
     table_name = mysql.random_table_name()
@@ -390,6 +407,7 @@ def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
         pw.run()
 
 
+@xfail_if_mysql_failed_to_start
 def test_mysql_single_column_snapshot_mode(mysql):
     table_name = mysql.random_table_name()
 

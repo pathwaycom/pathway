@@ -6,6 +6,7 @@ from utils import (
     MySQLContext,
     PgvectorContext,
     PostgresContext,
+    PostgresWithTlsContext,
     QuestDBContext,
 )
 
@@ -13,6 +14,11 @@ from utils import (
 @pytest.fixture
 def postgres():
     return PostgresContext()
+
+
+@pytest.fixture
+def postgres_with_tls():
+    return PostgresWithTlsContext()
 
 
 @pytest.fixture

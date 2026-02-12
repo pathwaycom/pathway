@@ -5581,3 +5581,18 @@ def test_worker_count_scaling_factors():
 
     assert UPSCALING_FACTOR > 1.0
     assert DOWNSCALING_FACTOR < 1.0
+
+
+def test_postgres_ssl_cert_not_found(tmp_path):
+    nonexistent_path = tmp_path / "ca.crt"
+    table = pw.io.plaintext.read(tmp_path / "input.txt", mode="static")
+    with pytest.raises(ValueError, match="sslrootcert points to a non-existent path"):
+        pw.io.postgres.write(table, {"sslrootcert": str(nonexistent_path)}, "table")
+
+
+def test_postgres_ssl_cert_not_a_file(tmp_path):
+    directory_path = tmp_path / "ca.crt"
+    os.mkdir(directory_path)
+    table = pw.io.plaintext.read(tmp_path / "input.txt", mode="static")
+    with pytest.raises(ValueError, match="sslrootcert doesn't point to a file"):
+        pw.io.postgres.write(table, {"sslrootcert": str(directory_path)}, "table")

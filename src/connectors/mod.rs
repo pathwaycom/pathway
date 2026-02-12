@@ -28,6 +28,7 @@ pub mod monitoring;
 pub mod nats;
 pub mod offset;
 pub mod posix_like;
+pub mod postgres;
 pub mod scanner;
 pub mod sqlite;
 pub mod synchronization;

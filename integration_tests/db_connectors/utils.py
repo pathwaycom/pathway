@@ -27,6 +27,16 @@ POSTGRES_SETTINGS = {
     "user": POSTGRES_DB_USER,
     "password": POSTGRES_DB_PASSWORD,
 }
+
+POSTGRES_WITH_TLS_DB_HOST = "postgres-tls"
+POSTGRES_WITH_TLS_SETTINGS = {
+    "host": POSTGRES_WITH_TLS_DB_HOST,
+    "port": str(POSTGRES_DB_PORT),
+    "dbname": POSTGRES_DB_NAME,
+    "user": POSTGRES_DB_USER,
+    "password": POSTGRES_DB_PASSWORD,
+}
+
 PGVECTOR_DB_HOST = "pgvector"
 PGVECTOR_SETTINGS = {
     "host": PGVECTOR_DB_HOST,
@@ -67,6 +77,22 @@ MYSQL_CONNECTION_STRING = (
     f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
     + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
 )
+
+
+def is_mysql_reachable():
+    try:
+        mysql.connector.connect(
+            host=MYSQL_DB_HOST,
+            port=MYSQL_DB_PORT,
+            database=MYSQL_DB_NAME,
+            user=MYSQL_DB_USER,
+            password=MYSQL_DB_PASSWORD,
+            autocommit=True,
+        )
+    except mysql.connector.errors.InterfaceError:
+        return False
+
+    return True
 
 
 @dataclass(frozen=True)
@@ -213,6 +239,18 @@ class PostgresContext(WireProtocolSupporterContext):
     def __init__(self):
         super().__init__(
             host=POSTGRES_DB_HOST,
+            port=POSTGRES_DB_PORT,
+            database=POSTGRES_DB_NAME,
+            user=POSTGRES_DB_USER,
+            password=POSTGRES_DB_PASSWORD,
+        )
+
+
+class PostgresWithTlsContext(WireProtocolSupporterContext):
+
+    def __init__(self):
+        super().__init__(
+            host=POSTGRES_WITH_TLS_DB_HOST,
             port=POSTGRES_DB_PORT,
             database=POSTGRES_DB_NAME,
             user=POSTGRES_DB_USER,

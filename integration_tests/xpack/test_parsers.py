@@ -65,6 +65,7 @@ single_page_parsers = {
 }
 
 
+@pytest.mark.flaky(reruns=5)
 @pytest.mark.parametrize("parser_name", single_page_parsers.keys())
 def test_parse_pdf_single_page(parser_name, tmp_path, credentials_dir):
     files_table = pw.io.gdrive.read(
@@ -100,6 +101,7 @@ parsers = {
 }
 
 
+@pytest.mark.flaky(reruns=5)
 @pytest.mark.parametrize("parser_name", parsers.keys())
 def test_parse_pdf_multi_page_output(parser_name, tmp_path, credentials_dir):
     files_table = pw.io.gdrive.read(

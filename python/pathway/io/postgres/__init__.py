@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import warnings
 from typing import Iterable, Literal
 
@@ -20,6 +21,27 @@ from pathway.io._utils import (
 
 def _connection_string_from_settings(settings: dict):
     return " ".join(k + "=" + str(v) for (k, v) in settings.items())
+
+
+def _parse_engine_ssl_mode(ssl_mode: str) -> api.SslMode:
+    match ssl_mode.lower():
+        case "disable":
+            return api.SslMode.DISABLE
+        case "allow":
+            return api.SslMode.ALLOW
+        case "prefer":
+            return api.SslMode.PREFER
+        case "require":
+            return api.SslMode.REQUIRE
+        case "verify-ca" | "verify_ca":
+            return api.SslMode.VERIFY_CA
+        case "verify-full" | "verify_full":
+            return api.SslMode.VERIFY_FULL
+        case _:
+            raise ValueError(
+                f"invalid sslmode '{ssl_mode}', expected one of "
+                "disable, allow, prefer, require, verify-ca, verify-full"
+            )
 
 
 @check_arg_types
@@ -48,6 +70,18 @@ def write(
 
     When using **snapshot**, the set of columns in the output table matches the set of
     columns in the table you are writing. No additional columns are created.
+
+    TLS configuration is controlled via the ``sslmode`` and ``sslrootcert`` parameters
+    passed in ``postgres_settings``. The ``sslmode`` parameter follows the official
+    Postgres documentation
+    `sslmode <https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-PROTECTION>`_
+    and defines the level of TLS verification to be performed during connection setup.
+
+    If no TLS-related parameters are provided, the connector defaults to ``sslmode="prefer"``.
+    In this mode, the system first attempts to establish a TLS-encrypted connection, and
+    falls back to an unencrypted connection if TLS negotiation fails. Note that this fallback
+    does not provide certificate-based security guarantees and should be avoided in
+    security-sensitive environments.
 
     Args:
         table: Table to be written.
@@ -162,14 +196,33 @@ def write(
     ... )
     """
 
+    owned_postgres_settings = copy.copy(postgres_settings)
+    sslmode = owned_postgres_settings.pop("sslmode", None)
+    if sslmode is not None:
+        sslmode = _parse_engine_ssl_mode(sslmode)
+    else:
+        sslmode = api.SslMode.PREFER
+    sslrootcert = owned_postgres_settings.pop("sslrootcert", None)
+    if sslrootcert is not None:
+        try:
+            open(sslrootcert).close()
+        except IsADirectoryError as e:
+            raise ValueError("sslrootcert doesn't point to a file") from e
+        except FileNotFoundError as e:
+            raise ValueError("sslrootcert points to a non-existent path") from e
+        except OSError as e:
+            raise ValueError(f"sslrootcert is not readable: {e}") from e
+
     is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
     data_storage = api.DataStorage(
         storage_type="postgres",
-        connection_string=_connection_string_from_settings(postgres_settings),
+        connection_string=_connection_string_from_settings(owned_postgres_settings),
         max_batch_size=max_batch_size,
         table_name=table_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
         snapshot_maintenance_on_output=is_snapshot_mode,
+        ssl_mode=sslmode,
+        ssl_cert_path=sslrootcert,
     )
 
     if not is_snapshot_mode:
@@ -201,9 +254,7 @@ def write(
         external_diff_column_index=external_diff_column_index,
     )
 
-    datasink_type = (
-        "snapshot" if output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE else "sink"
-    )
+    datasink_type = "snapshot" if is_snapshot_mode else "sink"
     table.to(
         datasink.GenericDataSink(
             data_storage,

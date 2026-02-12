@@ -71,6 +71,14 @@ class KeyGenerationPolicy(Enum):
     ALWAYS_AUTOGENERATE: KeyGenerationPolicy
     PREFER_MESSAGE_KEY: KeyGenerationPolicy
 
+class SslMode(Enum):
+    DISABLE: SslMode
+    ALLOW: SslMode
+    PREFER: SslMode
+    REQUIRE: SslMode
+    VERIFY_CA: SslMode
+    VERIFY_FULL: SslMode
+
 class Universe:
     pass
 
@@ -909,6 +917,8 @@ class DataStorage:
         js_stream_name: str | None = None,
         durable_consumer_name: str | None = None,
         iceberg_catalog: IcebergCatalogSettings | None = None,
+        ssl_mode: SslMode = SslMode.PREFER,
+        ssl_cert_path: str | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

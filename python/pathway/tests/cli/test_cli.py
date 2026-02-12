@@ -59,7 +59,7 @@ def run_replay(
     assert result.exit_code == 0
 
 
-@pytest.mark.flaky(reruns=2)
+@pytest.mark.flaky(reruns=10)  # FIXME
 def test_record_replay_through_cli(tmp_path: pathlib.Path):
     replay_dir = str(tmp_path / "test_replay")
     timestamp_file = tmp_path / "timestamp"

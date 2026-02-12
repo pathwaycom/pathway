@@ -1,15 +1,30 @@
+import copy
 import datetime
 import json
+import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-from utils import PGVECTOR_SETTINGS, POSTGRES_SETTINGS, ColumnProperties, SimpleObject
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+from utils import (
+    PGVECTOR_SETTINGS,
+    POSTGRES_SETTINGS,
+    POSTGRES_WITH_TLS_SETTINGS,
+    ColumnProperties,
+    SimpleObject,
+)
 
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import run
+
+CREDENTIALS_DIR = Path(os.getenv("CREDENTIALS_DIR", default=Path(__file__).parent))
 
 
 def test_psql_output_stream(tmp_path, postgres):
@@ -707,3 +722,148 @@ def test_psql_output_snapshot(tmp_path, postgres):
         {"name": "Water", "count": 600, "price": 0.5, "available": True},
     ]
     assert rows == expected_rows
+
+
+@pytest.mark.parametrize(
+    "sslmode", ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+)
+def test_tls_no_cert(postgres_with_tls, sslmode):
+    class InputSchema(pw.Schema):
+        data: str
+
+    table = pw.demo.generate_custom_stream(
+        value_generators={"data": lambda x: str(x + 1)},
+        schema=InputSchema,
+        nb_rows=5,
+        input_rate=5,
+        autocommit_duration_ms=10,
+    )
+
+    settings = copy.deepcopy(POSTGRES_WITH_TLS_SETTINGS)
+    settings["sslmode"] = sslmode
+
+    output_table = postgres_with_tls.create_table(InputSchema, add_special_fields=True)
+    pw.io.postgres.write(
+        table,
+        postgres_settings=settings,
+        table_name=output_table,
+    )
+
+    if sslmode == "disable":
+        with pytest.raises(
+            IOError,
+            match="Failed to establish PostgreSQL connection: "
+            "failed to perform write in postgres",
+        ):
+            pw.run()
+    elif sslmode == "verify-ca" or sslmode == "verify-full":
+        with pytest.raises(
+            IOError,
+            match="Failed to establish PostgreSQL connection: "
+            "ssl certificate is not provided",
+        ):
+            pw.run()
+    else:
+        pw.run()
+        rows = postgres_with_tls.get_table_contents(
+            output_table, InputSchema.column_names(), sort_by="data"
+        )
+        assert rows == [
+            {"data": "1"},
+            {"data": "2"},
+            {"data": "3"},
+            {"data": "4"},
+            {"data": "5"},
+        ]
+
+
+@pytest.mark.parametrize("sslmode", ["verify-ca", "verify-full"])
+def test_tls_with_cert(postgres_with_tls, sslmode):
+    class InputSchema(pw.Schema):
+        data: str
+
+    table = pw.demo.generate_custom_stream(
+        value_generators={"data": lambda x: str(x + 1)},
+        schema=InputSchema,
+        nb_rows=5,
+        input_rate=5,
+        autocommit_duration_ms=10,
+    )
+
+    settings = copy.deepcopy(POSTGRES_WITH_TLS_SETTINGS)
+    settings["sslmode"] = sslmode
+    settings["sslrootcert"] = str(CREDENTIALS_DIR / "ca.crt")
+
+    output_table = postgres_with_tls.create_table(InputSchema, add_special_fields=True)
+    pw.io.postgres.write(
+        table,
+        postgres_settings=settings,
+        table_name=output_table,
+    )
+    pw.run()
+
+    rows = postgres_with_tls.get_table_contents(
+        output_table, InputSchema.column_names(), sort_by="data"
+    )
+    assert rows == [
+        {"data": "1"},
+        {"data": "2"},
+        {"data": "3"},
+        {"data": "4"},
+        {"data": "5"},
+    ]
+
+
+@pytest.mark.parametrize("sslmode", ["verify-ca", "verify-full"])
+def test_tls_with_incorrect_cert(tmp_path, postgres_with_tls, sslmode):
+    cert_path = tmp_path / "ca.crt"
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "Bad Test CA"),
+        ]
+    )
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_subject)
+        .issuer_name(ca_subject)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        )
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
+        )
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    cert_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+
+    class InputSchema(pw.Schema):
+        data: str
+
+    table = pw.demo.generate_custom_stream(
+        value_generators={"data": lambda x: str(x + 1)},
+        schema=InputSchema,
+        nb_rows=5,
+        input_rate=5,
+        autocommit_duration_ms=10,
+    )
+
+    settings = copy.deepcopy(POSTGRES_WITH_TLS_SETTINGS)
+    settings["sslmode"] = sslmode
+    settings["sslrootcert"] = str(cert_path)
+
+    output_table = postgres_with_tls.create_table(InputSchema, add_special_fields=True)
+    pw.io.postgres.write(
+        table,
+        postgres_settings=settings,
+        table_name=output_table,
+    )
+    with pytest.raises(
+        IOError,
+        match="Failed to establish PostgreSQL connection: "
+        "failed to perform write in postgres",
+    ):
+        pw.run()
