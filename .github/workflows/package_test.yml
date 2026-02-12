@@ -65,7 +65,7 @@ jobs:
               llvm-devel \
               clang \
               clang-devel
-          sccache: true
+          # sccache: true
 
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'selfhosted-macOS'}}

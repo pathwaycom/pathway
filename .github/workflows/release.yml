@@ -100,7 +100,7 @@ jobs:
               llvm-devel \
               clang \
               clang-devel
-          sccache: true
+          # sccache: true
 
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'selfhosted-macOS'}}
@@ -142,7 +142,7 @@ jobs:
               clang \
               clang-devel
             python3 -m ensurepip
-          sccache: true
+          # sccache: true
 
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
