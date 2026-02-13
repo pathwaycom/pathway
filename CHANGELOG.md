@@ -11,6 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Workers can now automatically scale up or down based on pipeline load, using a configurable monitoring window. This feature requires persistence to be enabled and can be configured via `worker_scaling_enabled` and `workload_tracking_window_ms` in `pw.persistence.Config`. Please refer to the tutorial for more details.
 - `pw.io.postgres.write` now properly supports TLS configuration via `sslmode` and `sslrootcert` connection string parameters.
 
+### Changelog
+- `pw.xpacks.connectors.read` now retries initial connection requests.
+
 ## [0.29.0] - 2026-01-22
 
 ### Added

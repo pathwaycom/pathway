@@ -105,7 +105,7 @@ class _SharePointScanner:
         root_folder = self._context.web.get_folder_by_server_relative_path(
             self._root_path
         )
-        files = root_folder.get_files(self._recursive).execute_query()
+        files = root_folder.get_files(self._recursive).execute_query_retry()
 
         updated_entries = []
         deleted_entries = []
@@ -128,7 +128,7 @@ class _SharePointScanner:
                 if size_limit_exceeded:
                     content = b""
                 else:
-                    content = file.get_content().execute_query().value
+                    content = file.get_content().execute_query_retry().value
                 updated_entries.append((content, metadata))
                 self._stored_metadata[metadata.path] = metadata
             seen_objects.add(metadata.path)
@@ -247,7 +247,7 @@ class _ContextWrapper:
         )
         current_web = context.web
         context.load(current_web)
-        context.execute_query()
+        context.execute_query_retry()
         return context
 
 
