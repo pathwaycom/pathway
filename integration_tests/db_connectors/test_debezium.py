@@ -1,15 +1,39 @@
+import functools
 import json
 import pathlib
 import threading
 import time
 
 import pytest
-from utils import KAFKA_SETTINGS
+import requests
+from utils import DEBEZIUM_CONNECTOR_URL, KAFKA_SETTINGS
 
 import pathway as pw
 from pathway.tests.utils import wait_result_with_checker
 
 INPUT_COLLECTION_SIZE = 30
+
+
+@functools.cache
+def is_debezium_reachable() -> bool:
+    for _ in range(300):
+        try:
+            r = requests.get(DEBEZIUM_CONNECTOR_URL, timeout=60)
+            is_ok = r.status_code is not None
+        except Exception as e:
+            print(f"Debezium is unreachable: {e}")
+            time.sleep(1.0)
+            continue
+        if is_ok:
+            return True
+    return False
+
+
+# FIXME: the debezium Docker container used in the integration tests is unstable and
+# sometimes is unavailable, even though the healthcheck passes
+xfail_if_debezium_failed_to_start = pytest.mark.xfail(
+    not is_debezium_reachable(), reason="debezium has failed to start"
+)
 
 
 class SumChecker:
@@ -33,6 +57,7 @@ class SumChecker:
             return False
 
 
+@xfail_if_debezium_failed_to_start
 @pytest.mark.flaky(reruns=5)
 def test_debezium_mongodb(tmp_path, mongodb, debezium):
     topic_prefix = debezium.register_mongodb()
@@ -63,6 +88,7 @@ def test_debezium_mongodb(tmp_path, mongodb, debezium):
     wait_result_with_checker(SumChecker(output_path, expected_sum), 180, step=1.0)
 
 
+@xfail_if_debezium_failed_to_start
 @pytest.mark.xfail(reason="needs investigation")
 def test_debezium_postgres(tmp_path, postgres, debezium):
     class InputSchema(pw.Schema):
