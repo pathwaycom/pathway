@@ -5,13 +5,15 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.29.1] - 2026-02-16
+
 ### Added
 - `pw.io.kafka.read` and `pw.io.kafka.write` connectors now support OAUTHBEARER authentication.
 - `pw.io.mongodb.write` connector now supports an `output_table_type` parameter with two modes: `stream_of_changes` (default) and `snapshot`. In `snapshot` mode, the connector maintains the current state of the Pathway table in MongoDB using the `_id` field as the primary key, while `stream_of_changes` preserves the existing behavior by writing all events with `time` and `diff` flags to reflect transactional minibatches and the nature of each change.
 - Workers can now automatically scale up or down based on pipeline load, using a configurable monitoring window. This feature requires persistence to be enabled and can be configured via `worker_scaling_enabled` and `workload_tracking_window_ms` in `pw.persistence.Config`. Please refer to the tutorial for more details.
 - `pw.io.postgres.write` now properly supports TLS configuration via `sslmode` and `sslrootcert` connection string parameters.
 
-### Changelog
+### Changed
 - `pw.xpacks.connectors.read` now retries initial connection requests.
 
 ## [0.29.0] - 2026-01-22
