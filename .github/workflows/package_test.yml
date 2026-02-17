@@ -55,7 +55,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --strip
+          args: --release --strip -i python3.10
           manylinux: auto
           container: "quay.io/pypa/manylinux_2_28_x86_64:2026.02.01-1"
           before-script-linux: |
@@ -65,7 +65,6 @@ jobs:
               llvm-devel \
               clang \
               clang-devel
-          # sccache: true
 
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'selfhosted-macOS'}}
@@ -76,7 +75,7 @@ jobs:
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
         with:
           command: build
-          args: --release --strip
+          args: --release --strip -i python3.10
           target: universal2-apple-darwin
 
       - name: Upload artifact
