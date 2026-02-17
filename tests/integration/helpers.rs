@@ -178,7 +178,10 @@ pub fn full_cycle_read(
                 assert!(!rewind_finish_sentinel_seen);
                 snapshot_entries.push(snapshot_entry.clone());
             }
-            Entry::RewindFinishSentinel(_) => {
+            Entry::RewindFinishSentinel {
+                frontier: _,
+                needs_time_advancement: _,
+            } => {
                 assert!(!rewind_finish_sentinel_seen);
                 rewind_finish_sentinel_seen = true;
             }

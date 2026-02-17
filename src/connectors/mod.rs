@@ -3,7 +3,7 @@
 use adaptors::InputAdaptor;
 use crossbeam_channel::{self as channel, Sender, TryRecvError};
 use itertools::Itertools;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use scopeguard::guard;
 use std::cell::RefCell;
 use std::env;
@@ -119,7 +119,10 @@ pub struct Connector {
 #[derive(Debug)]
 pub enum Entry {
     Snapshot(SnapshotEvent),
-    RewindFinishSentinel(OffsetAntichain),
+    RewindFinishSentinel {
+        frontier: OffsetAntichain,
+        needs_time_advancement: bool,
+    },
     RealtimeEntries(
         Vec<ParsedEventWithErrors>,
         Offset,
@@ -152,6 +155,10 @@ impl PersistenceMode {
                 panic!("Failed to initialize time for batch replay: {e}");
             }
         }
+    }
+
+    fn needs_time_advancement_after_replay(self, has_persistence: bool) -> bool {
+        !matches!(self, Self::Batch) || has_persistence
     }
 
     fn handle_snapshot_time_advancement(self, sender: &Sender<Entry>, entry_read: SnapshotEvent) {
@@ -207,6 +214,17 @@ impl SnapshotAccess {
     }
 }
 
+struct ParseContext<'a, F>
+where
+    F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+{
+    session_type: SessionType,
+    input_session: &'a mut dyn InputAdaptor<Timestamp>,
+    values_to_key: F,
+    snapshot_writer: &'a mut Option<SharedSnapshotWriter>,
+    connector_monitor: Rc<RefCell<ConnectorMonitor>>,
+}
+
 impl Connector {
     /*
         The implementation for pull model of data acquisition: we explicitly inquiry the source about the newly
@@ -245,15 +263,17 @@ impl Connector {
         Timestamp::new_from_current_time() > self.current_timestamp
     }
 
+    fn current_minibatch_has_data(&self) -> bool {
+        self.backlog_tracker.last_timestamp_with_data() == Some(self.current_timestamp)
+    }
+
     fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
         let new_timestamp = Timestamp::new_from_current_time();
-        let current_minibatch_has_data =
-            self.backlog_tracker.last_timestamp_with_data() == Some(self.current_timestamp);
 
         let old_timestamp = self.current_timestamp;
         if self.current_timestamp < new_timestamp {
             self.current_timestamp = new_timestamp;
-        } else if current_minibatch_has_data {
+        } else if self.current_minibatch_has_data() {
             debug!("The current timestamp isn't greater than the last one saved, advancing 2ms further manually.");
             self.current_timestamp.0 += 2;
         }
@@ -264,12 +284,6 @@ impl Connector {
                     if ft > old_timestamp {
                         ft
                     } else {
-                        warn!(
-                            "The forced time advancement tries to push the global time backwards: \
-                            {} vs the current time {}. \
-                            Group source ID: {}. Reader ID within the source: {}",
-                            ft, old_timestamp, group.source_id, group.source_reader_worker_id
-                        );
                         self.current_timestamp
                     }
                 }
@@ -513,8 +527,13 @@ impl Connector {
                 }
             }
         }
+
         // Report that rewind has finished, so that autocommits start to work
-        let send_res = sender.send(Entry::RewindFinishSentinel(frontier));
+        let send_res = sender.send(Entry::RewindFinishSentinel {
+            frontier,
+            needs_time_advancement: persistence_mode
+                .needs_time_advancement_after_replay(persistent_storage.is_some()),
+        });
         if let Err(e) = send_res {
             panic!("Failed to switch from persisted to realtime: {e}");
         }
@@ -586,6 +605,7 @@ impl Connector {
             parser.short_description()
         );
         let reader_name = reader.name(unique_name);
+        let reader_name_2 = reader_name.clone();
         let session_type = parser.session_type();
         let in_connector_group = self.group.is_some();
 
@@ -652,6 +672,14 @@ impl Connector {
                 return ControlFlow::Continue(Some(iteration_start));
             }
 
+            let mut parse_context = ParseContext {
+                session_type,
+                input_session: input_session.as_mut(),
+                values_to_key: &mut values_to_key,
+                snapshot_writer: &mut snapshot_writer,
+                connector_monitor: connector_monitor.clone(),
+            };
+
             if let Some(next_commit_at_timestamp) = next_commit_at {
                 if next_commit_at_timestamp <= iteration_start {
                     if backfilling_finished && commit_allowed {
@@ -662,15 +690,7 @@ impl Connector {
                             The end of this batch is determined by the AdvanceTime event.
                         */
                         let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                        self.on_parsed_data(
-                            parsed_entries,
-                            None, // no key generation for time advancement
-                            input_session.as_mut(),
-                            &mut values_to_key,
-                            &mut snapshot_writer,
-                            &mut Some(&mut *connector_monitor.borrow_mut()),
-                            session_type,
-                        );
+                        self.on_parsed_data(parsed_entries, None, &mut parse_context);
                     }
 
                     next_commit_at = Some(next_commit_at_timestamp + self.commit_duration.unwrap());
@@ -692,15 +712,7 @@ impl Connector {
                             == Some(self.current_timestamp)
                         {
                             let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                            self.on_parsed_data(
-                                parsed_entries,
-                                None, // no key generation for time advancement
-                                input_session.as_mut(),
-                                &mut values_to_key,
-                                &mut snapshot_writer,
-                                &mut Some(&mut *connector_monitor.borrow_mut()),
-                                session_type,
-                            );
+                            self.on_parsed_data(parsed_entries, None, &mut parse_context);
                         }
 
                         // We pass the control to timely computations.
@@ -718,7 +730,7 @@ impl Connector {
                 }
                 match receiver.try_recv() {
                     Ok(Entry::RealtimeEvent(ReadResult::Finished)) => {
-                        if let Some(snapshot_writer) = &snapshot_writer {
+                        if let Some(snapshot_writer) = parse_context.snapshot_writer {
                             let snapshot_event = SnapshotEvent::AdvanceTime(
                                 Timestamp(self.current_timestamp.0 + 2),
                                 self.current_frontier.clone(),
@@ -781,12 +793,8 @@ impl Connector {
                             self.handle_input_entry(
                                 entry,
                                 &mut backfilling_finished,
-                                session_type,
-                                input_session.as_mut(),
-                                &mut values_to_key,
-                                &mut snapshot_writer,
-                                &mut Some(&mut *connector_monitor.borrow_mut()),
                                 &mut commit_allowed,
+                                &mut parse_context,
                             );
                         }
                     }
@@ -795,11 +803,16 @@ impl Connector {
                             if let Some(duration_to_consider_idle) = idleness_reporter.idle_duration
                             {
                                 // If the only entry is `TryRecvError::Empty`, then the source is idle.
-                                let is_idle = n_entries_in_batch == 1;
-                                if is_idle {
+                                // We need to check, for how long.
+                                if n_entries_in_batch == 1 {
                                     let idle_duration_elapsed = idleness_started_at.elapsed();
                                     if idle_duration_elapsed >= duration_to_consider_idle {
-                                        idleness_reporter.report_source_is_idle();
+                                        let reader_was_active =
+                                            idleness_reporter.report_source_is_idle();
+                                        if reader_was_active {
+                                            // Is AdvanceTime needed here?
+                                            info!("The reading worker for the source '{reader_name_2}' becomes idle");
+                                        }
                                     }
                                 } else {
                                     idleness_started_at = Instant::now();
@@ -822,20 +835,15 @@ impl Connector {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn handle_input_entry(
+    fn handle_input_entry<F>(
         &mut self,
         entry: Entry,
         backfilling_finished: &mut bool,
-        session_type: SessionType,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
-        values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
-        snapshot_writer: &mut Option<SharedSnapshotWriter>,
-        connector_monitor: &mut Option<&mut ConnectorMonitor>,
         commit_allowed: &mut bool,
-    ) {
-        let has_persistent_storage = snapshot_writer.is_some();
-
+        ctx: &mut ParseContext<'_, F>,
+    ) where
+        F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+    {
         match entry {
             Entry::RealtimeEvent(read_result) => match read_result {
                 ReadResult::Finished => {}
@@ -845,15 +853,7 @@ impl Connector {
                         self.has_clock_advanced() || commit_possibility.commit_forced();
                     if *commit_allowed && commit_needed {
                         let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                        self.on_parsed_data(
-                            parsed_entries,
-                            None, // no key generation for time advancement
-                            input_session,
-                            values_to_key,
-                            snapshot_writer,
-                            connector_monitor,
-                            session_type,
-                        );
+                        self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
                     }
                 }
                 ReadResult::NewSource(metadata) => {
@@ -877,18 +877,9 @@ impl Connector {
                     }
                 }
 
-                self.on_parsed_data(
-                    parsed_entries,
-                    Some(&offset.clone()),
-                    input_session,
-                    values_to_key,
-                    snapshot_writer,
-                    connector_monitor,
-                    session_type,
-                );
-
+                self.on_parsed_data(parsed_entries, Some(&offset.clone()), ctx);
                 let (offset_key, offset_value) = offset;
-                if has_persistent_storage {
+                if ctx.snapshot_writer.is_some() {
                     assert!(*backfilling_finished);
                     self.current_frontier
                         .advance_offset(offset_key, offset_value);
@@ -901,29 +892,31 @@ impl Connector {
                         .report_entries_sent(approvals);
                 }
             }
-            Entry::RewindFinishSentinel(restored_frontier) => {
+            Entry::RewindFinishSentinel {
+                frontier: restored_frontier,
+                needs_time_advancement,
+            } => {
                 assert!(!*backfilling_finished);
                 *backfilling_finished = true;
                 self.current_frontier = restored_frontier;
-                let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                self.on_parsed_data(
-                    parsed_entries,
-                    None, // no key generation for time advancement
-                    input_session,
-                    values_to_key,
-                    snapshot_writer,
-                    connector_monitor,
-                    session_type,
+
+                if needs_time_advancement {
+                    let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
+                    self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
+                }
+                info!(
+                    "Realtime data starts from the time {:?}",
+                    self.current_timestamp
                 );
             }
             Entry::Snapshot(snapshot) => {
                 assert!(!*backfilling_finished);
                 match snapshot {
                     SnapshotEvent::Insert(key, value) => {
-                        Self::on_insert(key, value, input_session);
+                        Self::on_insert(key, value, ctx.input_session);
                     }
                     SnapshotEvent::Delete(key, value) => {
-                        Self::on_remove(key, value, input_session);
+                        Self::on_remove(key, value, ctx.input_session);
                     }
                     SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => {
                         unreachable!()
@@ -941,17 +934,14 @@ impl Connector {
         input_session.remove(key, Value::Tuple(values.into()));
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn on_parsed_data(
+    fn on_parsed_data<F>(
         &mut self,
         parsed_entries: Vec<ParsedEventWithErrors>,
         offset: Option<&Offset>,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
-        mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
-        snapshot_writer: &mut Option<SharedSnapshotWriter>,
-        connector_monitor: &mut Option<&mut ConnectorMonitor>,
-        session_type: SessionType,
-    ) {
+        ctx: &mut ParseContext<'_, F>,
+    ) where
+        F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+    {
         let error_logger = self.error_logger.clone();
         let error_handling_logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
             Box::new(move |values| values.into_iter().try_collect())
@@ -980,14 +970,12 @@ impl Connector {
                     continue;
                 }
             };
-            let key = entry.key(&mut values_to_key, offset);
+            let key = entry.key(&mut ctx.values_to_key, offset);
             if let Some(key) = key {
                 // true for Insert, Delete
-                if let Some(ref mut connector_monitor) = connector_monitor {
-                    connector_monitor.increment();
-                }
+                ctx.connector_monitor.borrow_mut().increment();
 
-                if let Some(snapshot_writer) = snapshot_writer {
+                if let Some(snapshot_writer) = ctx.snapshot_writer {
                     // TODO: if the usage of Mutex+Arc hits the performance, add a buffered accessor here
                     // It must accumulate the data to the extent of the chunk size, and then unlock the mutex
                     // once and send the full chunk
@@ -1004,25 +992,23 @@ impl Connector {
                         error!("There are {} tokens in the entry, but the expected number of tokens was {}", values.len(), self.num_columns);
                         continue;
                     }
-                    Self::on_insert(key.expect("No key"), values, input_session);
+                    Self::on_insert(key.expect("No key"), values, ctx.input_session);
                     self.backlog_tracker.on_event(self.current_timestamp);
                 }
                 ParsedEvent::Delete((_, values)) => {
-                    if matches!(session_type, SessionType::Native)
+                    if matches!(ctx.session_type, SessionType::Native)
                         && values.len() != self.num_columns
                     {
                         error!("There are {} tokens in the entry, but the expected number of tokens was {}", values.len(), self.num_columns);
                         continue;
                     }
-                    Self::on_remove(key.expect("No key"), values, input_session);
+                    Self::on_remove(key.expect("No key"), values, ctx.input_session);
                     self.backlog_tracker.on_event(self.current_timestamp);
                 }
                 ParsedEvent::AdvanceTime => {
-                    let time_advanced = self.advance_time(input_session);
-                    if let Some(ref mut connector_monitor) = connector_monitor {
-                        connector_monitor.commit();
-                    }
-                    if let Some(snapshot_writer) = snapshot_writer {
+                    let time_advanced = self.advance_time(ctx.input_session);
+                    ctx.connector_monitor.borrow_mut().commit();
+                    if let Some(snapshot_writer) = ctx.snapshot_writer {
                         snapshot_writer
                             .lock()
                             .unwrap()

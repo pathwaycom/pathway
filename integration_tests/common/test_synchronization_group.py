@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import sys
 import threading
 import time
 from typing import Any
@@ -104,11 +105,25 @@ def check_output_events(
     # propagate max time seen so far for each origin separately
     advancements = batches_agg.ffill().cummax()
     # check if geofences are ahead of events until geofences are over
+    first_batch_with_event_idx = batches_agg["events"].first_valid_index()
     last_batch_with_geofence_idx = batches_agg["geofences"].last_valid_index()
-    advancements_not_over = advancements.loc[:last_batch_with_geofence_idx]  # type: ignore
-    assert (
+    advancements_not_over = advancements.loc[
+        first_batch_with_event_idx:last_batch_with_geofence_idx  # type: ignore
+    ]
+
+    # an information about the exact place where the
+    # ordering is broken is valuable for debugging
+    is_geofence_leading = (
         advancements_not_over["geofences"] >= advancements_not_over["events"]
-    ).all(), "geofence is not leading the stream"
+    )
+    total = len(is_geofence_leading)
+    for pos, (idx, ok) in enumerate(is_geofence_leading.items(), start=1):
+        if not ok:
+            print(
+                f"geofence is not leading: {pos}/{total}, index={idx}",
+                file=sys.stderr,
+            )
+    assert is_geofence_leading.all(), "geofence is not leading the stream"
     # in each batch, two sources have difference smaller than the defined interval
     assert (
         (advancements_not_over["geofences"] - advancements_not_over["events"]).abs()
@@ -117,17 +132,19 @@ def check_output_events(
     assert len(batches_agg) > 1000
 
 
-def create_and_run_graph(geofences_subject, events_subject):
+def create_and_run_graph(geofences_subject, events_subject, tmp_path):
     last_geofence_time = geofences_subject.last_event_time()
     events = pw.io.python.read(
         events_subject,
         schema=InputSchema,
         autocommit_duration_ms=10,
+        name="events",
     )
     geofences = pw.io.python.read(
         geofences_subject,
         schema=InputSchema,
         autocommit_duration_ms=10,
+        name="geofences",
     )
     pw.io.register_input_synchronization_group(
         pw.io.SynchronizedColumn(events.current_time, priority=0),
@@ -153,11 +170,12 @@ def create_and_run_graph(geofences_subject, events_subject):
             concat_events.append((origin, current_time, time))
 
     pw.io.python.write(concat, TestObserver())
+    pw.io.jsonlines.write(concat, tmp_path / "output.jsonl")
     pw.run()
     check_output_events(concat_events, last_geofence_time)
 
 
-def test_two_regular_streams():
+def test_two_regular_streams(tmp_path):
     geofences_subject = InsertSubject(
         100, interval=datetime.timedelta(days=1), origin="geofences"
     )
@@ -167,10 +185,10 @@ def test_two_regular_streams():
         origin="events",
         geofences_subject=geofences_subject,
     )
-    create_and_run_graph(geofences_subject, events_subject)
+    create_and_run_graph(geofences_subject, events_subject, tmp_path)
 
 
-def test_stream_with_snapshot():
+def test_stream_with_snapshot(tmp_path):
     geofences_subject = UpsertSubject(
         100, interval=datetime.timedelta(days=1), origin="geofences"
     )
@@ -180,4 +198,4 @@ def test_stream_with_snapshot():
         origin="events",
         geofences_subject=geofences_subject,
     )
-    create_and_run_graph(geofences_subject, events_subject)
+    create_and_run_graph(geofences_subject, events_subject, tmp_path)

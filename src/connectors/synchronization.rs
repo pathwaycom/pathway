@@ -241,8 +241,10 @@ impl TrackedSource {
         }
     }
 
-    fn report_idle_reader_worker(&mut self, reader_worker_id: usize) {
+    fn report_idle_reader_worker(&mut self, reader_worker_id: usize) -> bool {
+        let worker_was_active = (self.idle_reader_worker_mask & (1u64 << reader_worker_id)) == 0;
         self.idle_reader_worker_mask |= 1u64 << reader_worker_id;
+        worker_was_active
     }
 
     fn report_active_reader_worker(&mut self, reader_worker_id: usize) {
@@ -357,8 +359,13 @@ impl ConnectorGroup {
         }
     }
 
-    pub fn report_source_is_idle(&mut self, source_id: usize, source_reader_worker_id: usize) {
-        self.sources[source_id].report_idle_reader_worker(source_reader_worker_id);
+    pub fn report_source_is_idle(
+        &mut self,
+        source_id: usize,
+        source_reader_worker_id: usize,
+    ) -> bool {
+        let worker_was_active =
+            self.sources[source_id].report_idle_reader_worker(source_reader_worker_id);
         if self.sources[source_id].is_idle() && !self.sources.iter().all(TrackedSource::is_idle) {
             self.update_max_possible_value();
         }
@@ -369,6 +376,8 @@ impl ConnectorGroup {
                 self.max_active_priority = source.priority;
             }
         }
+
+        worker_was_active
     }
 
     pub fn report_entry_sent(&mut self, entry: &EntrySendApproval) {
@@ -722,9 +731,9 @@ impl ConnectorGroupAccessor {
         )
     }
 
-    pub fn report_source_is_idle(&mut self) {
+    pub fn report_source_is_idle(&mut self) -> bool {
         let mut group = self.group.lock().unwrap();
-        group.report_source_is_idle(self.source_id, self.source_reader_worker_id);
+        group.report_source_is_idle(self.source_id, self.source_reader_worker_id)
     }
 
     pub fn report_entries_sent(&mut self, approvals: Vec<EntrySendApproval>) {
