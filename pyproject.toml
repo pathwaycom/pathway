@@ -39,7 +39,6 @@ dependencies = [
     "opentelemetry-api >= 1.22.0",
     "opentelemetry-sdk >= 1.22.0",
     "opentelemetry-exporter-otlp-proto-grpc >= 1.22.0",
-    "fs >= 2.4.16",
     "async-lru >= 2.0.4",
     "networkx >= 3.2.1",
     "google-cloud-pubsub >= 2.21.1",
@@ -47,7 +46,6 @@ dependencies = [
     "pydantic ~= 2.9",
     "gitpython >= 3.1.43",
     "deltalake >= 0.17.0, < 0.18.0",
-    "setuptools < 82.0.0",
     "sqlalchemy >= 2.0.43",
     "sqlmodel >= 0.0.24",
     "fastapi >= 0.116.1",
@@ -55,6 +53,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pyfilesystem = [
+    "fs >= 2.4.16",
+    "setuptools < 82.0.0", # required due to https://github.com/PyFilesystem/pyfilesystem2/issues/577
+]
 sql = [
     "sqlglot == 10.6.1", # the new versions are incompatible with the current pw.sql Implementation
 ]
@@ -94,6 +96,7 @@ xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
 ]
 all = [
+    "pathway[pyfilesystem]",
     "pathway[sql]",
     "pathway[xpack-llm]",
     "pathway[xpack-llm-local]",

@@ -14,6 +14,7 @@ from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import STATIC_MODE_NAME
 from pathway.io.python import ConnectorSubject, read as python_connector_read
+from pathway.optional_import import optional_imports
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -36,7 +37,8 @@ class _PyFilesystemSubject(ConnectorSubject):
         self.stored_modify_times = {}
 
     def run(self):
-        from fs.errors import ResourceNotFound as FSResourceNotFound
+        with optional_imports("pyfilesystem"):
+            from fs.errors import ResourceNotFound as FSResourceNotFound
 
         while True:
             start_time = time.time()
@@ -117,7 +119,8 @@ class _PyFilesystemSubject(ConnectorSubject):
         deleted_paths = []
         existing_paths = set()
 
-        from fs.walk import Walker
+        with optional_imports("pyfilesystem"):
+            from fs.walk import Walker
 
         walker = Walker()
         for path in walker.files(self.source, path=self.path):

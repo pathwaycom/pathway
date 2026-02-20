@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Changed
+- **BREAKING**: The dependencies for `pw.io.pyfilesystem.read` are no longer included in the default package installation. To install them, please use `pip install pathway[pyfilesystem]`.
 - Asynchronous callback for `pw.io.python.write` is now available as `pw.io.OnChangeCallbackAsync`.
 
 ## [0.29.1] - 2026-02-16
