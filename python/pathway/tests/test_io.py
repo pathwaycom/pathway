@@ -5596,3 +5596,105 @@ def test_postgres_ssl_cert_not_a_file(tmp_path):
     table = pw.io.plaintext.read(tmp_path / "input.txt", mode="static")
     with pytest.raises(ValueError, match="sslrootcert doesn't point to a file"):
         pw.io.postgres.write(table, {"sslrootcert": str(directory_path)}, "table")
+
+
+def test_subscribe_async_on_change():
+    """Test that pw.io.subscribe works with an async OnChangeCallbackAsync."""
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(data="hello")
+            self.next(data="world")
+
+    table = pw.io.python.read(TestSubject(), format="raw")
+
+    calls = []
+
+    async def on_change_async(key, row, time, is_addition):
+        # Simulate async work
+        await asyncio.sleep(0)
+        calls.append({"key": key, "row": row, "time": time, "is_addition": is_addition})
+
+    end_called = []
+
+    def on_end():
+        end_called.append(True)
+
+    pw.io.subscribe(table, on_change=on_change_async, on_end=on_end)
+    run()
+
+    assert len(calls) == 2
+    rows = [c["row"] for c in calls]
+    assert {"data": "hello"} in rows
+    assert {"data": "world"} in rows
+    assert all(c["is_addition"] for c in calls)
+    assert len(end_called) == 1
+
+
+def test_subscribe_async_on_change_with_deletions():
+    """Test async callback receives is_addition=False for deletions."""
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self._add(pw.internals.api.ref_scalar(1), b'{"data": "foo"}')
+            self.commit()
+            self._remove(pw.internals.api.ref_scalar(1), b'{"data": "foo"}')
+
+    table = pw.io.python.read(TestSubject(), format="raw")
+
+    calls = []
+
+    async def on_change_async(key, row, time, is_addition):
+        await asyncio.sleep(0)
+        calls.append({"row": row, "is_addition": is_addition})
+
+    pw.io.subscribe(table, on_change=on_change_async)
+    run()
+
+    additions = [c for c in calls if c["is_addition"]]
+    deletions = [c for c in calls if not c["is_addition"]]
+    assert len(additions) == 1
+    assert len(deletions) == 1
+
+
+def test_subscribe_async_on_change_time_end():
+    """Test that on_time_end is called after async on_change."""
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(data="test")
+
+    table = pw.io.python.read(TestSubject(), format="raw")
+
+    time_end_times = []
+    change_times = []
+
+    async def on_change_async(key, row, time, is_addition):
+        await asyncio.sleep(0)
+        change_times.append(time)
+
+    def on_time_end(time):
+        time_end_times.append(time)
+
+    pw.io.subscribe(table, on_change=on_change_async, on_time_end=on_time_end)
+    run()
+
+    assert len(change_times) == 1
+    assert len(time_end_times) >= 1
+    # The time_end time should match the change time
+    assert change_times[0] in time_end_times
+
+
+def test_subscribe_async_incompatible_with_sort_by():
+    """Test that sort_by raises an error with async callbacks."""
+
+    table = pw.Table.empty(value=int)
+
+    async def on_change_async(key, row, time, is_addition):
+        pass
+
+    pw.io.subscribe(table, on_change=on_change_async, sort_by=[table.value])
+    with pytest.raises(
+        ValueError, match="Using sort_by with async observer is not supported"
+    ):
+        run()

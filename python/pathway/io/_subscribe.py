@@ -24,7 +24,7 @@ def subscribe(
     sort_by: Iterable[ColumnReference] | None = None,
 ):
     """
-    Calls a callback function on_change on every change happening in table.
+    Calls a callback function ``on_change`` on every change happening in table.
 
     Args:
         table: the table to subscribe.
@@ -32,7 +32,7 @@ def subscribe(
           function is required to accept four parameters: the key, the row changed, the time
           of the change in microseconds and the flag stating if the change had been an
           addition of the row. These parameters of the callback are expected to have
-          names key, row, time and is_addition respectively.
+          names ``key``, ``row``, ``time`` and ``is_addition`` respectively.
         on_end: the callback to be called when the stream of changes ends.
         on_time_end: the callback function to be called on each closed time of computation.
         name: A unique name for the connector. If provided, this name will be used in
