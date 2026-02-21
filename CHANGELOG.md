@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [0.29.1] - 2026-02-16
 
 ### Added
+- `pw.io.leann.write` connector for writing Pathway tables to LEANN vector indices. LEANN uses graph-based selective recomputation to achieve 97% storage reduction compared to traditional vector databases.
 - `pw.io.kafka.read` and `pw.io.kafka.write` connectors now support OAUTHBEARER authentication.
 - `pw.io.mongodb.write` connector now supports an `output_table_type` parameter with two modes: `stream_of_changes` (default) and `snapshot`. In `snapshot` mode, the connector maintains the current state of the Pathway table in MongoDB using the `_id` field as the primary key, while `stream_of_changes` preserves the existing behavior by writing all events with `time` and `diff` flags to reflect transactional minibatches and the nature of each change.
 - Workers can now automatically scale up or down based on pipeline load, using a configurable monitoring window. This feature requires persistence to be enabled and can be configured via `worker_scaling_enabled` and `workload_tracking_window_ms` in `pw.persistence.Config`. Please refer to the tutorial for more details.
