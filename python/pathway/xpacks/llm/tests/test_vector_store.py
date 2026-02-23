@@ -8,6 +8,7 @@ import pathlib
 import pytest
 
 import pathway as pw
+from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm import parsers
 from pathway.xpacks.llm.tests import mocks
@@ -132,8 +133,9 @@ def test_embedder_preserves_params():
         call_count += 1
         return [1.0, 1.0, 0.0]
 
-    _test_vs(fake_embeddings_model)
-    _test_vs(fake_embeddings_model)
+    with new_event_loop() as event_loop:
+        _test_vs(fake_embeddings_model, event_loop=event_loop)
+        _test_vs(fake_embeddings_model, event_loop=event_loop)
     assert call_count == 4  # dimension x 2 (no cache used), doc, query
 
 
@@ -174,8 +176,9 @@ def test_async_embedder_preserves_params():
         call_count += 1
         return [1.0, 1.0, 0.0]
 
-    _test_vs(fake_embeddings_model)
-    _test_vs(fake_embeddings_model)
+    with new_event_loop() as event_loop:
+        _test_vs(fake_embeddings_model, event_loop=event_loop)
+        _test_vs(fake_embeddings_model, event_loop=event_loop)
     assert call_count == 4  # dimension x 2 (no cache used), doc, query
 
 

@@ -18,6 +18,7 @@ import pytest
 
 import pathway as pw
 from pathway.internals import api
+from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.internals.udfs.executors import Executor
 from pathway.tests.utils import (
     T,
@@ -729,37 +730,38 @@ def test_udf_in_memory_cache(sync: str) -> None:
             internal_inc(a)
             return a + 1
 
-    input = pw.debug.table_from_markdown(
+    with new_event_loop() as event_loop:
+        input = pw.debug.table_from_markdown(
+            """
+            a
+            1
+            2
+            1
+            2
+            3
         """
-        a
-        1
-        2
-        1
-        2
-        3
-    """
-    )
-    result = input.select(ret=inc(pw.this.a))
-    if sync == "fully_async":
-        result = result.await_futures()
-    expected = T(
-        """
-        ret
-        2
-        3
-        2
-        3
-        4
-        """
-    )
-    assert_table_equality(result, expected)
-    internal_inc.assert_has_calls(
-        [mock.call(1), mock.call(2), mock.call(3)], any_order=True
-    )
-    assert internal_inc.call_count == 3
+        )
+        result = input.select(ret=inc(pw.this.a))
+        if sync == "fully_async":
+            result = result.await_futures()
+        expected = T(
+            """
+            ret
+            2
+            3
+            2
+            3
+            4
+            """
+        )
+        assert_table_equality(result, expected, event_loop=event_loop)
+        internal_inc.assert_has_calls(
+            [mock.call(1), mock.call(2), mock.call(3)], any_order=True
+        )
+        assert internal_inc.call_count == 3
 
-    assert_table_equality(result, expected)
-    assert internal_inc.call_count == 3  # count did not change
+        assert_table_equality(result, expected, event_loop=event_loop)
+        assert internal_inc.call_count == 3  # count did not change
 
 
 @pytest.mark.parametrize("sync", ["sync", "async", "fully_async"])

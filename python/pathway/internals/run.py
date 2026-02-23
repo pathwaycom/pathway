@@ -1,5 +1,6 @@
 # Copyright © 2026 Pathway
 
+import asyncio
 
 from pathway.internals import parse_graph
 from pathway.internals.graph_runner import GraphRunner
@@ -19,6 +20,7 @@ def run(
     runtime_typechecking: bool | None = None,
     terminate_on_error: bool | None = None,
     max_expression_batch_size: int = 1024,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
     """Runs the computation graph.
 
@@ -40,6 +42,10 @@ def run(
         max_expression_batch_size: the maximal number of rows for which the expressions
             are computed at once. You might want to decrease it if the intermediate state
             in one of your expressions is large.
+        event_loop: an externally created event loop to use for the duration of the run.
+            If not specified, a new event loop is created and closed automatically.
+            When running the graph multiple times with async UDFs that use ``InMemoryCache``,
+            the same event loop must be provided to all runs to avoid runtime errors.
     """
     GraphRunner(
         parse_graph.G,
@@ -51,6 +57,7 @@ def run(
         runtime_typechecking=runtime_typechecking,
         terminate_on_error=terminate_on_error,
         max_expression_batch_size=max_expression_batch_size,
+        event_loop=event_loop,
         _stacklevel=4,
     ).run_outputs()
 
@@ -66,6 +73,7 @@ def run_all(
     runtime_typechecking: bool | None = None,
     terminate_on_error: bool | None = None,
     max_expression_batch_size: int = 1024,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
     """Runs the computation graph with disabled tree-shaking optimization.
 
@@ -87,6 +95,10 @@ def run_all(
         max_expression_batch_size: the maximal number of rows for which the expressions
             are computed at once. You might want to decrease it if the intermediate state
             in one of your expressions is large.
+        event_loop: an externally created event loop to use for the duration of the run.
+            If not specified, a new event loop is created and closed automatically.
+            When running the graph multiple times with async UDFs that use ``InMemoryCache``,
+            the same event loop must be provided to all runs to avoid runtime errors.
     """
     GraphRunner(
         parse_graph.G,
@@ -98,5 +110,6 @@ def run_all(
         runtime_typechecking=runtime_typechecking,
         terminate_on_error=terminate_on_error,
         max_expression_batch_size=max_expression_batch_size,
+        event_loop=event_loop,
         _stacklevel=4,
     ).run_all()
