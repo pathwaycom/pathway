@@ -4,7 +4,9 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use crate::async_runtime::create_async_tokio_runtime;
-use crate::connectors::postgres::{create_psql_client, SslMode};
+use crate::connectors::postgres::{
+    create_psql_client, ReplicationSettings as PsqlInnerReplicationSettings, SslMode,
+};
 use crate::engine::graph::{
     ErrorLogHandle, ExportedTable, JoinExactlyOnce, OperatorProperties, SubscribeCallbacks,
     SubscribeCallbacksBuilder, SubscribeConfig,
@@ -109,10 +111,10 @@ use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter, MysqlWriter,
-    NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType,
-    PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter, RdkafkaWatermark, ReadError,
-    ReadMethod, ReaderBuilder, SqliteReader, TableWriterInitMode, WriteError, Writer,
-    MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter,
+    PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter,
+    RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqliteReader, TableWriterInitMode,
+    WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::nats;
@@ -4516,6 +4518,39 @@ impl MqttSettings {
     }
 }
 
+#[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct PsqlReplicationSettings {
+    connection_string: String,
+    publication_name: String,
+    replication_slot_name: Option<String>,
+    snapshot_name: Option<String>,
+}
+
+#[pymethods]
+impl PsqlReplicationSettings {
+    #[new]
+    #[pyo3(signature = (
+        connection_string,
+        publication_name,
+        replication_slot_name,
+        snapshot_name,
+    ))]
+    fn new(
+        connection_string: String,
+        publication_name: String,
+        replication_slot_name: Option<String>,
+        snapshot_name: Option<String>,
+    ) -> Self {
+        Self {
+            connection_string,
+            publication_name,
+            replication_slot_name,
+            snapshot_name,
+        }
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
@@ -4561,6 +4596,8 @@ pub struct DataStorage {
     iceberg_catalog: Option<IcebergCatalogSettings>,
     ssl_mode: SslMode,
     ssl_cert_path: Option<String>,
+    psql_replication: Option<PsqlReplicationSettings>,
+    schema_name: Option<String>,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5121,6 +5158,8 @@ impl DataStorage {
         iceberg_catalog = None,
         ssl_mode = SslMode::Prefer,
         ssl_cert_path = None,
+        psql_replication = None,
+        schema_name = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5165,6 +5204,8 @@ impl DataStorage {
         iceberg_catalog: Option<IcebergCatalogSettings>,
         ssl_mode: SslMode,
         ssl_cert_path: Option<String>,
+        psql_replication: Option<PsqlReplicationSettings>,
+        schema_name: Option<String>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5207,6 +5248,8 @@ impl DataStorage {
             iceberg_catalog,
             ssl_mode,
             ssl_cert_path,
+            psql_replication,
+            schema_name,
         }
     }
 
@@ -5592,6 +5635,13 @@ impl DataStorage {
         Self::extract_string_field(
             self.table_name.as_ref(),
             "For MongoDB or QuestDB, the 'table_name' field must be specified",
+        )
+    }
+
+    fn schema_name(&self) -> PyResult<&str> {
+        Self::extract_string_field(
+            self.schema_name.as_ref(),
+            "For Postgres, the 'schema_name' field must be specified",
         )
     }
 
@@ -6201,6 +6251,46 @@ impl DataStorage {
         Ok((Box::new(reader), properties.max_parallel_readers(scope)))
     }
 
+    fn construct_postgres_reader(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        scope: &Scope,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["postgres-wal-reader"])?;
+        }
+
+        let connection_string = self.connection_string()?;
+        let client =
+            create_psql_client(connection_string, self.ssl_mode, self.ssl_cert_path.clone())
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create Postgres client: {e}"))
+                })?;
+
+        let settings = self
+            .psql_replication
+            .clone()
+            .map(|outer| PsqlInnerReplicationSettings {
+                connection_string: outer.connection_string,
+                publication_name: outer.publication_name,
+                replication_slot_name: outer.replication_slot_name,
+                snapshot_name: outer.snapshot_name,
+            });
+
+        let reader = PsqlReader::new(
+            client,
+            settings,
+            self.schema_name()?,
+            self.table_name()?,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Postgres reader: {e}")))?;
+
+        Ok((Box::new(reader), 1))
+    }
+
     fn construct_reader(
         &self,
         py: pyo3::Python,
@@ -6219,6 +6309,7 @@ impl DataStorage {
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
+            "postgres" => self.construct_postgres_reader(py, data_format, scope),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -7337,6 +7428,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<MqttSettings>()?;
     m.add_class::<PySchemaRegistrySettings>()?;
     m.add_class::<IcebergCatalogSettings>()?;
+    m.add_class::<PsqlReplicationSettings>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

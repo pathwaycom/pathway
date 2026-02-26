@@ -1226,7 +1226,7 @@ pub fn create_bincoded_value(value: &Value) -> Result<String, FormatterError> {
     Ok(encoded)
 }
 
-fn parse_bincoded_value(s: &str) -> Result<Value, ParseError> {
+pub fn parse_bincoded_value(s: &str) -> Result<Value, ParseError> {
     let raw_bytes = base64::engine::general_purpose::STANDARD.decode(s)?;
     Ok(bincode::deserialize::<Value>(&raw_bytes).map_err(|e| *e)?)
 }

@@ -2,7 +2,9 @@ import copy
 import datetime
 import json
 import os
+import threading
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -22,7 +24,7 @@ from utils import (
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import run
+from pathway.tests.utils import FileLinesNumberChecker, run, wait_result_with_checker
 
 CREDENTIALS_DIR = Path(os.getenv("CREDENTIALS_DIR", default=Path(__file__).parent))
 
@@ -331,20 +333,19 @@ def test_different_types_schema_and_serialization(
         ), f"expecting PyObjectWrapper, got {type(obj)}"
         row["i"] = obj.value
 
-    assert result == [
-        {
-            "a": "foo",
-            "b": 1.5,
-            "c": False,
-            "d": [1, 2, 3],
-            "e": [1, 2, 3],
-            "f": {"foo": "bar", "baz": 123},
-            "g": datetime.datetime(2025, 3, 14, 10, 13),
-            "h": datetime.datetime(2025, 4, 23, 10, 13, tzinfo=datetime.timezone.utc),
-            "i": SimpleObject("test"),
-            "j": pd.Timedelta("4 days 2 seconds 123 us").value // 1_000,
-        }
-    ]
+    expected_output_row = {
+        "a": "foo",
+        "b": 1.5,
+        "c": False,
+        "d": [1, 2, 3],
+        "e": [1, 2, 3],
+        "f": {"foo": "bar", "baz": 123},
+        "g": datetime.datetime(2025, 3, 14, 10, 13),
+        "h": datetime.datetime(2025, 4, 23, 10, 13, tzinfo=datetime.timezone.utc),
+        "i": SimpleObject("test"),
+        "j": pd.Timedelta("4 days 2 seconds 123 us").value // 1_000,
+    }
+    assert result == [expected_output_row]
     external_schema = postgres.get_table_schema(table_name)
     assert external_schema["a"].type_name == "text"
     assert external_schema["b"].type_name == "double precision"
@@ -366,6 +367,37 @@ def test_different_types_schema_and_serialization(
                 assert not column_props.is_nullable
                 continue
         assert column_props.is_nullable == are_types_optional, column_name
+
+    class TestObserver(pw.io.python.ConnectorObserver):
+        def __init(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.last_row: dict[str, Any] | None = None
+
+        def on_change(
+            self, key: pw.Pointer, row: dict[str, Any], time: int, is_addition: bool
+        ) -> None:
+            self.last_row = row
+
+    G.clear()
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    observer = TestObserver()
+    pw.io.python.write(table, observer)
+    run()
+    assert observer.last_row is not None
+    assert observer.last_row["a"] == "foo"
+    assert observer.last_row["b"] == 1.5
+    assert not observer.last_row["c"]
+    assert observer.last_row["f"] == pw.Json({"foo": "bar", "baz": 123})
+    assert observer.last_row["g"] == datetime.datetime(2025, 3, 14, 10, 13)
+    assert observer.last_row["h"] == datetime.datetime(
+        2025, 4, 23, 10, 13, tzinfo=datetime.timezone.utc
+    )
+    assert observer.last_row["i"].value == SimpleObject("test")
 
 
 @pytest.mark.parametrize("write_method", [pw.io.postgres.write, write_snapshot(["i"])])
@@ -867,3 +899,398 @@ def test_tls_with_incorrect_cert(tmp_path, postgres_with_tls, sslmode):
         "failed to perform write in postgres",
     ):
         pw.run()
+
+
+@pytest.mark.parametrize("with_tls", [False, True])
+def test_postgres_input(tmp_path, postgres, postgres_with_tls, with_tls):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        v_none: bool | None
+        v_bool: bool
+        v_int: int
+        v_float: float
+        v_string: str
+        v_bytes: bytes
+        v_int_array: np.ndarray[None, int]  # type: ignore
+        v_float_array: np.ndarray[None, float]  # type: ignore
+        v_datetime_naive: pw.DateTimeNaive
+        v_datetime_utc: pw.DateTimeUtc
+        v_duration: pw.Duration
+        v_json: pw.Json
+        v_pyobject: bytes
+
+    if with_tls:
+        postgres = postgres_with_tls
+        postgres_settings = copy.deepcopy(POSTGRES_WITH_TLS_SETTINGS)
+        postgres_settings["sslmode"] = "verify-ca"
+        postgres_settings["sslrootcert"] = str(CREDENTIALS_DIR / "ca.crt")
+    else:
+        postgres_settings = POSTGRES_SETTINGS
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+    create_table_sql = f"""
+        CREATE TABLE {table_name} (
+            id BIGSERIAL PRIMARY KEY,
+            v_none BOOLEAN,
+            v_bool BOOLEAN,
+            v_int BIGINT,
+            v_float DOUBLE PRECISION,
+            v_string TEXT,
+            v_bytes BYTEA,
+            v_int_array BIGINT[],
+            v_float_array DOUBLE PRECISION[],
+            v_datetime_naive TIMESTAMP,
+            v_datetime_utc TIMESTAMPTZ,
+            v_duration INTERVAL,
+            v_json JSONB,
+            v_pyobject BYTEA
+        );
+    """
+    postgres.execute_sql(create_table_sql)
+
+    create_publication_sql = f"""
+    CREATE PUBLICATION {table_name}_pub FOR TABLE {table_name};
+    """
+    postgres.execute_sql(create_publication_sql)
+
+    json_value_dumped = json.dumps({"key": "value"})
+    insert_row_sql = f"""
+        INSERT INTO {table_name} (
+            v_none,
+            v_bool,
+            v_int,
+            v_float,
+            v_string,
+            v_bytes,
+            v_int_array,
+            v_float_array,
+            v_datetime_naive,
+            v_datetime_utc,
+            v_duration,
+            v_json,
+            v_pyobject
+        ) VALUES (
+            null,
+            TRUE,
+            42,
+            3.1415926535,
+            'hello world',
+            '\\xDEADBEEF'::bytea,
+            ARRAY[1, 2, 3, 4],
+            ARRAY[1.1, 2.2, 3.3],
+            '2025-01-01 12:00:00',
+            '2025-01-01 12:00:00+00',
+            INTERVAL '1 hour 30 minutes',
+            '{json_value_dumped}',
+            '\\xABCDEF'::bytea
+        );
+    """
+    postgres.execute_sql(insert_row_sql)
+
+    table = pw.io.postgres.read(
+        postgres_settings=postgres_settings,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="streaming",
+        publication_name=f"{table_name}_pub",
+        autocommit_duration_ms=10,
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    def stream_target():
+        for i in range(5):
+            wait_result_with_checker(
+                FileLinesNumberChecker(output_path, i + 1), 30, target=None
+            )
+            postgres.execute_sql(insert_row_sql)
+        for i in range(5):
+            wait_result_with_checker(
+                FileLinesNumberChecker(output_path, 6 + i), 30, target=None
+            )
+            delete_row_sql = f"DELETE FROM {table_name} WHERE id = {i + 1};"
+            postgres.execute_sql(delete_row_sql)
+
+    stream_thread = threading.Thread(target=stream_target, daemon=True)
+    stream_thread.start()
+
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 11), 60)
+
+    ids = set()
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            row_id = data.pop("id")
+            data.pop("time")
+            diff = data.pop("diff")
+            if diff == 1:
+                assert row_id not in ids
+                ids.add(row_id)
+            elif diff == -1:
+                assert row_id in ids
+                ids.remove(row_id)
+            else:
+                raise ValueError(f"unexpected diff: {diff}")
+            assert data == {
+                "v_none": None,
+                "v_bool": True,
+                "v_int": 42,
+                "v_float": 3.1415926535,
+                "v_string": "hello world",
+                "v_bytes": "3q2+7w==",
+                "v_int_array": {"shape": [4], "elements": [1, 2, 3, 4]},
+                "v_float_array": {"shape": [3], "elements": [1.1, 2.2, 3.3]},
+                "v_datetime_naive": "2025-01-01T12:00:00.000000000",
+                "v_datetime_utc": "2025-01-01T12:00:00.000000000+0000",
+                "v_duration": 5400000000000,
+                "v_json": {"key": "value"},
+                "v_pyobject": "q83v",
+            }
+    assert len(ids) == 1
+
+
+def test_postgres_snapshot_only(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id BIGSERIAL PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """
+    )
+
+    for i in range(5):
+        postgres.execute_sql(f"INSERT INTO {table_name} (value) VALUES ('row_{i}');")
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    rows = []
+    with open(output_path) as f:
+        for line in f:
+            rows.append(json.loads(line))
+
+    assert len(rows) == 5
+    values = {r["value"] for r in rows}
+    assert values == {f"row_{i}" for i in range(5)}
+    assert all(r["diff"] == 1 for r in rows)
+
+
+def test_postgres_streaming_inserts_only(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id BIGSERIAL PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """
+    )
+    postgres.execute_sql(f"CREATE PUBLICATION {table_name}_pub FOR TABLE {table_name};")
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="streaming",
+        publication_name=f"{table_name}_pub",
+        autocommit_duration_ms=10,
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    def stream_target():
+        for i in range(10):
+            postgres.execute_sql(
+                f"INSERT INTO {table_name} (value) VALUES ('row_{i}');"
+            )
+            wait_result_with_checker(
+                FileLinesNumberChecker(output_path, i + 1), 30, target=None
+            )
+
+    stream_thread = threading.Thread(target=stream_target, daemon=True)
+    stream_thread.start()
+
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 10), 30)
+
+    rows = []
+    with open(output_path) as f:
+        for line in f:
+            rows.append(json.loads(line))
+
+    assert len(rows) == 10
+    assert all(r["diff"] == 1 for r in rows)
+    ids = {r["id"] for r in rows}
+    assert len(ids) == 10
+
+
+def test_postgres_update_by_primary_key(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id BIGSERIAL PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """
+    )
+    postgres.execute_sql(f"CREATE PUBLICATION {table_name}_pub FOR TABLE {table_name};")
+    postgres.execute_sql(f"INSERT INTO {table_name} (value) VALUES ('value');")
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="streaming",
+        publication_name=f"{table_name}_pub",
+        autocommit_duration_ms=10,
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    def stream_target():
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 30, target=None
+        )
+        for i in range(10):
+            postgres.execute_sql(
+                f"UPDATE {table_name} SET id = {i + 2} WHERE id = {i + 1};"
+            )
+            wait_result_with_checker(
+                FileLinesNumberChecker(output_path, 3 + 2 * i), 30, target=None
+            )
+
+    stream_thread = threading.Thread(target=stream_target, daemon=True)
+    stream_thread.start()
+
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 21), 60)
+
+
+def test_postgres_read_after_truncate(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id BIGSERIAL PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """
+    )
+    postgres.execute_sql(f"CREATE PUBLICATION {table_name}_pub FOR TABLE {table_name};")
+
+    for i in range(5):
+        postgres.execute_sql(f"INSERT INTO {table_name} (value) VALUES ('row_{i}');")
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="streaming",
+        publication_name=f"{table_name}_pub",
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    def stream_target():
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 5), 30, target=None
+        )
+        postgres.execute_sql(f"TRUNCATE {table_name};")
+
+    stream_thread = threading.Thread(target=stream_target, daemon=True)
+    stream_thread.start()
+
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 10), 60)
+
+
+@pytest.mark.parametrize(
+    "pg_interval,expected_td",
+    [
+        ("0", datetime.timedelta(0)),
+        ("1 microsecond", datetime.timedelta(microseconds=1)),
+        ("1 millisecond", datetime.timedelta(milliseconds=1)),
+        ("1 second", datetime.timedelta(seconds=1)),
+        ("1 minute", datetime.timedelta(minutes=1)),
+        ("1 hour", datetime.timedelta(hours=1)),
+        ("1 day", datetime.timedelta(days=1)),
+        ("7 days", datetime.timedelta(weeks=1)),
+        ("-1 second", datetime.timedelta(seconds=-1)),
+        ("-1 day", datetime.timedelta(days=-1)),
+        ("1 hour 30 minutes", datetime.timedelta(hours=1, minutes=30)),
+        (
+            "2 days 12 hours 30 minutes",
+            datetime.timedelta(days=2, hours=12, minutes=30),
+        ),
+    ],
+)
+def test_postgres_external_interval_parsing(
+    tmp_path, postgres, pg_interval, expected_td
+):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        duration: pw.Duration
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id BIGSERIAL PRIMARY KEY,
+            duration INTERVAL NOT NULL
+        );
+        """
+    )
+    postgres.execute_sql(f"CREATE PUBLICATION {table_name}_pub FOR TABLE {table_name};")
+    postgres.execute_sql(
+        f"INSERT INTO {table_name} (id, duration) VALUES (1, INTERVAL '{pg_interval}');"
+    )
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="streaming",
+        publication_name=f"{table_name}_pub",
+        autocommit_duration_ms=10,
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 1), 30)
+
+    with open(output_path) as f:
+        rows = [json.loads(line) for line in f]
+
+    result = next(r for r in rows if r["diff"] == 1)
+    expected_ns = int(expected_td.total_seconds() * 1_000_000_000)
+    assert (
+        result["duration"] == expected_ns
+    ), f"INTERVAL '{pg_interval}': expected {expected_ns} ns, got {result['duration']}"

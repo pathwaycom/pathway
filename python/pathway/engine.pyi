@@ -875,6 +875,15 @@ class TableWriterInitMode(Enum):
     CREATE_IF_NOT_EXISTS: TableWriterInitMode
     REPLACE: TableWriterInitMode
 
+class PsqlReplicationSettings:
+    def __init__(
+        self,
+        connection_string: str,
+        publication_name: str,
+        replication_slot_name: str | None,
+        snapshot_name: str | None,
+    ) -> None: ...
+
 class DataStorage:
     mode: ConnectorMode
     def __init__(
@@ -919,6 +928,8 @@ class DataStorage:
         iceberg_catalog: IcebergCatalogSettings | None = None,
         ssl_mode: SslMode = SslMode.PREFER,
         ssl_cert_path: str | None = None,
+        psql_replication: PsqlReplicationSettings | None = None,
+        schema_name: str | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

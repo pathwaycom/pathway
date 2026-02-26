@@ -37,6 +37,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "kinesis",
     "monitoring",
     "mysql",
+    "postgres-wal-reader",
     "questdb",
     "xpack-sharepoint",
     "xpack-llm-mcp",
@@ -115,6 +116,7 @@ def test_license_default_policy(caplog):
     _check_entitlements("xpack-sharepoint")
     _check_entitlements("xpack-llm-mcp")
     _check_entitlements("worker-count-scaling")
+    _check_entitlements("postgres-wal-reader")
 
     run_all()
     assert "Telemetry enabled" in caplog.text

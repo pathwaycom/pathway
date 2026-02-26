@@ -2,6 +2,7 @@ pub mod file_like;
 pub mod iceberg;
 pub mod kafka;
 pub mod parquet;
+pub mod postgres;
 pub mod sqlite;
 
 #[allow(clippy::module_name_repetitions)]
@@ -17,6 +18,9 @@ pub use iceberg::IcebergMetadata;
 pub use parquet::ParquetMetadata;
 
 #[allow(clippy::module_name_repetitions)]
+pub use postgres::PostgresMetadata;
+
+#[allow(clippy::module_name_repetitions)]
 pub use sqlite::SQLiteMetadata;
 
 #[allow(clippy::module_name_repetitions)]
@@ -27,6 +31,7 @@ pub enum SourceMetadata {
     SQLite(SQLiteMetadata),
     Iceberg(IcebergMetadata),
     Parquet(ParquetMetadata),
+    Postgres(PostgresMetadata),
 }
 
 impl From<FileLikeMetadata> for SourceMetadata {
@@ -53,6 +58,12 @@ impl From<ParquetMetadata> for SourceMetadata {
     }
 }
 
+impl From<PostgresMetadata> for SourceMetadata {
+    fn from(impl_: PostgresMetadata) -> Self {
+        Self::Postgres(impl_)
+    }
+}
+
 impl From<SQLiteMetadata> for SourceMetadata {
     fn from(impl_: SQLiteMetadata) -> Self {
         Self::SQLite(impl_)
@@ -67,13 +78,18 @@ impl SourceMetadata {
             Self::SQLite(meta) => serde_json::to_value(meta),
             Self::Iceberg(meta) => serde_json::to_value(meta),
             Self::Parquet(meta) => serde_json::to_value(meta),
+            Self::Postgres(meta) => serde_json::to_value(meta),
         }
         .expect("Internal JSON serialization error")
     }
 
     pub fn commits_allowed_in_between(&self) -> bool {
         match self {
-            Self::FileLike(_) | Self::SQLite(_) | Self::Iceberg(_) | Self::Parquet(_) => false,
+            Self::FileLike(_)
+            | Self::SQLite(_)
+            | Self::Iceberg(_)
+            | Self::Parquet(_)
+            | Self::Postgres(_) => false,
             Self::Kafka(_) => true,
         }
     }

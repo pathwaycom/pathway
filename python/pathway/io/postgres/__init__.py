@@ -4,23 +4,43 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
-from pathway.internals import api, datasink, dtype
+from pathway.internals import api, datasink, datasource, dtype
 from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.table import Table
+from pathway.internals.table import Schema, Table
+from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     SNAPSHOT_OUTPUT_TABLE_TYPE,
     get_column_index,
     init_mode_from_str,
+    read_schema,
 )
 
 
 def _connection_string_from_settings(settings: dict):
     return " ".join(k + "=" + str(v) for (k, v) in settings.items())
+
+
+def _replication_connection_string_from_settings(settings: dict):
+    owned_settings = copy.copy(settings)
+
+    user = owned_settings.pop("user")
+    password = owned_settings.pop("password")
+    host = owned_settings.pop("host")
+    port = owned_settings.pop("port", 5432)
+    dbname = owned_settings.pop("dbname", user)
+
+    connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}?"
+
+    owned_settings["replication"] = "database"
+    connection_string += "&".join(k + "=" + str(v) for (k, v) in owned_settings.items())
+
+    return connection_string
 
 
 def _parse_engine_ssl_mode(ssl_mode: str) -> api.SslMode:
@@ -42,6 +62,255 @@ def _parse_engine_ssl_mode(ssl_mode: str) -> api.SslMode:
                 f"invalid sslmode '{ssl_mode}', expected one of "
                 "disable, allow, prefer, require, verify-ca, verify-full"
             )
+
+
+def _build_ssl_kwargs(owned_postgres_settings: dict):
+    sslmode = owned_postgres_settings.pop("sslmode", None)
+    if sslmode is not None:
+        sslmode = _parse_engine_ssl_mode(sslmode)
+    else:
+        sslmode = api.SslMode.PREFER
+
+    sslrootcert = owned_postgres_settings.pop("sslrootcert", None)
+    if sslrootcert is not None:
+        try:
+            open(sslrootcert).close()
+        except IsADirectoryError as e:
+            raise ValueError("sslrootcert doesn't point to a file") from e
+        except FileNotFoundError as e:
+            raise ValueError("sslrootcert points to a non-existent path") from e
+        except OSError as e:
+            raise ValueError(f"sslrootcert is not readable: {e}") from e
+
+    return {
+        "ssl_mode": sslmode,
+        "ssl_cert_path": sslrootcert,
+    }
+
+
+def _construct_replication_settings(
+    *,
+    mode: Literal["streaming", "static"],
+    postgres_settings: dict,
+    publication_name: str | None,
+    replication_slot_name: str | None,
+    snapshot_name: str | None,
+):
+    # static mode doesn't require replication slots
+    if mode == "static":
+        if publication_name is not None:
+            raise ValueError("'publication_name' is not needed for the static mode")
+        if replication_slot_name is not None:
+            raise ValueError(
+                "'replication_slot_name' is not needed for the static mode"
+            )
+        if snapshot_name is not None:
+            raise ValueError("'snapshot_name' is not needed for the static mode")
+        return None
+    if publication_name is None:
+        raise ValueError("'publication_name' is required for the streaming mode")
+
+    # streaming mode: user provides publication, we create the slot
+    replication_slot_defined = replication_slot_name is None
+    snapshot_name_defined = snapshot_name is None
+    if replication_slot_defined != snapshot_name_defined:
+        raise ValueError(
+            "Either none or both of 'repliction_slot_name', 'snapshot_name' must be specified"
+        )
+
+    return api.PsqlReplicationSettings(
+        connection_string=(
+            _replication_connection_string_from_settings(postgres_settings)
+        ),
+        publication_name=publication_name,
+        snapshot_name=snapshot_name,
+        replication_slot_name=replication_slot_name,
+    )
+
+
+@check_arg_types
+@trace_user_frame
+def read(
+    postgres_settings: dict,
+    table_name: str,
+    schema: type[Schema],
+    *,
+    mode: Literal["streaming", "static"] = "streaming",
+    publication_name: str | None = None,
+    schema_name: str | None = "public",
+    autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
+    max_backlog_size: int | None = None,
+    debug_data: Any = None,
+) -> Table:
+    """
+    **This module is available when using one of the following licenses only:**
+    `Pathway Scale, Pathway Enterprise </pricing>`_.
+
+    Reads a table from a PostgreSQL database.
+
+    .. note::
+        This connector is experimental and will be stabilized in the next release of the
+        Pathway framework.
+
+    This connector provides a lightweight alternative to ``pw.io.debezium.read``.
+    It supports two modes: ``"static"`` and ``"streaming"``.
+
+    In ``"static"`` mode, the table is read once and the connector stops afterward.
+
+    In ``"streaming"`` mode, a *temporary* replication slot is created using the
+    ``pgoutput`` logical decoding plugin, which is bundled with PostgreSQL and requires
+    no additional installation. The slot is created with the ``export snapshot`` option,
+    ensuring a consistent initial read. On startup, the connector first performs a
+    snapshot of the table as it existed at the moment the replication slot was created,
+    and then begins consuming the PostgreSQL write-ahead log (WAL), applying incremental
+    changes on top of that snapshot. Because the replication slot is temporary,
+    PostgreSQL will automatically drop it once the connection is closed (i.e., when the
+    program terminates).
+
+    To enable replication, a publication must be created in the database beforehand:
+
+    .. code-block:: sql
+
+        CREATE PUBLICATION {publication_name} FOR TABLE {table_name};
+
+    Args:
+        postgres_settings: Connection parameters for PostgreSQL, provided as a
+            dictionary of key-value pairs. The connection string is assembled by joining
+            all pairs with spaces, each formatted as ``key=value``. Keys must be strings;
+            values of other types are converted via Python's ``str()``.
+        table_name: Name of the PostgreSQL table to read from.
+        schema: Pathway schema describing the table's columns and their types.
+        mode: Polling mode for the connector. Accepted values are ``"streaming"``
+            (default) and ``"static"``. In ``"streaming"`` mode, the connector tracks
+            changes in the table via the WAL, reflecting insertions, updates, deletions,
+            and truncations in real time; requires ``publication_name`` to be specified.
+            In ``"static"`` mode, the connector reads all currently available rows in a
+            single commit and then stops.
+        publication_name: Name of the PostgreSQL publication that covers the target
+            table. Required when ``mode="streaming"``.
+        schema_name: Name of the PostgreSQL schema in which the table resides.
+            Defaults to ``"public"``; only needs to be changed when using a non-default
+            schema.
+        autocommit_duration_ms: the maximum time between two commits. Every
+            ``autocommit_duration_ms`` milliseconds, the updates received by the connector
+            are committed and pushed into Pathway's computation graph.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
+        max_backlog_size: Limit on the number of entries read from the input source and kept
+            in processing at any moment. Reading pauses when the limit is reached and resumes
+            as processing of some entries completes. Useful with large sources that
+            emit an initial burst of data to avoid memory spikes.
+        debug_data: Static data replacing original one when debug mode is active.
+
+    Returns:
+        Table: The table read.
+
+    Example:
+
+    Suppose you have a ``users`` table with the following columns: ``id`` (an auto-incremented
+    integer serving as the primary key), ``login`` (a string), and ``last_seen_at`` (a unix
+    timestamp). To read this table with Pathway, start by declaring the corresponding schema:
+
+    >>> import pathway as pw
+    >>> class UsersSchema(pw.Schema):
+    ...     id: int = pw.column_definition(primary_key=True)
+    ...     login: str
+    ...     last_seen_at: int
+
+    To perform a one-time read of the table, no additional database configuration is required.
+    Simply provide the connection parameters and use ``"static"`` mode:
+
+    >>> connection_string_parts = {
+    ...     "host": "localhost",
+    ...     "port": "5432",
+    ...     "dbname": "database",
+    ...     "user": "user",
+    ...     "password": "pass",
+    ... }
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="users",
+    ...     schema=UsersSchema,
+    ...     mode="static",
+    ... )
+
+    The resulting ``table`` object supports all Pathway transformations and can be passed
+    to any output connector for further processing or storage.
+
+    To go beyond a one-time snapshot and perform Change Data Capture (CDC), continuously
+    tracking insertions, updates, deletions, and truncations as they happen, you need to
+    switch to ``"streaming"`` mode. This requires the PostgreSQL server to have logical replication
+    enabled (``wal_level = logical``) and a publication to be created for the target table:
+
+    .. code-block:: sql
+
+        CREATE PUBLICATION users_pub FOR TABLE users;
+
+    With the publication in place, the streaming connector can be configured as follows:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="users",
+    ...     schema=UsersSchema,
+    ...     mode="streaming",
+    ...     publication_name="users_pub",
+    ... )
+
+    There is no need to create a replication slot manually, and doing so is strongly
+    discouraged. A replication slot causes PostgreSQL to retain WAL segments until all
+    changes have been acknowledged by the consumer. If a slot is created but its LSN
+    position is not advanced regularly, unacknowledged WAL can accumulate and eventually
+    exhaust disk space on the database server. To prevent this, Pathway manages the
+    replication slot internally: it uses a temporary slot that is automatically dropped
+    when the session ends, and continuously acknowledges processed LSN positions while
+    the program is running.
+    """
+    _check_entitlements("postgres-wal-reader")
+
+    owned_postgres_settings = copy.copy(postgres_settings)
+    ssl_kwargs = _build_ssl_kwargs(owned_postgres_settings)
+    replication_settings = _construct_replication_settings(
+        mode=mode,
+        postgres_settings=postgres_settings,  # use original settings for libpq
+        publication_name=publication_name,
+        # Note: an externally-provided replication slot can be added here
+        replication_slot_name=None,
+        snapshot_name=None,
+    )
+    data_storage = api.DataStorage(
+        storage_type="postgres",
+        connection_string=_connection_string_from_settings(owned_postgres_settings),
+        psql_replication=replication_settings,
+        table_name=table_name,
+        schema_name=schema_name,
+        **ssl_kwargs,
+    )
+
+    schema, api_schema = read_schema(schema)
+    data_format = api.DataFormat(
+        format_type="transparent",
+        session_type=api.SessionType.UPSERT,
+        **api_schema,
+    )
+
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=name,
+        max_backlog_size=max_backlog_size,
+    )
+    return table_from_datasource(
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            schema=schema,
+            data_source_options=data_source_options,
+            datasource_name="postgres",
+        ),
+        debug_datasource=datasource.debug_datasource(debug_data),
+    )
 
 
 @check_arg_types
@@ -70,18 +339,6 @@ def write(
 
     When using **snapshot**, the set of columns in the output table matches the set of
     columns in the table you are writing. No additional columns are created.
-
-    TLS configuration is controlled via the ``sslmode`` and ``sslrootcert`` parameters
-    passed in ``postgres_settings``. The ``sslmode`` parameter follows the official
-    Postgres documentation
-    `sslmode <https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-PROTECTION>`_
-    and defines the level of TLS verification to be performed during connection setup.
-
-    If no TLS-related parameters are provided, the connector defaults to ``sslmode="prefer"``.
-    In this mode, the system first attempts to establish a TLS-encrypted connection, and
-    falls back to an unencrypted connection if TLS negotiation fails. Note that this fallback
-    does not provide certificate-based security guarantees and should be avoided in
-    security-sensitive environments.
 
     Args:
         table: Table to be written.
@@ -196,33 +453,16 @@ def write(
     ... )
     """
 
-    owned_postgres_settings = copy.copy(postgres_settings)
-    sslmode = owned_postgres_settings.pop("sslmode", None)
-    if sslmode is not None:
-        sslmode = _parse_engine_ssl_mode(sslmode)
-    else:
-        sslmode = api.SslMode.PREFER
-    sslrootcert = owned_postgres_settings.pop("sslrootcert", None)
-    if sslrootcert is not None:
-        try:
-            open(sslrootcert).close()
-        except IsADirectoryError as e:
-            raise ValueError("sslrootcert doesn't point to a file") from e
-        except FileNotFoundError as e:
-            raise ValueError("sslrootcert points to a non-existent path") from e
-        except OSError as e:
-            raise ValueError(f"sslrootcert is not readable: {e}") from e
-
+    ssl_kwargs = _build_ssl_kwargs(postgres_settings)
     is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
     data_storage = api.DataStorage(
         storage_type="postgres",
-        connection_string=_connection_string_from_settings(owned_postgres_settings),
+        connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
         table_name=table_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
         snapshot_maintenance_on_output=is_snapshot_mode,
-        ssl_mode=sslmode,
-        ssl_cert_path=sslrootcert,
+        **ssl_kwargs,
     )
 
     if not is_snapshot_mode:

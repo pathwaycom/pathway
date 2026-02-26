@@ -108,7 +108,9 @@ pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
-pub use super::postgres::{PsqlWriter, SslError};
+pub use super::postgres::{
+    PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
+};
 pub use super::sqlite::SqliteReader;
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
@@ -315,6 +317,12 @@ pub enum ReadError {
     DeltaTable(#[from] DeltaTableError),
 
     #[error(transparent)]
+    Postgres(#[from] postgres::Error),
+
+    #[error(transparent)]
+    PostgresReplication(#[from] PostgresReplicationError),
+
+    #[error(transparent)]
     Parquet(#[from] ParquetError),
 
     #[error(transparent)]
@@ -337,6 +345,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
+
+    #[error("persistence is not supported for storage '{0:?}'")]
+    PersistenceNotSupported(StorageType),
 
     #[error(transparent)]
     Kinesis(#[from] AwsKinesisError),
@@ -415,6 +426,7 @@ pub enum StorageType {
     Iceberg,
     Mqtt,
     Kinesis,
+    Postgres,
 }
 
 impl StorageType {
@@ -437,6 +449,7 @@ impl StorageType {
             StorageType::Iceberg => IcebergReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mqtt => MqttReader::merge_two_frontiers(lhs, rhs),
             StorageType::Kinesis => KinesisReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }

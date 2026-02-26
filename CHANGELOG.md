@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.postgres.read` connector, which reads data from a PostgreSQL table directly by parsing the Write-Ahead Log (WAL).
+
 ### Changed
 - **BREAKING**: The dependencies for `pw.io.pyfilesystem.read` are no longer included in the default package installation. To install them, please use `pip install pathway[pyfilesystem]`.
 - Asynchronous callback for `pw.io.python.write` is now available as `pw.io.OnChangeCallbackAsync`.

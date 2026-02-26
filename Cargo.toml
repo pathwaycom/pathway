@@ -74,6 +74,7 @@ opentelemetry-otlp = { version = "0.30.0", features = ["default", "tls", "tls-ro
 opentelemetry-semantic-conventions = { version = "0.30.0", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio", "rt-tokio-current-thread"] }
 ordered-float = { version = "4.6.0", features = ["serde"] }
+pg_walstream = "0.4.1"
 pgvector = { version = "0.4.1", features = ["postgres", "halfvec"] }
 postgres = { version = "0.19.10", features = ["with-chrono-0_4", "with-serde_json-1"] }
 postgres-native-tls = "0.5.2"

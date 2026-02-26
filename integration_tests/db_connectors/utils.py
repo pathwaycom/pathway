@@ -230,6 +230,9 @@ class WireProtocolSupporterContext:
                 result.sort(key=lambda item: item[sort_by])
         return result
 
+    def execute_sql(self, query: str):
+        self.cursor.execute(query)
+
     def random_table_name(self) -> str:
         return f'wire_{str(uuid.uuid4()).replace("-", "")}'
 
