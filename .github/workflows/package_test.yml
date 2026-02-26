@@ -75,6 +75,7 @@ jobs:
           LIBPQ_PREFIX=$(brew --prefix libpq)
 
           echo "PG_CONFIG_AARCH64_APPLE_DARWIN=$LIBPQ_PREFIX/bin/pg_config" >> $GITHUB_ENV
+          echo "PG_CONFIG_X86_64_APPLE_DARWIN=$LIBPQ_PREFIX/bin/pg_config" >> $GITHUB_ENV
           echo "LIBPQ_LIB_DIR=$LIBPQ_PREFIX/lib" >> $GITHUB_ENV
           echo "LIBPQ_INCLUDE_DIR=$LIBPQ_PREFIX/include" >> $GITHUB_ENV
 
