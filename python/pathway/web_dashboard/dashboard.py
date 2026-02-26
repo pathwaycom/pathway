@@ -1,6 +1,8 @@
 import glob
 import logging
 import os
+import sys
+import time
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -19,8 +21,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     pattern = os.path.join(metrics_directory, "metrics_*.db")
     files = glob.glob(pattern)
 
-    if not files:
-        raise FileNotFoundError("No metrics database found")
+    while not files:
+        print("No metrics database found. Retrying in 10s...", file=sys.stderr)
+        time.sleep(10)
+        files = glob.glob(pattern)
 
     latest = max(files, key=os.path.getmtime)
 

@@ -13,6 +13,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Asynchronous callback for `pw.io.python.write` is now available as `pw.io.OnChangeCallbackAsync`.
 - `pw.run` and `pw.run_all` now have the `event_loop` parameter to support reusing async state across multiple graph runs.
 
+### Fixed
+- `pathway web-dashboard` now waits for the metrics database to be created instead of terminating instantly.
+
 ## [0.29.1] - 2026-02-16
 
 ### Added
