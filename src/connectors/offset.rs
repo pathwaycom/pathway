@@ -68,6 +68,7 @@ pub enum OffsetValue {
     },
     NatsReadEntriesCount(usize),
     MqttReadEntriesCount(usize),
+    PostgresReadEntriesCount(usize),
     KinesisOffset(String),
     Empty,
 }
@@ -138,7 +139,9 @@ impl HashInto for OffsetValue {
                 version.hash_into(hasher);
                 rows_read_within_version.hash_into(hasher);
             }
-            OffsetValue::NatsReadEntriesCount(count) | OffsetValue::MqttReadEntriesCount(count) => {
+            OffsetValue::NatsReadEntriesCount(count)
+            | OffsetValue::MqttReadEntriesCount(count)
+            | OffsetValue::PostgresReadEntriesCount(count) => {
                 count.hash_into(hasher);
             }
             OffsetValue::IcebergSnapshot { snapshot_id } => {

@@ -40,7 +40,7 @@ class DataSource(ABC):
             columns.append(
                 api.ColumnProperties(
                     dtype=column.dtype.to_engine(),
-                    append_only=column.append_only,
+                    append_only=self.is_append_only(),
                 )
             )
 

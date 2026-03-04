@@ -115,7 +115,7 @@ def _construct_replication_settings(
     snapshot_name_defined = snapshot_name is None
     if replication_slot_defined != snapshot_name_defined:
         raise ValueError(
-            "Either none or both of 'repliction_slot_name', 'snapshot_name' must be specified"
+            "Either none or both of 'replication_slot_name', 'snapshot_name' must be specified"
         )
 
     return api.PsqlReplicationSettings(
@@ -136,6 +136,7 @@ def read(
     schema: type[Schema],
     *,
     mode: Literal["streaming", "static"] = "streaming",
+    is_append_only: bool = False,
     publication_name: str | None = None,
     schema_name: str | None = "public",
     autocommit_duration_ms: int | None = 1500,
@@ -148,10 +149,6 @@ def read(
     `Pathway Scale, Pathway Enterprise </pricing>`_.
 
     Reads a table from a PostgreSQL database.
-
-    .. note::
-        This connector is experimental and will be stabilized in the next release of the
-        Pathway framework.
 
     This connector provides a lightweight alternative to ``pw.io.debezium.read``.
     It supports two modes: ``"static"`` and ``"streaming"``.
@@ -187,6 +184,12 @@ def read(
             and truncations in real time; requires ``publication_name`` to be specified.
             In ``"static"`` mode, the connector reads all currently available rows in a
             single commit and then stops.
+        is_append_only: Used in streaming mode. Specifies whether the input table is append-only.
+            If the table is not append-only, it must have a primary key, and all primary key
+            columns must be declared as such in the schema. This is required because when reading
+            diffs from the log, update and delete records only expose the primary key columns
+            of the affected rows. If the table is declared as append-only but a deletion,
+            truncation or modification is encountered, an error is raised.
         publication_name: Name of the PostgreSQL publication that covers the target
             table. Required when ``mode="streaming"``.
         schema_name: Name of the PostgreSQL schema in which the table resides.
@@ -308,6 +311,7 @@ def read(
             schema=schema,
             data_source_options=data_source_options,
             datasource_name="postgres",
+            append_only=(mode == "static") or is_append_only,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

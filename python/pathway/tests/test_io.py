@@ -5698,3 +5698,28 @@ def test_subscribe_async_incompatible_with_sort_by():
         ValueError, match="Using sort_by with async observer is not supported"
     ):
         run()
+
+
+def test_postgres_append_only():
+    postgres_settings = {
+        "user": "user",
+        "password": "password",
+        "host": "localhost",
+        "port": 5432,
+    }
+
+    class InputSchema(pw.Schema):
+        pkey: int = pw.column_definition(primary_key=True)
+        data: str
+
+    table = pw.io.postgres.read(postgres_settings, "table", InputSchema, mode="static")
+    assert table.is_append_only
+
+    table = pw.io.postgres.read(
+        postgres_settings,
+        "table",
+        InputSchema,
+        mode="streaming",
+        publication_name="pub",
+    )
+    assert not table.is_append_only

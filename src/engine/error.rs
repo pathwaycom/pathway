@@ -123,7 +123,7 @@ pub enum Error {
     #[error("snapshot writer failed: {0}")]
     SnapshotWriter(#[source] Box<WriteError>),
 
-    #[error("reader failed: {0:?}")]
+    #[error("reader failed: {0}")]
     ReaderFailed(#[source] Box<ReadError>),
 
     #[error("computation of imported table failed")]

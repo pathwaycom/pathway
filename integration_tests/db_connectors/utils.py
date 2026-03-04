@@ -1,5 +1,7 @@
+import logging
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Union
 
@@ -214,6 +216,13 @@ class WireProtocolSupporterContext:
         column_names: list[str],
         sort_by: str | tuple | None = None,
     ) -> list[dict[str, str | int | bool | float]]:
+        def convert_value(value):
+            if isinstance(value, memoryview):
+                return bytes(value)
+            if isinstance(value, list):
+                return [convert_value(v) for v in value]
+            return value
+
         select_query = f'SELECT {",".join(column_names)} FROM {table_name};'
         self.cursor.execute(select_query)
         rows = self.cursor.fetchall()
@@ -221,7 +230,7 @@ class WireProtocolSupporterContext:
         for row in rows:
             row_map = {}
             for name, value in zip(column_names, row):
-                row_map[name] = value
+                row_map[name] = convert_value(value)
             result.append(row_map)
         if sort_by is not None:
             if isinstance(sort_by, tuple):
@@ -235,6 +244,21 @@ class WireProtocolSupporterContext:
 
     def random_table_name(self) -> str:
         return f'wire_{str(uuid.uuid4()).replace("-", "")}'
+
+    @contextmanager
+    def publication(self, table_name: str):
+        pub_name = f"{table_name}_pub"
+        create_sql = f"CREATE PUBLICATION {pub_name} FOR TABLE {table_name};"
+        drop_sql = f"DROP PUBLICATION IF EXISTS {pub_name};"
+
+        try:
+            self.execute_sql(create_sql)
+            yield pub_name
+        finally:
+            try:
+                self.execute_sql(drop_sql)
+            except Exception as e:
+                logging.warning(f"Warning: Failed to drop publication {pub_name}: {e}")
 
 
 class PostgresContext(WireProtocolSupporterContext):

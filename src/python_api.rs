@@ -6256,6 +6256,7 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
         scope: &Scope,
+        properties: &ConnectorProperties,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         if let Some(license) = scope.license.as_ref() {
             license.check_entitlements(["postgres-wal-reader"])?;
@@ -6278,6 +6279,11 @@ impl DataStorage {
                 snapshot_name: outer.snapshot_name,
             });
 
+        let is_append_only = properties
+            .column_properties
+            .iter()
+            .all(|column| column.0.append_only);
+
         let reader = PsqlReader::new(
             client,
             settings,
@@ -6285,6 +6291,7 @@ impl DataStorage {
             self.table_name()?,
             &data_format.value_fields_vec(py),
             data_format.key_field_names.as_deref(),
+            is_append_only,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Postgres reader: {e}")))?;
 
@@ -6309,7 +6316,7 @@ impl DataStorage {
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
-            "postgres" => self.construct_postgres_reader(py, data_format, scope),
+            "postgres" => self.construct_postgres_reader(py, data_format, scope, properties),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
