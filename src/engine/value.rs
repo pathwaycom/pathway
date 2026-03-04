@@ -771,12 +771,29 @@ pub enum PointerParseError {
     IncorrectLength,
 }
 
+/// Parses a Pathway pointer from its serialized string representation.
+///
+/// # Arguments
+///
+/// * `serialized` - A string slice representing the serialized pointer
+///
+/// # Returns
+///
+/// Returns `Ok(Value::Pointer(Key(key)))` on success, or a `PointerParseError` on failure.
+///
+/// # Errors
+///
+/// Returns `PointerParseError` if:
+/// - The string cannot be decoded from base32
+/// - The decoded data is not exactly 16 bytes
 pub fn parse_pathway_pointer(serialized: &str) -> Result<Value, PointerParseError> {
     let encoded_pointer = &serialized[1..];
     let decoded = base32::decode(BASE32_ALPHABET, encoded_pointer)
         .ok_or(PointerParseError::MalformedBase32String)?;
     if decoded.len() == 16 {
-        let decoded: [u8; 16] = decoded.try_into().unwrap();
+        let decoded: [u8; 16] = decoded
+            .try_into()
+            .map_err(|_| PointerParseError::IncorrectLength)?;
         let key = KeyImpl::from_le_bytes(decoded);
         Ok(Value::Pointer(Key(key)))
     } else {

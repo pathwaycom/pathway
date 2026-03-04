@@ -156,7 +156,7 @@ pub enum ParseError {
     #[error("key-value pair has unexpected number of tokens: {0} instead of 2")]
     KeyValueTokensIncorrect(usize),
 
-    #[error("field {field_name} with {} is absent in {payload}", path.clone().map_or("no JsonPointer path specified".to_string(), |path| format!("path {path}")  ))]
+    #[error("field {field_name} with {} is absent in {payload}", path.as_ref().map_or("no JsonPointer path specified".to_string(), |p| format!("path {}", p)))]
     FailedToExtractJsonField {
         field_name: String,
         path: Option<String>,
