@@ -264,7 +264,7 @@ fn push_key_values_to_output<K, C: Cursor, P>(
             assert!(time >= *capability.time());
             output.session(&capability).give((
                 (k.clone(), curr_val.clone()),
-                time.clone().clone(),
+                time.clone(),
                 weight,
             ));
         }
