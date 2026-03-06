@@ -262,11 +262,9 @@ fn push_key_values_to_output<K, C: Cursor, P>(
         if let Some(weight) = weight.filter(|w| !w.is_zero()) {
             let time = time.cloned().unwrap();
             assert!(time >= *capability.time());
-            output.session(&capability).give((
-                (k.clone(), curr_val.clone()),
-                time.clone().clone(),
-                weight,
-            ));
+            output
+                .session(&capability)
+                .give(((k.clone(), curr_val.clone()), time.clone(), weight));
         }
         wrapper.cursor.step_val(wrapper.storage);
     }
