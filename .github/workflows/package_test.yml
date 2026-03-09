@@ -95,7 +95,7 @@ jobs:
         if: ${{ matrix.os == 'selfhosted-macOS'}}
         run: |
           pip install delocate
-          delocate-wheel ./targets/wheels/*.whl
+          delocate-wheel target/wheels/*.whl
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
