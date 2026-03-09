@@ -91,6 +91,12 @@ jobs:
           args: --release --strip -i python3.10
           target: universal2-apple-darwin
 
+      - name: Delocate macos wheels
+        if: ${{ matrix.os == 'selfhosted-macOS'}}
+        script:
+          - pip install delocate
+          - delocate-wheel ./targets/wheels/*.whl
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:

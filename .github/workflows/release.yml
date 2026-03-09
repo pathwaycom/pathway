@@ -138,6 +138,12 @@ jobs:
           args: --release --strip -i python3.10
           target: x86_64-apple-darwin
 
+      - name: Delocate macos wheels
+        if: ${{ matrix.os == 'selfhosted-macOS'}}
+        script:
+          - pip install delocate
+          - delocate-wheel ./targets/wheels/*.whl
+
       - name: Build package Ubuntu AArch64
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         uses: PyO3/maturin-action@v1
