@@ -93,6 +93,7 @@ jobs:
 
       - name: Delocate macos wheels
         if: ${{ matrix.os == 'selfhosted-macOS'}}
+        working-directory: public/pathway/
         run: |
           pip install delocate
           delocate-wheel target/wheels/*.whl

@@ -142,7 +142,7 @@ jobs:
         if: ${{ matrix.os == 'selfhosted-macOS'}}
         run: |
           pip install delocate
-          delocate-wheel target/wheels/*.whl
+          delocate-wheel ./target/wheels/*.whl
 
       - name: Build package Ubuntu AArch64
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
