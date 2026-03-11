@@ -25,6 +25,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
+      # This will ensure we have clean workspace
+      - name: Cleanup build folder
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
 
@@ -114,6 +121,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
+      # This will ensure we have clean workspace
+      - name: Cleanup build folder
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
       - name: Set up Python ${{ matrix.python-version }}
         if: ${{ matrix.os != 'selfhosted-macOS'}}
         uses: actions/setup-python@v5
@@ -141,6 +155,7 @@ jobs:
           fi
           export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+          rm -rf ${WHEEL}
 
   Notify_on_failure:
     needs:

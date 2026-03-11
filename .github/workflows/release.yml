@@ -53,6 +53,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
+      # This will ensure we have clean workspace
+      - name: Cleanup build folder
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
 
@@ -200,6 +207,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
+      # This will ensure we have clean workspace
+      - name: Cleanup build folder
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -245,6 +259,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
+      # This will ensure we have clean workspace
+      - name: Cleanup build folder
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
       - name: Create dir for wheels
         run: |
           mkdir -p wheels
