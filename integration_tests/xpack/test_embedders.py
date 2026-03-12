@@ -54,7 +54,7 @@ def test_openai_embedder_fails_no_truncation(model: str):
     with pytest.raises(Exception) as exc:
         sync_embedder([LONG_TEXT])
 
-    assert "maximum context length" in str(exc)
+    assert "maximum context length" in str(exc) or "maximum input length" in str(exc)
 
 
 def test_openai_embedder_with_common_parameter():
