@@ -1124,6 +1124,9 @@ pub enum ReplicationError {
     #[error(transparent)]
     WalReader(#[from] pg_walstream::error::ReplicationError),
 
+    #[error("Publication '{name}' does not exist")]
+    PublicationNotFound { name: String },
+
     #[error(transparent)]
     Query(#[from] postgres::Error),
 
@@ -2079,6 +2082,18 @@ impl PsqlReader {
         Self::validate_table_schema(&mut client, &table_ctx)?;
 
         let wal_reader = if let Some(replication_settings) = replication_settings {
+            let rows = client
+                .query(
+                    "SELECT 1 FROM pg_publication WHERE pubname = $1",
+                    &[&replication_settings.publication_name],
+                )
+                .map_err(ReplicationError::Query)?;
+            if rows.is_empty() {
+                return Err(ReplicationError::PublicationNotFound {
+                    name: replication_settings.publication_name.clone(),
+                }
+                .into());
+            }
             Some(WalReader::new(replication_settings, table_ctx.clone())?)
         } else {
             None

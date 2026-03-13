@@ -2115,3 +2115,34 @@ def test_postgres_date_out_of_range_skipped(tmp_path, postgres):
     assert VALID_STREAMING_ID in ids_out, "Valid streaming row must be present"
     for oor_id in OOR_IDS:
         assert oor_id not in ids_out, f"Out-of-range row {oor_id} must be skipped"
+
+
+def test_no_publication(tmp_path, postgres):
+    class InputSchema(pw.Schema):
+        value: str
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            value TEXT PRIMARY KEY
+        );
+        """
+    )
+
+    postgres.execute_sql(f"INSERT INTO {table_name} (value) VALUES ('hello');")
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="streaming",
+        publication_name=f"{table_name}_pub",
+        autocommit_duration_ms=10,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    with pytest.raises(
+        RuntimeError, match=f"Publication '{table_name}_pub' does not exist"
+    ):
+        pw.run()
