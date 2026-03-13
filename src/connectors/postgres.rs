@@ -913,6 +913,7 @@ mod from_sql {
     }
 
     impl<'a> FromSql<'a> for Value {
+        #[allow(clippy::too_many_lines)]
         fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
             // bool
             if <bool as FromSql>::accepts(ty) {
@@ -955,6 +956,74 @@ mod from_sql {
                 )?))));
             }
 
+            // OID → int
+            if *ty == Type::OID {
+                let mut buf = raw;
+                let oid = buf.get_u32();
+                return Ok(Value::Int(i64::from(oid)));
+            }
+
+            if *ty == Type::NUMERIC {
+                // Binary: ndigits (i16), weight (i16), sign (u16), dscale (i16), digits (i16 each, base 10000)
+                let mut buf = raw;
+                let ndigits = buf.get_i16();
+                let weight = buf.get_i16();
+                let sign = buf.get_u16();
+                let _dscale = buf.get_i16();
+
+                let mut value: f64 = 0.0;
+                for i in 0..i32::from(ndigits) {
+                    let digit = f64::from(buf.get_i16());
+                    value += digit * 10_000f64.powi(i32::from(weight) - i);
+                }
+                if sign == 0x4000 {
+                    value = -value;
+                }
+                return Ok(Value::Float(OrderedFloat(value)));
+            }
+
+            // addresses → string
+            if *ty == Type::INET || *ty == Type::CIDR {
+                // Binary format: family (1 byte), prefix_len (1 byte), is_cidr (1 byte), addr_len (1 byte), addr bytes
+                let family = raw[0];
+                let prefix_len = raw[1];
+                let addr_len = raw[3] as usize;
+                let addr_bytes = &raw[4..4 + addr_len];
+                let ip: std::net::IpAddr = if family == 2 {
+                    // AF_INET
+                    let octets: [u8; 4] = addr_bytes.try_into()?;
+                    std::net::Ipv4Addr::from(octets).into()
+                } else {
+                    // AF_INET6
+                    let octets: [u8; 16] = addr_bytes.try_into()?;
+                    std::net::Ipv6Addr::from(octets).into()
+                };
+                let max_prefix = if family == 2 { 32 } else { 128 };
+                let s = if *ty == Type::CIDR || prefix_len < max_prefix {
+                    format!("{ip}/{prefix_len}")
+                } else {
+                    ip.to_string()
+                };
+                return Ok(Value::String(s.into()));
+            }
+
+            if *ty == Type::MACADDR {
+                // 6 raw bytes → "xx:xx:xx:xx:xx:xx"
+                let s = format!(
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]
+                );
+                return Ok(Value::String(s.into()));
+            }
+
+            // uuid
+            if *ty == Type::UUID {
+                let mut bytes = [0u8; 16];
+                bytes.copy_from_slice(&raw[..16]);
+                let uuid = uuid::Uuid::from_bytes(bytes);
+                return Ok(Value::String(uuid.to_string().into()));
+            }
+
             // text
             if <String as FromSql>::accepts(ty) {
                 return Ok(Value::String(String::from_sql(ty, raw)?.into()));
@@ -970,16 +1039,47 @@ mod from_sql {
                 return Ok(serde_json::Value::from_sql(ty, raw)?.into());
             }
 
+            // TIME (without timezone) — nanoseconds since midnight
+            if *ty == Type::TIME {
+                let mut buf = raw;
+                let usecs = buf.get_i64();
+                return Ok(Value::Duration(Duration::new_with_unit(usecs, "us")?));
+            }
+
+            // TIMETZ — time with timezone offset, convert to UTC
+            if *ty == Type::TIMETZ {
+                let mut buf = raw;
+                let usecs = buf.get_i64();
+                let offset_secs = buf.get_i32(); // offset from UTC in seconds, sign is inverted in PG
+                let usecs_utc = usecs + i64::from(offset_secs) * 1_000_000;
+                return Ok(Value::Duration(Duration::new_with_unit(usecs_utc, "us")?));
+            }
+
+            // date
+            if *ty == Type::DATE {
+                let mut buf = raw;
+                let days = buf.get_i32();
+                let pg_epoch =
+                    chrono::NaiveDate::from_ymd_opt(2000, 1, 1).ok_or("invalid epoch")?;
+                let naive_date = pg_epoch
+                    .checked_add_signed(chrono::Duration::days(i64::from(days)))
+                    .ok_or("date out of range")?;
+                let naive_datetime = naive_date.and_hms_opt(0, 0, 0).ok_or("invalid time")?;
+                return Ok(Value::DateTimeNaive(DateTimeNaive::try_from(
+                    naive_datetime,
+                )?));
+            }
+
             // chrono timestamps
             if <DateTime<Utc> as FromSql>::accepts(ty) {
-                return Ok(Value::DateTimeUtc(DateTimeUtc::from(
+                return Ok(Value::DateTimeUtc(DateTimeUtc::try_from(
                     DateTime::<Utc>::from_sql(ty, raw)?,
-                )));
+                )?));
             }
             if <NaiveDateTime as FromSql>::accepts(ty) {
-                return Ok(Value::DateTimeNaive(DateTimeNaive::from(
+                return Ok(Value::DateTimeNaive(DateTimeNaive::try_from(
                     NaiveDateTime::from_sql(ty, raw)?,
-                )));
+                )?));
             }
 
             // pgvector
@@ -1463,9 +1563,24 @@ impl WalReader {
     where
         E: Fn(String) -> Box<ConversionError>,
     {
-        let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
-            .map_err(|e| err(format!("Cannot parse DateTimeNaive '{s}': {e}")))?;
-        Ok(Value::DateTimeNaive(DateTimeNaive::from(dt)))
+        // Full timestamp
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+            return DateTimeNaive::try_from(dt)
+                .map(Value::DateTimeNaive)
+                .map_err(|e| err(format!("DateTime out of range '{s}': {e}")));
+        }
+        // Date-only (e.g. from DATE column in WAL streaming)
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            let dt = d
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| err("invalid time".to_string()))?;
+            return DateTimeNaive::try_from(dt)
+                .map(Value::DateTimeNaive)
+                .map_err(|e| err(format!("DateTime out of range '{s}': {e}")));
+        }
+        Err(err(format!(
+            "Cannot parse DateTimeNaive '{s}': premature end of input"
+        )))
     }
 
     fn parse_datetime_utc<E>(s: &str, err: &E) -> Result<Value, Box<ConversionError>>
@@ -1474,7 +1589,9 @@ impl WalReader {
     {
         let dt = chrono::DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f%#z")
             .map_err(|e| err(format!("Cannot parse DateTimeUtc '{s}': {e}")))?;
-        Ok(Value::DateTimeUtc(DateTimeUtc::from(dt)))
+        DateTimeUtc::try_from(dt.to_utc())
+            .map(Value::DateTimeUtc)
+            .map_err(|e| err(format!("DateTime out of range '{s}': {e}")))
     }
 
     fn parse_duration_from_str<E>(s: &str, err: &E) -> Result<Value, Box<ConversionError>>
@@ -1683,7 +1800,24 @@ impl WalReader {
 
             if remaining.contains(':') {
                 let time_part = remaining.split_whitespace().next().unwrap_or(remaining);
-                let parts: Vec<&str> = time_part.split(':').collect();
+
+                // Strip timezone offset if present: "12:30:00+02:00" or "12:30:00-05:30"
+                let (time_part_no_tz, offset_nanos) = if let Some(sign_pos) =
+                    time_part.find(['+', '-']).filter(|&i| i > 0)
+                // skip leading minus for negative times
+                {
+                    let (t, tz) = time_part.split_at(sign_pos);
+                    let sign: i64 = if tz.starts_with('+') { -1 } else { 1 };
+                    let tz_parts: Vec<&str> = tz[1..].split(':').collect();
+                    let tz_hours: i64 = tz_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let tz_mins: i64 = tz_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let offset = sign * (tz_hours * 3_600 + tz_mins * 60) * 1_000_000_000;
+                    (t, offset)
+                } else {
+                    (time_part, 0)
+                };
+
+                let parts: Vec<&str> = time_part_no_tz.split(':').collect();
                 if parts.len() == 3 {
                     let hours: i64 = parts[0]
                         .parse()
@@ -1707,7 +1841,9 @@ impl WalReader {
                             .map_err(|e| format!("Cannot parse seconds in '{s}': {e}"))?;
                         (secs, 0)
                     };
-                    total_nanos += (hours * 3_600 + minutes * 60 + secs) * 1_000_000_000 + nanos;
+                    total_nanos += (hours * 3_600 + minutes * 60 + secs) * 1_000_000_000
+                        + nanos
+                        + offset_nanos;
                     remaining = &remaining[time_part.len()..];
                     continue;
                 }

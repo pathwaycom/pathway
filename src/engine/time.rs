@@ -152,15 +152,15 @@ impl DateTimeNaive {
     pub fn strptime(date_string: &str, format: &str) -> DataResult<Self> {
         let format = Self::sanitize_format_string(format)?;
         if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(date_string, &format) {
-            Ok(datetime.into())
+            datetime.try_into()
         } else if let Ok(date) = chrono::NaiveDate::parse_from_str(date_string, &format) {
             let datetime = date.and_hms_opt(0, 0, 0).unwrap();
-            Ok(datetime.into())
+            datetime.try_into()
         } else if let Ok(time) = chrono::NaiveTime::parse_from_str(date_string, &format) {
             let datetime = chrono::NaiveDate::from_ymd_opt(1900, 1, 1)
                 .unwrap()
                 .and_time(time);
-            Ok(datetime.into())
+            datetime.try_into()
         } else {
             Err(DataError::ParseError(format!(
                 "cannot parse date {date_string:?} using format {format:?}"
@@ -197,11 +197,17 @@ impl DateTimeNaive {
     }
 }
 
-impl From<chrono::NaiveDateTime> for DateTimeNaive {
-    fn from(value: chrono::NaiveDateTime) -> Self {
-        Self {
-            timestamp: value.and_utc().timestamp_nanos_opt().unwrap(),
-        }
+impl TryFrom<chrono::NaiveDateTime> for DateTimeNaive {
+    type Error = DataError;
+
+    fn try_from(value: chrono::NaiveDateTime) -> DataResult<Self> {
+        value
+            .and_utc()
+            .timestamp_nanos_opt()
+            .map(|timestamp| Self { timestamp })
+            .ok_or(DataError::ParseError(
+                "datetime out of representable nanosecond range".to_string(),
+            ))
     }
 }
 
@@ -264,7 +270,7 @@ impl DateTimeUtc {
     pub fn strptime(date_string: &str, format: &str) -> DataResult<Self> {
         let format = Self::sanitize_format_string(format)?;
         match chrono::DateTime::parse_from_str(date_string, &format) {
-            Ok(datetime) => Ok(datetime.into()),
+            Ok(datetime) => datetime.try_into(),
             Err(e) => Err(DataError::ParseError(format!(
                 "cannot parse date {date_string:?} using format {format:?}: {e}"
             ))),
@@ -293,11 +299,16 @@ impl DateTimeUtc {
     }
 }
 
-impl<Tz: chrono::TimeZone> From<chrono::DateTime<Tz>> for DateTimeUtc {
-    fn from(value: chrono::DateTime<Tz>) -> Self {
-        Self {
-            timestamp: value.timestamp_nanos_opt().unwrap(),
-        }
+impl<Tz: chrono::TimeZone> TryFrom<chrono::DateTime<Tz>> for DateTimeUtc {
+    type Error = DataError;
+
+    fn try_from(value: chrono::DateTime<Tz>) -> DataResult<Self> {
+        value
+            .timestamp_nanos_opt()
+            .map(|timestamp| Self { timestamp })
+            .ok_or(DataError::ParseError(
+                "datetime out of representable nanosecond range".to_string(),
+            ))
     }
 }
 
@@ -545,7 +556,7 @@ where
     let localized = tz.from_local_datetime(&naive_local);
     match localized {
         LocalResult::Single(localized) | LocalResult::Ambiguous(_, localized) => {
-            Ok(localized.into())
+            localized.try_into()
         }
         LocalResult::None => {
             // This NaiveDateTime doesn't exist in a given timezone.
@@ -556,7 +567,7 @@ where
                 .unwrap();
             let localized = tz.from_local_datetime(&rounded);
             if let LocalResult::Single(localized) = localized {
-                Ok(localized.into())
+                localized.try_into()
             } else {
                 Err(DataError::DateTimeConversionError)
             }
@@ -576,7 +587,7 @@ where
         Ok(tz) => {
             let localized = tz.from_utc_datetime(&naive_utc);
             let naive_local = localized.naive_local();
-            Ok(naive_local.into())
+            naive_local.try_into()
         }
         Err(e) => Err(DataError::ParseError(format!(
             "cannot parse time zone {timezone:?}: {e}"
