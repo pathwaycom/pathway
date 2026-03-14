@@ -104,8 +104,10 @@ sysinfo = "0.35.1"
 tantivy = "0.22.1"  # Note: don't bump this dependency before the RAG integration test failure is investigated
 tempfile = "3.20.0"
 thiserror = "1.0.63"
+tiberius = { version = "0.12", features = ["rustls"] }
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 tonic = { version = "0.13.1", features = ["tls-native-roots"] }
 usearch = "2.15.3"
 uuid = { version = "1.17.0", features = ["v4"] }
