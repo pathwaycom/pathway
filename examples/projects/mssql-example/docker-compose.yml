@@ -1,0 +1,35 @@
+version: "3.7"
+services:
+  mssql:
+    container_name: mssql_example_db
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=YourStrong!Passw0rd
+    ports:
+      - "1433:1433"
+    volumes:
+      - ./sql/init-db.sql:/init-db.sql
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong!Passw0rd" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  mssql-init:
+    container_name: mssql_example_init
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./sql/init-db.sql:/init-db.sql
+    entrypoint: /opt/mssql-tools18/bin/sqlcmd -S mssql -U sa -P "YourStrong!Passw0rd" -C -i /init-db.sql
+  pathway:
+    container_name: mssql_example_pathway
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on:
+      mssql-init:
+        condition: service_completed_successfully
