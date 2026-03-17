@@ -2257,80 +2257,158 @@ impl PsqlReader {
                 .ok_or_else(|| make_error(&Value::None, "non-optional value is undefined"));
         }
 
-        let expected_type_unopt = value_field.type_.unoptionalize();
-        if *expected_type_unopt == Type::PyObjectWrapper {
-            let Value::Bytes(ref bytes) = parsed_value else {
-                return Err(make_error(
-                    &parsed_value,
-                    "unexpected type of a postgres column",
-                ));
+        Self::precise_value_by_type(parsed_value.clone(), &value_field.type_)
+            .map_err(|e| make_error(&parsed_value, &e))
+    }
+
+    /// Converts a parsed value to the precise type required by the schema, recursing into
+    /// `List` and `Tuple` containers. Handles `Duration` (stored as microseconds integer),
+    /// `Pointer` (stored as string), and `PyObjectWrapper` (stored as serialized bytes).
+    fn precise_value_by_type(value: Value, type_: &Type) -> Result<Value, String> {
+        if value == Value::None {
+            return if type_.is_optional() {
+                Ok(Value::None)
+            } else {
+                Err("non-optional value is undefined".to_string())
             };
-            return bincode::deserialize::<Value>(bytes)
-                .map_err(|err| make_error(&parsed_value, &err.to_string()));
         }
 
-        if let Type::Array(ndim, element_type) = expected_type_unopt {
-            // from_sql does not know the target type and returns `Value::Tuple`.
-            // Convert it to `Value::IntArray` or `Value::FloatArray` with the correct shape.
-            let Value::Tuple(_) = &parsed_value else {
-                // Already the correct type (e.g. pgvector returned `Value::FloatArray`) — pass through.
-                return Ok(parsed_value);
-            };
-
-            let (shape, flat) = Self::flatten_tuple_with_shape(&parsed_value)
-                .map_err(|e| make_error(&parsed_value, &e))?;
-
-            // ndim == 0 means "any dimensionality" in the schema.
-            if *ndim != Some(0) && Some(shape.len()) != *ndim {
-                return Err(make_error(
-                    &parsed_value,
-                    &format!(
-                        "expected array with {:?} dimensions, got {}",
-                        ndim,
-                        shape.len()
-                    ),
-                ));
+        match type_.unoptionalize() {
+            Type::PyObjectWrapper => Self::precise_py_object_wrapper(&value),
+            Type::Duration => Self::precise_duration(value),
+            Type::Pointer => Self::precise_pointer(&value),
+            Type::List(element_type) => Self::precise_list(value, element_type),
+            Type::Tuple(element_types) => Self::precise_tuple(value, element_types),
+            Type::Array(ndim, element_type) => {
+                Self::precise_array(value, ndim.as_ref(), element_type)
             }
+            _ => Ok(value),
+        }
+    }
 
-            return match element_type.as_ref() {
-                Type::Int => {
-                    let ints: Result<Vec<i64>, _> = flat
-                        .iter()
-                        .map(|v| match v {
-                            Value::Int(i) => Ok(*i),
-                            Value::None => Err("unexpected NULL in non-optional int array"),
-                            _ => Err("unexpected non-int element in int array"),
-                        })
-                        .collect();
-                    let ints = ints.map_err(|e| make_error(&parsed_value, e))?;
-                    ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), ints)
-                        .map(Value::from)
-                        .map_err(|e| make_error(&parsed_value, &e.to_string()))
-                }
-                Type::Float => {
-                    let floats: Result<Vec<f64>, _> = flat
-                        .iter()
-                        .map(|v| match v {
-                            Value::Float(OrderedFloat(f)) => Ok(*f),
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Int(i) => Ok(*i as f64),
-                            Value::None => Err("unexpected NULL in non-optional float array"),
-                            _ => Err("unexpected non-float element in float array"),
-                        })
-                        .collect();
-                    let floats = floats.map_err(|e| make_error(&parsed_value, e))?;
-                    ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), floats)
-                        .map(Value::from)
-                        .map_err(|e| make_error(&parsed_value, &e.to_string()))
-                }
-                other => Err(make_error(
-                    &parsed_value,
-                    &format!("unsupported element type for Array: {other}"),
-                )),
+    fn precise_py_object_wrapper(value: &Value) -> Result<Value, String> {
+        let Value::Bytes(bytes) = value else {
+            return Err(format!("unexpected type for PyObjectWrapper: {value:?}"));
+        };
+        bincode::deserialize::<Value>(bytes).map_err(|e| e.to_string())
+    }
+
+    fn precise_duration(value: Value) -> Result<Value, String> {
+        if matches!(value, Value::Duration(_)) {
+            return Ok(value);
+        }
+        let Value::Int(i) = value else {
+            return Err(format!("unexpected type for Duration: {value:?}"));
+        };
+        EngineDuration::new_with_unit(i, "us")
+            .map(Value::Duration)
+            .map_err(|e| e.to_string())
+    }
+
+    fn precise_pointer(value: &Value) -> Result<Value, String> {
+        let Value::String(s) = value else {
+            return Err(format!("unexpected type for Pointer: {value:?}"));
+        };
+        parse_pathway_pointer(s).map_err(|e| e.to_string())
+    }
+
+    fn precise_list(value: Value, element_type: &Type) -> Result<Value, String> {
+        let Value::Tuple(elements) = value else {
+            return Err(format!("expected Tuple for List type, got {value:?}"));
+        };
+        let converted: Result<Vec<Value>, _> = elements
+            .iter()
+            .map(|v| Self::precise_value_by_type(v.clone(), element_type))
+            .collect();
+        converted.map(Value::from)
+    }
+
+    fn precise_tuple(value: Value, element_types: &[Type]) -> Result<Value, String> {
+        let Value::Tuple(elements) = value else {
+            return Err(format!("expected Tuple for Tuple type, got {value:?}"));
+        };
+        if elements.len() != element_types.len() {
+            return Err(format!(
+                "tuple length mismatch: expected {}, got {}",
+                element_types.len(),
+                elements.len()
+            ));
+        }
+        let converted: Result<Vec<Value>, _> = elements
+            .iter()
+            .zip(element_types.iter())
+            .map(|(v, t)| Self::precise_value_by_type(v.clone(), t))
+            .collect();
+        converted.map(Value::from)
+    }
+
+    fn precise_array(
+        value: Value,
+        ndim: Option<&usize>,
+        element_type: &Type,
+    ) -> Result<Value, String> {
+        // from_sql does not know the target type and returns `Value::Tuple`.
+        // Convert it to `Value::IntArray` or `Value::FloatArray` with the correct shape.
+        let Value::Tuple(_) = &value else {
+            // Verify that the value is already the expected array type (e.g. pgvector returned
+            // `Value::FloatArray`). Any other value — a scalar float, date, etc. — is an error.
+            let is_expected = match element_type {
+                Type::Int => matches!(value, Value::IntArray(_)),
+                Type::Float => matches!(value, Value::FloatArray(_)),
+                _ => false,
             };
+            if is_expected {
+                return Ok(value);
+            }
+            return Err(format!(
+                "expected an array value for element type {element_type}, got {value:?}"
+            ));
+        };
+
+        let (shape, flat) = Self::flatten_tuple_with_shape(&value)?;
+
+        // ndim == 0 means "any dimensionality" in the schema.
+        if ndim != Some(&0) && Some(shape.len()) != ndim.copied() {
+            return Err(format!(
+                "expected array with {:?} dimensions, got {}",
+                ndim,
+                shape.len()
+            ));
         }
 
-        Ok(parsed_value)
+        match element_type {
+            Type::Int => {
+                let ints: Result<Vec<i64>, _> = flat
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(i) => Ok(*i),
+                        Value::None => Err("unexpected NULL in non-optional int array"),
+                        _ => Err("unexpected non-int element in int array"),
+                    })
+                    .collect();
+                let ints = ints.map_err(std::string::ToString::to_string)?;
+                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), ints)
+                    .map(Value::from)
+                    .map_err(|e| e.to_string())
+            }
+            Type::Float => {
+                let floats: Result<Vec<f64>, _> = flat
+                    .iter()
+                    .map(|v| match v {
+                        Value::Float(OrderedFloat(f)) => Ok(*f),
+                        #[allow(clippy::cast_precision_loss)]
+                        Value::Int(i) => Ok(*i as f64),
+                        Value::None => Err("unexpected NULL in non-optional float array"),
+                        _ => Err("unexpected non-float element in float array"),
+                    })
+                    .collect();
+                let floats = floats.map_err(std::string::ToString::to_string)?;
+                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), floats)
+                    .map(Value::from)
+                    .map_err(|e| e.to_string())
+            }
+            other => Err(format!("unsupported element type for Array: {other}")),
+        }
     }
 
     /// Recursively traverses nested `Value::Tuple`, returning the shape and flat leaf elements.

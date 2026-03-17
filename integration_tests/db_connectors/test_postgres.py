@@ -436,11 +436,11 @@ def test_different_types_schema_and_serialization(
                 2025, 4, 23, 10, 13, tzinfo=datetime.timezone.utc
             )
             assert row["i"].value == SimpleObject("test")
-            assert row["j"] == pd.Timedelta("4 days 2 seconds 123 us").value // 1_000
+            assert row["j"] == pd.Timedelta("4 days 2 seconds 123 us")
             assert row["k"] == ("abc", "def", "ghi")
             assert row["l"] == (
-                pd.Timedelta("4 days 2 seconds 123 us").value // 1_000,
-                pd.Timedelta("1 days 2 seconds 3 us").value // 1_000,
+                pd.Timedelta("4 days 2 seconds 123 us"),
+                pd.Timedelta("1 days 2 seconds 3 us"),
             )
             assert row["m"] == (("a", "b"), ("c", "d"))
 
@@ -2115,6 +2115,95 @@ def test_postgres_date_out_of_range_skipped(tmp_path, postgres):
     assert VALID_STREAMING_ID in ids_out, "Valid streaming row must be present"
     for oor_id in OOR_IDS:
         assert oor_id not in ids_out, f"Out-of-range row {oor_id} must be skipped"
+
+
+@pytest.mark.parametrize("pg_type", ["BIGINT", "INTEGER"])
+def test_static_int_read_as_duration(tmp_path, postgres, pg_type):
+    """Integral columns declared as pw.Duration must be returned as Duration values
+    (nanoseconds in jsonlines output) in static read mode."""
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        duration_col: pw.Duration
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id {pg_type} PRIMARY KEY,
+            duration_col {pg_type} NOT NULL
+        );
+        """
+    )
+    # 10 seconds expressed in microseconds, as the output connector writes pw.Duration
+    microseconds = 10_000_000
+    postgres.execute_sql(
+        f"INSERT INTO {table_name} (id, duration_col) VALUES (1, {microseconds});"
+    )
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_path)
+    run()
+
+    rows = []
+    with open(output_path) as f:
+        for line in f:
+            rows.append(json.loads(line))
+
+    assert len(rows) == 1
+    # pw.Duration is serialized to jsonlines as nanoseconds
+    assert rows[0]["duration_col"] == microseconds * 1_000
+
+
+def test_static_bigint_array_read_as_duration_list(tmp_path, postgres):
+    """BIGINT[] columns declared as list[pw.Duration] must be returned as lists of
+    Duration values (each element in nanoseconds in jsonlines) in static read mode."""
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        durations: list[pw.Duration]
+
+    output_path = tmp_path / "output.jsonl"
+    table_name = postgres.random_table_name()
+
+    postgres.execute_sql(
+        f"""
+        CREATE TABLE {table_name} (
+            id BIGINT PRIMARY KEY,
+            durations BIGINT[] NOT NULL
+        );
+        """
+    )
+    # Three durations in microseconds: 1s, 2s, 3s
+    postgres.execute_sql(
+        f"INSERT INTO {table_name} (id, durations)"
+        f" VALUES (1, ARRAY[1000000, 2000000, 3000000]::BIGINT[]);"
+    )
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_path)
+    run()
+
+    rows = []
+    with open(output_path) as f:
+        for line in f:
+            rows.append(json.loads(line))
+
+    assert len(rows) == 1
+    # Each Duration element serialized as nanoseconds
+    assert rows[0]["durations"] == [1_000_000_000, 2_000_000_000, 3_000_000_000]
 
 
 def test_no_publication(tmp_path, postgres):

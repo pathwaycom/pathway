@@ -1,4 +1,4 @@
-from typing import Any, get_args
+from typing import Any, Union, get_args, get_origin
 
 import numpy as np
 import pandas as pd
@@ -155,10 +155,14 @@ def _test_postgres_streaming(
             output_table_name,
             init_mode="create_if_not_exists",
         )
+        observer, type_errors = _make_type_check_observer(ItemType)
+        pw.io.python.write(table, observer)
         wait_result_with_checker(
             PostgresRowCountChecker(postgres, output_table_name, 2 * len(items)), 60
         )
         streaming_thread.join()
+
+        assert not type_errors, "\n".join(type_errors)
 
         output_rows = postgres.get_table_contents(
             output_table_name, InputSchemaWithPkey.column_names()
@@ -174,6 +178,60 @@ def _test_postgres_streaming(
             )
         input_rows.sort(key=lambda i: i["pkey"])
         _compare_input_and_output(ItemType, input_rows, output_rows)
+
+
+def _get_expected_python_type(ItemType: type) -> type | tuple:
+    import types as builtin_types
+
+    origin = get_origin(ItemType)
+
+    if origin is Union or (
+        hasattr(builtin_types, "UnionType") and origin is builtin_types.UnionType
+    ):
+        args = get_args(ItemType)
+        non_none_args = [a for a in args if a is not type(None)]
+        inner = _get_expected_python_type(non_none_args[0])
+        if isinstance(inner, tuple):
+            return inner + (type(None),)
+        return (inner, type(None))
+
+    if origin is not None:
+        return origin
+
+    if ItemType is pw.Duration:
+        return pd.Timedelta
+    if ItemType in (pw.DateTimeNaive, pw.DateTimeUtc):
+        return pd.Timestamp
+
+    return ItemType
+
+
+def _make_type_check_observer(
+    ItemType: type,
+) -> tuple[pw.io.python.ConnectorObserver, list[str]]:
+    type_errors: list[str] = []
+    expected_type = _get_expected_python_type(ItemType)
+
+    class TypeCheckObserver(pw.io.python.ConnectorObserver):
+        def on_change(self, key, row, time, is_addition):
+            if is_addition:
+                value = row["item"]
+                if not isinstance(value, expected_type):
+                    # tuple is acceptable when the schema type is list
+                    if isinstance(value, tuple) and (
+                        expected_type is list
+                        or (isinstance(expected_type, tuple) and list in expected_type)
+                    ):
+                        return
+                    type_errors.append(
+                        f"item value {value!r} has type {type(value)}, "
+                        f"expected {expected_type}"
+                    )
+
+        def on_end(self):
+            pass
+
+    return TypeCheckObserver(), type_errors
 
 
 def _test_postgres_static(
@@ -205,7 +263,12 @@ def _test_postgres_static(
     pw.io.postgres.write(
         table, POSTGRES_SETTINGS, output_table_name, init_mode="create_if_not_exists"
     )
+
+    observer, type_errors = _make_type_check_observer(ItemType)
+    pw.io.python.write(table, observer)
     run()
+
+    assert not type_errors, "\n".join(type_errors)
 
     output_rows = postgres.get_table_contents(
         output_table_name, InputSchemaWithPkey.column_names()
