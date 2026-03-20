@@ -44,7 +44,7 @@ The `PaddleOCRParser` uses a Paddle pipeline object to perform the parsing/OCR.
 Currently, `PaddleOCR` and `PPStructureV3` pipelines are supported.
 By default, it uses a `PPStructureV3` pipeline.
 
-More details on how to use the PaddleOCRParser in the [associated blog post](/blog/paddleocr/).
+More details on how to use the PaddleOCRParser in the [associated blog post](/framework/blog/paddleocr/).
 
 
 ## UnstructuredParser
@@ -156,7 +156,7 @@ See [PdfPipelineOptions](https://github.com/DS4SD/docling/blob/6875913e34abacb8d
 
 <!-- ### Other references -->
 
-Want to learn more? Have a look on our special [blog post](/blog/multimodal-data-processing) about DoclingParser.
+Want to learn more? Have a look on our special [blog post](/framework/blog/multimodal-data-processing) about DoclingParser.
 
 ## PypdfParser
 
