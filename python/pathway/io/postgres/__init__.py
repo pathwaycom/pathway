@@ -270,6 +270,123 @@ def read(
     replication slot internally: it uses a temporary slot that is automatically dropped
     when the session ends, and continuously acknowledges processed LSN positions while
     the program is running.
+
+    The examples above use an integer primary key, but other primary key types are
+    supported as well.
+
+    Suppose you have a ``products`` table where each row is identified by a string
+    product code such as ``"SKU-001"``, alongside a ``name`` column and a ``price``
+    column. The schema in this case is:
+
+    >>> class ProductsSchema(pw.Schema):
+    ...     sku: str = pw.column_definition(primary_key=True)
+    ...     name: str
+    ...     price: float
+
+    Both ``"static"`` and ``"streaming"`` modes are supported, set up in exactly
+    the same way as for an integer primary key. For a one-time snapshot:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="products",
+    ...     schema=ProductsSchema,
+    ...     mode="static",
+    ... )
+
+    For continuous CDC, create a publication first:
+
+    .. code-block:: sql
+
+        CREATE PUBLICATION products_pub FOR TABLE products;
+
+    Then configure the streaming connector:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="products",
+    ...     schema=ProductsSchema,
+    ...     mode="streaming",
+    ...     publication_name="products_pub",
+    ... )
+
+    PostgreSQL's ``UUID`` type is also supported. Because Pathway represents UUID
+    values as strings, the corresponding schema field must be declared as ``str``.
+    Suppose you have a ``messages`` table whose primary key is a UUID column ``id``,
+    alongside a string ``body`` column:
+
+    >>> class MessagesSchema(pw.Schema):
+    ...     id: str = pw.column_definition(primary_key=True)
+    ...     body: str
+
+    Pathway will read the UUID values as standard hyphenated strings, for example
+    ``"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"``. Both modes are supported. For a
+    one-time snapshot:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="messages",
+    ...     schema=MessagesSchema,
+    ...     mode="static",
+    ... )
+
+    For continuous CDC, create a publication first:
+
+    .. code-block:: sql
+
+        CREATE PUBLICATION messages_pub FOR TABLE messages;
+
+    Then configure the streaming connector:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="messages",
+    ...     schema=MessagesSchema,
+    ...     mode="streaming",
+    ...     publication_name="messages_pub",
+    ... )
+
+    Tables with composite primary keys — where the primary key spans multiple columns
+    — are supported as well. To declare a composite primary key in Pathway, mark every
+    participating column with ``pw.column_definition(primary_key=True)``. Suppose you
+    have an ``order_items`` table where each row is uniquely identified by the
+    combination of ``order_id`` and ``product_id``, both integers, alongside a
+    ``quantity`` column:
+
+    >>> class OrderItemsSchema(pw.Schema):
+    ...     order_id: int = pw.column_definition(primary_key=True)
+    ...     product_id: int = pw.column_definition(primary_key=True)
+    ...     quantity: int
+
+    Both ``order_id`` and ``product_id`` are marked as primary key columns, matching
+    the ``PRIMARY KEY (order_id, product_id)`` constraint on the PostgreSQL side. In
+    streaming mode, this is especially important: when an update or delete event arrives
+    in the WAL, PostgreSQL only exposes the primary key columns of the affected row, so
+    all primary key columns must be declared as such in the schema.
+
+    Both modes are supported. For a one-time snapshot:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="order_items",
+    ...     schema=OrderItemsSchema,
+    ...     mode="static",
+    ... )
+
+    For continuous CDC, create a publication first:
+
+    .. code-block:: sql
+
+        CREATE PUBLICATION order_items_pub FOR TABLE order_items;
+
+    Then configure the streaming connector:
+
+    >>> table = pw.io.postgres.read(
+    ...     postgres_settings=connection_string_parts,
+    ...     table_name="order_items",
+    ...     schema=OrderItemsSchema,
+    ...     mode="streaming",
+    ...     publication_name="order_items_pub",
+    ... )
     """
     _check_entitlements("postgres-wal-reader")
 
