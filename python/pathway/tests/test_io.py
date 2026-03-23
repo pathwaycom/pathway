@@ -5723,3 +5723,20 @@ def test_postgres_append_only():
         publication_name="pub",
     )
     assert not table.is_append_only
+
+
+def test_mongodb_read_rejects_user_defined_primary_key():
+    class SchemaWithPrimaryKey(pw.Schema):
+        name: str = pw.column_definition(primary_key=True)
+        count: int
+
+    with pytest.raises(
+        ValueError,
+        match="Defining a primary key in the schema is not supported for pw.io.mongodb.read",
+    ):
+        pw.io.mongodb.read(
+            connection_string="mongodb://localhost:27017/",
+            database="test",
+            collection="test",
+            schema=SchemaWithPrimaryKey,
+        )

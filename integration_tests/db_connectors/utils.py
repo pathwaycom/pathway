@@ -1,18 +1,21 @@
+import json
 import logging
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, get_args, get_origin
 
 import boto3
 import mysql.connector
+import numpy as np
+import pandas as pd
 import psycopg2
 import requests
 from pymongo import MongoClient
 
 import pathway as pw
-from pathway.internals import dtype
+from pathway.internals import api, dtype
 
 # from pgvector.psycopg2 import register_vector # FIXME enable once pgvector can be added to env
 
@@ -321,12 +324,16 @@ class MongoDBContext:
         table_name = f'mongodb_{str(uuid.uuid4()).replace("-", "")}'
         return table_name
 
-    def get_full_collection(
-        self, collection_name: str
-    ) -> list[dict[str, str | int | bool | float]]:
+    def collection_exists(self, collection_name: str) -> bool:
+        db = self.client[MONGODB_BASE_NAME]
+        return collection_name in db.list_collection_names()
+
+    def get_full_collection(self, collection_name):
+        if not self.collection_exists(collection_name):
+            return []
         db = self.client[MONGODB_BASE_NAME]
         collection = db[collection_name]
-        return [i for i in collection.find()]  # cast to list
+        return [i for i in collection.find({}, {"_id": 0})]  # cast to list
 
     def get_collection(
         self, collection_name: str, field_names: list[str]
@@ -348,6 +355,21 @@ class MongoDBContext:
         db = self.client[MONGODB_BASE_NAME]
         collection = db[collection_name]
         collection.insert_one(document)
+
+    def replace_document(
+        self,
+        collection_name: str,
+        filter: dict,
+        replacement: dict[str, int | bool | str | float],
+    ) -> None:
+        db = self.client[MONGODB_BASE_NAME]
+        collection = db[collection_name]
+        collection.replace_one(filter, replacement)
+
+    def delete_document(self, collection_name: str, filter: dict) -> None:
+        db = self.client[MONGODB_BASE_NAME]
+        collection = db[collection_name]
+        collection.delete_one(filter)
 
 
 class DebeziumContext:
@@ -540,3 +562,120 @@ class EntryCountChecker:
         except Exception:
             return False
         return len(table_contents) == self.n_expected_entries
+
+
+def _compare_input_and_output(
+    ItemType: type,
+    input_rows: list[dict],
+    output_rows: list[dict],
+    timestamp_precision: int = 1000,
+    timezone_supported: bool = True,
+):
+    def normalize_input(value):
+        if isinstance(value, pw.Pointer):
+            return str(value)
+        if isinstance(value, pw.Json):
+            return value.value
+        if isinstance(value, pd.Timestamp):
+            result = value.to_pydatetime()
+            if not timezone_supported:
+                result = result.replace(tzinfo=None)
+            return result
+        if isinstance(value, pd.Timedelta):
+            return value.value // timestamp_precision
+        if isinstance(value, np.ndarray):
+            return normalize_input(value.tolist())
+        if hasattr(value, "_create_with_serializer"):
+            return value.value
+        if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
+            return [normalize_input(v) for v in value]
+        return value
+
+    def normalize_output(value, ItemType: type):
+        if hasattr(ItemType, "_create_with_serializer"):
+            value = api.deserialize(value)
+            assert isinstance(
+                value, pw.PyObjectWrapper
+            ), f"expecting PyObjectWrapper, got {type(value)}"
+            return value.value
+
+        actual_type = get_args(ItemType) or (ItemType,)
+        if pw.Json in actual_type and isinstance(value, str):
+            value = json.loads(value)
+        if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
+            args = get_args(ItemType)
+            nested_arg = None
+            for arg in args:
+                if arg is not None:
+                    nested_arg = arg
+                    break
+            return [normalize_output(v, nested_arg) for v in value]  # type: ignore
+        return value
+
+    output_rows.sort(key=lambda item: item["pkey"])
+
+    for input_row in input_rows:
+        input_row["item"] = normalize_input(input_row["item"])
+
+    for output_row in output_rows:
+        output_row["item"] = normalize_output(output_row["item"], ItemType)
+        output_row.pop("time", None)
+        output_row.pop("diff", None)
+
+    print("input rows", input_rows)
+    print("output rows", output_rows)
+    assert output_rows == input_rows
+
+
+def _get_expected_python_type(ItemType: type) -> type | tuple:
+    import types as builtin_types
+
+    origin = get_origin(ItemType)
+
+    if origin is Union or (
+        hasattr(builtin_types, "UnionType") and origin is builtin_types.UnionType
+    ):
+        args = get_args(ItemType)
+        non_none_args = [a for a in args if a is not type(None)]
+        inner = _get_expected_python_type(non_none_args[0])
+        if isinstance(inner, tuple):
+            return inner + (type(None),)
+        return (inner, type(None))
+
+    if origin is not None:
+        return origin
+
+    if ItemType is pw.Duration:
+        return pd.Timedelta
+    if ItemType in (pw.DateTimeNaive, pw.DateTimeUtc):
+        return pd.Timestamp
+
+    return ItemType
+
+
+def _make_type_check_observer(
+    ItemType: type,
+) -> tuple[pw.io.python.ConnectorObserver, list[str]]:
+    type_errors: list[str] = []
+    expected_type = _get_expected_python_type(ItemType)
+
+    class TypeCheckObserver(pw.io.python.ConnectorObserver):
+        def on_change(self, key, row, time, is_addition):
+            if is_addition:
+                value = row["item"]
+                if not isinstance(value, expected_type):
+                    # tuple is acceptable when the schema type is list
+                    if isinstance(value, tuple) and (
+                        expected_type is list
+                        or (isinstance(expected_type, tuple) and list in expected_type)
+                    ):
+                        return
+                    type_errors.append(
+                        f"item value {value!r} has type {type(value)}, "
+                        f"expected {expected_type}"
+                    )
+
+        def on_end(self):
+            pass
+
+    return TypeCheckObserver(), type_errors

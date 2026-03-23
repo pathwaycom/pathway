@@ -2,15 +2,279 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
-from pathway.internals import api, datasink
+from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.table import Table
+from pathway.internals.table import Schema, Table
+from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import SNAPSHOT_OUTPUT_TABLE_TYPE
+from pathway.io._utils import (
+    SNAPSHOT_OUTPUT_TABLE_TYPE,
+    internal_connector_mode,
+    read_schema,
+)
+
+
+@check_arg_types
+@trace_user_frame
+def read(
+    connection_string: str,
+    database: str,
+    collection: str,
+    schema: type[Schema],
+    *,
+    mode: Literal["static", "streaming"] = "streaming",
+    autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
+    max_backlog_size: int | None = None,
+    debug_data: Any = None,
+) -> Table:
+    """
+    **This module is available when using one of the following licenses only:**
+    `Pathway Scale, Pathway Enterprise </pricing>`_.
+
+    .. warning::
+
+        This is an early version of the connector. The API and behavior may change
+        in the next release as the connector is stabilized.
+
+    Reads a collection from MongoDB into a Pathway table.
+
+    The connector fetches all documents from the specified collection and maps each
+    document's fields to table columns according to the ``schema`` parameter. Field
+    names in the documents must match the column names in the schema exactly.
+
+    **Note:** Specifying a primary key in the schema is not supported. The connector
+    uses MongoDB's ``_id`` field as the Pathway row key, ensuring that document
+    identity is preserved consistently across the initial snapshot and subsequent
+    incremental updates. Using a different primary key could cause mismatches between
+    Pathway's internal state and the actual collection contents. To reindex the
+    resulting table by a different column, use ``pw.Table.with_id_from()`` after
+    reading.
+
+    In ``"streaming"`` mode (the default), the connector first emits the full
+    collection as an initial snapshot, then subscribes to MongoDB's change stream to
+    receive incremental inserts, replacements, updates, and deletions in real time.
+    The change stream is backed by the oplog, so the collection must be part of a
+    `replica set <https://www.mongodb.com/docs/manual/replication/>`_ or a sharded
+    cluster — a standalone MongoDB instance without replica set configuration does
+    not support change streams. In ``"static"`` mode, the connector reads the
+    collection once and terminates without subscribing to the change stream.
+
+    When persistence is enabled, the connector saves the oplog position — specifically,
+    the change stream resume token of the last processed event — as its offset. On
+    restart, it resumes from that token and delivers only the changes that occurred
+    since the last checkpoint, so the downstream computation sees only the new delta
+    rather than the full collection again. The ``name`` parameter is required when
+    using persistence, so that the engine can match the connector to its saved state
+    across restarts.
+
+    Args:
+        connection_string: The connection string for the MongoDB deployment. See the
+            `MongoDB documentation <https://www.mongodb.com/docs/manual/reference/connection-string/>`_
+            for the details.
+        database: The name of the database to read from.
+        collection: The name of the collection to read.
+        schema: Schema of the resulting table. Column names must match the field names
+            in the MongoDB documents. Specifying a primary key in the schema is not
+            supported; see above for details.
+        mode: If set to ``"streaming"`` (the default), the connector first delivers
+            the initial collection snapshot and then continuously watches for new
+            changes via the change stream. If set to ``"static"``, it reads the
+            collection once and terminates without opening a change stream.
+        autocommit_duration_ms: The maximum time between two commits. Every
+            autocommit_duration_ms milliseconds, the updates received by the connector
+            are committed and pushed into Pathway's computation graph.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's
+            progress.
+        max_backlog_size: Limit on the number of entries read from the input source
+            and kept in processing at any moment. Reading pauses when the limit is
+            reached and resumes as processing of some entries completes. Useful with
+            large sources that emit an initial burst of data to avoid memory spikes.
+        debug_data: Static data replacing original one when debug mode is active.
+
+    Returns:
+        Table: The table read.
+
+    Example:
+
+    To get started, you need to run MongoDB locally. The connector uses MongoDB's
+    change stream, which requires a replica set. The easiest way to spin up a
+    single-node replica set with Docker is:
+
+    .. code-block:: bash
+
+        docker pull mongo
+        docker run -d --name mongo -p 27017:27017 mongo --replSet rs0
+
+    The ``--replSet rs0`` flag enables replica set mode. After the container starts,
+    initialize the replica set with:
+
+    .. code-block:: bash
+
+        docker exec -it mongo mongosh --eval "rs.initiate()"
+
+    You only need to do this once. Once the replica set is up, connect to the shell
+    to insert some sample data:
+
+    .. code-block:: bash
+
+        docker exec -it mongo mongosh
+
+    Inside the shell, create a collection and populate it:
+
+    .. code-block:: rst
+
+        use shop
+        db.orders.insertMany([
+            { product: "apple",  qty: 10 },
+            { product: "banana", qty: 5  },
+            { product: "cherry", qty: 20 },
+        ])
+
+    With data in place, define a matching schema in Pathway. Note that no primary key
+    is declared — the connector derives the row key from each document's ``_id``.
+
+    >>> import pathway as pw
+    >>> class OrderSchema(pw.Schema):
+    ...     product: str
+    ...     qty: int
+
+    **Static mode.** To read the collection once and stop, use ``mode="static"``.
+    This is suitable for batch pipelines that process all available documents and
+    then terminate.
+
+    >>> table = pw.io.mongodb.read(
+    ...     "mongodb://127.0.0.1:27017/?replicaSet=rs0",
+    ...     database="shop",
+    ...     collection="orders",
+    ...     schema=OrderSchema,
+    ...     mode="static",
+    ... )
+    >>> pw.debug.compute_and_print(table, include_id=False)  # doctest: +SKIP
+    product  qty
+      apple   10
+     banana    5
+     cherry   20
+
+    **Streaming mode.** When ``mode="streaming"`` (the default), the connector first
+    delivers the full collection as an initial snapshot and then continues to watch
+    for changes. Every insert, replacement, update, or deletion in MongoDB is
+    forwarded to Pathway in real time.
+
+    >>> table = pw.io.mongodb.read(
+    ...     "mongodb://127.0.0.1:27017/?replicaSet=rs0",
+    ...     database="shop",
+    ...     collection="orders",
+    ...     schema=OrderSchema,
+    ... )
+
+    After the snapshot is delivered, any change made in the MongoDB shell will be
+    reflected in Pathway immediately. For example, running the following in
+    ``mongosh``:
+
+    .. code-block:: rst
+
+        db.orders.insertOne({ product: "durian", qty: 2 })
+
+    will cause Pathway to receive a new row ``{ product: "durian", qty: 2 }`` with
+    ``diff = 1``. Running:
+
+    .. code-block:: rst
+
+        db.orders.deleteOne({ product: "banana" })
+
+    will cause Pathway to retract the ``banana`` row with ``diff = -1``.
+
+    **Persistence in static mode.** With persistence enabled, the connector records
+    the oplog position after each run. On the next run it resumes from that position
+    and delivers only the documents that changed since the last checkpoint, so the
+    output contains the delta rather than the full collection.
+
+    >>> persistence_config = pw.persistence.Config(
+    ...     backend=pw.persistence.Backend.filesystem("./PStorage")
+    ... )
+    >>> table = pw.io.mongodb.read(
+    ...     "mongodb://127.0.0.1:27017/?replicaSet=rs0",
+    ...     database="shop",
+    ...     collection="orders",
+    ...     schema=OrderSchema,
+    ...     mode="static",
+    ...     name="orders_source",
+    ... )
+    >>> pw.io.jsonlines.write(table, "output.jsonl")
+    >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
+
+    On the first run, ``output.jsonl`` will contain all three documents with
+    ``diff = 1``. If you then insert a new document into the collection and run
+    the program again with the same ``persistence_config``, only the newly inserted
+    document will appear in the output.
+
+    **Persistence in streaming mode.** Persistence works the same way in streaming
+    mode. Pass the same ``persistence_config`` to ``pw.run()`` and provide the same
+    ``name`` to ``pw.io.mongodb.read()`` so the engine can find the saved offset:
+
+    >>> table = pw.io.mongodb.read(
+    ...     "mongodb://127.0.0.1:27017/?replicaSet=rs0",
+    ...     database="shop",
+    ...     collection="orders",
+    ...     schema=OrderSchema,
+    ...     name="orders_source",
+    ... )
+    >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
+
+    If the program is restarted, it will resume from the saved oplog position and
+    emit only the changes that arrived after the previous run terminated, without
+    replaying the initial snapshot.
+    """
+    _check_entitlements("mongodb-oplog-reader")
+
+    if schema.primary_key_columns():
+        raise ValueError(
+            "Defining a primary key in the schema is not supported for pw.io.mongodb.read. "
+            "The connector maintains a snapshot of the MongoDB collection keyed by the "
+            "document's _id field. Using a different primary key could cause mismatches "
+            "between Pathway's internal state and the actual collection contents. "
+            "If you need to reindex the resulting table by a different column, use "
+            "pw.Table.with_id_from() after reading."
+        )
+
+    data_storage = api.DataStorage(
+        storage_type="mongodb",
+        connection_string=connection_string,
+        database=database,
+        table_name=collection,
+        mode=internal_connector_mode(mode),
+    )
+
+    schema, api_schema = read_schema(schema)
+    data_format = api.DataFormat(
+        format_type="bson",
+        session_type=api.SessionType.UPSERT,
+        **api_schema,
+    )
+
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=name,
+        max_backlog_size=max_backlog_size,
+    )
+    return table_from_datasource(
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            schema=schema,
+            data_source_options=data_source_options,
+            datasource_name="mongodb",
+        ),
+        debug_datasource=datasource.debug_datasource(debug_data),
+    )
 
 
 @check_arg_types

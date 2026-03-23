@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `pw.io.mongodb.read` connector, which reads data from a MongoDB collection. The connector first delivers a full snapshot of the collection and then, if the streaming mode is used, subscribes to the change stream to receive incremental updates in real time.
 - `pw.io.postgres.read` connector, which reads data from a PostgreSQL table directly by parsing the Write-Ahead Log (WAL).
 - `pw.io.postgres.write` and `pw.io.postgres.read` now support serialization/deserialization of `np.ndarray` (`int`/`float` elements), homogeneous `tuple` and `list` (via Postgres `ARRAY`; multidimensional rectangular arrays supported).
 
