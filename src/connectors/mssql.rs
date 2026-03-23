@@ -91,14 +91,129 @@ impl MssqlReader {
         })
     }
 
-    fn convert_to_value(
+    /// Check if a tiberius `ColumnData` represents a SQL NULL value.
+    fn is_column_null(col_data: &ColumnData<'_>) -> bool {
+        matches!(
+            col_data,
+            ColumnData::Bit(None)
+                | ColumnData::U8(None)
+                | ColumnData::I16(None)
+                | ColumnData::I32(None)
+                | ColumnData::I64(None)
+                | ColumnData::F32(None)
+                | ColumnData::F64(None)
+                | ColumnData::String(None)
+                | ColumnData::Binary(None)
+                | ColumnData::Numeric(None)
+                | ColumnData::DateTime(None)
+                | ColumnData::DateTime2(None)
+                | ColumnData::SmallDateTime(None)
+                | ColumnData::DateTimeOffset(None)
+                | ColumnData::Guid(None)
+                | ColumnData::Xml(None)
+        )
+    }
+
+    /// Convert a single row value at `col_idx` to a Pathway `Value`.
+    ///
+    /// Uses `row.get()` for datetime types (leveraging tiberius's built-in chrono
+    /// `FromSql` implementations) and raw `ColumnData` matching for all other types.
+    fn convert_row_value(
+        row: &tiberius::Row,
+        col_idx: usize,
+        field_name: &str,
+        dtype: &Type,
+    ) -> Result<Value, Box<ConversionError>> {
+        // Handle datetime types via row.get() which uses tiberius's FromSql
+        let inner_dtype = match dtype {
+            Type::Optional(inner) => inner.as_ref(),
+            other => other,
+        };
+        let is_optional = matches!(dtype, Type::Optional(_));
+
+        match inner_dtype {
+            Type::DateTimeNaive | Type::Any
+                if matches!(
+                    row.cells().nth(col_idx).map(|(_, cd)| cd),
+                    Some(
+                        ColumnData::DateTime(_)
+                            | ColumnData::DateTime2(_)
+                            | ColumnData::SmallDateTime(_)
+                    )
+                ) =>
+            {
+                let ndt: Option<chrono::NaiveDateTime> = row.get(col_idx);
+                match ndt {
+                    Some(ndt) => crate::engine::DateTimeNaive::try_from(ndt)
+                        .map(Value::DateTimeNaive)
+                        .map_err(|_| {
+                            Box::new(ConversionError::new(
+                                format!("{ndt:?}"),
+                                field_name.to_owned(),
+                                dtype.clone(),
+                                None,
+                            ))
+                        }),
+                    None if is_optional => Ok(Value::None),
+                    None => Err(Box::new(ConversionError::new(
+                        "NULL".to_string(),
+                        field_name.to_owned(),
+                        dtype.clone(),
+                        None,
+                    ))),
+                }
+            }
+            Type::DateTimeUtc | Type::Any
+                if matches!(
+                    row.cells().nth(col_idx).map(|(_, cd)| cd),
+                    Some(ColumnData::DateTimeOffset(_))
+                ) =>
+            {
+                let dt: Option<chrono::DateTime<chrono::Utc>> = row.get(col_idx);
+                match dt {
+                    Some(dt) => crate::engine::DateTimeUtc::try_from(dt)
+                        .map(Value::DateTimeUtc)
+                        .map_err(|_| {
+                            Box::new(ConversionError::new(
+                                format!("{dt:?}"),
+                                field_name.to_owned(),
+                                dtype.clone(),
+                                None,
+                            ))
+                        }),
+                    None if is_optional => Ok(Value::None),
+                    None => Err(Box::new(ConversionError::new(
+                        "NULL".to_string(),
+                        field_name.to_owned(),
+                        dtype.clone(),
+                        None,
+                    ))),
+                }
+            }
+            _ => {
+                // For non-datetime types, use ColumnData matching
+                let col_data = row
+                    .cells()
+                    .nth(col_idx)
+                    .map(|(_, cd)| cd)
+                    .expect("column index out of bounds");
+                Self::convert_column_data(col_data, field_name, dtype)
+            }
+        }
+    }
+
+    fn convert_column_data(
         col_data: &ColumnData<'_>,
         field_name: &str,
         dtype: &Type,
     ) -> Result<Value, Box<ConversionError>> {
         let value = match (dtype, col_data) {
-            (Type::Optional(_) | Type::Any, ColumnData::Null) => Some(Value::None),
-            (Type::Optional(inner), other) => Self::convert_to_value(other, field_name, inner).ok(),
+            (Type::Optional(_) | Type::Any, col) if Self::is_column_null(col) => {
+                Some(Value::None)
+            }
+            (Type::Optional(inner), other) => {
+                Self::convert_column_data(other, field_name, inner).ok()
+            }
             (Type::Bool | Type::Any, ColumnData::Bit(Some(v))) => Some(Value::Bool(*v)),
             (Type::Int | Type::Any, ColumnData::I16(Some(v))) => Some(Value::Int(i64::from(*v))),
             (Type::Int | Type::Any, ColumnData::I32(Some(v))) => Some(Value::Int(i64::from(*v))),
@@ -121,33 +236,6 @@ impl MssqlReader {
             }
             (Type::Bytes | Type::Any, ColumnData::Binary(Some(b))) => {
                 Some(Value::Bytes(b.to_vec().into()))
-            }
-            (Type::DateTimeNaive | Type::Any, ColumnData::DateTime(Some(dt))) => {
-                let s = format!("{dt}");
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
-                    .ok()
-                    .map(|ndt| Value::DateTimeNaive(ndt.into()))
-            }
-            (Type::DateTimeNaive | Type::Any, ColumnData::DateTime2(Some(dt))) => {
-                let s = format!("{dt}");
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
-                    .ok()
-                    .map(|ndt| Value::DateTimeNaive(ndt.into()))
-            }
-            (Type::DateTimeNaive | Type::Any, ColumnData::SmallDateTime(Some(dt))) => {
-                let s = format!("{dt}");
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                    .ok()
-                    .map(|ndt| Value::DateTimeNaive(ndt.into()))
-            }
-            (Type::DateTimeUtc | Type::Any, ColumnData::DateTimeOffset(Some(dto))) => {
-                let s = format!("{dto}");
-                chrono::DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f %:z")
-                    .ok()
-                    .map(|dt| {
-                        let utc = dt.naive_utc();
-                        Value::DateTimeUtc(utc.into())
-                    })
             }
             (Type::String | Type::Any, ColumnData::Guid(Some(guid))) => {
                 Some(Value::String(guid.to_string().into()))
@@ -217,8 +305,7 @@ impl MssqlReader {
 
             let mut values = HashMap::with_capacity(self.schema.len());
             for (column_idx, (column_name, column_dtype)) in self.schema.iter().enumerate() {
-                let col_data = &row[column_idx];
-                let value = Self::convert_to_value(col_data, column_name, column_dtype);
+                let value = Self::convert_row_value(row, column_idx, column_name, column_dtype);
                 values.insert(column_name.clone(), value);
             }
             let values: ValuesMap = values.into();
@@ -474,8 +561,7 @@ impl MssqlCdcReader {
         for (row_idx, row) in rows.iter().enumerate() {
             let mut values = HashMap::with_capacity(self.schema.len());
             for (col_idx, (col_name, col_dtype)) in self.schema.iter().enumerate() {
-                let col_data = &row[col_idx];
-                let value = MssqlReader::convert_to_value(col_data, col_name, col_dtype);
+                let value = MssqlReader::convert_row_value(row, col_idx, col_name, col_dtype);
                 values.insert(col_name.clone(), value);
             }
             let values: ValuesMap = values.into();
@@ -595,8 +681,8 @@ impl MssqlCdcReader {
             // User columns start at index 4 (after the 4 system columns)
             let mut values = HashMap::with_capacity(schema.len());
             for (col_idx, (col_name, col_dtype)) in schema.iter().enumerate() {
-                let col_data = &row[col_idx + 4];
-                let value = MssqlReader::convert_to_value(col_data, col_name, col_dtype);
+                let value =
+                    MssqlReader::convert_row_value(row, col_idx + 4, col_name, col_dtype);
                 values.insert(col_name.clone(), value);
             }
             let values: ValuesMap = values.into();
