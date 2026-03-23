@@ -110,6 +110,7 @@ def read(
     )
     data_format = api.DataFormat(
         format_type="transparent",
+        session_type=api.SessionType.UPSERT,
         **api_schema,
     )
 
@@ -125,6 +126,7 @@ def read(
             schema=schema,
             data_source_options=data_source_options,
             datasource_name="mssql",
+            append_only=(mode == "static"),
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -174,7 +176,8 @@ def write(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on the
-            values of the given columns within each minibatch.
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -216,6 +219,8 @@ def write(
     ...     output_table_type="snapshot",
     ...     primary_key=[table.key],
     ... )
+
+    You can run this pipeline with ``pw.run()``.
     """
 
     data_storage = api.DataStorage(
