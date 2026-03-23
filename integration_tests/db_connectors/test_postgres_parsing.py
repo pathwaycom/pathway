@@ -3,7 +3,12 @@ from typing import Any, get_args
 import numpy as np
 import pandas as pd
 import pytest
-from utils import POSTGRES_SETTINGS, SimpleObject, _make_type_check_observer
+from utils import (
+    POSTGRES_SETTINGS,
+    SimpleObject,
+    _create_ndarray_table,
+    _make_type_check_observer,
+)
 
 import pathway as pw
 from pathway.internals import api
@@ -86,19 +91,6 @@ def _create_table(ItemType: type, input_rows: list[Any]) -> pw.Table:
         InputSchemaWithPkey,
         [tuple(row.values()) for row in input_rows],
     )
-
-    return table
-
-
-def _create_ndarray_table(ItemType: type, input_rows: list[Any]) -> pw.Table:
-    class InputSchemaWithPkey(pw.Schema):
-        pkey: int = pw.column_definition(primary_key=True)
-        item: Any
-
-    table = pw.debug.table_from_rows(
-        InputSchemaWithPkey,
-        [tuple(row.values()) for row in input_rows],
-    ).update_types(item=ItemType)
 
     return table
 

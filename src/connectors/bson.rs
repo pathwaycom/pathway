@@ -5,6 +5,7 @@ use mongodb::bson::{
     bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents, Bson,
     DateTime as BsonDateTime, Document,
 };
+use ndarray::{ArrayViewD, Axis};
 use ordered_float::OrderedFloat;
 
 use crate::connectors::data_format::{
@@ -293,7 +294,11 @@ impl BsonParser {
                 Self::bson_to_complex_value(bson, field_name, type_)
             }
 
-            Type::Array(_, _) | Type::Future(_) => Err(Box::new(make_conversion_err(
+            Type::Array(_, element_type) => {
+                bson_to_ndarray_value(bson, field_name, type_, element_type)
+            }
+
+            Type::Future(_) => Err(Box::new(make_conversion_err(
                 format!("{bson:?}"),
                 "unsupported type for MongoDB conversion",
                 field_name,
@@ -390,6 +395,137 @@ impl Parser for BsonParser {
     }
 }
 
+fn int_ndarray_to_bson(view: ArrayViewD<i64>) -> Bson {
+    match view.ndim() {
+        0 => Bson::Int64(*view.iter().next().unwrap_or(&0)),
+        1 => Bson::Array(view.iter().map(|&i| Bson::Int64(i)).collect()),
+        _ => Bson::Array(
+            (0..view.shape()[0])
+                .map(|i| int_ndarray_to_bson(view.index_axis(Axis(0), i)))
+                .collect(),
+        ),
+    }
+}
+
+fn float_ndarray_to_bson(view: ArrayViewD<f64>) -> Bson {
+    match view.ndim() {
+        0 => Bson::Double(*view.iter().next().unwrap_or(&0.0)),
+        1 => Bson::Array(view.iter().map(|&f| Bson::Double(f)).collect()),
+        _ => Bson::Array(
+            (0..view.shape()[0])
+                .map(|i| float_ndarray_to_bson(view.index_axis(Axis(0), i)))
+                .collect(),
+        ),
+    }
+}
+
+fn collect_bson_ndarray<T>(
+    bson: &Bson,
+    field_name: &str,
+    type_: &Type,
+    parse_elem: &dyn Fn(&Bson) -> Option<T>,
+    flat: &mut Vec<T>,
+    shape: &mut Vec<usize>,
+    depth: usize,
+) -> Result<(), Box<ConversionError>> {
+    match bson {
+        Bson::Array(arr) => {
+            if depth >= shape.len() {
+                shape.push(arr.len());
+            } else if shape[depth] != arr.len() {
+                return Err(Box::new(make_conversion_err(
+                    format!("{bson:?}"),
+                    "jagged ndarray is not supported",
+                    field_name,
+                    type_,
+                )));
+            }
+            for item in arr {
+                collect_bson_ndarray(item, field_name, type_, parse_elem, flat, shape, depth + 1)?;
+            }
+            Ok(())
+        }
+        scalar => match parse_elem(scalar) {
+            Some(v) => {
+                flat.push(v);
+                Ok(())
+            }
+            None => Err(Box::new(make_conversion_err(
+                format!("{scalar:?}"),
+                "unexpected element type in ndarray",
+                field_name,
+                type_,
+            ))),
+        },
+    }
+}
+
+fn bson_to_ndarray_value(
+    bson: &Bson,
+    field_name: &str,
+    type_: &Type,
+    element_type: &Type,
+) -> Result<Value, Box<ConversionError>> {
+    let err = |msg: &str| {
+        Box::new(make_conversion_err(
+            format!("{bson:?}"),
+            msg,
+            field_name,
+            type_,
+        ))
+    };
+    match element_type {
+        Type::Int => {
+            let mut flat = Vec::new();
+            let mut shape = Vec::new();
+            collect_bson_ndarray(
+                bson,
+                field_name,
+                type_,
+                &|b| match b {
+                    Bson::Int64(i) => Some(*i),
+                    Bson::Int32(i) => Some(i64::from(*i)),
+                    _ => None,
+                },
+                &mut flat,
+                &mut shape,
+                0,
+            )?;
+            if shape.is_empty() {
+                shape.push(flat.len());
+            }
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), flat)
+                .map(Value::from)
+                .map_err(|e| err(&format!("cannot build int ndarray: {e}")))
+        }
+        Type::Float => {
+            let mut flat = Vec::new();
+            let mut shape = Vec::new();
+            collect_bson_ndarray(
+                bson,
+                field_name,
+                type_,
+                &|b| match b {
+                    Bson::Double(f) => Some(*f),
+                    Bson::Int32(i) => Some(f64::from(*i)),
+                    Bson::Int64(i) => Some(*i as f64),
+                    _ => None,
+                },
+                &mut flat,
+                &mut shape,
+                0,
+            )?;
+            if shape.is_empty() {
+                shape.push(flat.len());
+            }
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), flat)
+                .map(Value::from)
+                .map_err(|e| err(&format!("cannot build float ndarray: {e}")))
+        }
+        _ => Err(err("ndarray element type must be Int or Float")),
+    }
+}
+
 pub fn serialize_value_to_bson(value: &Value) -> Result<Bson, FormatterError> {
     match value {
         Value::None => Ok(Bson::Null),
@@ -405,20 +541,8 @@ pub fn serialize_value_to_bson(value: &Value) -> Result<Bson, FormatterError> {
             }
             Ok(Bson::Array(items))
         }
-        Value::IntArray(a) => {
-            let mut items = Vec::with_capacity(a.len());
-            for item in a.iter() {
-                items.push(bson!(item));
-            }
-            Ok(Bson::Array(items))
-        }
-        Value::FloatArray(a) => {
-            let mut items = Vec::with_capacity(a.len());
-            for item in a.iter() {
-                items.push(bson!(item));
-            }
-            Ok(Bson::Array(items))
-        }
+        Value::IntArray(a) => Ok(int_ndarray_to_bson(a.view())),
+        Value::FloatArray(a) => Ok(float_ndarray_to_bson(a.view())),
         Value::Bytes(b) => Ok(Bson::Binary(BsonBinaryContents {
             subtype: BsonBinarySubtype::Generic,
             bytes: b.to_vec(),

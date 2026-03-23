@@ -4,7 +4,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin
 
 import boto3
 import mysql.connector
@@ -679,3 +679,14 @@ def _make_type_check_observer(
             pass
 
     return TypeCheckObserver(), type_errors
+
+
+def _create_ndarray_table(ItemType: type, input_rows: list[dict]) -> pw.Table:
+    class InputSchemaWithPkey(pw.Schema):
+        pkey: int
+        item: Any
+
+    return pw.debug.table_from_rows(
+        InputSchemaWithPkey,
+        [tuple(row.values()) for row in input_rows],
+    ).update_types(item=ItemType)

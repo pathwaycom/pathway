@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mongodb::bson::{doc, Document as BsonDocument};
-use ndarray::{arr1, ArrayD};
+use ndarray::{arr1, arr2, ArrayD, IxDyn};
 use ordered_float::OrderedFloat;
 use serde_json::json;
 
@@ -18,6 +18,20 @@ use pathway_engine::engine::time::DateTime;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Timestamp, Type, Value};
 
 const TEST_FIELD: &str = "field";
+
+fn flatten_bson_ints(bson: &mongodb::bson::Bson) -> Vec<i64> {
+    match bson {
+        mongodb::bson::Bson::Array(arr) => arr.iter().flat_map(flatten_bson_ints).collect(),
+        other => vec![other.as_i64().expect("expected i64 in int ndarray")],
+    }
+}
+
+fn flatten_bson_floats(bson: &mongodb::bson::Bson) -> Vec<f64> {
+    match bson {
+        mongodb::bson::Bson::Array(arr) => arr.iter().flat_map(flatten_bson_floats).collect(),
+        other => vec![other.as_f64().expect("expected f64 in float ndarray")],
+    }
+}
 
 fn check_formatted_value(type_: &Type, value: &Value, document: &BsonDocument) {
     match (&type_, value) {
@@ -75,22 +89,14 @@ fn check_formatted_value(type_: &Type, value: &Value, document: &BsonDocument) {
             assert_eq!(original_contents, document_contents);
         }
         (&Type::Array(_, _), Value::IntArray(a)) => {
-            let document_contents: Vec<i64> = document
-                .get_array(TEST_FIELD)
-                .unwrap()
-                .iter()
-                .map(|x| x.as_i64().unwrap())
-                .collect();
+            let bson_field = document.get(TEST_FIELD).unwrap();
+            let document_contents = flatten_bson_ints(bson_field);
             let original_contents: Vec<i64> = a.iter().copied().collect();
             assert_eq!(original_contents, document_contents);
         }
         (&Type::Array(_, _), Value::FloatArray(a)) => {
-            let document_contents: Vec<f64> = document
-                .get_array(TEST_FIELD)
-                .unwrap()
-                .iter()
-                .map(|x| x.as_f64().unwrap())
-                .collect();
+            let bson_field = document.get(TEST_FIELD).unwrap();
+            let document_contents = flatten_bson_floats(bson_field);
             let original_contents: Vec<f64> = a.iter().copied().collect();
             assert_eq!(original_contents, document_contents);
         }
@@ -431,18 +437,131 @@ fn test_parse_tuple() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_parse_unsupported_type() -> eyre::Result<()> {
-    // Type::Array is not supported by the parser (mirrors test_unsupported_type for
-    // the formatter, which rejects Value::Error).
+fn test_parse_int_ndarray_1d() -> eyre::Result<()> {
+    let arr: ArrayD<i64> = arr1(&[1_i64, 2, 3]).into_dyn();
+    test_type_parsing(
+        Type::Array(Some(1), Arc::new(Type::Int)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_float_ndarray_1d() -> eyre::Result<()> {
+    let arr: ArrayD<f64> = arr1(&[1.0_f64, -2.5, 3.14]).into_dyn();
+    test_type_parsing(
+        Type::Array(Some(1), Arc::new(Type::Float)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_int_ndarray_2d() -> eyre::Result<()> {
+    let arr: ArrayD<i64> = arr2(&[[1_i64, 2], [3, 4]]).into_dyn();
+    test_type_parsing(
+        Type::Array(Some(2), Arc::new(Type::Int)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_float_ndarray_2d() -> eyre::Result<()> {
+    let arr: ArrayD<f64> = arr2(&[[1.1_f64, 2.2], [3.3, 4.4]]).into_dyn();
+    test_type_parsing(
+        Type::Array(Some(2), Arc::new(Type::Float)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_int_ndarray_3d() -> eyre::Result<()> {
+    let arr: ArrayD<i64> =
+        ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1_i64, 2, 3, 4, 5, 6, 7, 8])?;
+    test_type_parsing(
+        Type::Array(Some(3), Arc::new(Type::Int)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_float_ndarray_3d() -> eyre::Result<()> {
+    let arr: ArrayD<f64> =
+        ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])?;
+    test_type_parsing(
+        Type::Array(Some(3), Arc::new(Type::Float)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_int_ndarray_empty() -> eyre::Result<()> {
+    let arr: ArrayD<i64> = ArrayD::from_shape_vec(IxDyn(&[0]), vec![])?;
+    test_type_parsing(
+        Type::Array(Some(1), Arc::new(Type::Int)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_float_ndarray_empty() -> eyre::Result<()> {
+    let arr: ArrayD<f64> = ArrayD::from_shape_vec(IxDyn(&[0]), vec![])?;
+    test_type_parsing(
+        Type::Array(Some(1), Arc::new(Type::Float)),
+        &[Value::from(arr)],
+    )
+}
+
+#[test]
+fn test_parse_ndarray_jagged_error() -> eyre::Result<()> {
     let value_fields = vec![TEST_FIELD.to_string()];
     let schema = make_schema(&[(TEST_FIELD, Type::Array(None, Arc::new(Type::Int)))]);
     let mut parser = BsonParser::new(value_fields, schema, SessionType::Native)?;
 
-    let doc = doc! { TEST_FIELD: [1_i64, 2_i64, 3_i64] };
+    // [[1, 2], [3]] is jagged — rows have different lengths.
+    let doc = doc! { TEST_FIELD: [[1_i64, 2_i64], [3_i64]] };
     let event = parse_bson_context(&mut parser, DataEventType::Insert, "key", doc);
     assert_parse_field_error(event);
 
     Ok(())
+}
+
+#[test]
+fn test_parse_ndarray_wrong_element_type_error() -> eyre::Result<()> {
+    let value_fields = vec![TEST_FIELD.to_string()];
+    let schema = make_schema(&[(TEST_FIELD, Type::Array(None, Arc::new(Type::Int)))]);
+    let mut parser = BsonParser::new(value_fields, schema, SessionType::Native)?;
+
+    // Strings cannot be parsed as int ndarray elements.
+    let doc = doc! { TEST_FIELD: ["a", "b"] };
+    let event = parse_bson_context(&mut parser, DataEventType::Insert, "key", doc);
+    assert_parse_field_error(event);
+
+    Ok(())
+}
+
+#[test]
+fn test_format_int_ndarray_2d() -> eyre::Result<()> {
+    let arr: ArrayD<i64> = arr2(&[[1_i64, 2], [3, 4]]).into_dyn();
+    test_type_formatting(Type::Array(Some(2), Arc::new(Type::Int)), &[Value::from(arr)])
+}
+
+#[test]
+fn test_format_float_ndarray_2d() -> eyre::Result<()> {
+    let arr: ArrayD<f64> = arr2(&[[1.1_f64, 2.2], [3.3, 4.4]]).into_dyn();
+    test_type_formatting(Type::Array(Some(2), Arc::new(Type::Float)), &[Value::from(arr)])
+}
+
+#[test]
+fn test_format_int_ndarray_3d() -> eyre::Result<()> {
+    let arr: ArrayD<i64> =
+        ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1_i64, 2, 3, 4, 5, 6, 7, 8])?;
+    test_type_formatting(Type::Array(Some(3), Arc::new(Type::Int)), &[Value::from(arr)])
+}
+
+#[test]
+fn test_format_float_ndarray_3d() -> eyre::Result<()> {
+    let arr: ArrayD<f64> =
+        ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])?;
+    test_type_formatting(Type::Array(Some(3), Arc::new(Type::Float)), &[Value::from(arr)])
 }
 
 fn assert_parse_field_error(event: ParsedEventWithErrors) {
@@ -494,7 +613,7 @@ fn test_parse_any() -> eyre::Result<()> {
 
 #[test]
 fn test_parse_future_unsupported() -> eyre::Result<()> {
-    // Type::Future is not supported by the parser, just like Type::Array.
+    // Type::Future is not supported by the parser.
     let value_fields = vec![TEST_FIELD.to_string()];
     let schema = make_schema(&[(TEST_FIELD, Type::Future(Arc::new(Type::Int)))]);
     let mut parser = BsonParser::new(value_fields, schema, SessionType::Native)?;

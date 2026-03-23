@@ -1,5 +1,6 @@
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 from utils import (
@@ -8,6 +9,7 @@ from utils import (
     MongoDBContext,
     SimpleObject,
     _compare_input_and_output,
+    _create_ndarray_table,
     _make_type_check_observer,
 )
 
@@ -38,10 +40,10 @@ class MongoDBRowCountChecker:
         return len(rows) == self.n_rows_expected
 
 
-def _create_table(ItemType: type, input_rows: list[dict]) -> pw.Table:
+def _create_table(ItemType: Any, input_rows: list[dict]) -> pw.Table:
     class InputSchema(pw.Schema):
         pkey: int
-        item: ItemType  # type: ignore
+        item: ItemType
 
     return pw.debug.table_from_rows(
         InputSchema,
@@ -50,7 +52,7 @@ def _create_table(ItemType: type, input_rows: list[dict]) -> pw.Table:
 
 
 def _test_mongodb_static(
-    mongodb, ItemType: type, items: list[Any], create_table: Any = _create_table
+    mongodb, ItemType: Any, items: list[Any], create_table: Any = _create_table
 ) -> str:
     input_rows = []
     for index, item in enumerate(items):
@@ -111,7 +113,7 @@ def _test_mongodb_static(
 
 def _test_mongodb_streaming(
     mongodb,
-    ItemType: type,
+    ItemType: Any,
     items: list[Any],
     create_table: Any = _create_table,
 ):
@@ -120,7 +122,7 @@ def _test_mongodb_streaming(
 
     class InputSchemaWithPkey(pw.Schema):
         pkey: int
-        item: ItemType  # type: ignore
+        item: ItemType
 
     input_rows = []
     for index, item in enumerate(items):
@@ -532,4 +534,110 @@ def test_pyobject_wrapper_array(mongodb):
             [pw.wrap_py_object(SimpleObject(1)), pw.wrap_py_object(SimpleObject(2))],
             [pw.wrap_py_object(SimpleObject(3)), pw.wrap_py_object(SimpleObject(4))],
         ],
+    )
+
+
+def test_tuple(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        tuple[int, str, bool],
+        [(1, "hello", True), (2, "world", False), (-1, "", True)],
+    )
+
+
+def test_tuple_optional(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        tuple[int, str] | None,
+        [(1, "hello"), None, (2, "world")],
+    )
+
+
+def test_optional_int(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        int | None,
+        [1, None, -1, None, 0],
+    )
+
+
+def test_optional_str(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        str | None,
+        ["hello", None, "", None, "world"],
+    )
+
+
+def test_int_ndarray_1d(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        np.ndarray[None, int],  # type: ignore
+        [
+            np.array([1, 2, 3], dtype=np.int64),
+            np.array([-1, 0, 1], dtype=np.int64),
+            np.array([], dtype=np.int64),
+        ],
+        _create_ndarray_table,
+    )
+
+
+def test_float_ndarray_1d(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        np.ndarray[None, float],  # type: ignore
+        [
+            np.array([1.1, 2.2, 3.3], dtype=np.float64),
+            np.array([-1.5, 0.0, 3.14], dtype=np.float64),
+            np.array([], dtype=np.float64),
+        ],
+        _create_ndarray_table,
+    )
+
+
+def test_int_ndarray_2d(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        np.ndarray[None, int],  # type: ignore
+        [
+            np.array([[1, 2], [3, 4]], dtype=np.int64),
+            np.array([[5, 6], [7, 8]], dtype=np.int64),
+        ],
+        _create_ndarray_table,
+    )
+
+
+def test_float_ndarray_2d(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        np.ndarray[None, float],  # type: ignore
+        [
+            np.array([[1.1, 2.2], [3.3, 4.4]], dtype=np.float64),
+            np.array([[5.5, 6.6], [7.7, 8.8]], dtype=np.float64),
+        ],
+        _create_ndarray_table,
+    )
+
+
+def test_int_ndarray_3d(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        np.ndarray[None, int],  # type: ignore
+        [
+            np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=np.int64),
+        ],
+        _create_ndarray_table,
+    )
+
+
+def test_float_ndarray_3d(mongodb):
+    _test_mongodb_streaming(
+        mongodb,
+        np.ndarray[None, float],  # type: ignore
+        [
+            np.array(
+                [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]], dtype=np.float64
+            ),
+        ],
+        _create_ndarray_table,
     )
