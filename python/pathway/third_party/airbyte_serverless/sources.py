@@ -144,6 +144,7 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
         config: dict | None = None,
         streams: Iterable[str] | None = None,
         env_vars: dict | None = None,
+        dependency_overrides: list[str] | None = None,
     ):
         super().__init__("", config, streams, env_vars)
         self._venv_directory = tempfile.TemporaryDirectory()
@@ -153,9 +154,11 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
 
         logging.info(f"Installing python connector package for {connector}...")
         pip_path = os.fspath(self._venv_path / "bin" / "pip")
+        packages = [f"airbyte-{connector}"] + (dependency_overrides or [])
+        print("Packages:", packages)
         for n_attempt in range(MAX_PIP_INSTALL_ATTEMPTS):
             process = subprocess.run(
-                [pip_path, "install", f"airbyte-{connector}"],
+                [pip_path, "install"] + packages,
                 stderr=subprocess.STDOUT,
             )
             if process.returncode != 0:

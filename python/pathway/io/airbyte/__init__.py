@@ -48,6 +48,7 @@ def _construct_local_source(
     streams: Sequence[str],
     env_vars: dict[str, str] | None = None,
     enforce_method: str | None = None,
+    dependency_overrides: list[str] | None = None,
 ) -> AbstractAirbyteSource:
     with optional_imports("airbyte"):
         from pathway.io.airbyte.logic import (
@@ -75,6 +76,7 @@ def _construct_local_source(
             config=source_config.get("config"),
             streams=streams,
             env_vars=copy.copy(env_vars),
+            dependency_overrides=dependency_overrides,
         )
     else:
         logging.info(f"Running connector {connector_name} as a Docker image")
@@ -117,6 +119,7 @@ def read(
     gcp_region: str = "europe-west1",
     gcp_job_name: str | None = None,
     enforce_method: str | None = None,
+    dependency_overrides: list[str] | None = None,
     refresh_interval_ms: int = 60000,
     name: str | None = None,
     max_backlog_size: int | None = None,
@@ -168,6 +171,13 @@ mode. Please note that reusage Airbyte license is not supported at the moment.
             ``"pypi"``, Pathway will prefer the usage of the latest image available on
             PyPI. Use this option when you need to ensure certain behavior on the local
             run.
+        dependency_overrides: an optional list of pip requirement specifiers to install
+            alongside the connector package in its virtual environment. Use this to pin
+            a known-good version of a transitive dependency when the connector's own
+            metadata does not constrain it tightly enough. For example,
+            ``dependency_overrides=["airbyte-cdk==2.16.0"]`` will force that exact CDK
+            version regardless of what the connector declares. Only applies to the PyPI
+            execution method; ignored for Docker and remote execution.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -341,6 +351,7 @@ mode. Please note that reusage Airbyte license is not supported at the moment.
             streams,
             env_vars,
             enforce_method,
+            dependency_overrides,
         )
     elif execution_type == "remote":
         job_id = gcp_job_name or f"airbyte-serverless-{str(uuid.uuid4())}"
