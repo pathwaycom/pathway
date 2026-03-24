@@ -31,6 +31,11 @@ const MAX_MSSQL_RETRIES: usize = 3;
 
 type MssqlClient = Client<Compat<TcpStream>>;
 
+/// Build a schema-qualified table name using MSSQL bracket quoting.
+fn qualified_table_name(schema_name: &str, table_name: &str) -> String {
+    format!("[{}].[{}]", schema_name, table_name)
+}
+
 async fn connect_mssql(config: &Config) -> Result<MssqlClient, tiberius::error::Error> {
     let tcp = TcpStream::connect(config.get_addr()).await?;
     tcp.set_nodelay(true)?;
@@ -66,6 +71,7 @@ async fn detect_server_version(
 pub struct MssqlReader {
     runtime: TokioRuntime,
     config: Config,
+    schema_name: String,
     table_name: String,
     schema: Vec<(String, Type)>,
 
@@ -77,12 +83,14 @@ pub struct MssqlReader {
 impl MssqlReader {
     pub fn new(
         config: Config,
+        schema_name: String,
         table_name: String,
         schema: Vec<(String, Type)>,
     ) -> Result<Self, ReadError> {
         Ok(Self {
             runtime: create_async_tokio_runtime()?,
             config,
+            schema_name,
             table_name,
             schema,
             stored_state: HashMap::new(),
@@ -268,9 +276,9 @@ impl MssqlReader {
         // MSSQL doesn't have _rowid_, so we use ROW_NUMBER() as a synthetic row identity.
         // For tables with a primary key, this will produce stable ordering.
         let columns_str = column_names.join(",");
+        let full_table_name = qualified_table_name(&self.schema_name, &self.table_name);
         let query_str = format!(
-            "SELECT {columns_str}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS _rn FROM {}",
-            self.table_name
+            "SELECT {columns_str}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS _rn FROM {full_table_name}",
         );
 
         let rows = self.runtime.block_on(async {
@@ -429,6 +437,7 @@ impl Reader for MssqlReader {
 pub struct MssqlCdcReader {
     runtime: TokioRuntime,
     config: Config,
+    schema_name: String,
     table_name: String,
     capture_instance: String,
     schema: Vec<(String, Type)>,
@@ -441,6 +450,7 @@ pub struct MssqlCdcReader {
 impl MssqlCdcReader {
     pub fn new(
         config: Config,
+        schema_name: String,
         table_name: String,
         schema: Vec<(String, Type)>,
     ) -> Result<Self, ReadError> {
@@ -478,7 +488,8 @@ impl MssqlCdcReader {
             // Check if the table has CDC enabled and get capture instance
             let query = format!(
                 "SELECT capture_instance FROM cdc.change_tables \
-                 WHERE source_object_id = OBJECT_ID(N'{}')",
+                 WHERE source_object_id = OBJECT_ID(N'{}.{}')",
+                schema_name.replace('\'', "''"),
                 table_name.replace('\'', "''")
             );
             let row = client
@@ -497,23 +508,23 @@ impl MssqlCdcReader {
                 None => Err(ReadError::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     format!(
-                        "CDC is not enabled on table '{}'. Enable it with: \
-                         EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', \
-                         @source_name=N'{}', @role_name=NULL;",
-                        table_name, table_name
+                        "CDC is not enabled on table '{schema_name}.{table_name}'. Enable it with: \
+                         EXEC sys.sp_cdc_enable_table @source_schema=N'{schema_name}', \
+                         @source_name=N'{table_name}', @role_name=NULL;",
                     ),
                 ))),
             }
         })?;
 
         info!(
-            "MSSQL CDC reader initialized for table '{}', capture_instance='{}'",
-            table_name, capture_instance
+            "MSSQL CDC reader initialized for table '{}.{}', capture_instance='{}'",
+            schema_name, table_name, capture_instance
         );
 
         Ok(Self {
             runtime,
             config,
+            schema_name,
             table_name,
             capture_instance,
             schema,
@@ -528,7 +539,8 @@ impl MssqlCdcReader {
     fn load_snapshot(&mut self) -> Result<(), ReadError> {
         let column_names: Vec<&str> = self.schema.iter().map(|(n, _)| n.as_str()).collect();
         let columns_str = column_names.join(",");
-        let query_str = format!("SELECT {columns_str} FROM {}", self.table_name);
+        let full_table_name = qualified_table_name(&self.schema_name, &self.table_name);
+        let query_str = format!("SELECT {columns_str} FROM {full_table_name}");
 
         let (rows, max_lsn) = self.runtime.block_on(async {
             let mut client = connect_mssql(&self.config).await.map_err(|e| {
@@ -791,17 +803,19 @@ impl MssqlWriter {
         config: Config,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
+        schema_name: &str,
         table_name: &str,
         value_fields: &[ValueField],
         key_field_names: Option<&[String]>,
         mode: TableWriterInitMode,
     ) -> Result<MssqlWriter, WriteError> {
         let runtime = create_async_tokio_runtime()?;
+        let full_table_name = qualified_table_name(schema_name, table_name);
 
         // Collect initialization queries
         let mut init_queries: Vec<String> = Vec::new();
         mode.initialize(
-            table_name,
+            &full_table_name,
             value_fields,
             key_field_names,
             !snapshot_mode,
@@ -840,14 +854,14 @@ impl MssqlWriter {
         }
 
         let merge_query = if snapshot_mode {
-            key_field_names.map(|keys| build_merge_query(table_name, value_fields, keys))
+            key_field_names.map(|keys| build_merge_query(&full_table_name, value_fields, keys))
         } else {
             None
         };
 
         let query_template = SqlQueryTemplate::new(
             snapshot_mode,
-            table_name,
+            &full_table_name,
             value_fields,
             key_field_names,
             false,
@@ -861,7 +875,7 @@ impl MssqlWriter {
             max_batch_size,
             buffer: Vec::new(),
             snapshot_mode,
-            table_name: table_name.to_string(),
+            table_name: full_table_name,
             query_template,
             merge_query,
         })

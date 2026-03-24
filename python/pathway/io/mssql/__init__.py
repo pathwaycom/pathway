@@ -23,6 +23,7 @@ def read(
     schema: type[Schema],
     *,
     mode: Literal["static", "streaming"] = "static",
+    schema_name: str | None = "dbo",
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     max_backlog_size: int | None = None,
@@ -54,6 +55,8 @@ def read(
         mode: ``"static"`` (default) polls the full table periodically and diffs
             against stored state. ``"streaming"`` uses CDC for real-time change
             tracking via the transaction log.
+        schema_name: Name of the database schema containing the table. Defaults to
+            ``"dbo"``, which is the default schema in MSSQL.
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
@@ -106,6 +109,7 @@ def read(
         storage_type=storage_type,
         connection_string=connection_string,
         table_name=table_name,
+        schema_name=schema_name,
         mode=api.ConnectorMode.STREAMING,
     )
     data_format = api.DataFormat(
@@ -139,6 +143,7 @@ def write(
     connection_string: str,
     table_name: str,
     *,
+    schema_name: str | None = "dbo",
     max_batch_size: int | None = None,
     init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
@@ -162,6 +167,8 @@ def write(
         connection_string: ADO.NET-style connection string for the MSSQL database.
             Example: ``"Server=tcp:localhost,1433;Database=mydb;User Id=sa;Password=pass;TrustServerCertificate=true"``
         table_name: Name of the target table.
+        schema_name: Name of the database schema containing the table. Defaults to
+            ``"dbo"``, which is the default schema in MSSQL.
         max_batch_size: Maximum number of entries allowed to be committed within a
             single transaction.
         init_mode: ``"default"``: The default initialization mode;
@@ -228,6 +235,7 @@ def write(
         connection_string=connection_string,
         max_batch_size=max_batch_size,
         table_name=table_name,
+        schema_name=schema_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
         snapshot_maintenance_on_output=output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE,
     )
