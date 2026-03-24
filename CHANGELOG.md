@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.30.0] - 2026-03-24
+
 ### Added
 - `pw.io.mongodb.read` connector, which reads data from a MongoDB collection. The connector first delivers a full snapshot of the collection and then, if the streaming mode is used, subscribes to the change stream to receive incremental updates in real time.
 - `pw.io.postgres.read` connector, which reads data from a PostgreSQL table directly by parsing the Write-Ahead Log (WAL).
