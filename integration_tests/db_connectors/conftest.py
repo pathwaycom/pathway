@@ -32,9 +32,11 @@ def questdb():
     return QuestDBContext()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def mongodb():
-    return MongoDBContext()
+    ctx = MongoDBContext()
+    yield ctx
+    ctx.client.close()
 
 
 @pytest.fixture

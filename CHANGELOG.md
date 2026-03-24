@@ -6,10 +6,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `pw.io.mongodb.read` connector, which reads data from a MongoDB collection. The connector first delivers a full snapshot of the collection and then, if the streaming mode is used, subscribes to the change stream to receive incremental updates in real time.
 - `pw.io.postgres.read` connector, which reads data from a PostgreSQL table directly by parsing the Write-Ahead Log (WAL).
 - `pw.io.postgres.write` and `pw.io.postgres.read` now support serialization/deserialization of `np.ndarray` (`int`/`float` elements), homogeneous `tuple` and `list` (via Postgres `ARRAY`; multidimensional rectangular arrays supported).
+- `pw.io.airbyte.read` now accepts a `dependency_overrides` parameter, allowing users to pin specific versions of transitive dependencies (e.g. `airbyte-cdk`) installed into the connector's virtual environment. This unblocks connectors broken by upstream dependency changes without waiting for upstream fixes.
 
 ### Changed
+- **BREAKING**: `pw.io.mongodb.write` and `pw.io.mongodb.read` now serialize and deserialize `np.ndarray` columns as nested BSON arrays that preserve the array's shape. Previously, all ndarrays were flattened to a single BSON array regardless of dimensionality, making it impossible to reconstruct the original shape on read-back. For 1-D arrays the representation is identical to before (`[1, 2, 3]`); only multi-dimensional arrays are affected.
 - **BREAKING**: The dependencies for `pw.io.pyfilesystem.read` are no longer included in the default package installation. To install them, please use `pip install pathway[pyfilesystem]`.
 - Asynchronous callback for `pw.io.python.write` is now available as `pw.io.OnChangeCallbackAsync`.
 - `pw.run` and `pw.run_all` now have the `event_loop` parameter to support reusing async state across multiple graph runs.

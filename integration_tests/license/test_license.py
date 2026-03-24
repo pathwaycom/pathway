@@ -35,6 +35,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "full-persistence",
     "iceberg",
     "kinesis",
+    "mongodb-oplog-reader",
     "monitoring",
     "mssql",
     "mysql",
@@ -118,6 +119,7 @@ def test_license_default_policy(caplog):
     _check_entitlements("xpack-llm-mcp")
     _check_entitlements("worker-count-scaling")
     _check_entitlements("postgres-wal-reader")
+    _check_entitlements("mongodb-oplog-reader")
 
     run_all()
     assert "Telemetry enabled" in caplog.text

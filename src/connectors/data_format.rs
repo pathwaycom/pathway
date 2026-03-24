@@ -8,11 +8,10 @@ use std::iter::zip;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{Bson, Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LENGTH_LIMIT};
-use crate::engine::time::DateTime;
 use crate::engine::{
     value::parse_pathway_pointer, value::Kind as ValueKind, DateTimeNaive, DateTimeUtc,
     Duration as EngineDuration, Error, Key, Result, Timestamp, Type, Value,
@@ -24,10 +23,7 @@ use base64::engine::general_purpose::STANDARD as base64encoder;
 use base64::Engine;
 use bincode::ErrorKind as BincodeError;
 use itertools::Itertools;
-use mongodb::bson::{
-    bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents,
-    Bson as BsonValue, DateTime as BsonDateTime, Document as BsonDocument,
-};
+use mongodb::bson::Document as BsonDocument;
 use ndarray::ArrayD;
 use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
 use schema_registry_converter::blocking::json::JsonDecoder as RegistryJsonDecoder;
@@ -39,6 +35,8 @@ use serde_json::json;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::data_storage::{ConversionError, SpecialEvent};
+
+pub use crate::connectors::bson::{BsonFormatter, BsonParser};
 
 pub const COMMIT_LITERAL: &str = "*COMMIT*";
 pub const NDARRAY_ELEMENTS_FIELD_NAME: &str = "elements";
@@ -231,8 +229,8 @@ type PrepareStringResult = Result<String, ParseError>;
 
 #[derive(Clone, Debug)]
 pub struct InnerSchemaField {
-    type_: Type,
-    default: Option<Value>, // None means that there is no default for the field
+    pub type_: Type,
+    pub default: Option<Value>, // None means that there is no default for the field
 }
 
 impl InnerSchemaField {
@@ -636,10 +634,10 @@ fn parse_with_type(
     })?)
 }
 
-fn ensure_all_fields_in_schema(
+pub fn ensure_all_fields_in_schema(
     key_column_names: Option<&[String]>,
     value_column_names: &[String],
-    schema: &HashMap<String, InnerSchemaField>,
+    schema: &HashMap<String, InnerSchemaField, impl std::hash::BuildHasher>,
 ) -> Result<()> {
     for name in key_column_names
         .into_iter()
@@ -837,7 +835,7 @@ impl Parser for DsvParser {
                 Some(bytes) => self.parse_bytes_simple(DataEventType::Insert, bytes), // In Kafka we only have additions now
                 None => Err(ParseError::EmptyKafkaPayload.into()),
             },
-            Diff(_) => Err(ParseError::UnsupportedReaderContext.into()),
+            Diff(_) | Bson(_) => Err(ParseError::UnsupportedReaderContext.into()),
             Empty => Ok(vec![]),
         }
     }
@@ -963,7 +961,7 @@ impl Parser for IdentityParser {
                     Ok(None),
                 )
             }
-            Diff(_) | TokenizedEntries(_, _) => {
+            Diff(_) | TokenizedEntries(_, _) | Bson(_) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
             }
             Empty => return Ok(vec![]),
@@ -1562,7 +1560,7 @@ impl Parser for DebeziumMessageParser {
                 };
                 (key, value)
             }
-            Diff(_) | TokenizedEntries(_, _) | Empty => {
+            Diff(_) | TokenizedEntries(_, _) | Empty | Bson(_) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
         };
@@ -1821,7 +1819,7 @@ impl Parser for JsonLinesParser {
                 let raw_bytes_value = value.clone().unwrap_or_default();
                 (DataEventType::Insert, raw_bytes_key, raw_bytes_value)
             }
-            Diff(_) | TokenizedEntries(..) => {
+            Diff(_) | TokenizedEntries(..) | Bson(_) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
             Empty => return Ok(vec![]),
@@ -2115,109 +2113,6 @@ impl Formatter for IdentityFormatter {
             values.to_vec(),
             time,
             prepared_diff,
-        ))
-    }
-}
-
-pub fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
-    match value {
-        Value::None => Ok(BsonValue::Null),
-        Value::Int(i) => Ok(bson!(i)),
-        Value::Bool(b) => Ok(bson!(b)),
-        Value::Float(f) => Ok(BsonValue::Double((*f).into())),
-        Value::String(s) => Ok(BsonValue::String(s.to_string())),
-        Value::Pointer(p) => Ok(bson!(p.to_string())),
-        Value::Tuple(t) => {
-            let mut items = Vec::with_capacity(t.len());
-            for item in t.iter() {
-                items.push(serialize_value_to_bson(item)?);
-            }
-            Ok(BsonValue::Array(items))
-        }
-        Value::IntArray(a) => {
-            let mut items = Vec::with_capacity(a.len());
-            for item in a.iter() {
-                items.push(bson!(item));
-            }
-            Ok(BsonValue::Array(items))
-        }
-        Value::FloatArray(a) => {
-            let mut items = Vec::with_capacity(a.len());
-            for item in a.iter() {
-                items.push(bson!(item));
-            }
-            Ok(BsonValue::Array(items))
-        }
-        Value::Bytes(b) => Ok(BsonValue::Binary(BsonBinaryContents {
-            subtype: BsonBinarySubtype::Generic,
-            bytes: b.to_vec(),
-        })),
-
-        // We use milliseconds here because BSON DateTime type has millisecond precision
-        // See also: https://docs.rs/bson/2.11.0/bson/struct.DateTime.html
-        Value::DateTimeNaive(dt) => Ok(BsonValue::DateTime(BsonDateTime::from_millis(
-            dt.timestamp_milliseconds(),
-        ))),
-        Value::DateTimeUtc(dt) => Ok(BsonValue::DateTime(BsonDateTime::from_millis(
-            dt.timestamp_milliseconds(),
-        ))),
-
-        // We use milliseconds in durations to be consistent with the granularity
-        // of the BSON DateTime type
-        Value::Duration(d) => Ok(bson!(d.milliseconds())),
-        Value::Json(j) => Ok(bson!(j.to_string())),
-        Value::PyObjectWrapper(_) | Value::Error | Value::Pending => {
-            Err(FormatterError::ValueNonSerializable(value.kind(), "BSON"))
-        }
-    }
-}
-
-pub struct BsonFormatter {
-    value_field_names: Vec<String>,
-    with_special_fields: bool,
-}
-
-impl BsonFormatter {
-    pub fn new(value_field_names: Vec<String>, with_special_fields: bool) -> Self {
-        Self {
-            value_field_names,
-            with_special_fields,
-        }
-    }
-}
-
-impl Formatter for BsonFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        let mut document = BsonDocument::new();
-        for (key, value) in zip(self.value_field_names.iter(), values) {
-            let _ = document.insert(key, serialize_value_to_bson(value)?);
-        }
-        if self.with_special_fields {
-            let _ = document.insert(
-                SPECIAL_FIELD_DIFF,
-                BsonValue::Int64(diff.try_into().expect("diff can only be +1 or -1")),
-            );
-            let _ = document.insert(
-                SPECIAL_FIELD_TIME,
-                BsonValue::Int64(
-                    time.0
-                        .try_into()
-                        .expect("timestamp is not expected to exceed int64 type"),
-                ),
-            );
-        }
-        Ok(FormatterContext::new_single_payload(
-            document,
-            *key,
-            Vec::new(),
-            time,
-            diff,
         ))
     }
 }

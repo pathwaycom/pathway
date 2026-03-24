@@ -32,6 +32,7 @@ use deltalake::DeltaTableError;
 use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
+use mongodb::bson::Document as BsonDocument;
 use mysql::{
     prelude::Queryable, Error as MysqlError, Params as MysqlParams, Pool as MysqlConnectionPool,
     PooledConn as MysqlConnection, TxOpts as MysqlTxOpts, Value as MysqlValue,
@@ -51,8 +52,8 @@ use crate::connectors::aws::dynamodb::Error as AwsDynamoDBError;
 use crate::connectors::aws::kinesis::Error as AwsKinesisError;
 use crate::connectors::aws::kinesis::KinesisReader;
 use crate::connectors::data_format::{
-    create_bincoded_value, serialize_value_to_bson, serialize_value_to_json, FormatterContext,
-    FormatterError, COMMIT_LITERAL,
+    create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
+    COMMIT_LITERAL,
 };
 use crate::connectors::data_lake::buffering::IncorrectSnapshotError;
 use crate::connectors::metadata::{KafkaMetadata, SourceMetadata};
@@ -80,15 +81,6 @@ use async_nats::error::Error as NatsError;
 use async_nats::jetstream::context::PublishErrorKind as JetStreamPublishError;
 use bincode::ErrorKind as BincodeError;
 use glob::PatternError as GlobPatternError;
-use mongodb::bson::Document as BsonDocument;
-use mongodb::error::Error as MongoError;
-use mongodb::options::{
-    DeleteOneModel as MongoDeleteOneModel, UpdateOneModel as MongoUpdateOneModel,
-    WriteModel as MongoWriteModel,
-};
-use mongodb::{
-    sync::Client as MongoClient, sync::Collection as MongoCollection, Namespace as MongoNamespace,
-};
 use pyo3::prelude::*;
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
@@ -106,6 +98,7 @@ pub use super::data_lake::delta::{
 pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
+pub use super::mongodb::{MongoReader, MongoWriter};
 pub use super::mssql::{MssqlCdcReader, MssqlReader};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
@@ -235,6 +228,7 @@ pub enum ReaderContext {
     TokenizedEntries(DataEventType, Vec<String>),
     KeyValue((Option<Vec<u8>>, Option<Vec<u8>>)),
     Diff((DataEventType, Option<Vec<Value>>, ValuesMap)),
+    Bson((DataEventType, String, BsonDocument)),
     Empty,
 }
 
@@ -296,6 +290,8 @@ pub enum ReadResult {
     Data(ReaderContext, Offset),
 }
 
+use crate::connectors::mongodb::MongoDbError;
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReadError {
@@ -345,6 +341,9 @@ pub enum ReadError {
     Mqtt(#[from] MqttConnectionError),
 
     #[error(transparent)]
+    MongoDb(#[from] MongoDbError),
+
+    #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
     #[error("persistence is not supported for storage '{0:?}'")]
@@ -379,6 +378,14 @@ pub enum ReadError {
 
     #[error("failed to acknowledge read nats message: {0}")]
     NatsMessageAck(async_nats::Error),
+}
+
+// Allow `?` on `mongodb::error::Error` in functions returning `Result<_, ReadError>`.
+// Routes through `MongoDbError::Driver` so the full chain is `ReadError::MongoDb`.
+impl From<mongodb::error::Error> for ReadError {
+    fn from(e: mongodb::error::Error) -> Self {
+        ReadError::MongoDb(MongoDbError::Driver(e))
+    }
 }
 
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
@@ -429,6 +436,7 @@ pub enum StorageType {
     Kinesis,
     Mssql,
     Postgres,
+    MongoDb,
 }
 
 impl StorageType {
@@ -453,6 +461,7 @@ impl StorageType {
             StorageType::Kinesis => KinesisReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mssql => MssqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
+            StorageType::MongoDb => MongoReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -566,6 +575,11 @@ pub trait Reader {
                         {
                             result.advance_offset(offset_key.clone(), other_value.clone());
                         }
+                    }
+                    (OffsetValue::MongoDbOplogToken(a), OffsetValue::MongoDbOplogToken(b))
+                        if b > a =>
+                    {
+                        result.advance_offset(offset_key.clone(), other_value.clone());
                     }
                     (_, _) => {
                         error!("Incomparable offsets in the frontier: {offset_value:?} and {other_value:?}");
@@ -704,7 +718,7 @@ pub enum WriteError {
     Formatter(#[from] FormatterError),
 
     #[error(transparent)]
-    MongoDB(#[from] MongoError),
+    MongoDB(#[from] MongoDbError),
 
     #[error(transparent)]
     Mysql(#[from] MysqlError),
@@ -747,6 +761,14 @@ pub enum WriteError {
 
     #[error("primary key field names must be specified for a snapshot mode")]
     EmptyKeyFieldsForSnapshot,
+}
+
+// Allow `?` on `mongodb::error::Error` in functions returning `Result<_, WriteError>`.
+// Routes through `MongoDbError::Driver` so the full chain is `WriteError::MongoDB`.
+impl From<mongodb::error::Error> for WriteError {
+    fn from(e: mongodb::error::Error) -> Self {
+        WriteError::MongoDB(MongoDbError::Driver(e))
+    }
 }
 
 pub trait Writer: Send {
@@ -1523,161 +1545,6 @@ impl Writer for NullWriter {
 
     fn single_threaded(&self) -> bool {
         false
-    }
-}
-
-#[derive(Debug)]
-enum BufferedMongoEvent {
-    Insert {
-        value: BsonDocument,
-    },
-    Upsert {
-        key: BsonDocument,
-        value: BsonDocument,
-    },
-    Delete {
-        key: BsonDocument,
-    },
-}
-
-const MONGODB_SET_PARAMETER: &str = "$set";
-const MONGODB_PRIMARY_KEY_NAME: &str = "_id";
-
-pub struct MongoWriter {
-    namespace: MongoNamespace,
-    client: MongoClient,
-    collection: MongoCollection<BsonDocument>,
-    buffer: HashMap<Key, BufferedMongoEvent>,
-    snapshot_mode: bool,
-    max_batch_size: Option<usize>,
-}
-
-impl MongoWriter {
-    pub fn new(
-        namespace: MongoNamespace,
-        client: MongoClient,
-        collection: MongoCollection<BsonDocument>,
-        max_batch_size: Option<usize>,
-        snapshot_mode: bool,
-    ) -> Self {
-        Self {
-            namespace,
-            client,
-            collection,
-            max_batch_size,
-            snapshot_mode,
-            buffer: HashMap::new(),
-        }
-    }
-
-    fn flush_stream_of_changes(&mut self) -> Result<(), WriteError> {
-        let prepared_buffer: Vec<_> = self
-            .buffer
-            .values_mut()
-            .map(|entry| match entry {
-                BufferedMongoEvent::Insert { value } => value,
-                other => unreachable!(
-                    "Unexpected type of buffered entry for a stream of changes mode: {other:?}"
-                ),
-            })
-            .collect();
-        let command = self.collection.insert_many(prepared_buffer);
-        let _ = command.run()?;
-        Ok(())
-    }
-
-    fn flush_snapshot(&mut self) -> Result<(), WriteError> {
-        let prepared_buffer: Vec<_> = self
-            .buffer
-            .values_mut()
-            .map(|entry| match entry {
-                BufferedMongoEvent::Upsert { key, value } => {
-                    let mut update_payload = BsonDocument::new();
-                    update_payload.insert(MONGODB_SET_PARAMETER, value);
-
-                    MongoWriteModel::UpdateOne(
-                        MongoUpdateOneModel::builder()
-                            .namespace(self.namespace.clone())
-                            .filter(take(key))
-                            .update(update_payload)
-                            .upsert(true)
-                            .build(),
-                    )
-                }
-                BufferedMongoEvent::Delete { key } => MongoWriteModel::DeleteOne(
-                    MongoDeleteOneModel::builder()
-                        .namespace(self.namespace.clone())
-                        .filter(take(key))
-                        .build(),
-                ),
-                other @ BufferedMongoEvent::Insert { .. } => {
-                    unreachable!("Unexpected type of buffered entry for a snapshot mode: {other:?}")
-                }
-            })
-            .collect();
-
-        let command = self.client.bulk_write(prepared_buffer);
-        let _ = command.run()?;
-        Ok(())
-    }
-}
-
-impl Writer for MongoWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
-            if self.snapshot_mode {
-                let mut key = BsonDocument::new();
-                let _ = key.insert(
-                    MONGODB_PRIMARY_KEY_NAME,
-                    serialize_value_to_bson(&Value::Pointer(data.key))?,
-                );
-                if data.diff == 1 {
-                    self.buffer.insert(
-                        data.key,
-                        BufferedMongoEvent::Upsert {
-                            key,
-                            value: payload.into_bson_document()?,
-                        },
-                    );
-                } else {
-                    self.buffer
-                        .entry(data.key)
-                        .or_insert(BufferedMongoEvent::Delete { key });
-                }
-            } else {
-                self.buffer.insert(
-                    data.key,
-                    BufferedMongoEvent::Insert {
-                        value: payload.into_bson_document()?,
-                    },
-                );
-            }
-        }
-        if let Some(max_batch_size) = self.max_batch_size {
-            if self.buffer.len() >= max_batch_size {
-                self.flush(true)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        if self.buffer.is_empty() {
-            return Ok(());
-        }
-
-        let result = if self.snapshot_mode {
-            self.flush_snapshot()
-        } else {
-            self.flush_stream_of_changes()
-        };
-        self.buffer.clear();
-
-        result
-    }
-
-    fn name(&self) -> String {
-        format!("MongoDB({})", self.collection.name())
     }
 }
 

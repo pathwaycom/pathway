@@ -95,8 +95,9 @@ use self::external_index_wrappers::{
 use self::threads::PythonThreadState;
 
 use crate::connectors::aws::{DynamoDBWriter, KinesisReader, KinesisWriter};
+use crate::connectors::bson::BsonFormatter;
 use crate::connectors::data_format::{
-    BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, FieldSource, Formatter,
+    BsonParser, DebeziumDBType, DebeziumMessageParser, DsvSettings, FieldSource, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
     KeyGenerationPolicy, NullFormatter, Parser, RegistryEncoderWrapper, SingleColumnFormatter,
     TransparentParser, METADATA_FIELD_NAME,
@@ -110,7 +111,7 @@ use crate::connectors::data_lake::iceberg::{IcebergBatchWriter, IcebergTablePara
 use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
-    KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter,
+    KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter,
     MssqlCdcReader, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
     PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqliteReader,
@@ -6345,6 +6346,23 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn construct_mongodb_reader(&self, scope: &Scope) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["mongodb-oplog-reader"])?;
+        }
+
+        let uri = self.connection_string()?;
+        let client = MongoClient::with_uri_str(uri)
+            .map_err(|e| PyIOError::new_err(format!("Failed to connect to MongoDB: {e}")))?;
+
+        let ns = MongoNamespace::new(self.database()?, self.table_name()?);
+        let database = client.database(self.database()?);
+        let collection = database.collection(self.table_name()?);
+        let reader = MongoReader::new(ns, client, collection, self.mode)
+            .map_err(|e| PyIOError::new_err(format!("Failed start MongoDB reader: {e}")))?;
+        Ok((Box::new(reader), 1))
+    }
+
     fn construct_reader(
         &self,
         py: pyo3::Python,
@@ -6366,6 +6384,7 @@ impl DataStorage {
             "mqtt" => self.construct_mqtt_reader(),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
             "postgres" => self.construct_postgres_reader(py, data_format, scope, properties),
+            "mongodb" => self.construct_mongodb_reader(scope),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -6991,6 +7010,11 @@ impl DataFormat {
             ))),
             "transparent" => Ok(Box::new(TransparentParser::new(
                 self.key_field_names.clone(),
+                self.value_field_names(py),
+                self.schema(py)?,
+                self.session_type,
+            )?)),
+            "bson" => Ok(Box::new(BsonParser::new(
                 self.value_field_names(py),
                 self.schema(py)?,
                 self.session_type,

@@ -12,6 +12,26 @@ from pathway.tests.utils import (
     wait_result_with_checker,
     write_lines,
 )
+from pathway.third_party.airbyte_serverless.executable_runner import (
+    AirbyteSourceException,
+)
+
+# Minimal GitHub connector config with a fake PAT. Used by two tests: one that pins
+# a broken airbyte-cdk version (7.13.0) where the connector crashes at import time
+# before making any API call, and one that pins a working version (7.10.0) where the
+# connector loads correctly and reaches GitHub's API, failing with 401 Unauthorized.
+_GITHUB_FAKE_CONFIG = {
+    "source": {
+        "docker_image": "airbyte/source-github:latest",
+        "config": {
+            "credentials": {
+                "personal_access_token": "fake_token_for_import_error_reproduction",
+            },
+            "repositories": ["pathwaycom/pathway"],
+            "start_date": "2020-01-01T00:00:00Z",
+        },
+    }
+}
 
 TEST_FAKER_CONNECTION_PATH = os.path.join(
     os.path.dirname(__file__), "test-faker-connection.yaml"
@@ -80,3 +100,53 @@ def test_airbyte_full_refresh_streams(tmp_path):
 
     wait_result_with_checker(FileLinesNumberChecker(output_path, 7), 15)
     inputs_thread.join()
+
+
+def test_github_connector_fails_with_broken_cdk(tmp_path):
+    """
+    Reproduces https://github.com/pathwaycom/pathway/issues/201.
+
+    airbyte-cdk==7.13.0 removed MessageRepresentationAirbyteTracedErrors. The connector
+    process crashes at import time — before emitting any JSON — which surfaces as
+    AssertionError inside Pathway's connector infrastructure.
+
+    See also: https://github.com/airbytehq/airbyte-python-cdk/issues/946
+    """
+    config_path = tmp_path / "github.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(_GITHUB_FAKE_CONFIG, f)
+
+    with pytest.raises(
+        AssertionError,
+        match="No message returned by AirbyteSource with action `discover`",
+    ):
+        pw.io.airbyte.read(
+            config_path,
+            streams=["commits"],
+            mode="static",
+            enforce_method="pypi",
+            dependency_overrides=["airbyte-cdk==7.13.0"],
+        )
+
+
+def test_github_connector_unauthorized_with_working_cdk(tmp_path):
+    """
+    Verifies that pinning airbyte-cdk to a version that still has
+    MessageRepresentationAirbyteTracedErrors (7.10.0) allows the connector to load
+    and reach GitHub's API, where it fails with a 401 Unauthorized error instead of
+    crashing at import time.
+
+    See https://github.com/pathwaycom/pathway/issues/201
+    """
+    config_path = tmp_path / "github.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(_GITHUB_FAKE_CONFIG, f)
+
+    with pytest.raises(AirbyteSourceException, match="HTTP Status Code: 401"):
+        pw.io.airbyte.read(
+            config_path,
+            streams=["commits"],
+            mode="static",
+            enforce_method="pypi",
+            dependency_overrides=["airbyte-cdk==7.10.0"],
+        )

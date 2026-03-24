@@ -19,6 +19,7 @@ pub enum OffsetKey {
     Nats(usize),
     Empty,
     Kinesis(ArcStr),
+    MongoDb,
 }
 
 impl HashInto for OffsetKey {
@@ -29,8 +30,8 @@ impl HashInto for OffsetKey {
                 partition.hash_into(hasher);
             }
             OffsetKey::Nats(worker_index) => worker_index.hash_into(hasher),
-            OffsetKey::Empty => {}
             OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
+            OffsetKey::Empty | OffsetKey::MongoDb => {}
         }
     }
 }
@@ -70,6 +71,10 @@ pub enum OffsetValue {
     MqttReadEntriesCount(usize),
     PostgresReadEntriesCount(usize),
     KinesisOffset(String),
+    /// Raw `BSON` bytes of a `MongoDB` change-stream resume token.
+    /// `MongoDB` guarantees that tokens are lexicographically ordered by oplog position,
+    /// so byte-wise comparison is a valid ordering.
+    MongoDbOplogToken(Vec<u8>),
     Empty,
 }
 
@@ -149,6 +154,9 @@ impl HashInto for OffsetValue {
             }
             OffsetValue::KinesisOffset(offset) => {
                 offset.hash_into(hasher);
+            }
+            OffsetValue::MongoDbOplogToken(bytes) => {
+                hasher.update(bytes);
             }
             OffsetValue::Empty => {}
         }
