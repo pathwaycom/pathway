@@ -36,6 +36,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "iceberg",
     "kinesis",
     "monitoring",
+    "mssql",
     "mysql",
     "postgres-wal-reader",
     "questdb",

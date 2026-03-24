@@ -7,10 +7,10 @@ import pathway as pw
 # To use advanced features with Pathway Scale, get your free license key from
 # https://pathway.com/features and paste it below.
 # To use Pathway Community, comment out the line below.
-pw.set_license_key("demo-license-key-with-telemetry")
+pw.set_license_key("82687D-05BBFA-2CCBE1-F021E4-8FAAE4-V3")
 
 MSSQL_CONNECTION = (
-    "Server=tcp:mssql,1433;"
+    "Server=tcp:localhost,1433;"
     "Database=sensordb;"
     "User Id=sa;"
     "Password=YourStrong!Passw0rd;"
