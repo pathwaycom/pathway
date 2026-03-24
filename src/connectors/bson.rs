@@ -395,25 +395,25 @@ impl Parser for BsonParser {
     }
 }
 
-fn int_ndarray_to_bson(view: ArrayViewD<i64>) -> Bson {
+fn int_ndarray_to_bson(view: &ArrayViewD<i64>) -> Bson {
     match view.ndim() {
         0 => Bson::Int64(*view.iter().next().unwrap_or(&0)),
         1 => Bson::Array(view.iter().map(|&i| Bson::Int64(i)).collect()),
         _ => Bson::Array(
             (0..view.shape()[0])
-                .map(|i| int_ndarray_to_bson(view.index_axis(Axis(0), i)))
+                .map(|i| int_ndarray_to_bson(&view.index_axis(Axis(0), i)))
                 .collect(),
         ),
     }
 }
 
-fn float_ndarray_to_bson(view: ArrayViewD<f64>) -> Bson {
+fn float_ndarray_to_bson(view: &ArrayViewD<f64>) -> Bson {
     match view.ndim() {
         0 => Bson::Double(*view.iter().next().unwrap_or(&0.0)),
         1 => Bson::Array(view.iter().map(|&f| Bson::Double(f)).collect()),
         _ => Bson::Array(
             (0..view.shape()[0])
-                .map(|i| float_ndarray_to_bson(view.index_axis(Axis(0), i)))
+                .map(|i| float_ndarray_to_bson(&view.index_axis(Axis(0), i)))
                 .collect(),
         ),
     }
@@ -505,6 +505,7 @@ fn bson_to_ndarray_value(
                 bson,
                 field_name,
                 type_,
+                #[allow(clippy::cast_precision_loss)]
                 &|b| match b {
                     Bson::Double(f) => Some(*f),
                     Bson::Int32(i) => Some(f64::from(*i)),
@@ -541,8 +542,8 @@ pub fn serialize_value_to_bson(value: &Value) -> Result<Bson, FormatterError> {
             }
             Ok(Bson::Array(items))
         }
-        Value::IntArray(a) => Ok(int_ndarray_to_bson(a.view())),
-        Value::FloatArray(a) => Ok(float_ndarray_to_bson(a.view())),
+        Value::IntArray(a) => Ok(int_ndarray_to_bson(&a.view())),
+        Value::FloatArray(a) => Ok(float_ndarray_to_bson(&a.view())),
         Value::Bytes(b) => Ok(Bson::Binary(BsonBinaryContents {
             subtype: BsonBinarySubtype::Generic,
             bytes: b.to_vec(),

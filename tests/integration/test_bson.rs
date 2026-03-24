@@ -447,7 +447,7 @@ fn test_parse_int_ndarray_1d() -> eyre::Result<()> {
 
 #[test]
 fn test_parse_float_ndarray_1d() -> eyre::Result<()> {
-    let arr: ArrayD<f64> = arr1(&[1.0_f64, -2.5, 3.14]).into_dyn();
+    let arr: ArrayD<f64> = arr1(&[1.0_f64, -2.5, 3.15]).into_dyn();
     test_type_parsing(
         Type::Array(Some(1), Arc::new(Type::Float)),
         &[Value::from(arr)],
@@ -484,8 +484,10 @@ fn test_parse_int_ndarray_3d() -> eyre::Result<()> {
 
 #[test]
 fn test_parse_float_ndarray_3d() -> eyre::Result<()> {
-    let arr: ArrayD<f64> =
-        ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])?;
+    let arr: ArrayD<f64> = ArrayD::from_shape_vec(
+        IxDyn(&[2, 2, 2]),
+        vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+    )?;
     test_type_parsing(
         Type::Array(Some(3), Arc::new(Type::Float)),
         &[Value::from(arr)],
@@ -541,27 +543,41 @@ fn test_parse_ndarray_wrong_element_type_error() -> eyre::Result<()> {
 #[test]
 fn test_format_int_ndarray_2d() -> eyre::Result<()> {
     let arr: ArrayD<i64> = arr2(&[[1_i64, 2], [3, 4]]).into_dyn();
-    test_type_formatting(Type::Array(Some(2), Arc::new(Type::Int)), &[Value::from(arr)])
+    test_type_formatting(
+        Type::Array(Some(2), Arc::new(Type::Int)),
+        &[Value::from(arr)],
+    )
 }
 
 #[test]
 fn test_format_float_ndarray_2d() -> eyre::Result<()> {
     let arr: ArrayD<f64> = arr2(&[[1.1_f64, 2.2], [3.3, 4.4]]).into_dyn();
-    test_type_formatting(Type::Array(Some(2), Arc::new(Type::Float)), &[Value::from(arr)])
+    test_type_formatting(
+        Type::Array(Some(2), Arc::new(Type::Float)),
+        &[Value::from(arr)],
+    )
 }
 
 #[test]
 fn test_format_int_ndarray_3d() -> eyre::Result<()> {
     let arr: ArrayD<i64> =
         ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1_i64, 2, 3, 4, 5, 6, 7, 8])?;
-    test_type_formatting(Type::Array(Some(3), Arc::new(Type::Int)), &[Value::from(arr)])
+    test_type_formatting(
+        Type::Array(Some(3), Arc::new(Type::Int)),
+        &[Value::from(arr)],
+    )
 }
 
 #[test]
 fn test_format_float_ndarray_3d() -> eyre::Result<()> {
-    let arr: ArrayD<f64> =
-        ArrayD::from_shape_vec(IxDyn(&[2, 2, 2]), vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])?;
-    test_type_formatting(Type::Array(Some(3), Arc::new(Type::Float)), &[Value::from(arr)])
+    let arr: ArrayD<f64> = ArrayD::from_shape_vec(
+        IxDyn(&[2, 2, 2]),
+        vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+    )?;
+    test_type_formatting(
+        Type::Array(Some(3), Arc::new(Type::Float)),
+        &[Value::from(arr)],
+    )
 }
 
 fn assert_parse_field_error(event: ParsedEventWithErrors) {
