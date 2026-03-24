@@ -37,6 +37,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "kinesis",
     "mongodb-oplog-reader",
     "monitoring",
+    "mssql",
     "mysql",
     "postgres-wal-reader",
     "questdb",
