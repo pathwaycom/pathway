@@ -6800,10 +6800,9 @@ impl DataStorage {
         data_format: &DataFormat,
         license: Option<&License>,
     ) -> PyResult<Box<dyn Writer>> {
-        // TODO: Re-enable once "mssql" entitlement is provisioned on the license server
-        // if let Some(license) = license {
-        //     license.check_entitlements(["mssql"])?;
-        // }
+        if let Some(license) = license {
+            license.check_entitlements(["mssql"])?;
+        }
         let connection_string = self.connection_string()?;
         let config = tiberius::Config::from_ado_string(&connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
