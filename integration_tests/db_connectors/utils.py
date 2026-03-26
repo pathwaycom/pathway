@@ -314,6 +314,90 @@ class QuestDBContext(WireProtocolSupporterContext):
         )
 
 
+MILVUS_VECTOR_DIM = 3
+
+
+def _make_milvus_client(uri: str):
+    """Create a MilvusClient for the given URI.
+
+    For local ``.db`` files, works around a pymilvus 2.6.x bug where the
+    Unix-domain-socket address is not forwarded to the gRPC handler.  See
+    ``pathway.io.milvus._make_client`` for the full explanation.
+    """
+    from pymilvus import MilvusClient
+
+    if uri.endswith(".db"):
+        try:
+            from milvus_lite.server_manager import server_manager_instance
+
+            uds_uri = server_manager_instance.start_and_get_uri(uri)
+            if uds_uri is None:
+                raise RuntimeError(
+                    f"milvus-lite failed to start a local server for: {uri}"
+                )
+            return MilvusClient(uds_uri, address=uds_uri)
+        except ImportError:
+            pass
+    return MilvusClient(uri)
+
+
+class MilvusContext:
+    def __init__(self, uri: str) -> None:
+        from pymilvus import DataType
+
+        self.uri = uri
+        self._DataType = DataType
+        self.client = _make_milvus_client(uri)
+
+    def create_collection(
+        self, collection_name: str, *, dimension: int = MILVUS_VECTOR_DIM
+    ) -> None:
+        schema = self.client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("id", self._DataType.INT64, is_primary=True)
+        schema.add_field("vector", self._DataType.FLOAT_VECTOR, dim=dimension)
+        index_params = self.client.prepare_index_params()
+        index_params.add_index("vector", metric_type="COSINE", index_type="FLAT")
+        self.client.create_collection(
+            collection_name, schema=schema, index_params=index_params
+        )
+
+    def create_scalar_collection(
+        self, collection_name: str, value_type, **value_kwargs
+    ) -> None:
+        """Create a collection with id (INT64 PK), value (<value_type>), vec (FLOAT_VECTOR).
+
+        ``value_type`` is a Milvus ``DataType``. Extra keyword arguments are
+        forwarded to ``add_field`` for the value field (e.g. ``max_length`` for
+        ``VARCHAR``).  The ``vec`` field is always added so that the collection
+        can be indexed.
+        """
+        schema = self.client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("id", self._DataType.INT64, is_primary=True)
+        schema.add_field("value", value_type, **value_kwargs)
+        schema.add_field("vec", self._DataType.FLOAT_VECTOR, dim=MILVUS_VECTOR_DIM)
+        index_params = self.client.prepare_index_params()
+        index_params.add_index("vec", metric_type="COSINE", index_type="FLAT")
+        self.client.create_collection(
+            collection_name, schema=schema, index_params=index_params
+        )
+
+    def query_all(self, collection_name: str, output_fields: list[str]) -> list[dict]:
+        # Empty filter requires a limit in Milvus 2.6+; use id >= 0 to fetch
+        # all rows without a limit cap (test IDs are always positive integers).
+        # query() returns HybridExtraList in pymilvus 2.6.x; list() unwraps it.
+        return list(
+            self.client.query(
+                collection_name, filter="id >= 0", output_fields=output_fields
+            )
+        )
+
+    def generate_collection_name(self) -> str:
+        return f"milvus_{uuid.uuid4().hex[:12]}"
+
+    def close(self) -> None:
+        self.client.close()
+
+
 class MongoDBContext:
     client: MongoClient
 

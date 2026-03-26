@@ -57,6 +57,10 @@ pyfilesystem = [
     "fs >= 2.4.16",
     "setuptools < 82.0.0", # required due to https://github.com/PyFilesystem/pyfilesystem2/issues/577
 ]
+milvus = [
+    "pymilvus >= 2.4.2",
+    "milvus-lite >= 2.4.2",
+]
 sql = [
     "sqlglot == 10.6.1", # the new versions are incompatible with the current pw.sql Implementation
 ]
@@ -103,6 +107,7 @@ all = [
     "pathway[xpack-llm-docs]",
     "pathway[xpack-sharepoint]",
     "pathway[airbyte]",
+    "pathway[milvus]",
 ]
 tests = [
     "pytest >= 8.0.0, < 9.0.0",

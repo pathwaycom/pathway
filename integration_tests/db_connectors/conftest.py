@@ -2,6 +2,7 @@ import pytest
 from utils import (
     DebeziumContext,
     DynamoDBContext,
+    MilvusContext,
     MongoDBContext,
     MySQLContext,
     PgvectorContext,
@@ -51,3 +52,10 @@ def dynamodb():
 @pytest.fixture
 def mysql():
     return MySQLContext()
+
+
+@pytest.fixture
+def milvus(tmp_path):
+    ctx = MilvusContext(str(tmp_path / "milvus.db"))
+    yield ctx
+    ctx.close()
