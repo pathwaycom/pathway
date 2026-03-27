@@ -30,6 +30,7 @@ pub mod mongodb;
 pub mod monitoring;
 pub mod nats;
 pub mod offset;
+pub mod rabbitmq;
 pub mod posix_like;
 pub mod postgres;
 pub mod scanner;

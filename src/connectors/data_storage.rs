@@ -101,6 +101,8 @@ pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
+pub use super::rabbitmq::RabbitmqReader;
+pub use super::rabbitmq::RabbitmqWriter;
 pub use super::postgres::{
     PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
@@ -377,6 +379,9 @@ pub enum ReadError {
 
     #[error("failed to acknowledge read nats message: {0}")]
     NatsMessageAck(async_nats::Error),
+
+    #[error("RabbitMQ consumer error: {0}")]
+    Rabbitmq(String),
 }
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, ReadError>`.
@@ -435,6 +440,7 @@ pub enum StorageType {
     Kinesis,
     Postgres,
     MongoDb,
+    Rabbitmq,
 }
 
 impl StorageType {
@@ -459,6 +465,7 @@ impl StorageType {
             StorageType::Kinesis => KinesisReader::merge_two_frontiers(lhs, rhs),
             StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::MongoDb => MongoReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Rabbitmq => RabbitmqReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -578,6 +585,14 @@ pub trait Reader {
                     {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
+                    (
+                        OffsetValue::RabbitmqOffset(offset_position),
+                        OffsetValue::RabbitmqOffset(other_position),
+                    ) => {
+                        if other_position > offset_position {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
                     (_, _) => {
                         error!("Incomparable offsets in the frontier: {offset_value:?} and {other_value:?}");
                     }
@@ -671,6 +686,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
+
+    #[error("RabbitMQ publish error: {0}")]
+    RabbitmqPublish(String),
 
     #[error(transparent)]
     JetStream(#[from] NatsError<JetStreamPublishError>),
