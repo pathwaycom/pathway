@@ -1,9 +1,9 @@
 pub mod file_like;
 pub mod iceberg;
 pub mod kafka;
-pub mod mssql;
 pub mod parquet;
 pub mod postgres;
+pub mod rabbitmq;
 pub mod sqlite;
 
 #[allow(clippy::module_name_repetitions)]
@@ -22,7 +22,7 @@ pub use parquet::ParquetMetadata;
 pub use postgres::PostgresMetadata;
 
 #[allow(clippy::module_name_repetitions)]
-pub use mssql::MssqlMetadata;
+pub use rabbitmq::RabbitmqMetadata;
 
 #[allow(clippy::module_name_repetitions)]
 pub use sqlite::SQLiteMetadata;
@@ -32,11 +32,11 @@ pub use sqlite::SQLiteMetadata;
 pub enum SourceMetadata {
     FileLike(FileLikeMetadata),
     Kafka(KafkaMetadata),
-    Mssql(MssqlMetadata),
     SQLite(SQLiteMetadata),
     Iceberg(IcebergMetadata),
     Parquet(ParquetMetadata),
     Postgres(PostgresMetadata),
+    Rabbitmq(RabbitmqMetadata),
 }
 
 impl From<FileLikeMetadata> for SourceMetadata {
@@ -69,9 +69,9 @@ impl From<PostgresMetadata> for SourceMetadata {
     }
 }
 
-impl From<MssqlMetadata> for SourceMetadata {
-    fn from(impl_: MssqlMetadata) -> Self {
-        Self::Mssql(impl_)
+impl From<RabbitmqMetadata> for SourceMetadata {
+    fn from(impl_: RabbitmqMetadata) -> Self {
+        Self::Rabbitmq(impl_)
     }
 }
 
@@ -86,11 +86,11 @@ impl SourceMetadata {
         match self {
             Self::FileLike(meta) => serde_json::to_value(meta),
             Self::Kafka(meta) => serde_json::to_value(meta),
-            Self::Mssql(meta) => serde_json::to_value(meta),
             Self::SQLite(meta) => serde_json::to_value(meta),
             Self::Iceberg(meta) => serde_json::to_value(meta),
             Self::Parquet(meta) => serde_json::to_value(meta),
             Self::Postgres(meta) => serde_json::to_value(meta),
+            Self::Rabbitmq(meta) => serde_json::to_value(meta),
         }
         .expect("Internal JSON serialization error")
     }
@@ -98,12 +98,11 @@ impl SourceMetadata {
     pub fn commits_allowed_in_between(&self) -> bool {
         match self {
             Self::FileLike(_)
-            | Self::Mssql(_)
             | Self::SQLite(_)
             | Self::Iceberg(_)
             | Self::Parquet(_)
             | Self::Postgres(_) => false,
-            Self::Kafka(_) => true,
+            Self::Kafka(_) | Self::Rabbitmq(_) => true,
         }
     }
 }

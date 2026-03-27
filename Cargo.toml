@@ -83,6 +83,7 @@ pyo3 = { version = "0.25.0", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-async-runtimes = "0.25.0"
 pyo3-log = "0.12.4"
 qdrant-client = "1.15.0"
+rabbitmq-stream-client = "0.11.0"
 questdb-rs = "4.0.5"
 rand = "0.9.1"
 rayon = "1.10.0"
@@ -104,7 +105,6 @@ sysinfo = "0.35.1"
 tantivy = "0.22.1"  # Note: don't bump this dependency before the RAG integration test failure is investigated
 tempfile = "3.20.0"
 thiserror = "1.0.63"
-tiberius = { version = "0.12", default-features = false, features = ["tds73", "winauth", "rustls"] }
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }

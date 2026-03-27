@@ -111,13 +111,13 @@ use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter,
-    MssqlCdcReader, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
+    MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
+    RabbitmqReader, RabbitmqWriter,
     PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqliteReader,
     TableWriterInitMode, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
-use crate::connectors::mssql::MssqlWriter;
 use crate::connectors::nats;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
@@ -159,6 +159,56 @@ use s3::creds::Credentials as AwsCredentials;
 mod external_index_wrappers;
 mod logging;
 pub mod threads;
+
+/// Parse a RabbitMQ Streams URI and build an Environment.
+/// URI format: `rabbitmq-stream://user:pass@host:port/vhost`
+async fn build_rabbitmq_environment(
+    uri: &str,
+) -> PyResult<rabbitmq_stream_client::Environment> {
+    // Parse URI: rabbitmq-stream://user:pass@host:port/vhost
+    let uri_str = uri
+        .strip_prefix("rabbitmq-stream://")
+        .unwrap_or(uri);
+    let mut builder = rabbitmq_stream_client::Environment::builder();
+
+    // Split userinfo from host
+    if let Some((userinfo, rest)) = uri_str.split_once('@') {
+        if let Some((user, pass)) = userinfo.split_once(':') {
+            builder = builder.username(user).password(pass);
+        }
+        // Parse host:port/vhost
+        let (hostport, vhost) = rest.split_once('/').unwrap_or((rest, ""));
+        if let Some((host, port_str)) = hostport.split_once(':') {
+            builder = builder.host(host);
+            if let Ok(port) = port_str.parse::<u16>() {
+                builder = builder.port(port);
+            }
+        } else {
+            builder = builder.host(hostport);
+        }
+        if !vhost.is_empty() {
+            builder = builder.virtual_host(vhost);
+        }
+    } else {
+        // No userinfo, just host:port
+        let (hostport, vhost) = uri_str.split_once('/').unwrap_or((uri_str, ""));
+        if let Some((host, port_str)) = hostport.split_once(':') {
+            builder = builder.host(host);
+            if let Ok(port) = port_str.parse::<u16>() {
+                builder = builder.port(port);
+            }
+        } else {
+            builder = builder.host(uri_str);
+        }
+        if !vhost.is_empty() {
+            builder = builder.virtual_host(vhost);
+        }
+    }
+
+    builder.build().await.map_err(|e| {
+        PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}"))
+    })
+}
 
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
@@ -6011,48 +6061,6 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
-    fn construct_mssql_reader(
-        &self,
-        py: pyo3::Python,
-        data_format: &DataFormat,
-    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(&connection_string)
-            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
-        let table_name = self.table_name.clone().ok_or_else(|| {
-            PyValueError::new_err("For MSSQL connector, table_name should be specified")
-        })?;
-
-        let reader = MssqlReader::new(
-            config,
-            table_name,
-            data_format.value_fields_type_map(py).into_iter().collect(),
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create MSSQL reader: {e}")))?;
-        Ok((Box::new(reader), 1))
-    }
-
-    fn construct_mssql_cdc_reader(
-        &self,
-        py: pyo3::Python,
-        data_format: &DataFormat,
-    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(&connection_string)
-            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
-        let table_name = self.table_name.clone().ok_or_else(|| {
-            PyValueError::new_err("For MSSQL CDC connector, table_name should be specified")
-        })?;
-
-        let reader = MssqlCdcReader::new(
-            config,
-            table_name,
-            data_format.value_fields_type_map(py).into_iter().collect(),
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create MSSQL CDC reader: {e}")))?;
-        Ok((Box::new(reader), 1))
-    }
-
     fn object_downloader(&self) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
             Ok(ObjectDownloader::S3(Box::new(self.s3_bucket()?)))
@@ -6170,6 +6178,73 @@ impl DataStorage {
             nats::NatsPoller::Simple(subscriber)
         };
         let reader = NatsReader::new(runtime, poller, scope.worker_index(), topic);
+        Ok((Box::new(reader), properties.max_parallel_readers(scope)))
+    }
+
+    fn construct_rabbitmq_reader(
+        &self,
+        scope: &Scope,
+        properties: &ConnectorProperties,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let uri = self.path()?;
+        let stream_name = self.message_queue_fixed_topic()?;
+        let runtime = create_async_tokio_runtime()?;
+
+        let offset_spec = match self.start_from_timestamp_ms {
+            Some(ts) => rabbitmq_stream_client::types::OffsetSpecification::Timestamp(ts),
+            None => rabbitmq_stream_client::types::OffsetSpecification::First,
+        };
+
+        let (environment, consumer, end_offset) = runtime.block_on(async {
+            let environment = build_rabbitmq_environment(uri).await?;
+            let consumer = environment
+                .consumer()
+                .offset(offset_spec)
+                .build(&stream_name)
+                .await
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create RabbitMQ consumer: {e}"))
+                })?;
+
+            // For static mode, try to determine the last offset to know when to stop.
+            // We create a temporary consumer at the Last offset to discover the boundary.
+            let end_offset = if self.mode == ConnectorMode::Static {
+                let mut probe = environment
+                    .consumer()
+                    .offset(rabbitmq_stream_client::types::OffsetSpecification::Last)
+                    .build(&stream_name)
+                    .await
+                    .ok();
+                if let Some(ref mut p) = probe {
+                    use futures::StreamExt;
+                    // Read one message to get the last offset
+                    const STATIC_MODE_PROBE_TIMEOUT_SECS: u64 = 5;
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(STATIC_MODE_PROBE_TIMEOUT_SECS),
+                        p.next(),
+                    )
+                    .await
+                    {
+                        Ok(Some(Ok(delivery))) => Some(delivery.offset()),
+                        _ => None, // empty stream or timeout
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok::<_, PyErr>((environment, consumer, end_offset))
+        })?;
+
+        let reader = RabbitmqReader::new(
+            runtime,
+            consumer,
+            environment,
+            scope.worker_index(),
+            stream_name.clone(),
+            end_offset,
+        );
         Ok((Box::new(reader), properties.max_parallel_readers(scope)))
     }
 
@@ -6353,11 +6428,10 @@ impl DataStorage {
             "s3" => self.construct_s3_reader(scope, data_format),
             "kafka" => self.construct_kafka_reader(scope, properties),
             "python" => self.construct_python_reader(py, data_format),
-            "mssql" => self.construct_mssql_reader(py, data_format),
-            "mssql_cdc" => self.construct_mssql_cdc_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
             "nats" => self.construct_nats_reader(py, scope, properties),
+            "rabbitmq" => self.construct_rabbitmq_reader(scope, properties),
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
@@ -6647,6 +6721,32 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_rabbitmq_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let uri = self.path()?;
+        let topic = self.message_queue_topic()?;
+        let stream_name = self.message_queue_fixed_topic()?;
+        let runtime = create_async_tokio_runtime()?;
+        let producer = runtime.block_on(async {
+            let environment = build_rabbitmq_environment(uri).await?;
+            let producer = environment
+                .producer()
+                .build(&stream_name)
+                .await
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create RabbitMQ producer: {e}"))
+                })?;
+            Ok::<_, PyErr>(producer)
+        })?;
+        let writer = RabbitmqWriter::new(
+            runtime,
+            producer,
+            topic,
+            self.header_fields.clone(),
+            self.key_field_index,
+        );
+        Ok(Box::new(writer))
+    }
+
     fn construct_mongodb_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
@@ -6790,32 +6890,6 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
-    fn construct_mssql_writer(
-        &self,
-        py: pyo3::Python,
-        data_format: &DataFormat,
-        license: Option<&License>,
-    ) -> PyResult<Box<dyn Writer>> {
-        if let Some(license) = license {
-            license.check_entitlements(["mssql"])?;
-        }
-        let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(&connection_string)
-            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
-        let writer = MssqlWriter::new(
-            config,
-            self.max_batch_size,
-            self.snapshot_maintenance_on_output,
-            &self.table_name()?,
-            &data_format.value_fields_vec(py),
-            data_format.key_field_names.as_deref(),
-            self.table_writer_init_mode,
-        )
-        .map_err(|e| PyValueError::new_err(format!("Failed to initialize MSSQL writer: {e}")))?;
-
-        Ok(Box::new(writer))
-    }
-
     fn construct_mysql_writer(
         &self,
         py: pyo3::Python,
@@ -6858,12 +6932,12 @@ impl DataStorage {
             "mongodb" => self.construct_mongodb_writer(),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
+            "rabbitmq" => self.construct_rabbitmq_writer(),
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
             "dynamodb" => self.construct_dynamodb_writer(py, data_format, license),
             "kinesis" => self.construct_kinesis_writer(license),
-            "mssql" => self.construct_mssql_writer(py, data_format, license),
             "mysql" => self.construct_mysql_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"

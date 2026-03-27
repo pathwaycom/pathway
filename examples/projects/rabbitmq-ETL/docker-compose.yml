@@ -1,0 +1,59 @@
+version: "3.7"
+name: etl-rabbitmq
+networks:
+  etl-rabbitmq-network:
+    driver: bridge
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_stream advertised_host rabbitmq -rabbitmq_stream advertised_port 5552"
+    ports:
+      - 5552:5552
+      - 5672:5672
+      - 15672:15672
+    command: bash -c "rabbitmq-plugins enable --offline rabbitmq_stream && rabbitmq-server"
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - etl-rabbitmq-network
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pathway
+      POSTGRES_PASSWORD: pathway
+      POSTGRES_DB: etl_db
+    ports:
+      - 5432:5432
+    volumes:
+      - ./sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pathway"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - etl-rabbitmq-network
+  stream-producer:
+    build:
+      context: .
+      dockerfile: ./producer-src/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - etl-rabbitmq-network
+  pathway:
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - etl-rabbitmq-network
