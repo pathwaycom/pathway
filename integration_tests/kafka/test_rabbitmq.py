@@ -10,10 +10,7 @@ import pytest
 
 import pathway as pw
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import (
-    CsvLinesNumberChecker,
-    wait_result_with_checker,
-)
+from pathway.tests.utils import CsvLinesNumberChecker, wait_result_with_checker
 
 RABBITMQ_STREAM_URI = "rabbitmq-stream://guest:guest@rabbitmq:5552/"
 RABBITMQ_HOST = "rabbitmq"
