@@ -2,6 +2,9 @@
 
 use log::error;
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use rabbitmq_stream_client::types::{Message, OffsetSpecification, SimpleValue};
@@ -22,6 +25,9 @@ use crate::persistence::frontier::OffsetAntichain;
 /// Writer stores the key here; reader extracts it from this property.
 const RABBITMQ_KEY_PROPERTY: &str = "key";
 
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
+const FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 // --- Writer ---
 
 #[allow(clippy::module_name_repetitions)]
@@ -31,10 +37,20 @@ pub struct RabbitmqWriter {
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    pending_confirms: Arc<AtomicUsize>,
+    send_errors: Arc<Mutex<Vec<String>>>,
 }
 
 impl Writer for RabbitmqWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        // Check for errors accumulated from previous async sends
+        {
+            let errs = self.send_errors.lock().unwrap();
+            if !errs.is_empty() {
+                return Err(WriteError::RabbitmqPublish(errs.join("; ")));
+            }
+        }
+
         self.runtime.block_on(async {
             let properties = data.construct_rabbitmq_properties(&self.header_fields);
 
@@ -63,8 +79,30 @@ impl Writer for RabbitmqWriter {
                 } else {
                     Message::builder().body(payload_bytes).build()
                 };
+
+                self.pending_confirms.fetch_add(1, Ordering::Release);
+                let counter = self.pending_confirms.clone();
+                let errs = self.send_errors.clone();
                 self.producer
-                    .send_with_confirm(message)
+                    .send(message, move |result| {
+                        let c = counter;
+                        let e = errs;
+                        async move {
+                            c.fetch_sub(1, Ordering::Release);
+                            match result {
+                                Ok(confirm) if !confirm.confirmed() => {
+                                    e.lock().unwrap().push(format!(
+                                        "message not confirmed (publishing_id={})",
+                                        confirm.publishing_id()
+                                    ));
+                                }
+                                Err(err) => {
+                                    e.lock().unwrap().push(format!("{err}"));
+                                }
+                                _ => {}
+                            }
+                        }
+                    })
                     .await
                     .map_err(|e| WriteError::RabbitmqPublish(e.to_string()))?;
             }
@@ -73,7 +111,21 @@ impl Writer for RabbitmqWriter {
     }
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        // send_with_confirm already waits for broker acknowledgment
+        let start = Instant::now();
+        while self.pending_confirms.load(Ordering::Acquire) > 0 {
+            if start.elapsed() > FLUSH_TIMEOUT {
+                return Err(WriteError::RabbitmqPublish(format!(
+                    "flush timed out after {}s with {} messages still pending",
+                    FLUSH_TIMEOUT.as_secs(),
+                    self.pending_confirms.load(Ordering::Acquire)
+                )));
+            }
+            std::thread::sleep(FLUSH_POLL_INTERVAL);
+        }
+        let errs = self.send_errors.lock().unwrap();
+        if !errs.is_empty() {
+            return Err(WriteError::RabbitmqPublish(errs.join("; ")));
+        }
         Ok(())
     }
 
@@ -92,7 +144,9 @@ impl Writer for RabbitmqWriter {
 
 impl Drop for RabbitmqWriter {
     fn drop(&mut self) {
-        self.flush(true).expect("failed to send the final messages");
+        if let Err(e) = self.flush(true) {
+            error!("RabbitMQ flush failed on drop: {e}");
+        }
     }
 }
 
@@ -110,6 +164,8 @@ impl RabbitmqWriter {
             topic,
             header_fields,
             key_field_index,
+            pending_confirms: Arc::new(AtomicUsize::new(0)),
+            send_errors: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }

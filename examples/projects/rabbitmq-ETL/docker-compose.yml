@@ -27,7 +27,7 @@ services:
       POSTGRES_PASSWORD: pathway
       POSTGRES_DB: etl_db
     ports:
-      - 5432:5432
+      - 5433:5432
     volumes:
       - ./sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     healthcheck:

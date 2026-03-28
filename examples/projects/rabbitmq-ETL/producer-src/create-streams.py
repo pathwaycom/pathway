@@ -170,15 +170,16 @@ SOURCES = ["website_a", "website_b"]
 
 
 async def main():
-    from rstream import Producer
+    from rstream import AMQPMessage, Producer
 
     print("Connecting to RabbitMQ Streams...")
-    producer = await Producer.create(
+    producer = Producer(
         host=RABBITMQ_HOST,
         port=RABBITMQ_PORT,
         username=RABBITMQ_USER,
         password=RABBITMQ_PASSWORD,
     )
+    await producer.start()
 
     # Create all streams
     for stream in STREAMS:
@@ -191,21 +192,21 @@ async def main():
     # Publish initial employees
     print("Publishing employee records...")
     for emp in EMPLOYEES:
-        await producer.send("employees_raw", json.dumps(emp).encode())
+        await producer.send("employees_raw", AMQPMessage(body=json.dumps(emp).encode()))
         await asyncio.sleep(0.3)
     print(f"Published {len(EMPLOYEES)} employees")
 
     # Publish initial orders
     print("Publishing order records...")
     for order in ORDERS:
-        await producer.send("orders_raw", json.dumps(order).encode())
+        await producer.send("orders_raw", AMQPMessage(body=json.dumps(order).encode()))
         await asyncio.sleep(0.2)
     print(f"Published {len(ORDERS)} orders")
 
     # Publish initial listings
     print("Publishing listing records...")
     for listing in LISTINGS:
-        await producer.send("listings_raw", json.dumps(listing).encode())
+        await producer.send("listings_raw", AMQPMessage(body=json.dumps(listing).encode()))
         await asyncio.sleep(0.2)
     print(f"Published {len(LISTINGS)} listings")
 
@@ -229,7 +230,7 @@ async def main():
             "product": random.choice(PRODUCTS),
             "quantity": random.randint(1, 10),
         }
-        await producer.send("orders_raw", json.dumps(new_order).encode())
+        await producer.send("orders_raw", AMQPMessage(body=json.dumps(new_order).encode()))
         print(f"Published new order: {order_id}")
 
         await asyncio.sleep(3)
@@ -245,7 +246,7 @@ async def main():
             "posted_date": "2024-12-10",
             "agent_employee_id": random.choice(agent_ids),
         }
-        await producer.send("listings_raw", json.dumps(new_listing).encode())
+        await producer.send("listings_raw", AMQPMessage(body=json.dumps(new_listing).encode()))
         print(f"Published new listing: {listing_id}")
 
 

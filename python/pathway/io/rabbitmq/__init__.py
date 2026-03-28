@@ -37,7 +37,12 @@ def read(
     parallel_readers: int | None = None,
     name: str | None = None,
     max_backlog_size: int | None = None,
+    tls_root_certificates: str | None = None,
+    tls_client_cert: str | None = None,
+    tls_client_key: str | None = None,
+    tls_trust_certificates: bool = False,
     debug_data=None,
+    _stacklevel: int = 5,
     **kwargs,
 ) -> Table:
     """Reads data from a specified RabbitMQ stream.
@@ -84,6 +89,10 @@ def read(
             will be used as the name for the snapshot that stores the connector's progress.
         max_backlog_size: Limit on the number of entries read from the input source and
             kept in processing at any moment.
+        tls_root_certificates: Path to the root CA certificate file for TLS connections.
+        tls_client_cert: Path to the client certificate file for mutual TLS.
+        tls_client_key: Path to the client private key file for mutual TLS.
+        tls_trust_certificates: If True, trust server certificates without verification.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -139,6 +148,15 @@ def read(
     ...     mode="static",
     ... )
     """
+    tls_kwargs: dict = {}
+    if tls_root_certificates is not None:
+        tls_kwargs["rabbitmq_tls_root_certificates"] = tls_root_certificates
+    if tls_client_cert is not None:
+        tls_kwargs["rabbitmq_tls_client_cert"] = tls_client_cert
+    if tls_client_key is not None:
+        tls_kwargs["rabbitmq_tls_client_key"] = tls_client_key
+    if tls_trust_certificates:
+        tls_kwargs["rabbitmq_tls_trust_certificates"] = tls_trust_certificates
     data_storage = api.DataStorage(
         storage_type="rabbitmq",
         path=uri,
@@ -146,6 +164,7 @@ def read(
         parallel_readers=parallel_readers,
         mode=internal_connector_mode(mode),
         start_from_timestamp_ms=start_from_timestamp_ms,
+        **tls_kwargs,
     )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
@@ -154,7 +173,7 @@ def read(
         with_native_record_key=True,
         autogenerate_key=autogenerate_key,
         with_metadata=with_metadata,
-        _stacklevel=5,
+        _stacklevel=_stacklevel,
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
@@ -177,6 +196,73 @@ def read(
     )
 
 
+@check_arg_types
+@trace_user_frame
+def simple_read(
+    host: str,
+    stream_name: str,
+    *,
+    port: int = 5552,
+    schema: type[Schema] | None = None,
+    format: Literal["plaintext", "raw", "json"] = "raw",
+    autocommit_duration_ms: int | None = 1500,
+    json_field_paths: dict[str, str] | None = None,
+    parallel_readers: int | None = None,
+    name: str | None = None,
+    debug_data=None,
+    **kwargs,
+) -> Table:
+    """Simplified method to read data from a RabbitMQ stream. Only requires the
+    server host and the stream name. Uses default credentials (``guest:guest``).
+    If you need TLS, authentication, or fine-tuning, use :py:func:`read` instead.
+
+    Read starts from the beginning of the stream, unless the ``read_only_new``
+    parameter is set to True.
+
+    There are three formats currently supported: ``"plaintext"``, ``"raw"``, and
+    ``"json"``. If ``"raw"`` is chosen, the key and the payload are read as raw bytes.
+    If ``"plaintext"`` is chosen, they are parsed from UTF-8. In both cases the table
+    has a ``"data"`` column. If ``"json"`` is chosen, the payload is parsed according
+    to the ``schema`` parameter.
+
+    Args:
+        host: Hostname of the RabbitMQ server with Streams enabled.
+        stream_name: Name of the RabbitMQ stream to read from.
+        port: Port of the RabbitMQ Streams endpoint (default ``5552``).
+        schema: Schema of the resulting table (used with ``"json"`` format).
+        format: Input data format: ``"raw"``, ``"plaintext"``, or ``"json"``.
+        autocommit_duration_ms: The maximum time between two commits in milliseconds.
+        json_field_paths: For ``"json"`` format, mapping of field names to JSON
+            Pointer paths.
+        parallel_readers: Number of reader instances running in parallel.
+        name: A unique name for the connector.
+        debug_data: Static data replacing original one when debug mode is active.
+
+    Returns:
+        Table: The table read.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.io.rabbitmq.simple_read("localhost", "events")
+    """
+    uri = f"rabbitmq-stream://guest:guest@{host}:{port}"
+    return read(
+        uri=uri,
+        stream_name=stream_name,
+        schema=schema,
+        format=format,
+        mode="streaming",
+        autocommit_duration_ms=autocommit_duration_ms,
+        json_field_paths=json_field_paths,
+        parallel_readers=parallel_readers,
+        name=name,
+        debug_data=debug_data,
+        _stacklevel=7,
+        **kwargs,
+    )
+
+
 @check_raw_and_plaintext_only_kwargs_for_message_queues
 @check_arg_types
 @trace_user_frame
@@ -192,6 +278,10 @@ def write(
     headers: Iterable[ColumnReference] | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    tls_root_certificates: str | None = None,
+    tls_client_cert: str | None = None,
+    tls_client_key: str | None = None,
+    tls_trust_certificates: bool = False,
 ) -> None:
     """Writes data into the specified RabbitMQ stream.
 
@@ -231,6 +321,10 @@ def write(
             logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on the
             values of the given columns within each minibatch.
+        tls_root_certificates: Path to the root CA certificate file for TLS connections.
+        tls_client_cert: Path to the client certificate file for mutual TLS.
+        tls_client_key: Path to the client private key file for mutual TLS.
+        tls_trust_certificates: If True, trust server certificates without verification.
 
     Example:
 
@@ -279,6 +373,15 @@ def write(
     )
     table = output_format.table
 
+    tls_kwargs: dict = {}
+    if tls_root_certificates is not None:
+        tls_kwargs["rabbitmq_tls_root_certificates"] = tls_root_certificates
+    if tls_client_cert is not None:
+        tls_kwargs["rabbitmq_tls_client_cert"] = tls_client_cert
+    if tls_client_key is not None:
+        tls_kwargs["rabbitmq_tls_client_key"] = tls_client_key
+    if tls_trust_certificates:
+        tls_kwargs["rabbitmq_tls_trust_certificates"] = tls_trust_certificates
     data_storage = api.DataStorage(
         storage_type="rabbitmq",
         path=uri,
@@ -286,6 +389,7 @@ def write(
         topic_name_index=output_format.topic_name_index,
         key_field_index=output_format.key_field_index,
         header_fields=list(output_format.header_fields.items()),
+        **tls_kwargs,
     )
 
     table.to(

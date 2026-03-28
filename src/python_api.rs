@@ -164,6 +164,10 @@ pub mod threads;
 /// URI format: `rabbitmq-stream://user:pass@host:port/vhost`
 async fn build_rabbitmq_environment(
     uri: &str,
+    tls_root_certs: Option<&str>,
+    tls_client_cert: Option<&str>,
+    tls_client_key: Option<&str>,
+    tls_trust: bool,
 ) -> PyResult<rabbitmq_stream_client::Environment> {
     // Parse URI: rabbitmq-stream://user:pass@host:port/vhost
     let uri_str = uri
@@ -203,6 +207,27 @@ async fn build_rabbitmq_environment(
         if !vhost.is_empty() {
             builder = builder.virtual_host(vhost);
         }
+    }
+
+    // Configure TLS if any TLS parameters are provided
+    if tls_root_certs.is_some() || tls_trust || tls_client_cert.is_some() {
+        let mut tls_builder = rabbitmq_stream_client::TlsConfiguration::builder();
+        if let Some(root) = tls_root_certs {
+            // add_root_certificates enables TLS and sets the CA cert path
+            tls_builder = tls_builder.add_root_certificates(root.to_string());
+        }
+        if let (Some(cert), Some(key)) = (tls_client_cert, tls_client_key) {
+            tls_builder =
+                tls_builder.add_client_certificates_keys(cert.to_string(), key.to_string());
+        }
+        if tls_trust && tls_root_certs.is_none() {
+            // enable(true) without root certs produces TlsConfiguration::Untrusted
+            tls_builder = tls_builder.enable(true);
+        }
+        let tls_config = tls_builder.build().map_err(|e| {
+            PyValueError::new_err(format!("Failed to build RabbitMQ TLS configuration: {e}"))
+        })?;
+        builder = builder.tls(tls_config);
     }
 
     builder.build().await.map_err(|e| {
@@ -4649,6 +4674,10 @@ pub struct DataStorage {
     ssl_cert_path: Option<String>,
     psql_replication: Option<PsqlReplicationSettings>,
     schema_name: Option<String>,
+    rabbitmq_tls_root_certificates: Option<String>,
+    rabbitmq_tls_client_cert: Option<String>,
+    rabbitmq_tls_client_key: Option<String>,
+    rabbitmq_tls_trust_certificates: bool,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5211,6 +5240,10 @@ impl DataStorage {
         ssl_cert_path = None,
         psql_replication = None,
         schema_name = None,
+        rabbitmq_tls_root_certificates = None,
+        rabbitmq_tls_client_cert = None,
+        rabbitmq_tls_client_key = None,
+        rabbitmq_tls_trust_certificates = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5257,6 +5290,10 @@ impl DataStorage {
         ssl_cert_path: Option<String>,
         psql_replication: Option<PsqlReplicationSettings>,
         schema_name: Option<String>,
+        rabbitmq_tls_root_certificates: Option<String>,
+        rabbitmq_tls_client_cert: Option<String>,
+        rabbitmq_tls_client_key: Option<String>,
+        rabbitmq_tls_trust_certificates: bool,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5301,6 +5338,10 @@ impl DataStorage {
             ssl_cert_path,
             psql_replication,
             schema_name,
+            rabbitmq_tls_root_certificates,
+            rabbitmq_tls_client_cert,
+            rabbitmq_tls_client_key,
+            rabbitmq_tls_trust_certificates,
         }
     }
 
@@ -6196,7 +6237,14 @@ impl DataStorage {
         };
 
         let (environment, consumer, end_offset) = runtime.block_on(async {
-            let environment = build_rabbitmq_environment(uri).await?;
+            let environment = build_rabbitmq_environment(
+                uri,
+                self.rabbitmq_tls_root_certificates.as_deref(),
+                self.rabbitmq_tls_client_cert.as_deref(),
+                self.rabbitmq_tls_client_key.as_deref(),
+                self.rabbitmq_tls_trust_certificates,
+            )
+            .await?;
             let consumer = environment
                 .consumer()
                 .offset(offset_spec)
@@ -6745,7 +6793,14 @@ impl DataStorage {
         let stream_name = self.message_queue_fixed_topic()?;
         let runtime = create_async_tokio_runtime()?;
         let producer = runtime.block_on(async {
-            let environment = build_rabbitmq_environment(uri).await?;
+            let environment = build_rabbitmq_environment(
+                uri,
+                self.rabbitmq_tls_root_certificates.as_deref(),
+                self.rabbitmq_tls_client_cert.as_deref(),
+                self.rabbitmq_tls_client_key.as_deref(),
+                self.rabbitmq_tls_trust_certificates,
+            )
+            .await?;
             let producer = environment
                 .producer()
                 .build(&stream_name)

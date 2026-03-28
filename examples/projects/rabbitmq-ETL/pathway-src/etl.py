@@ -17,13 +17,13 @@ import pathway as pw
 # To use advanced features with Pathway Scale, get your free license key from
 # https://pathway.com/features and paste it below.
 # To use Pathway Community, comment out the line below.
-pw.set_license_key("demo-license-key-with-telemetry")
+# pw.set_license_key("demo-license-key-with-telemetry")
 
-RABBITMQ_URI = "rabbitmq-stream://guest:guest@rabbitmq:5552"
+RABBITMQ_URI = "rabbitmq-stream://guest:guest@0.0.0.0:5552"
 
 postgres_settings = {
-    "host": "postgres",
-    "port": "5432",
+    "host": "0.0.0.0",
+    "port": "5433",
     "dbname": "etl_db",
     "user": "pathway",
     "password": "pathway",
