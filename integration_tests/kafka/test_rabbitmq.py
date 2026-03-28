@@ -83,9 +83,7 @@ class RabbitmqStreamManager:
             message.encode(),
         )
 
-    def send_with_properties(
-        self, message: str, properties: dict[str, str]
-    ) -> None:
+    def send_with_properties(self, message: str, properties: dict[str, str]) -> None:
         """Send a message with AMQP 1.0 application properties."""
         fut = asyncio.run_coroutine_threadsafe(
             self._send_with_properties_async(message, properties),

@@ -55,13 +55,12 @@ impl Writer for RabbitmqWriter {
             let properties = data.construct_rabbitmq_properties(&self.header_fields);
 
             // Extract key from data values if key_field_index is set
-            let key_value: Option<String> = self.key_field_index.map(|idx| {
-                match &data.values[idx] {
+            let key_value: Option<String> =
+                self.key_field_index.map(|idx| match &data.values[idx] {
                     Value::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
                     Value::String(s) => s.to_string(),
                     other => other.to_string(),
-                }
-            });
+                });
 
             let has_app_props = !properties.is_empty() || key_value.is_some();
 
@@ -190,9 +189,7 @@ impl Reader for RabbitmqReader {
             return Ok(deferred);
         }
 
-        let delivery = self
-            .runtime
-            .block_on(async { self.consumer.next().await });
+        let delivery = self.runtime.block_on(async { self.consumer.next().await });
         match delivery {
             Some(Ok(delivery)) => {
                 let stream_offset = delivery.offset();
@@ -228,11 +225,7 @@ impl Reader for RabbitmqReader {
                 // Create metadata and use deferred pattern (like Kafka).
                 // Timestamp extraction is not possible due to private field in
                 // rabbitmq_stream_protocol::Timestamp.
-                let metadata = RabbitmqMetadata::new(
-                    stream_offset,
-                    self.stream_name.clone(),
-                    None,
-                );
+                let metadata = RabbitmqMetadata::new(stream_offset, self.stream_name.clone(), None);
                 self.deferred_read_result = Some(ReadResult::Data(payload, offset));
                 Ok(ReadResult::NewSource(metadata.into()))
             }
@@ -247,9 +240,7 @@ impl Reader for RabbitmqReader {
             if let OffsetValue::RabbitmqOffset(last_offset) = offset {
                 // Rebuild consumer starting from the next offset after the persisted one
                 let next_offset = last_offset.checked_add(1).ok_or_else(|| {
-                    ReadError::Rabbitmq(
-                        "Offset overflow: cannot seek past u64::MAX".to_string(),
-                    )
+                    ReadError::Rabbitmq("Offset overflow: cannot seek past u64::MAX".to_string())
                 })?;
                 let new_consumer = self
                     .runtime
@@ -261,9 +252,7 @@ impl Reader for RabbitmqReader {
                             .await
                     })
                     .map_err(|e| {
-                        ReadError::Rabbitmq(format!(
-                            "Failed to rebuild consumer for seek: {e}"
-                        ))
+                        ReadError::Rabbitmq(format!("Failed to rebuild consumer for seek: {e}"))
                     })?;
                 self.consumer = new_consumer;
             } else {

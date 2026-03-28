@@ -101,11 +101,11 @@ pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
-pub use super::rabbitmq::RabbitmqReader;
-pub use super::rabbitmq::RabbitmqWriter;
 pub use super::postgres::{
     PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
+pub use super::rabbitmq::RabbitmqReader;
+pub use super::rabbitmq::RabbitmqWriter;
 pub use super::sqlite::SqliteReader;
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]

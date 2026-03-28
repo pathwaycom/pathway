@@ -7,7 +7,11 @@ from typing import Iterable, Literal
 from pathway.internals import api, datasink, datasource
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.schema import KEY_SOURCE_COMPONENT, PAYLOAD_SOURCE_COMPONENT, Schema
+from pathway.internals.schema import (
+    KEY_SOURCE_COMPONENT,
+    PAYLOAD_SOURCE_COMPONENT,
+    Schema,
+)
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
