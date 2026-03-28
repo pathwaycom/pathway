@@ -432,13 +432,13 @@ impl FormatterContext {
         raw_headers
             .into_iter()
             .map(|h| {
-                let value = h
-                    .value
-                    .map(|v| {
+                let value = h.value.map_or_else(
+                    || Value::None.to_string(),
+                    |v| {
                         String::from_utf8(v)
                             .expect("all prepared headers must be UTF-8 serializable")
-                    })
-                    .unwrap_or_else(|| Value::None.to_string());
+                    },
+                );
                 (h.key, value)
             })
             .collect()
