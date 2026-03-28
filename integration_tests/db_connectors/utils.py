@@ -100,8 +100,6 @@ def is_mysql_reachable():
     return True
 
 
-
-
 @dataclass(frozen=True)
 class ColumnProperties:
     type_name: str

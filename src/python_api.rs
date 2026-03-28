@@ -160,7 +160,7 @@ mod external_index_wrappers;
 mod logging;
 pub mod threads;
 
-/// Parse a RabbitMQ Streams URI and build an Environment.
+/// Parse a `RabbitMQ` Streams URI and build an Environment.
 /// URI format: `rabbitmq-stream://user:pass@host:port/vhost`
 async fn build_rabbitmq_environment(
     uri: &str,
@@ -170,9 +170,7 @@ async fn build_rabbitmq_environment(
     tls_trust: bool,
 ) -> PyResult<rabbitmq_stream_client::Environment> {
     // Parse URI: rabbitmq-stream://user:pass@host:port/vhost
-    let uri_str = uri
-        .strip_prefix("rabbitmq-stream://")
-        .unwrap_or(uri);
+    let uri_str = uri.strip_prefix("rabbitmq-stream://").unwrap_or(uri);
     let mut builder = rabbitmq_stream_client::Environment::builder();
 
     // Split userinfo from host
@@ -230,9 +228,10 @@ async fn build_rabbitmq_environment(
         builder = builder.tls(tls_config);
     }
 
-    builder.build().await.map_err(|e| {
-        PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}"))
-    })
+    builder
+        .build()
+        .await
+        .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
 }
 
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();

@@ -64,7 +64,7 @@ impl Writer for RabbitmqWriter {
 
             let has_app_props = !properties.is_empty() || key_value.is_some();
 
-            for payload in data.payloads.into_iter() {
+            for payload in data.payloads {
                 let payload_bytes = payload.into_raw_bytes()?;
                 let message = if has_app_props {
                     let mut app_props = Message::builder().application_properties();
@@ -212,7 +212,7 @@ impl Reader for RabbitmqReader {
                         SimpleValue::Binary(b) => b.clone(),
                         other => format!("{other:?}").into_bytes(),
                     });
-                let body = message.data().map(|d| d.to_vec());
+                let body = message.data().map(<[u8]>::to_vec);
 
                 // Use key-value context to support native record keys
                 let payload = ReaderContext::from_key_value(key, body);
