@@ -488,7 +488,7 @@ pub trait Reader {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     fn merge_two_frontiers(lhs: &OffsetAntichain, rhs: &OffsetAntichain) -> OffsetAntichain
     where
         Self: Sized,
@@ -500,8 +500,12 @@ pub trait Reader {
                     (
                         OffsetValue::KafkaOffset(offset_position),
                         OffsetValue::KafkaOffset(other_position),
-                    )
-                    | (
+                    ) => {
+                        if other_position > offset_position {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
                         OffsetValue::RabbitmqOffset(offset_position),
                         OffsetValue::RabbitmqOffset(other_position),
                     ) => {
