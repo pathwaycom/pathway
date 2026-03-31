@@ -19,10 +19,7 @@ def count_commits_in_pathway_repository(tmp_path):
 # Retries are needed for an unlikely case when the number of commits in the repository
 # changes between the remote run and the `count_commits_in_pathway_repository` method
 # execution.
-# Upd(10.03.2026) the airbyte-cdk library, a principal connector dependency is broken.
-# Details: https://github.com/airbytehq/airbyte-python-cdk/issues/946
-# Planned workaround: https://github.com/pathwaycom/pathway/issues/201
-@pytest.mark.xfail
+@pytest.mark.flaky(reruns=2)
 def test_repository_url_feature(tmp_path):
     output_deltalake_path = tmp_path / "commit-lake"
     os.environ["LOCAL_OUTPUT_PATH"] = os.fspath(output_deltalake_path)
