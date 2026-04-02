@@ -1,8 +1,12 @@
 // Copyright © 2026 Pathway
 
-use crate::env::{parse_env_var, parse_env_var_required, Error as EnvError};
-use log::warn;
+use log::{info, warn};
+
 use timely::{CommunicationConfig, Config as TimelyConfig, WorkerConfig};
+
+use crate::engine::dataflow::License;
+use crate::engine::license::Error as LicenseError;
+use crate::env::{parse_env_var, parse_env_var_required, Error as EnvError};
 
 const MAX_WORKERS: usize = if cfg!(feature = "unlimited-workers") {
     usize::MAX
@@ -38,6 +42,7 @@ pub struct Config {
     threads: usize,
     processes: Processes,
     process_id: usize,
+    fixed_pool: bool,
 }
 
 impl Config {
@@ -59,6 +64,13 @@ impl Config {
     const IDLE_MERGE_EFFORT_SETTING: &str = "differential/idle_merge_effort";
     const BASE_IDLE_MERGE_EFFORT: isize = 64;
 
+    pub fn check_scopes(&self, license: &License) -> Result<(), LicenseError> {
+        if self.fixed_pool {
+            license.check_entitlements(["multiple-machines"])?;
+        }
+        Ok(())
+    }
+
     pub fn workers(&self) -> usize {
         self.workers
     }
@@ -75,10 +87,18 @@ impl Config {
     }
 
     pub fn is_downscaling_possible(&self) -> bool {
+        if self.fixed_pool {
+            warn!("Downscaling is not supported with a fixed worker address pool; use --processes in CLI runner to enable scaling");
+            return false;
+        }
         self.processes() > 1
     }
 
     pub fn is_upscaling_possible(&self) -> bool {
+        if self.fixed_pool {
+            warn!("Upscaling is not supported with a fixed worker address pool; use --processes in CLI runner to enable scaling");
+            return false;
+        }
         (self.processes() + 1) * self.threads <= MAX_WORKERS
     }
 
@@ -136,24 +156,33 @@ impl Config {
         }
         let workers = threads * processes;
         assert!(workers <= MAX_WORKERS);
-        let (process_id, processes) = if processes > 1 {
+        let (process_id, processes, fixed_pool) = if processes > 1 {
             let process_id: usize = parse_env_var_required("PATHWAY_PROCESS_ID")?;
             if process_id >= processes {
                 return Err(Error::InvalidId(process_id));
             }
-            let first_port: usize = parse_env_var_required("PATHWAY_FIRST_PORT")?;
-            let addresses = (0..processes)
-                .map(|id| format!("127.0.0.1:{}", first_port + id))
-                .collect();
-            (process_id, Processes::Multi(addresses))
+            let (addresses, fixed_pool) =
+                if let Some(addresses) = parse_env_var::<String>("PATHWAY_ADDRESSES")? {
+                    let addrs = addresses.split(',').map(str::to_string).collect();
+                    info!("Spawning a worker over the set of addresses: ({process_id}, {addrs:?})");
+                    (addrs, true)
+                } else {
+                    let first_port: usize = parse_env_var_required("PATHWAY_FIRST_PORT")?;
+                    let addrs = (0..processes)
+                        .map(|id| format!("127.0.0.1:{}", first_port + id))
+                        .collect();
+                    (addrs, false)
+                };
+            (process_id, Processes::Multi(addresses), fixed_pool)
         } else {
-            (0, Processes::Single)
+            (0, Processes::Single, false)
         };
         Ok(Self {
             workers,
             threads,
             processes,
             process_id,
+            fixed_pool,
         })
     }
 }

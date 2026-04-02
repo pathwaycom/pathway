@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.milvus.write` connector, which writes a Pathway table to a Milvus collection. Row additions are sent as upserts and row deletions are sent as deletes keyed on the configured primary key column. Requires a Pathway Scale license.
+- `pathway spawn` now supports the `--addresses` and `--process-id` flags for multi-machine deployments. Pass a comma-separated list of `host:port` addresses for all processes and the index of the local process; Pathway will connect the cluster over TCP without requiring all processes to run on the same machine.
 
 ## [0.30.0] - 2026-03-24
 

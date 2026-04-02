@@ -8,6 +8,7 @@ use std::result;
 use super::ColumnPath;
 use super::{Key, Value};
 use crate::connectors::synchronization::Error as InputSynchronizationError;
+use crate::engine::license::Error as LicenseError;
 use crate::persistence::Error as PersistenceBackendError;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
@@ -152,6 +153,9 @@ pub enum Error {
 
     #[error("exactly once join is not supported in iteration")]
     ExactlyOnceJoinNotSupportedInIteration,
+
+    #[error(transparent)]
+    License(#[from] LicenseError),
 }
 
 const OTHER_WORKER_ERROR_MESSAGES: [&str; 3] = [
