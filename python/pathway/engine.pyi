@@ -930,6 +930,10 @@ class DataStorage:
         ssl_cert_path: str | None = None,
         psql_replication: PsqlReplicationSettings | None = None,
         schema_name: str | None = None,
+        rabbitmq_tls_root_certificates: str | None = None,
+        rabbitmq_tls_client_cert: str | None = None,
+        rabbitmq_tls_client_key: str | None = None,
+        rabbitmq_tls_trust_certificates: bool = False,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

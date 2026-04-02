@@ -4,6 +4,7 @@ pub mod kafka;
 pub mod mongodb;
 pub mod parquet;
 pub mod postgres;
+pub mod rabbitmq;
 pub mod sqlite;
 
 #[allow(clippy::module_name_repetitions)]
@@ -25,6 +26,9 @@ pub use parquet::ParquetMetadata;
 pub use postgres::PostgresMetadata;
 
 #[allow(clippy::module_name_repetitions)]
+pub use rabbitmq::RabbitmqMetadata;
+
+#[allow(clippy::module_name_repetitions)]
 pub use sqlite::SQLiteMetadata;
 
 #[allow(clippy::module_name_repetitions)]
@@ -37,6 +41,7 @@ pub enum SourceMetadata {
     Iceberg(IcebergMetadata),
     Parquet(ParquetMetadata),
     Postgres(PostgresMetadata),
+    Rabbitmq(RabbitmqMetadata),
 }
 
 impl From<FileLikeMetadata> for SourceMetadata {
@@ -75,6 +80,12 @@ impl From<PostgresMetadata> for SourceMetadata {
     }
 }
 
+impl From<RabbitmqMetadata> for SourceMetadata {
+    fn from(impl_: RabbitmqMetadata) -> Self {
+        Self::Rabbitmq(impl_)
+    }
+}
+
 impl From<SQLiteMetadata> for SourceMetadata {
     fn from(impl_: SQLiteMetadata) -> Self {
         Self::SQLite(impl_)
@@ -91,6 +102,7 @@ impl SourceMetadata {
             Self::Iceberg(meta) => serde_json::to_value(meta),
             Self::Parquet(meta) => serde_json::to_value(meta),
             Self::Postgres(meta) => serde_json::to_value(meta),
+            Self::Rabbitmq(meta) => serde_json::to_value(meta),
         }
         .expect("Internal JSON serialization error")
     }
@@ -103,7 +115,7 @@ impl SourceMetadata {
             | Self::Iceberg(_)
             | Self::Parquet(_)
             | Self::Postgres(_) => false,
-            Self::Kafka(_) => true,
+            Self::Kafka(_) | Self::Rabbitmq(_) => true,
         }
     }
 }
