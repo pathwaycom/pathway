@@ -38,6 +38,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "milvusdb",
     "mongodb-oplog-reader",
     "monitoring",
+    "mssql",
     "mysql",
     "postgres-wal-reader",
     "questdb",
@@ -123,6 +124,7 @@ def test_license_default_policy(caplog):
     _check_entitlements("milvusdb")
     _check_entitlements("mongodb-oplog-reader")
     _check_entitlements("multiple-machines")
+    _check_entitlements("mssql")
 
     run_all()
     assert "Telemetry enabled" in caplog.text

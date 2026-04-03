@@ -4,6 +4,7 @@ from utils import (
     DynamoDBContext,
     MilvusContext,
     MongoDBContext,
+    MssqlContext,
     MySQLContext,
     PgvectorContext,
     PostgresContext,
@@ -52,6 +53,11 @@ def dynamodb():
 @pytest.fixture
 def mysql():
     return MySQLContext()
+
+
+@pytest.fixture
+def mssql():
+    return MssqlContext()
 
 
 @pytest.fixture

@@ -83,6 +83,19 @@ MYSQL_CONNECTION_STRING = (
     + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
 )
 
+MSSQL_DB_HOST = "mssql"
+MSSQL_DB_PORT = 1433
+MSSQL_DB_NAME = "testdb"
+MSSQL_DB_USER = "sa"
+MSSQL_DB_PASSWORD = "YourStrong!Passw0rd"
+MSSQL_CONNECTION_STRING = (
+    f"Server=tcp:{MSSQL_DB_HOST},{MSSQL_DB_PORT};"
+    f"Database={MSSQL_DB_NAME};"
+    f"User Id={MSSQL_DB_USER};"
+    f"Password={MSSQL_DB_PASSWORD};"
+    "TrustServerCertificate=true"
+)
+
 
 def is_mysql_reachable():
     try:
@@ -626,6 +639,141 @@ class MySQLContext:
         return f"mysql_{uuid.uuid4().hex}"
 
 
+class MssqlContext:
+    def __init__(self):
+        import pymssql
+
+        self.connection = pymssql.connect(
+            server=MSSQL_DB_HOST,
+            port=MSSQL_DB_PORT,
+            user=MSSQL_DB_USER,
+            password=MSSQL_DB_PASSWORD,
+            database=MSSQL_DB_NAME,
+            autocommit=True,
+            tds_version="7.3",
+        )
+        self.cursor = self.connection.cursor()
+
+    def random_table_name(self) -> str:
+        return f"mssql_{uuid.uuid4().hex}"
+
+    def execute_sql(self, query: str):
+        self.cursor.execute(query)
+
+    def enable_cdc(
+        self, table_name: str, max_retries: int = 5, retry_delay: float = 1.0
+    ) -> None:
+        """Enable CDC on a table, retrying on deadlock (SQL Server error 1205)."""
+        import pymssql
+
+        for attempt in range(max_retries):
+            try:
+                self.cursor.execute(
+                    f"EXEC sys.sp_cdc_enable_table "
+                    f"@source_schema=N'dbo', "
+                    f"@source_name=N'{table_name}', "
+                    f"@role_name=NULL"
+                )
+                return
+            except pymssql.exceptions.OperationalError as e:
+                if attempt < max_retries - 1 and "1205" in str(e):
+                    time.sleep(retry_delay)
+                else:
+                    raise
+
+    def insert_row(
+        self, table_name: str, values: dict[str, Union[int, bool, str, float, bytes]]
+    ) -> None:
+        field_names = []
+        value_exprs = []
+        params = []
+        for k, v in values.items():
+            field_names.append(k)
+            if isinstance(v, (bytes, bytearray)):
+                # pymssql encodes empty bytes b"" as '' (varchar) instead of
+                # 0x (binary), causing SQL Server error 257.  Embed all bytes
+                # values as SQL binary literals to avoid the issue entirely.
+                value_exprs.append(f"0x{v.hex()}")
+            else:
+                value_exprs.append("%s")
+                params.append(v)
+        query = f"INSERT INTO {table_name} ({','.join(field_names)}) VALUES ({','.join(value_exprs)})"
+        self.cursor.execute(query, tuple(params))
+
+    def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
+        table_name = self.random_table_name()
+
+        primary_key_found = False
+        fields = []
+        for field_name, field_schema in schema.columns().items():
+            parts = [f"[{field_name}]"]
+            field_type = field_schema.dtype
+            if field_type == dtype.STR:
+                parts.append("NVARCHAR(MAX)")
+            elif field_type == dtype.INT:
+                parts.append("BIGINT")
+            elif field_type == dtype.FLOAT:
+                parts.append("FLOAT")
+            elif field_type == dtype.BOOL:
+                parts.append("BIT")
+            else:
+                raise RuntimeError(f"Unsupported field type {field_type}")
+            if field_schema.primary_key:
+                if primary_key_found:
+                    raise AssertionError("Only single primary key supported")
+                primary_key_found = True
+                parts.append("PRIMARY KEY NOT NULL")
+            fields.append(" ".join(parts))
+
+        if add_special_fields:
+            fields.append("[time] BIGINT NOT NULL")
+            fields.append("[diff] BIGINT NOT NULL")
+
+        create_sql = (
+            f"IF OBJECT_ID(N'{table_name}', N'U') IS NULL "
+            f"CREATE TABLE {table_name} ({','.join(fields)})"
+        )
+        self.cursor.execute(create_sql)
+        return table_name
+
+    def get_table_contents(
+        self,
+        table_name: str,
+        column_names: list[str],
+        sort_by: Union[str, tuple, None] = None,
+    ) -> list[dict[str, Union[str, int, bool, float]]]:
+        select_query = f"SELECT {','.join(column_names)} FROM {table_name};"
+        self.cursor.execute(select_query)
+        rows = self.cursor.fetchall()
+        result = []
+        for row in rows:
+            row_map = dict(zip(column_names, row))
+            result.append(row_map)
+        if sort_by is not None:
+            if isinstance(sort_by, tuple):
+                result.sort(key=lambda item: tuple(item[key] for key in sort_by))
+            else:
+                result.sort(key=lambda item: item[sort_by])
+        return result
+
+    def get_table_schema(self, table_name: str) -> dict[str, ColumnProperties]:
+        query = """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = %s AND table_schema = 'dbo'
+            ORDER BY ordinal_position;
+        """
+        self.cursor.execute(query, (table_name,))
+        rows = self.cursor.fetchall()
+
+        schema_props = {}
+        for column_name, type_name, is_nullable in rows:
+            schema_props[column_name] = ColumnProperties(
+                type_name.lower(), is_nullable.upper() == "YES"
+            )
+        return schema_props
+
+
 class EntryCountChecker:
 
     def __init__(
@@ -685,7 +833,29 @@ def _compare_input_and_output(
 
         actual_type = get_args(ItemType) or (ItemType,)
         if pw.Json in actual_type and isinstance(value, str):
-            value = json.loads(value)
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                pass  # plain string is a valid JSON string value
+        # JSON-parse string values for list/tuple types (e.g. MSSQL stores them as JSON strings)
+        if isinstance(value, str) and get_origin(ItemType) in (list, tuple):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Parse ndarray JSON representation {"shape":[...],"elements":[...]} back to nested lists
+        if isinstance(value, str) and get_origin(ItemType) is np.ndarray:
+            try:
+                parsed = json.loads(value)
+                if (
+                    isinstance(parsed, dict)
+                    and "shape" in parsed
+                    and "elements" in parsed
+                ):
+                    arr = np.array(parsed["elements"]).reshape(parsed["shape"])
+                    return arr.tolist()
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
         if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
             args = get_args(ItemType)
             nested_arg = None

@@ -99,6 +99,7 @@ pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
+pub use super::mssql::{MssqlError, MssqlReader};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{
@@ -343,6 +344,9 @@ pub enum ReadError {
     MongoDb(#[from] MongoDbError),
 
     #[error(transparent)]
+    Mssql(#[from] MssqlError),
+
+    #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
     #[error("persistence is not supported for storage '{0:?}'")]
@@ -433,6 +437,7 @@ pub enum StorageType {
     Iceberg,
     Mqtt,
     Kinesis,
+    Mssql,
     Postgres,
     MongoDb,
 }
@@ -457,6 +462,7 @@ impl StorageType {
             StorageType::Iceberg => IcebergReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mqtt => MqttReader::merge_two_frontiers(lhs, rhs),
             StorageType::Kinesis => KinesisReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Mssql => MssqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::MongoDb => MongoReader::merge_two_frontiers(lhs, rhs),
         }
@@ -716,6 +722,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     MongoDB(#[from] MongoDbError),
+
+    #[error(transparent)]
+    Mssql(#[from] MssqlError),
 
     #[error(transparent)]
     Mysql(#[from] MysqlError),

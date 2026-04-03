@@ -1234,7 +1234,7 @@ pub fn parse_bincoded_value(s: &str) -> Result<Value, ParseError> {
 /// given payload, returns `None`. This `None` is further converted
 /// into `ParseError::FailedToParseFromJson` containing verbose
 /// information about parsing problem.
-fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
+pub fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
     if value.is_null() {
         if dtype.is_optional() {
             return Some(Value::None);

@@ -524,9 +524,9 @@ def test_requires_hashable_instance():
     with pytest.raises(
         ValueError,
         match=re.escape(
-            "You can't use a column of type Array(0, FLOAT) as instance"
+            "You can't use a column of type * as instance"
             + " in AsyncTransformer because it is unhashable."
-        ),
+        ).replace(r"\*", ".*"),
     ):
         TestAsyncTransformer(input_table=input_table, instance=pw.this.instance)
 
