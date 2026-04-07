@@ -53,7 +53,7 @@ User Query --> AG2 UserProxy --> GroupChat [Researcher + Analyst]
 
 2. **Install Dependencies**:
    ```bash
-   pip install -U pathway "ag2[openai]>=0.11.4,<1.0" requests
+   pip install -U pathway "ag2[openai]>=0.11.4,<1.0" requests python-dotenv
    ```
 
 3. **Environment Variables**:

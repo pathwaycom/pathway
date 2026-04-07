@@ -21,7 +21,6 @@ Usage:
     2. Run: python main.py
 """
 
-import json
 import os
 import sys
 import threading
@@ -93,8 +92,7 @@ def query_pathway_server(query: str, k: int = 5) -> str:
     try:
         response = requests.post(
             url,
-            data=json.dumps(payload),
-            headers={"Content-Type": "application/json"},
+            json=payload,
             timeout=30,
         )
         response.raise_for_status()
