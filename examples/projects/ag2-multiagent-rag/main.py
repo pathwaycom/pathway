@@ -109,9 +109,7 @@ def query_pathway_server(query: str, k: int = 5) -> str:
             metadata = result.get("metadata", {})
             source = metadata.get("path", "Unknown source")
             dist = result.get("dist", "N/A")
-            formatted.append(
-                f"[{i}] Source: {source} (distance: {dist})\n{text}"
-            )
+            formatted.append(f"[{i}] Source: {source} (distance: {dist})\n{text}")
 
         return "\n\n---\n\n".join(formatted)
 
@@ -137,9 +135,7 @@ def main():
         print("Please add documents (TXT, MD, PDF) and re-run.")
         sys.exit(1)
 
-    if not any(
-        f for f in os.listdir(DATA_DIR) if not f.startswith(".")
-    ):
+    if not any(f for f in os.listdir(DATA_DIR) if not f.startswith(".")):
         print(f"No documents found in {DATA_DIR}/")
         print("Please add documents (TXT, MD, PDF) and re-run.")
         sys.exit(1)
@@ -160,7 +156,9 @@ def main():
             )
             if resp.status_code == 200:
                 stats = resp.json()
-                print(f"Pathway server is ready! Indexed files: {stats.get('file_count', 'N/A')}")
+                print(
+                    f"Pathway server is ready! Indexed files: {stats.get('file_count', 'N/A')}"
+                )
                 break
         except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
             time.sleep(2)
