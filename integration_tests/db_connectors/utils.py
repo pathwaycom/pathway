@@ -13,6 +13,7 @@ import pandas as pd
 import psycopg2
 import requests
 from pymongo import MongoClient
+from pymongo.read_concern import ReadConcern
 
 import pathway as pw
 from pathway.internals import api, dtype
@@ -426,11 +427,11 @@ class MongoDBContext:
         return collection_name in db.list_collection_names()
 
     def get_full_collection(self, collection_name):
-        if not self.collection_exists(collection_name):
-            return []
         db = self.client[MONGODB_BASE_NAME]
-        collection = db[collection_name]
-        return [i for i in collection.find({}, {"_id": 0})]  # cast to list
+        collection = db[collection_name].with_options(
+            read_concern=ReadConcern("majority")
+        )
+        return list(collection.find({}, {"_id": 0}))
 
     def get_collection(
         self, collection_name: str, field_names: list[str]
