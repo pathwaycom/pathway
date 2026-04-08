@@ -4,6 +4,7 @@ from utils import (
     DynamoDBContext,
     MilvusContext,
     MongoDBContext,
+    MssqlContext,
     MySQLContext,
     PgvectorContext,
     PostgresContext,
@@ -59,3 +60,8 @@ def milvus(tmp_path):
     ctx = MilvusContext(str(tmp_path / "milvus.db"))
     yield ctx
     ctx.close()
+
+
+@pytest.fixture
+def mssql():
+    return MssqlContext()

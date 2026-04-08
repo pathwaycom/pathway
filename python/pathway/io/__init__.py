@@ -20,6 +20,7 @@ from pathway.io import (
     minio,
     mongodb,
     mqtt,
+    mssql,
     mysql,
     nats,
     null,
@@ -86,6 +87,7 @@ __all__ = [
     "rabbitmq",
     "dynamodb",
     "kinesis",
+    "mssql",
     "mysql",
     "SynchronizedColumn",
 ]

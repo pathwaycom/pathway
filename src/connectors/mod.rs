@@ -28,6 +28,7 @@ pub mod elasticsearch;
 pub mod metadata;
 pub mod mongodb;
 pub mod monitoring;
+pub mod mssql;
 pub mod nats;
 pub mod offset;
 pub mod posix_like;
