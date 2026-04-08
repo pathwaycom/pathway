@@ -56,12 +56,12 @@ def mysql():
 
 
 @pytest.fixture
+def mssql():
+    return MssqlContext()
+
+
+@pytest.fixture
 def milvus(tmp_path):
     ctx = MilvusContext(str(tmp_path / "milvus.db"))
     yield ctx
     ctx.close()
-
-
-@pytest.fixture
-def mssql():
-    return MssqlContext()

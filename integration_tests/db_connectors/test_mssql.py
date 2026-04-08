@@ -2,29 +2,20 @@
 
 import datetime
 import json
-import re
 import threading
 import time
 
 import pandas as pd
 import pytest
-from utils import (
-    MSSQL_CONNECTION_STRING,
-    MSSQL_DB_NAME,
-    SimpleObject,
-    is_mssql_reachable,
-)
+from utils import MSSQL_CONNECTION_STRING, SimpleObject
 
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
 
-xfail_if_mssql_failed_to_start = pytest.mark.xfail(
-    not is_mssql_reachable(), reason="mssql has failed to start"
-)
+pytestmark = pytest.mark.xdist_group("mssql")
 
 
-@xfail_if_mssql_failed_to_start
 @pytest.mark.parametrize("output_table_type", ["stream_of_changes", "snapshot"])
 @pytest.mark.parametrize("init_mode", ["default", "create_if_not_exists", "replace"])
 def test_mssql_write_outputs(output_table_type, init_mode, mssql):
@@ -107,7 +98,6 @@ def test_mssql_write_outputs(output_table_type, init_mode, mssql):
         ]
 
 
-@xfail_if_mssql_failed_to_start
 @pytest.mark.parametrize("are_types_optional", [False, True])
 @pytest.mark.parametrize("init_mode", ["create_if_not_exists", "replace"])
 def test_mssql_different_types(init_mode, are_types_optional, mssql):
@@ -197,7 +187,7 @@ def test_mssql_different_types(init_mode, are_types_optional, mssql):
         "e": "^Z5QKEQCDK9ZZ6TSYV0PM0G92JC",
         "f": {"foo": "bar", "baz": 123},
         "g": datetime.datetime(2025, 3, 14, 10, 13),
-        "h": datetime.datetime(2025, 4, 23, 10, 13),
+        "h": datetime.datetime(2025, 4, 23, 10, 13, tzinfo=datetime.timezone.utc),
         "i": SimpleObject("test"),
         "j": pd.Timedelta("4 days 2 seconds 123 us"),
         "k": 42,
@@ -207,6 +197,8 @@ def test_mssql_different_types(init_mode, are_types_optional, mssql):
         our_value = result[0][key]
         if key == "f":
             our_value = json.loads(our_value)
+        elif key == "j":
+            our_value = pd.Timedelta(microseconds=our_value)
         assert our_value == expected_value, key
 
     external_schema = mssql.get_table_schema(table_name)
@@ -228,7 +220,6 @@ def test_mssql_different_types(init_mode, are_types_optional, mssql):
             assert column_props.is_nullable == are_types_optional, column_name
 
 
-@xfail_if_mssql_failed_to_start
 def test_mssql_snapshot_overwrite_by_key(mssql):
     words = ["one", "two", "three", "one", "four", "two", "one", "one", "two", "four"]
 
@@ -255,7 +246,6 @@ def test_mssql_snapshot_overwrite_by_key(mssql):
     assert len(mssql.get_table_contents(table_name, ["word", "count"])) == 4
 
 
-@xfail_if_mssql_failed_to_start
 def test_mssql_overwrites_old_snapshot(mssql):
     table_name = mssql.random_table_name()
 
@@ -314,7 +304,6 @@ def test_mssql_overwrites_old_snapshot(mssql):
     ]
 
 
-@xfail_if_mssql_failed_to_start
 def test_mssql_composite_snapshot_key(mssql):
     table_name = mssql.random_table_name()
 
@@ -360,7 +349,6 @@ def test_mssql_composite_snapshot_key(mssql):
     ]
 
 
-@xfail_if_mssql_failed_to_start
 @pytest.mark.parametrize("malformed_primary_key", [None, []])
 def test_mssql_no_snapshot_key(malformed_primary_key, mssql):
     table_name = mssql.random_table_name()
@@ -394,7 +382,6 @@ def test_mssql_no_snapshot_key(malformed_primary_key, mssql):
         pw.run()
 
 
-@xfail_if_mssql_failed_to_start
 def test_mssql_single_column_snapshot_mode(mssql):
     table_name = mssql.random_table_name()
 
@@ -421,23 +408,28 @@ def test_mssql_single_column_snapshot_mode(mssql):
     assert contents == [{"x": 0}, {"x": 1}, {"x": 2}, {"x": 3}, {"x": 4}]
 
 
-@xfail_if_mssql_failed_to_start
 def test_mssql_read_basic(mssql, tmp_path):
     """Test basic read from an MSSQL table."""
     table_name = mssql.random_table_name()
     mssql.execute_sql(
         f"CREATE TABLE {table_name} ("
-        f"  sensor_name NVARCHAR(100) NOT NULL,"
+        f"  sensor_name NVARCHAR(100) NOT NULL PRIMARY KEY,"
         f"  temperature FLOAT NOT NULL,"
         f"  humidity FLOAT NOT NULL"
         f")"
     )
-    mssql.insert_row(table_name, {"sensor_name": "A", "temperature": 22.5, "humidity": 45.0})
-    mssql.insert_row(table_name, {"sensor_name": "B", "temperature": 23.1, "humidity": 42.3})
-    mssql.insert_row(table_name, {"sensor_name": "C", "temperature": 21.0, "humidity": 50.2})
+    mssql.insert_row(
+        table_name, {"sensor_name": "A", "temperature": 22.5, "humidity": 45.0}
+    )
+    mssql.insert_row(
+        table_name, {"sensor_name": "B", "temperature": 23.1, "humidity": 42.3}
+    )
+    mssql.insert_row(
+        table_name, {"sensor_name": "C", "temperature": 21.0, "humidity": 50.2}
+    )
 
     class SensorSchema(pw.Schema):
-        sensor_name: str
+        sensor_name: str = pw.column_definition(primary_key=True)
         temperature: float
         humidity: float
 
@@ -447,6 +439,7 @@ def test_mssql_read_basic(mssql, tmp_path):
         connection_string=MSSQL_CONNECTION_STRING,
         table_name=table_name,
         schema=SensorSchema,
+        mode="static",
         autocommit_duration_ms=100,
     )
     pw.io.jsonlines.write(table, str(output_path))
@@ -475,7 +468,6 @@ def test_mssql_read_basic(mssql, tmp_path):
     assert sensor_names == ["A", "B", "C"]
 
 
-@xfail_if_mssql_failed_to_start
 def test_mssql_read_write_roundtrip(mssql, tmp_path):
     """Test reading from MSSQL, transforming, and writing back."""
     input_table = mssql.random_table_name()
@@ -483,27 +475,32 @@ def test_mssql_read_write_roundtrip(mssql, tmp_path):
 
     mssql.execute_sql(
         f"CREATE TABLE {input_table} ("
-        f"  name NVARCHAR(100) NOT NULL,"
-        f"  value FLOAT NOT NULL"
+        f"  name NVARCHAR(100) NOT NULL PRIMARY KEY,"
+        f"  value FLOAT NOT NULL,"
+        f"  score TINYINT NOT NULL"
         f")"
     )
-    mssql.insert_row(input_table, {"name": "x", "value": 10.0})
-    mssql.insert_row(input_table, {"name": "y", "value": 20.0})
-    mssql.insert_row(input_table, {"name": "z", "value": 30.0})
+    mssql.insert_row(input_table, {"name": "x", "value": 10.0, "score": 1})
+    mssql.insert_row(input_table, {"name": "y", "value": 20.0, "score": 2})
+    mssql.insert_row(input_table, {"name": "z", "value": 30.0, "score": 255})
 
     class InputSchema(pw.Schema):
-        name: str
+        name: str = pw.column_definition(primary_key=True)
         value: float
+        score: int
 
     table = pw.io.mssql.read(
         connection_string=MSSQL_CONNECTION_STRING,
         table_name=input_table,
         schema=InputSchema,
+        mode="static",
         autocommit_duration_ms=100,
     )
 
     # Double the values
-    transformed = table.select(name=pw.this.name, value=pw.this.value * 2)
+    transformed = table.select(
+        name=pw.this.name, value=pw.this.value * 2, score=pw.this.score
+    )
 
     pw.io.mssql.write(
         transformed,
@@ -522,56 +519,29 @@ def test_mssql_read_write_roundtrip(mssql, tmp_path):
     deadline = time.time() + 30
     while time.time() < deadline:
         try:
-            contents = mssql.get_table_contents(output_table, ["name", "value"])
+            contents = mssql.get_table_contents(
+                output_table, ["name", "value", "score"]
+            )
             if len(contents) >= 3:
                 break
         except Exception:
             pass
         time.sleep(0.5)
 
-    contents = mssql.get_table_contents(output_table, ["name", "value"])
+    contents = mssql.get_table_contents(output_table, ["name", "value", "score"])
     contents.sort(key=lambda item: item["name"])
     assert len(contents) == 3
     assert contents[0]["name"] == "x"
     assert contents[0]["value"] == 20.0
+    assert contents[0]["score"] == 1
     assert contents[1]["name"] == "y"
     assert contents[1]["value"] == 40.0
+    assert contents[1]["score"] == 2
     assert contents[2]["name"] == "z"
     assert contents[2]["value"] == 60.0
+    assert contents[2]["score"] == 255
 
 
-def _is_mssql_cdc_available():
-    """Check if CDC is available on the MSSQL instance."""
-    if not is_mssql_reachable():
-        return False
-    try:
-        import pymssql
-
-        conn = pymssql.connect(
-            server="mssql",
-            port=1433,
-            user="sa",
-            password="YourStrong!Passw0rd",
-            database="testdb",
-            autocommit=True,
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()"
-        )
-        row = cursor.fetchone()
-        return row is not None and row[0] == 1
-    except Exception:
-        return False
-
-
-xfail_if_mssql_cdc_unavailable = pytest.mark.xfail(
-    not _is_mssql_cdc_available(),
-    reason="mssql CDC is not available (requires Developer/Enterprise edition with CDC enabled)",
-)
-
-
-@xfail_if_mssql_cdc_unavailable
 def test_mssql_cdc_read_inserts(mssql, tmp_path):
     """Test CDC reader detects inserts in real-time."""
     table_name = mssql.random_table_name()
@@ -582,19 +552,14 @@ def test_mssql_cdc_read_inserts(mssql, tmp_path):
         f")"
     )
     # Enable CDC on the table
-    mssql.execute_sql(
-        f"EXEC sys.sp_cdc_enable_table "
-        f"@source_schema=N'dbo', "
-        f"@source_name=N'{table_name}', "
-        f"@role_name=NULL"
-    )
+    mssql.enable_cdc(table_name)
 
     # Insert initial data
     mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
     mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
 
     class TestSchema(pw.Schema):
-        id: int
+        id: int = pw.column_definition(primary_key=True)
         name: str
 
     output_path = tmp_path / "cdc_output.jsonl"
@@ -643,7 +608,6 @@ def test_mssql_cdc_read_inserts(mssql, tmp_path):
     assert "Charlie" in names
 
 
-@xfail_if_mssql_cdc_unavailable
 def test_mssql_cdc_read_updates(mssql, tmp_path):
     """Test CDC reader detects updates (emits delete + insert)."""
     table_name = mssql.random_table_name()
@@ -653,17 +617,12 @@ def test_mssql_cdc_read_updates(mssql, tmp_path):
         f"  value NVARCHAR(100) NOT NULL"
         f")"
     )
-    mssql.execute_sql(
-        f"EXEC sys.sp_cdc_enable_table "
-        f"@source_schema=N'dbo', "
-        f"@source_name=N'{table_name}', "
-        f"@role_name=NULL"
-    )
+    mssql.enable_cdc(table_name)
 
     mssql.insert_row(table_name, {"id": 1, "value": "original"})
 
     class TestSchema(pw.Schema):
-        id: int
+        id: int = pw.column_definition(primary_key=True)
         value: str
 
     output_path = tmp_path / "cdc_update_output.jsonl"
@@ -693,9 +652,7 @@ def test_mssql_cdc_read_updates(mssql, tmp_path):
         time.sleep(0.5)
 
     # Update the row — CDC should emit delete (old) + insert (new)
-    mssql.execute_sql(
-        f"UPDATE {table_name} SET value = 'updated' WHERE id = 1"
-    )
+    mssql.execute_sql(f"UPDATE {table_name} SET value = 'updated' WHERE id = 1")
 
     # Wait for the update events
     deadline = time.time() + 30
@@ -711,7 +668,6 @@ def test_mssql_cdc_read_updates(mssql, tmp_path):
     assert "updated" in values
 
 
-@xfail_if_mssql_cdc_unavailable
 def test_mssql_cdc_read_deletes(mssql, tmp_path):
     """Test CDC reader detects deletes."""
     table_name = mssql.random_table_name()
@@ -721,18 +677,13 @@ def test_mssql_cdc_read_deletes(mssql, tmp_path):
         f"  name NVARCHAR(100) NOT NULL"
         f")"
     )
-    mssql.execute_sql(
-        f"EXEC sys.sp_cdc_enable_table "
-        f"@source_schema=N'dbo', "
-        f"@source_name=N'{table_name}', "
-        f"@role_name=NULL"
-    )
+    mssql.enable_cdc(table_name)
 
     mssql.insert_row(table_name, {"id": 1, "name": "ToDelete"})
     mssql.insert_row(table_name, {"id": 2, "name": "ToKeep"})
 
     class TestSchema(pw.Schema):
-        id: int
+        id: int = pw.column_definition(primary_key=True)
         name: str
 
     output_path = tmp_path / "cdc_delete_output.jsonl"
@@ -776,3 +727,122 @@ def test_mssql_cdc_read_deletes(mssql, tmp_path):
 
     lines = output_path.read_text().strip().split("\n")
     assert len(lines) > initial_count
+
+
+def test_mssql_read_reserved_word_columns(mssql, tmp_path):
+    """Regression: column names that are SQL reserved words must be bracket-quoted
+    in the snapshot SELECT. Without the fix the generated query is
+    ``SELECT key,order FROM [dbo].[table]`` which SQL Server rejects."""
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  [key] NVARCHAR(100) NOT NULL PRIMARY KEY,"
+        f"  [order] BIGINT NOT NULL"
+        f")"
+    )
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] ([key], [order]) VALUES ('alpha', 1)"
+    )
+    mssql.execute_sql(f"INSERT INTO [{table_name}] ([key], [order]) VALUES ('beta', 2)")
+
+    class ReservedSchema(pw.Schema):
+        key: str = pw.column_definition(primary_key=True)
+        order: int
+
+    output_path = tmp_path / "output.jsonl"
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=ReservedSchema,
+        mode="static",
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, str(output_path))
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    lines = [ln for ln in output_path.read_text().strip().split("\n") if ln]
+    records = [json.loads(ln) for ln in lines]
+    assert sorted((r["key"], r["order"]) for r in records) == [
+        ("alpha", 1),
+        ("beta", 2),
+    ]
+
+
+def test_mssql_snapshot_write_reserved_word_columns(mssql):
+    """Regression: column names that are SQL reserved words must be bracket-quoted
+    in the MERGE statement used for snapshot upserts. Without the fix the generated
+    MERGE contains bare ``key`` and ``order`` identifiers which SQL Server rejects."""
+    table_name = mssql.random_table_name()
+
+    class ReservedSchema(pw.Schema):
+        key: str = pw.column_definition(primary_key=True)
+        order: int
+
+    table = pw.debug.table_from_rows(
+        ReservedSchema,
+        [("alpha", 1), ("beta", 2)],
+    )
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="create_if_not_exists",
+        output_table_type="snapshot",
+        primary_key=[table.key],
+    )
+    pw.run()
+
+    mssql.execute_sql(f"SELECT [key], [order] FROM [{table_name}] ORDER BY [key]")
+    rows = list(mssql.cursor.fetchall())
+    assert rows == [("alpha", 1), ("beta", 2)]
+
+
+def test_mssql_write_null_non_string_columns(mssql):
+    """Check that NULL values round-trip correctly for every non-string optional
+    column type. The write path currently binds all NULLs as Option::<String>::None
+    (a typed NVARCHAR NULL in TDS); this test exposes whether SQL Server accepts
+    that for BIGINT, FLOAT, BIT, and VARBINARY columns."""
+    table_name = mssql.random_table_name()
+
+    class NullableSchema(pw.Schema):
+        row_id: int = pw.column_definition(primary_key=True)
+        int_val: int | None
+        float_val: float | None
+        bool_val: bool | None
+        bytes_val: bytes | None
+
+    table = pw.debug.table_from_rows(
+        NullableSchema,
+        [
+            (1, 42, 3.14, True, b"\x01\x02"),  # all fields populated
+            (2, None, None, None, None),  # all optional fields null
+        ],
+    )
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="create_if_not_exists",
+    )
+    pw.run()
+
+    mssql.execute_sql(
+        f"SELECT [row_id],[int_val],[float_val],[bool_val],[bytes_val] "
+        f"FROM [{table_name}] ORDER BY [row_id]"
+    )
+    db_rows = list(mssql.cursor.fetchall())
+    assert len(db_rows) == 2
+
+    r1_id, r1_int, r1_float, r1_bool, r1_bytes = db_rows[0]
+    assert r1_id == 1
+    assert r1_int == 42
+    assert abs(r1_float - 3.14) < 1e-6
+    assert r1_bool
+    assert r1_bytes == b"\x01\x02"
+
+    r2_id, r2_int, r2_float, r2_bool, r2_bytes = db_rows[1]
+    assert r2_id == 2
+    assert r2_int is None
+    assert r2_float is None
+    assert r2_bool is None
+    assert r2_bytes is None

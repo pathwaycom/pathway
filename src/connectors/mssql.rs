@@ -1,13 +1,13 @@
 // Copyright © 2026 Pathway
 
-use log::{error, info};
+use log::info;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::mem::take;
-use std::thread::sleep;
-use std::time::Duration;
 
-use tiberius::{Client, ColumnData, Config};
+use chrono::Timelike;
+use hex;
+use tiberius::{Client, ColumnData, Config, Query};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime as TokioRuntime;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -15,13 +15,15 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::{
-    CommitPossibility, ConversionError, SqlQueryTemplate, TableWriterInitMode, ValuesMap,
+    CommitPossibility, ConnectorMode, ConversionError, SqlQueryTemplate, TableWriterInitMode,
+    ValuesMap,
 };
 use crate::connectors::metadata::MssqlMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::{DataEventType, ReadError, ReadResult, Reader, ReaderContext, StorageType};
 use crate::connectors::{WriteError, Writer};
 use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
+use crate::engine::time::DateTime as DateTimeTrait;
 use crate::engine::{Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
@@ -30,6 +32,83 @@ use crate::retry::{execute_with_retries, RetryConfig};
 const MAX_MSSQL_RETRIES: usize = 3;
 
 type MssqlClient = Client<Compat<TcpStream>>;
+
+/// Errors specific to MSSQL connector operations.
+///
+/// A dedicated enum surfaces actionable messages for the most common failure
+/// modes that users encounter, while delegating everything else to the tiberius
+/// driver error.
+#[derive(Debug, thiserror::Error)]
+pub enum MssqlError {
+    /// General tiberius driver or SQL Server error not covered by a more specific variant.
+    #[error(transparent)]
+    Driver(#[from] tiberius::error::Error),
+
+    /// TCP connection to the SQL Server host failed.
+    ///
+    /// Check that the `Server` address and port in the connection string are correct
+    /// and that the server is running and reachable from this host.
+    #[error(
+        "failed to connect to SQL Server: {reason}; \
+         verify the Server address and port in the connection string"
+    )]
+    ConnectionFailed { reason: String },
+
+    /// SQL Server rejected the login credentials (SQL Server error 18456).
+    ///
+    /// Verify the `User Id` and `Password` fields in the connection string.
+    #[error(
+        "SQL Server authentication failed: {reason}; \
+         verify the User Id and Password in the connection string"
+    )]
+    AuthenticationFailed { reason: String },
+
+    /// The requested database does not exist or the login has no access to it
+    /// (SQL Server error 4060).
+    ///
+    /// Verify the `Database` field in the connection string and that the user has
+    /// been granted access to that database.
+    #[error(
+        "cannot open SQL Server database: {reason}; \
+         verify the Database name in the connection string and that the user has access"
+    )]
+    DatabaseNotFound { reason: String },
+
+    /// The target table does not exist in the database (SQL Server error 208).
+    ///
+    /// Use `init_mode="create_if_not_exists"` to create the table automatically,
+    /// or check that `table_name` and `schema_name` are spelled correctly.
+    #[error(
+        "table not found in the SQL Server database: {reason}; \
+         use init_mode=\"create_if_not_exists\" to create it automatically"
+    )]
+    TableNotFound { reason: String },
+
+    /// CDC is not enabled at the database level.
+    ///
+    /// Enable it with: `EXEC sys.sp_cdc_enable_db`
+    #[error(
+        "CDC is not enabled on the current database; \
+         enable it with: EXEC sys.sp_cdc_enable_db"
+    )]
+    CdcNotEnabledOnDatabase,
+
+    /// CDC is not enabled on the source table.
+    ///
+    /// Enable it with:
+    /// `EXEC sys.sp_cdc_enable_table @source_schema=N'<schema>', @source_name=N'<table>', @role_name=NULL`
+    #[error(
+        "CDC is not enabled on table '{schema}.{table}'; enable it with: \
+         EXEC sys.sp_cdc_enable_table \
+         @source_schema=N'{schema}', @source_name=N'{table}', @role_name=NULL"
+    )]
+    CdcNotEnabledOnTable { schema: String, table: String },
+}
+
+/// Build a schema-qualified table name using MSSQL bracket quoting.
+fn qualified_table_name(schema_name: &str, table_name: &str) -> String {
+    format!("[{schema_name}].[{table_name}]")
+}
 
 async fn connect_mssql(config: &Config) -> Result<MssqlClient, tiberius::error::Error> {
     let tcp = TcpStream::connect(config.get_addr()).await?;
@@ -61,45 +140,226 @@ async fn detect_server_version(
     }
 }
 
-// ========================= Reader =========================
-
+/// Unified MSSQL reader for both static and streaming (CDC) modes.
+///
+/// In `ConnectorMode::Static` the connector reads the table once and emits
+/// `ReadResult::Finished`.  In `ConnectorMode::Streaming` it reads a snapshot
+/// of the table on first call to `read()`, then continuously polls CDC change
+/// tables for new inserts, updates, and deletes.
 pub struct MssqlReader {
     runtime: TokioRuntime,
     config: Config,
+    schema_name: String,
     table_name: String,
     schema: Vec<(String, Type)>,
-
-    stored_state: HashMap<i64, ValuesMap>,
-    queued_updates: VecDeque<ReadResult>,
+    key_column_names: Vec<String>,
+    mode: ConnectorMode,
+    snapshot: Vec<ReadResult>,
+    is_initialized: bool,
+    // CDC-only state — unused in static mode.
+    client: Option<MssqlClient>,
+    capture_instance: String,
+    last_lsn: Option<Vec<u8>>,
     snapshot_version: u64,
 }
 
 impl MssqlReader {
     pub fn new(
         config: Config,
+        schema_name: String,
         table_name: String,
         schema: Vec<(String, Type)>,
+        key_field_names: Option<Vec<String>>,
+        mode: ConnectorMode,
     ) -> Result<Self, ReadError> {
+        let key_column_names = key_field_names
+            .unwrap_or_else(|| schema.iter().map(|(name, _)| name.clone()).collect());
         Ok(Self {
             runtime: create_async_tokio_runtime()?,
             config,
+            schema_name,
             table_name,
             schema,
-            stored_state: HashMap::new(),
-            queued_updates: VecDeque::new(),
+            key_column_names,
+            mode,
+            snapshot: Vec::new(),
+            is_initialized: false,
+            client: None,
+            capture_instance: String::new(),
+            last_lsn: None,
             snapshot_version: 0,
         })
     }
 
-    fn convert_to_value(
+    /// Check if a tiberius `ColumnData` represents a SQL NULL value.
+    fn is_column_null(col_data: &ColumnData<'_>) -> bool {
+        matches!(
+            col_data,
+            ColumnData::Bit(None)
+                | ColumnData::U8(None)
+                | ColumnData::I16(None)
+                | ColumnData::I32(None)
+                | ColumnData::I64(None)
+                | ColumnData::F32(None)
+                | ColumnData::F64(None)
+                | ColumnData::String(None)
+                | ColumnData::Binary(None)
+                | ColumnData::Numeric(None)
+                | ColumnData::DateTime(None)
+                | ColumnData::DateTime2(None)
+                | ColumnData::SmallDateTime(None)
+                | ColumnData::DateTimeOffset(None)
+                | ColumnData::Guid(None)
+                | ColumnData::Xml(None)
+                | ColumnData::Date(None)
+                | ColumnData::Time(None)
+        )
+    }
+
+    /// Convert a single row value at `col_idx` to a Pathway `Value`.
+    ///
+    /// Uses `row.get()` for datetime types (leveraging tiberius's built-in chrono
+    /// `FromSql` implementations) and raw `ColumnData` matching for all other types.
+    #[allow(clippy::too_many_lines)]
+    fn convert_row_value(
+        row: &tiberius::Row,
+        col_idx: usize,
+        field_name: &str,
+        dtype: &Type,
+    ) -> Result<Value, Box<ConversionError>> {
+        // Handle datetime types via row.get() which uses tiberius's FromSql
+        let inner_dtype = match dtype {
+            Type::Optional(inner) => inner.as_ref(),
+            other => other,
+        };
+        let is_optional = matches!(dtype, Type::Optional(_));
+
+        match inner_dtype {
+            Type::DateTimeNaive | Type::Any
+                if matches!(
+                    row.cells().nth(col_idx).map(|(_, cd)| cd),
+                    Some(
+                        ColumnData::DateTime(_)
+                            | ColumnData::DateTime2(_)
+                            | ColumnData::SmallDateTime(_)
+                            | ColumnData::Date(_)
+                    )
+                ) =>
+            {
+                // For DATE columns, get NaiveDate and convert to NaiveDateTime at midnight
+                let ndt: Option<chrono::NaiveDateTime> = if matches!(
+                    row.cells().nth(col_idx).map(|(_, cd)| cd),
+                    Some(ColumnData::Date(_))
+                ) {
+                    row.get::<chrono::NaiveDate, _>(col_idx)
+                        .map(|d| d.and_hms_opt(0, 0, 0).expect("midnight is always valid"))
+                } else {
+                    row.get(col_idx)
+                };
+                match ndt {
+                    Some(ndt) => crate::engine::DateTimeNaive::try_from(ndt)
+                        .map(Value::DateTimeNaive)
+                        .map_err(|_| {
+                            Box::new(ConversionError::new(
+                                format!("{ndt:?}"),
+                                field_name.to_owned(),
+                                dtype.clone(),
+                                None,
+                            ))
+                        }),
+                    None if is_optional => Ok(Value::None),
+                    None => Err(Box::new(ConversionError::new(
+                        "NULL".to_string(),
+                        field_name.to_owned(),
+                        dtype.clone(),
+                        None,
+                    ))),
+                }
+            }
+            Type::DateTimeUtc | Type::Any
+                if matches!(
+                    row.cells().nth(col_idx).map(|(_, cd)| cd),
+                    Some(ColumnData::DateTimeOffset(_))
+                ) =>
+            {
+                let dt: Option<chrono::DateTime<chrono::Utc>> = row.get(col_idx);
+                match dt {
+                    Some(dt) => crate::engine::DateTimeUtc::try_from(dt)
+                        .map(Value::DateTimeUtc)
+                        .map_err(|_| {
+                            Box::new(ConversionError::new(
+                                format!("{dt:?}"),
+                                field_name.to_owned(),
+                                dtype.clone(),
+                                None,
+                            ))
+                        }),
+                    None if is_optional => Ok(Value::None),
+                    None => Err(Box::new(ConversionError::new(
+                        "NULL".to_string(),
+                        field_name.to_owned(),
+                        dtype.clone(),
+                        None,
+                    ))),
+                }
+            }
+            Type::Duration | Type::Any
+                if matches!(
+                    row.cells().nth(col_idx).map(|(_, cd)| cd),
+                    Some(ColumnData::Time(_))
+                ) =>
+            {
+                let nt: Option<chrono::NaiveTime> = row.get(col_idx);
+                match nt {
+                    Some(nt) => {
+                        let total_usecs = i64::from(nt.hour()) * 3_600_000_000
+                            + i64::from(nt.minute()) * 60_000_000
+                            + i64::from(nt.second()) * 1_000_000
+                            + i64::from(nt.nanosecond() / 1_000);
+                        crate::engine::Duration::new_with_unit(total_usecs, "us")
+                            .map(Value::Duration)
+                            .map_err(|_| {
+                                Box::new(ConversionError::new(
+                                    format!("{nt:?}"),
+                                    field_name.to_owned(),
+                                    dtype.clone(),
+                                    None,
+                                ))
+                            })
+                    }
+                    None if is_optional => Ok(Value::None),
+                    None => Err(Box::new(ConversionError::new(
+                        "NULL".to_string(),
+                        field_name.to_owned(),
+                        dtype.clone(),
+                        None,
+                    ))),
+                }
+            }
+            _ => {
+                // For non-datetime types, use ColumnData matching
+                let col_data = row
+                    .cells()
+                    .nth(col_idx)
+                    .map(|(_, cd)| cd)
+                    .expect("column index out of bounds");
+                Self::convert_column_data(col_data, field_name, dtype)
+            }
+        }
+    }
+
+    fn convert_column_data(
         col_data: &ColumnData<'_>,
         field_name: &str,
         dtype: &Type,
     ) -> Result<Value, Box<ConversionError>> {
         let value = match (dtype, col_data) {
-            (Type::Optional(_) | Type::Any, ColumnData::Null) => Some(Value::None),
-            (Type::Optional(inner), other) => Self::convert_to_value(other, field_name, inner).ok(),
+            (Type::Optional(_) | Type::Any, col) if Self::is_column_null(col) => Some(Value::None),
+            (Type::Optional(inner), other) => {
+                Self::convert_column_data(other, field_name, inner).ok()
+            }
             (Type::Bool | Type::Any, ColumnData::Bit(Some(v))) => Some(Value::Bool(*v)),
+            (Type::Int | Type::Any, ColumnData::U8(Some(v))) => Some(Value::Int(i64::from(*v))),
             (Type::Int | Type::Any, ColumnData::I16(Some(v))) => Some(Value::Int(i64::from(*v))),
             (Type::Int | Type::Any, ColumnData::I32(Some(v))) => Some(Value::Int(i64::from(*v))),
             (Type::Int | Type::Any, ColumnData::I64(Some(v))) => Some(Value::Int(*v)),
@@ -122,38 +382,29 @@ impl MssqlReader {
             (Type::Bytes | Type::Any, ColumnData::Binary(Some(b))) => {
                 Some(Value::Bytes(b.to_vec().into()))
             }
-            (Type::DateTimeNaive | Type::Any, ColumnData::DateTime(Some(dt))) => {
-                let s = format!("{dt}");
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
-                    .ok()
-                    .map(|ndt| Value::DateTimeNaive(ndt.into()))
-            }
-            (Type::DateTimeNaive | Type::Any, ColumnData::DateTime2(Some(dt))) => {
-                let s = format!("{dt}");
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
-                    .ok()
-                    .map(|ndt| Value::DateTimeNaive(ndt.into()))
-            }
-            (Type::DateTimeNaive | Type::Any, ColumnData::SmallDateTime(Some(dt))) => {
-                let s = format!("{dt}");
-                chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                    .ok()
-                    .map(|ndt| Value::DateTimeNaive(ndt.into()))
-            }
-            (Type::DateTimeUtc | Type::Any, ColumnData::DateTimeOffset(Some(dto))) => {
-                let s = format!("{dto}");
-                chrono::DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f %:z")
-                    .ok()
-                    .map(|dt| {
-                        let utc = dt.naive_utc();
-                        Value::DateTimeUtc(utc.into())
-                    })
-            }
             (Type::String | Type::Any, ColumnData::Guid(Some(guid))) => {
                 Some(Value::String(guid.to_string().into()))
             }
             (Type::String | Type::Any, ColumnData::Xml(Some(xml))) => {
                 Some(Value::String(xml.to_string().into()))
+            }
+            (Type::Pointer, ColumnData::String(Some(s))) => {
+                crate::engine::value::parse_pathway_pointer(s).ok()
+            }
+            (Type::Duration, ColumnData::I64(Some(v))) => {
+                crate::engine::Duration::new_with_unit(*v, "us")
+                    .map(Value::Duration)
+                    .ok()
+            }
+            (Type::List(_) | Type::Tuple(_) | Type::Array(..), ColumnData::String(Some(s))) => {
+                serde_json::from_str::<serde_json::Value>(s)
+                    .ok()
+                    .and_then(|json_val| {
+                        crate::connectors::data_format::parse_value_from_json(&json_val, dtype)
+                    })
+            }
+            (Type::PyObjectWrapper, ColumnData::Binary(Some(b))) => {
+                bincode::deserialize::<Value>(b.as_ref()).ok()
             }
             _ => None,
         };
@@ -170,335 +421,439 @@ impl MssqlReader {
         }
     }
 
-    fn load_table(&mut self) -> Result<(), ReadError> {
-        let column_names: Vec<&str> = self
-            .schema
-            .iter()
-            .map(|(name, _dtype)| name.as_str())
-            .collect();
+    /// Initialize the reader: verify CDC setup (streaming mode only), then load
+    /// the table snapshot.  Sets `is_initialized = true` on success.
+    fn initialize(&mut self) -> Result<(), ReadError> {
+        if self.mode.is_polling_enabled() {
+            let schema_name = self.schema_name.clone();
+            let table_name = self.table_name.clone();
+            let capture_instance = self.runtime.block_on(async {
+                let mut client = connect_mssql(&self.config)
+                    .await
+                    .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?;
 
-        // MSSQL doesn't have _rowid_, so we use ROW_NUMBER() as a synthetic row identity.
-        // For tables with a primary key, this will produce stable ordering.
-        let columns_str = column_names.join(",");
-        let query_str = format!(
-            "SELECT {columns_str}, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS _rn FROM {}",
-            self.table_name
-        );
-
-        let rows = self.runtime.block_on(async {
-            let mut client = connect_mssql(&self.config).await.map_err(|e| {
-                ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    e.to_string(),
-                ))
-            })?;
-            let stream = client.simple_query(&query_str).await.map_err(|e| {
-                ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
-            let rows = stream.into_first_result().await.map_err(|e| {
-                ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
-            Ok::<_, ReadError>(rows)
-        })?;
-
-        let mut present_rowids = HashSet::new();
-        for row in &rows {
-            // The last column is _rn (ROW_NUMBER)
-            let rowid: i64 = match row.get::<i64, _>(self.schema.len()) {
-                Some(v) => v,
-                None => continue,
-            };
-
-            let mut values = HashMap::with_capacity(self.schema.len());
-            for (column_idx, (column_name, column_dtype)) in self.schema.iter().enumerate() {
-                let col_data = &row[column_idx];
-                let value = Self::convert_to_value(col_data, column_name, column_dtype);
-                values.insert(column_name.clone(), value);
-            }
-            let values: ValuesMap = values.into();
-            self.stored_state
-                .entry(rowid)
-                .and_modify(|current_values| {
-                    if current_values != &values {
-                        let key = vec![Value::Int(rowid)];
-                        self.queued_updates.push_back(ReadResult::Data(
-                            ReaderContext::from_diff(
-                                DataEventType::Delete,
-                                Some(key.clone()),
-                                take(current_values),
-                            ),
-                            EMPTY_OFFSET,
-                        ));
-                        self.queued_updates.push_back(ReadResult::Data(
-                            ReaderContext::from_diff(
-                                DataEventType::Insert,
-                                Some(key),
-                                values.clone(),
-                            ),
-                            EMPTY_OFFSET,
-                        ));
-                        current_values.clone_from(&values);
+                let row = client
+                    .simple_query("SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()")
+                    .await
+                    .map_err(mssql_read_err)?
+                    .into_row()
+                    .await
+                    .map_err(mssql_read_err)?;
+                if let Some(row) = &row {
+                    let enabled: Option<bool> = row.get(0);
+                    if enabled != Some(true) {
+                        return Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnDatabase));
                     }
-                })
-                .or_insert_with(|| {
-                    let key = vec![Value::Int(rowid)];
-                    self.queued_updates.push_back(ReadResult::Data(
-                        ReaderContext::from_diff(DataEventType::Insert, Some(key), values.clone()),
-                        EMPTY_OFFSET,
-                    ));
-                    values
-                });
-            present_rowids.insert(rowid);
+                }
+
+                let qualified_name = qualified_table_name(&schema_name, &table_name);
+                let query = format!(
+                    "SELECT capture_instance FROM cdc.change_tables \
+                     WHERE source_object_id = OBJECT_ID(N'{qualified_name}')"
+                );
+                let row = client
+                    .simple_query(&query)
+                    .await
+                    .map_err(mssql_read_err)?
+                    .into_row()
+                    .await
+                    .map_err(mssql_read_err)?;
+
+                match row {
+                    Some(row) => {
+                        let instance: Option<&str> = row.get(0);
+                        Ok(instance.unwrap_or("").to_string())
+                    }
+                    None => Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnTable {
+                        schema: schema_name,
+                        table: table_name,
+                    })),
+                }
+            })?;
+            self.capture_instance = capture_instance;
+            info!(
+                "MSSQL CDC reader initialized for table '{}.{}', capture_instance='{}'",
+                self.schema_name, self.table_name, self.capture_instance
+            );
         }
-
-        self.stored_state.retain(|rowid, values| {
-            if present_rowids.contains(rowid) {
-                true
-            } else {
-                let key = vec![Value::Int(*rowid)];
-                self.queued_updates.push_back(ReadResult::Data(
-                    ReaderContext::from_diff(DataEventType::Delete, Some(key), take(values)),
-                    EMPTY_OFFSET,
-                ));
-                false
-            }
-        });
-
-        if !self.queued_updates.is_empty() {
-            self.queued_updates.push_back(ReadResult::FinishedSource {
-                commit_possibility: CommitPossibility::Possible,
-            });
-        }
-
+        self.load_snapshot()?;
+        self.is_initialized = true;
         Ok(())
     }
 
-    fn wait_period() -> Duration {
-        Duration::from_millis(500)
-    }
-
-    fn retry_after_error_period() -> Duration {
-        Duration::from_millis(500)
-    }
-}
-
-impl Reader for MssqlReader {
-    fn seek(&mut self, _frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        todo!("seek is not supported for MSSQL source: persistent history of changes unavailable")
-    }
-
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        loop {
-            if let Some(queued_update) = self.queued_updates.pop_front() {
-                return Ok(queued_update);
-            }
-
-            match self.load_table() {
-                Ok(()) => {
-                    if !self.queued_updates.is_empty() {
-                        self.snapshot_version += 1;
-                        return Ok(ReadResult::NewSource(
-                            MssqlMetadata::new(self.snapshot_version).into(),
-                        ));
-                    }
-                }
-                Err(e) => {
-                    error!("MSSQL load_table error: {e}");
-                    sleep(Self::retry_after_error_period());
-                    continue;
-                }
-            }
-
-            sleep(Self::wait_period());
+    /// Extract column values from a row into a `HashMap`.
+    ///
+    /// `col_offset` is added to each column index — pass `0` for snapshot rows,
+    /// `4` for CDC rows (which have four metadata columns before the user data).
+    fn extract_row_values(
+        row: &tiberius::Row,
+        schema: &[(String, Type)],
+        col_offset: usize,
+    ) -> HashMap<String, Result<Value, Box<ConversionError>>> {
+        let mut row_values = HashMap::with_capacity(schema.len());
+        for (col_idx, (col_name, col_dtype)) in schema.iter().enumerate() {
+            let value = Self::convert_row_value(row, col_idx + col_offset, col_name, col_dtype);
+            row_values.insert(col_name.clone(), value);
         }
+        row_values
     }
 
-    fn short_description(&self) -> Cow<'static, str> {
-        format!("MSSQL({})", self.table_name).into()
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::Mssql
-    }
-}
-
-// ========================= CDC Reader =========================
-
-/// CDC (Change Data Capture) reader for MSSQL.
-///
-/// Uses MSSQL's built-in CDC feature which tracks changes via the transaction log
-/// and exposes them through `cdc.fn_cdc_get_all_changes_*` functions.
-///
-/// Requirements:
-/// - SQL Server Developer or Enterprise edition
-/// - CDC must be enabled on the database (`sys.sp_cdc_enable_db`)
-/// - CDC must be enabled on the target table (`sys.sp_cdc_enable_table`)
-pub struct MssqlCdcReader {
-    runtime: TokioRuntime,
-    config: Config,
-    table_name: String,
-    capture_instance: String,
-    schema: Vec<(String, Type)>,
-    last_lsn: Option<Vec<u8>>,
-    queued_updates: VecDeque<ReadResult>,
-    snapshot_done: bool,
-    snapshot_version: u64,
-}
-
-impl MssqlCdcReader {
-    pub fn new(
-        config: Config,
-        table_name: String,
-        schema: Vec<(String, Type)>,
-    ) -> Result<Self, ReadError> {
-        let runtime = create_async_tokio_runtime()?;
-
-        // Verify CDC is enabled and discover the capture instance name
-        let capture_instance = runtime.block_on(async {
-            let mut client = connect_mssql(&config).await.map_err(|e| {
-                ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    e.to_string(),
-                ))
-            })?;
-
-            // Check if CDC is enabled on the database
+    /// Step 1: Record the current CDC max LSN (retry until the capture agent
+    /// has started).
+    ///
+    /// `fn_cdc_get_max_lsn` returns NULL until the capture agent has processed
+    /// at least one transaction; we retry up to 20 times (10 s) before giving up.
+    async fn fetch_lsn_before(
+        client: &mut Client<Compat<TcpStream>>,
+    ) -> Result<Option<Vec<u8>>, ReadError> {
+        let mut lsn: Option<Vec<u8>> = None;
+        for _ in 0..20usize {
             let row = client
-                .simple_query("SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()")
-                .await
-                .map_err(mssql_read_err)?
-                .into_row()
-                .await
-                .map_err(mssql_read_err)?;
-
-            if let Some(row) = &row {
-                let enabled: Option<bool> = row.get(0);
-                if enabled != Some(true) {
-                    return Err(ReadError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "CDC is not enabled on the current database. \
-                         Enable it with: EXEC sys.sp_cdc_enable_db;",
-                    )));
-                }
-            }
-
-            // Check if the table has CDC enabled and get capture instance
-            let query = format!(
-                "SELECT capture_instance FROM cdc.change_tables \
-                 WHERE source_object_id = OBJECT_ID(N'{}')",
-                table_name.replace('\'', "''")
-            );
-            let row = client
-                .simple_query(&query)
-                .await
-                .map_err(mssql_read_err)?
-                .into_row()
-                .await
-                .map_err(mssql_read_err)?;
-
-            match row {
-                Some(row) => {
-                    let instance: Option<&str> = row.get(0);
-                    Ok(instance.unwrap_or("").to_string())
-                }
-                None => Err(ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!(
-                        "CDC is not enabled on table '{}'. Enable it with: \
-                         EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', \
-                         @source_name=N'{}', @role_name=NULL;",
-                        table_name, table_name
-                    ),
-                ))),
-            }
-        })?;
-
-        info!(
-            "MSSQL CDC reader initialized for table '{}', capture_instance='{}'",
-            table_name, capture_instance
-        );
-
-        Ok(Self {
-            runtime,
-            config,
-            table_name,
-            capture_instance,
-            schema,
-            last_lsn: None,
-            queued_updates: VecDeque::new(),
-            snapshot_done: false,
-            snapshot_version: 0,
-        })
-    }
-
-    /// Load the initial snapshot of the table.
-    fn load_snapshot(&mut self) -> Result<(), ReadError> {
-        let column_names: Vec<&str> = self.schema.iter().map(|(n, _)| n.as_str()).collect();
-        let columns_str = column_names.join(",");
-        let query_str = format!("SELECT {columns_str} FROM {}", self.table_name);
-
-        let (rows, max_lsn) = self.runtime.block_on(async {
-            let mut client = connect_mssql(&self.config).await.map_err(|e| {
-                ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    e.to_string(),
-                ))
-            })?;
-
-            // Get the current max LSN so we know where to start CDC polling from
-            let lsn_row = client
                 .simple_query("SELECT sys.fn_cdc_get_max_lsn()")
                 .await
                 .map_err(mssql_read_err)?
                 .into_row()
                 .await
                 .map_err(mssql_read_err)?;
-
-            let max_lsn: Option<Vec<u8>> =
-                lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(|b| b.to_vec()));
-
-            let stream = client
-                .simple_query(&query_str)
-                .await
-                .map_err(mssql_read_err)?;
-            let rows = stream.into_first_result().await.map_err(mssql_read_err)?;
-            Ok::<_, ReadError>((rows, max_lsn))
-        })?;
-
-        for (row_idx, row) in rows.iter().enumerate() {
-            let mut values = HashMap::with_capacity(self.schema.len());
-            for (col_idx, (col_name, col_dtype)) in self.schema.iter().enumerate() {
-                let col_data = &row[col_idx];
-                let value = MssqlReader::convert_to_value(col_data, col_name, col_dtype);
-                values.insert(col_name.clone(), value);
+            lsn = row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
+            if lsn.is_some() {
+                break;
             }
-            let values: ValuesMap = values.into();
-            let key = vec![Value::Int(row_idx as i64)];
-            self.queued_updates.push_back(ReadResult::Data(
-                ReaderContext::from_diff(DataEventType::Insert, Some(key), values),
-                EMPTY_OFFSET,
-            ));
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        Ok(lsn)
+    }
+
+    /// Step 2: Read the full table snapshot via a plain SELECT.
+    async fn fetch_snapshot_rows(
+        client: &mut Client<Compat<TcpStream>>,
+        query_str: &str,
+    ) -> Result<Vec<tiberius::Row>, ReadError> {
+        client
+            .simple_query(query_str)
+            .await
+            .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?
+            .into_first_result()
+            .await
+            .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))
+    }
+
+    /// Step 3: Record the CDC max LSN again, immediately after the snapshot SELECT.
+    async fn fetch_lsn_after(
+        client: &mut Client<Compat<TcpStream>>,
+    ) -> Result<Option<Vec<u8>>, ReadError> {
+        let row = client
+            .simple_query("SELECT sys.fn_cdc_get_max_lsn()")
+            .await
+            .map_err(mssql_read_err)?
+            .into_row()
+            .await
+            .map_err(mssql_read_err)?;
+        Ok(row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec)))
+    }
+
+    /// Execute a CDC change-table query for the half-open window
+    /// (`from_lsn_exclusive`, `to_lsn_inclusive`].
+    ///
+    /// Increments `from_lsn_exclusive` by one and clamps the result to the
+    /// capture instance's `fn_cdc_get_min_lsn` to avoid error 313
+    /// ("LSN specified is not within the range …").
+    /// Returns an empty `Vec` when the effective range is empty.
+    async fn fetch_cdc_rows_in_range(
+        client: &mut MssqlClient,
+        from_lsn_exclusive: &[u8],
+        to_lsn_inclusive: &[u8],
+        schema: &[(String, Type)],
+        capture_instance: &str,
+    ) -> Result<Vec<tiberius::Row>, ReadError> {
+        let from_hex = hex::encode(from_lsn_exclusive);
+        let inc_row = client
+            .simple_query(&format!("SELECT sys.fn_cdc_increment_lsn(0x{from_hex})"))
+            .await
+            .map_err(mssql_read_err)?
+            .into_row()
+            .await
+            .map_err(mssql_read_err)?;
+        let incremented_lsn: Option<Vec<u8>> =
+            inc_row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
+
+        let Some(inc_lsn) = incremented_lsn else {
+            return Ok(Vec::new());
+        };
+
+        // Clamp to capture instance minimum to avoid error 313.
+        let min_lsn_row = client
+            .simple_query(&format!(
+                "SELECT sys.fn_cdc_get_min_lsn(N'{capture_instance}')"
+            ))
+            .await
+            .map_err(mssql_read_err)?
+            .into_row()
+            .await
+            .map_err(mssql_read_err)?;
+        let min_lsn: Option<Vec<u8>> =
+            min_lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
+
+        let effective_from = match min_lsn {
+            Some(ref min) if min.as_slice() > inc_lsn.as_slice() => min.clone(),
+            _ => inc_lsn,
+        };
+
+        if effective_from.as_slice() > to_lsn_inclusive {
+            return Ok(Vec::new());
         }
 
-        self.last_lsn = max_lsn;
-        self.snapshot_done = true;
+        let from_hex = hex::encode(&effective_from);
+        let to_hex = hex::encode(to_lsn_inclusive);
+        let user_cols = schema
+            .iter()
+            .map(|(n, _)| format!("[{n}]"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let cdc_query = format!(
+            "SELECT __$start_lsn,__$seqval,__$operation,__$update_mask,\
+             {user_cols} FROM cdc.fn_cdc_get_all_changes_{capture_instance}\
+             (0x{from_hex}, 0x{to_hex}, N'all update old')"
+        );
 
-        if !self.queued_updates.is_empty() {
-            self.queued_updates.push_back(ReadResult::FinishedSource {
-                commit_possibility: CommitPossibility::Possible,
-            });
+        client
+            .simple_query(&cdc_query)
+            .await
+            .map_err(mssql_read_err)?
+            .into_first_result()
+            .await
+            .map_err(mssql_read_err)
+    }
+
+    /// Step 4: Fetch CDC changes that raced with the snapshot read.
+    ///
+    /// Queries `cdc.fn_cdc_get_all_changes_{capture_instance}` for the
+    /// half-open window (`lsn_before`, `lsn_after`].  Returns an empty `Vec`
+    /// when the two LSNs are equal or the effective range is empty.
+    async fn fetch_gap_cdc_changes(
+        client: &mut MssqlClient,
+        lsn_before: &[u8],
+        lsn_after: &[u8],
+        schema: &[(String, Type)],
+        capture_instance: &str,
+    ) -> Result<Vec<tiberius::Row>, ReadError> {
+        if lsn_before == lsn_after {
+            return Ok(Vec::new());
+        }
+        Self::fetch_cdc_rows_in_range(client, lsn_before, lsn_after, schema, capture_instance).await
+    }
+
+    /// Step 5a: Convert raw snapshot rows into `ReadResult::Data(Insert)` entries.
+    ///
+    /// All snapshot rows are emitted as inserts regardless of their prior state.
+    /// In streaming mode a composite key is derived from `key_column_names` so
+    /// that Pathway can correlate them with subsequent CDC deletes/inserts.
+    fn build_snapshot_results(
+        rows: &[tiberius::Row],
+        schema: &[(String, Type)],
+        key_column_names: &[String],
+        streaming: bool,
+    ) -> Vec<ReadResult> {
+        rows.iter()
+            .map(|row| {
+                let row_values = Self::extract_row_values(row, schema, 0);
+                let key = if streaming {
+                    Some(
+                        key_column_names
+                            .iter()
+                            .map(|name| {
+                                row_values
+                                    .get(name)
+                                    .and_then(|r| r.as_ref().ok().cloned())
+                                    .unwrap_or(Value::None)
+                            })
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+                let values: ValuesMap = row_values.into();
+                ReadResult::Data(
+                    ReaderContext::from_diff(DataEventType::Insert, key, values),
+                    EMPTY_OFFSET,
+                )
+            })
+            .collect()
+    }
+
+    /// Step 5b: Convert gap CDC rows into `ReadResult::Data` entries.
+    ///
+    /// CDC operation codes:
+    /// - `1` = delete before-image, `3` = delete after-update-old → **Delete**
+    /// - `2` = insert,              `4` = insert after-update-new → **Insert**
+    ///
+    /// Rows with unrecognized operation codes are silently skipped.
+    /// User columns start at offset 4 (after the four CDC metadata columns).
+    fn build_gap_results(
+        gap_changes: &[tiberius::Row],
+        schema: &[(String, Type)],
+        key_column_names: &[String],
+    ) -> Vec<ReadResult> {
+        gap_changes
+            .iter()
+            .filter_map(|row| {
+                let operation: Option<i32> = row.get(2);
+                let event_type = match operation.unwrap_or(0) {
+                    1 | 3 => DataEventType::Delete,
+                    2 | 4 => DataEventType::Insert,
+                    _ => return None,
+                };
+                // User columns start at index 4 (after four CDC metadata columns).
+                let row_values = Self::extract_row_values(row, schema, 4);
+                let key: Vec<Value> = key_column_names
+                    .iter()
+                    .map(|name| {
+                        row_values
+                            .get(name)
+                            .and_then(|r| r.as_ref().ok().cloned())
+                            .unwrap_or(Value::None)
+                    })
+                    .collect();
+                let values: ValuesMap = row_values.into();
+                Some(ReadResult::Data(
+                    ReaderContext::from_diff(event_type, Some(key), values),
+                    EMPTY_OFFSET,
+                ))
+            })
+            .collect()
+    }
+
+    /// Load the current table contents into `self.snapshot`.
+    ///
+    /// In streaming mode the snapshot and the CDC changes that raced with it are
+    /// emitted as a **single** `NewSource … FinishedSource` block so that
+    /// Pathway reconciles them atomically:
+    ///
+    /// 1. Record `lsn_before` = current CDC max LSN (retry until the capture
+    ///    agent has started).
+    /// 2. Read the full table snapshot.
+    /// 3. Record `lsn_after` = CDC max LSN again.
+    /// 4. Query CDC for all changes in (`lsn_before`, `lsn_after`] — these are
+    ///    the rows that changed while the SELECT was running.
+    /// 5. Emit snapshot rows followed by gap CDC rows inside one block.
+    /// 6. Set `last_lsn = lsn_after` so that `poll_cdc_changes` picks up only
+    ///    changes that arrived strictly after the snapshot window.
+    ///
+    /// Results are stored in reverse order so that `Vec::pop` yields them in
+    /// the correct sequence: `NewSource` first, data rows, then `FinishedSource`.
+    fn load_snapshot(&mut self) -> Result<(), ReadError> {
+        let columns_str = self
+            .schema
+            .iter()
+            .map(|(n, _)| format!("[{n}]"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let full_table_name = qualified_table_name(&self.schema_name, &self.table_name);
+        let query_str = format!("SELECT {columns_str} FROM {full_table_name}");
+        let streaming = self.mode.is_polling_enabled();
+        let key_column_names = self.key_column_names.clone();
+        let schema = self.schema.clone();
+        let capture_instance = self.capture_instance.clone();
+
+        let mut client_opt = if streaming { self.client.take() } else { None };
+        let config = self.config.clone();
+
+        let result = self.runtime.block_on(async {
+            if client_opt.is_none() {
+                client_opt = Some(
+                    connect_mssql(&config)
+                        .await
+                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
+                );
+            }
+            let client = client_opt.as_mut().unwrap();
+
+            // Step 1: record LSN before snapshot read.
+            // Retry until the CDC capture agent has processed at least one
+            // transaction (fn_cdc_get_max_lsn returns NULL until then).
+            let lsn_before: Option<Vec<u8>> = if streaming {
+                Self::fetch_lsn_before(client).await?
+            } else {
+                None
+            };
+
+            // Step 2: read the full table snapshot.
+            let rows = Self::fetch_snapshot_rows(client, &query_str).await?;
+
+            // Step 3: record LSN after snapshot read.
+            let lsn_after: Option<Vec<u8>> = if streaming {
+                Self::fetch_lsn_after(client).await?
+            } else {
+                None
+            };
+
+            // Step 4: fetch CDC changes that raced with the snapshot read.
+            let gap_changes: Vec<tiberius::Row> =
+                match (streaming, lsn_before.as_deref(), lsn_after.as_deref()) {
+                    (true, Some(before), Some(after)) => {
+                        Self::fetch_gap_cdc_changes(
+                            client,
+                            before,
+                            after,
+                            &schema,
+                            &capture_instance,
+                        )
+                        .await?
+                    }
+                    _ => Vec::new(),
+                };
+
+            Ok::<_, ReadError>((rows, lsn_after.or(lsn_before), gap_changes))
+        });
+
+        if streaming {
+            if result.is_err() {
+                self.client = None;
+            } else {
+                self.client = client_opt;
+            }
+        }
+        let (rows, max_lsn, gap_changes) = result?;
+
+        self.snapshot_version += 1;
+        let mut results = Vec::with_capacity(rows.len() + gap_changes.len() + 2);
+        results.push(ReadResult::NewSource(
+            MssqlMetadata::new(self.snapshot_version).into(),
+        ));
+
+        // Step 5a: snapshot rows — all emitted as inserts.
+        results.extend(Self::build_snapshot_results(
+            &rows,
+            &schema,
+            &key_column_names,
+            streaming,
+        ));
+
+        // Step 5b: gap CDC rows — changes that raced with the snapshot read, emitted in
+        // the same block so Pathway reconciles them in one atomic transaction.
+        results.extend(Self::build_gap_results(
+            &gap_changes,
+            &schema,
+            &key_column_names,
+        ));
+
+        results.push(ReadResult::FinishedSource {
+            commit_possibility: CommitPossibility::Possible,
+        });
+        results.reverse();
+        self.snapshot = results;
+
+        // Step 6: advance last_lsn so poll_cdc_changes starts strictly after
+        // the snapshot window.
+        if streaming {
+            self.last_lsn = max_lsn;
         }
 
         Ok(())
     }
 
-    /// Poll for CDC changes since the last processed LSN.
+    /// Poll for CDC changes since the last processed LSN and push results into
+    /// `self.snapshot` as a complete `NewSource … FinishedSource` block.
     fn poll_cdc_changes(&mut self) -> Result<(), ReadError> {
         let from_lsn = match &self.last_lsn {
             Some(lsn) => lsn.clone(),
@@ -507,16 +862,21 @@ impl MssqlCdcReader {
 
         let capture_instance = self.capture_instance.clone();
         let schema = self.schema.clone();
+        let key_column_names = self.key_column_names.clone();
 
-        let (changes, new_max_lsn) = self.runtime.block_on(async {
-            let mut client = connect_mssql(&self.config).await.map_err(|e| {
-                ReadError::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    e.to_string(),
-                ))
-            })?;
+        let mut client_opt = self.client.take();
+        let config = self.config.clone();
 
-            // Get current max LSN
+        let result = self.runtime.block_on(async {
+            if client_opt.is_none() {
+                client_opt = Some(
+                    connect_mssql(&config)
+                        .await
+                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
+                );
+            }
+            let client = client_opt.as_mut().unwrap();
+
             let lsn_row = client
                 .simple_query("SELECT sys.fn_cdc_get_max_lsn()")
                 .await
@@ -526,159 +886,102 @@ impl MssqlCdcReader {
                 .map_err(mssql_read_err)?;
 
             let new_max_lsn: Option<Vec<u8>> =
-                lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(|b| b.to_vec()));
+                lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
 
-            // If max LSN hasn't changed, no new changes
             if new_max_lsn.as_ref() == Some(&from_lsn) {
                 return Ok::<_, ReadError>((Vec::new(), Some(from_lsn)));
             }
 
-            // Increment from_lsn by 1 to avoid re-reading the last processed LSN
-            // Use sys.fn_cdc_increment_lsn to get the next LSN
-            let from_lsn_hex = bytes_to_hex(&from_lsn);
-            let increment_query = format!("SELECT sys.fn_cdc_increment_lsn(0x{from_lsn_hex})");
-            let inc_row = client
-                .simple_query(&increment_query)
-                .await
-                .map_err(mssql_read_err)?
-                .into_row()
-                .await
-                .map_err(mssql_read_err)?;
-
-            let incremented_lsn: Option<Vec<u8>> =
-                inc_row.and_then(|r| r.get::<&[u8], _>(0).map(|b| b.to_vec()));
-
-            let inc_lsn = match incremented_lsn {
-                Some(lsn) => lsn,
-                None => return Ok((Vec::new(), new_max_lsn)),
+            let Some(to_lsn) = &new_max_lsn else {
+                return Ok((Vec::new(), new_max_lsn));
             };
 
-            let to_lsn = match &new_max_lsn {
-                Some(lsn) => lsn,
-                None => return Ok((Vec::new(), new_max_lsn)),
-            };
-
-            let inc_lsn_hex = bytes_to_hex(&inc_lsn);
-            let to_lsn_hex = bytes_to_hex(to_lsn);
-
-            // Query CDC changes using 'all update old' to get both before and after images
-            let cdc_query = format!(
-                "SELECT * FROM cdc.fn_cdc_get_all_changes_{capture_instance}\
-                 (0x{inc_lsn_hex}, 0x{to_lsn_hex}, N'all update old')"
-            );
-
-            let stream = client
-                .simple_query(&cdc_query)
-                .await
-                .map_err(mssql_read_err)?;
-            let rows = stream.into_first_result().await.map_err(mssql_read_err)?;
+            let rows = Self::fetch_cdc_rows_in_range(
+                client,
+                &from_lsn,
+                to_lsn,
+                &schema,
+                &capture_instance,
+            )
+            .await?;
 
             Ok((rows, new_max_lsn))
-        })?;
+        });
 
-        for row in &changes {
-            // CDC rows have these system columns at the start:
-            // __$start_lsn, __$seqval, __$operation, __$update_mask, then user columns
-            let operation: Option<i32> = row.get(2);
-            let operation = operation.unwrap_or(0);
+        if result.is_err() {
+            self.client = None;
+        } else {
+            self.client = client_opt;
+        }
+        let (changes, new_max_lsn) = result?;
 
-            // Map CDC operation codes to Pathway events
-            // 1 = DELETE, 2 = INSERT, 3 = UPDATE (before), 4 = UPDATE (after)
-            let event_type = match operation {
-                1 => DataEventType::Delete,
-                2 => DataEventType::Insert,
-                3 => DataEventType::Delete, // UPDATE before-image
-                4 => DataEventType::Insert, // UPDATE after-image
-                _ => continue,
-            };
-
-            // User columns start at index 4 (after the 4 system columns)
-            let mut values = HashMap::with_capacity(schema.len());
-            for (col_idx, (col_name, col_dtype)) in schema.iter().enumerate() {
-                let col_data = &row[col_idx + 4];
-                let value = MssqlReader::convert_to_value(col_data, col_name, col_dtype);
-                values.insert(col_name.clone(), value);
-            }
-            let values: ValuesMap = values.into();
-            self.queued_updates.push_back(ReadResult::Data(
-                ReaderContext::from_diff(event_type, None, values),
-                EMPTY_OFFSET,
+        if !changes.is_empty() {
+            self.snapshot_version += 1;
+            let mut results = Vec::with_capacity(changes.len() + 2);
+            results.push(ReadResult::NewSource(
+                MssqlMetadata::new(self.snapshot_version).into(),
             ));
+            results.extend(Self::build_gap_results(
+                &changes,
+                &schema,
+                &key_column_names,
+            ));
+            results.push(ReadResult::FinishedSource {
+                commit_possibility: CommitPossibility::Possible,
+            });
+            results.reverse();
+            self.snapshot = results;
         }
 
         if let Some(new_lsn) = new_max_lsn {
             self.last_lsn = Some(new_lsn);
         }
 
-        if !self.queued_updates.is_empty() {
-            self.queued_updates.push_back(ReadResult::FinishedSource {
-                commit_possibility: CommitPossibility::Possible,
-            });
-        }
-
         Ok(())
     }
 
-    fn wait_period() -> Duration {
-        Duration::from_millis(500)
-    }
-
-    fn retry_after_error_period() -> Duration {
-        Duration::from_millis(500)
+    fn wait_period() -> std::time::Duration {
+        std::time::Duration::from_millis(500)
     }
 }
 
-impl Reader for MssqlCdcReader {
+impl Reader for MssqlReader {
     fn seek(&mut self, _frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        todo!("seek is not yet supported for MSSQL CDC source")
+        Err(ReadError::PersistenceNotSupported(StorageType::Mssql))
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
         loop {
-            if let Some(queued_update) = self.queued_updates.pop_front() {
-                return Ok(queued_update);
+            if let Some(result) = self.snapshot.pop() {
+                return Ok(result);
             }
-
-            if !self.snapshot_done {
-                match self.load_snapshot() {
-                    Ok(()) => {
-                        if !self.queued_updates.is_empty() {
-                            self.snapshot_version += 1;
-                            return Ok(ReadResult::NewSource(
-                                MssqlMetadata::new(self.snapshot_version).into(),
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        error!("MSSQL CDC snapshot error: {e}");
-                        sleep(Self::retry_after_error_period());
-                        continue;
-                    }
+            if !self.is_initialized {
+                self.initialize().inspect_err(|_e| {
+                    self.client = None;
+                })?;
+            } else if self.mode.is_polling_enabled() {
+                self.poll_cdc_changes().inspect_err(|_e| {
+                    self.client = None;
+                })?;
+                if self.snapshot.is_empty() {
+                    std::thread::sleep(Self::wait_period());
                 }
             } else {
-                match self.poll_cdc_changes() {
-                    Ok(()) => {
-                        if !self.queued_updates.is_empty() {
-                            self.snapshot_version += 1;
-                            return Ok(ReadResult::NewSource(
-                                MssqlMetadata::new(self.snapshot_version).into(),
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        error!("MSSQL CDC poll error: {e}");
-                        sleep(Self::retry_after_error_period());
-                        continue;
-                    }
-                }
+                return Ok(ReadResult::Finished);
             }
-
-            sleep(Self::wait_period());
         }
     }
 
+    fn max_allowed_consecutive_errors(&self) -> usize {
+        MAX_MSSQL_RETRIES
+    }
+
     fn short_description(&self) -> Cow<'static, str> {
-        format!("MSSQL-CDC({})", self.table_name).into()
+        if self.mode.is_polling_enabled() {
+            format!("MSSQL-CDC({})", self.table_name).into()
+        } else {
+            format!("MSSQL({})", self.table_name).into()
+        }
     }
 
     fn storage_type(&self) -> StorageType {
@@ -686,11 +989,10 @@ impl Reader for MssqlCdcReader {
     }
 }
 
-// ========================= Writer =========================
-
 pub struct MssqlWriter {
     runtime: TokioRuntime,
     config: Config,
+    client: Option<MssqlClient>,
     max_batch_size: Option<usize>,
     buffer: Vec<FormatterContext>,
     snapshot_mode: bool,
@@ -698,70 +1000,83 @@ pub struct MssqlWriter {
     query_template: SqlQueryTemplate,
     // For snapshot mode, we need a custom MERGE statement
     merge_query: Option<String>,
+    // Types for every value field in schema order — used for typed NULL binding.
+    value_field_types: Vec<Type>,
+    // Types for PK fields in PK order — used for typed NULL binding in deletes.
+    pk_field_types: Vec<Type>,
 }
 
 impl MssqlWriter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Config,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
+        schema_name: &str,
         table_name: &str,
         value_fields: &[ValueField],
         key_field_names: Option<&[String]>,
         mode: TableWriterInitMode,
     ) -> Result<MssqlWriter, WriteError> {
         let runtime = create_async_tokio_runtime()?;
+        let full_table_name = qualified_table_name(schema_name, table_name);
 
-        // Collect initialization queries
+        // Collect initialization queries with bracket-quoted identifiers.
+        // We bypass the shared create_table_if_not_exists because it generates
+        // unquoted column names that break SQL Server reserved-word identifiers.
         let mut init_queries: Vec<String> = Vec::new();
-        mode.initialize(
-            table_name,
-            value_fields,
-            key_field_names,
-            !snapshot_mode,
-            |query| {
-                let adapted = adapt_create_table_query(query);
-                init_queries.push(adapted);
-                Ok(())
-            },
-            Self::mssql_data_type,
-        )?;
-
-        // Execute initialization queries
-        if !init_queries.is_empty() {
-            runtime.block_on(async {
-                let mut client = connect_mssql(&config).await.map_err(|e| {
-                    WriteError::Io(std::io::Error::new(
-                        std::io::ErrorKind::ConnectionRefused,
-                        e.to_string(),
-                    ))
-                })?;
-
-                if let Ok((version, edition)) = detect_server_version(&mut client).await {
-                    info!("Connected to MSSQL Server: version={version}, edition={edition}");
-                }
-
-                for query in &init_queries {
-                    client.execute(query.as_str(), &[]).await.map_err(|e| {
-                        WriteError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e.to_string(),
-                        ))
-                    })?;
-                }
-                Ok::<_, WriteError>(())
-            })?;
+        match mode {
+            TableWriterInitMode::Default => {}
+            TableWriterInitMode::Replace => {
+                init_queries.push(format!(
+                    "IF OBJECT_ID(N'{full_table_name}', N'U') IS NOT NULL \
+                     DROP TABLE {full_table_name}"
+                ));
+                init_queries.push(Self::build_create_table_query(
+                    &full_table_name,
+                    value_fields,
+                    key_field_names,
+                    !snapshot_mode,
+                )?);
+            }
+            TableWriterInitMode::CreateIfNotExists => {
+                init_queries.push(Self::build_create_table_query(
+                    &full_table_name,
+                    value_fields,
+                    key_field_names,
+                    !snapshot_mode,
+                )?);
+            }
         }
 
+        // Establish connection and execute initialization queries
+        let client = runtime.block_on(async {
+            let mut client = connect_mssql(&config)
+                .await
+                .map_err(|e| WriteError::Mssql(classify_mssql_error(e)))?;
+
+            if let Ok((version, edition)) = detect_server_version(&mut client).await {
+                info!("Connected to MSSQL Server: version={version}, edition={edition}");
+            }
+
+            for query in &init_queries {
+                client
+                    .execute(query.as_str(), &[])
+                    .await
+                    .map_err(mssql_write_err)?;
+            }
+            Ok::<_, WriteError>(client)
+        })?;
+
         let merge_query = if snapshot_mode {
-            key_field_names.map(|keys| build_merge_query(table_name, value_fields, keys))
+            key_field_names.map(|keys| build_merge_query(&full_table_name, value_fields, keys))
         } else {
             None
         };
 
         let query_template = SqlQueryTemplate::new(
             snapshot_mode,
-            table_name,
+            &full_table_name,
             value_fields,
             key_field_names,
             false,
@@ -769,16 +1084,74 @@ impl MssqlWriter {
             Self::on_insert_conflict_condition,
         )?;
 
+        let value_field_types: Vec<Type> = value_fields.iter().map(|f| f.type_.clone()).collect();
+        let pk_field_types: Vec<Type> = key_field_names
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|k| {
+                value_fields
+                    .iter()
+                    .find(|f| &f.name == k)
+                    .map(|f| f.type_.clone())
+            })
+            .collect();
+
         Ok(MssqlWriter {
             runtime,
             config,
+            client: Some(client),
             max_batch_size,
             buffer: Vec::new(),
             snapshot_mode,
-            table_name: table_name.to_string(),
+            table_name: full_table_name,
             query_template,
             merge_query,
+            value_field_types,
+            pk_field_types,
         })
+    }
+
+    fn build_create_table_query(
+        full_table_name: &str,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+        include_special_fields: bool,
+    ) -> Result<String, WriteError> {
+        let key_set: std::collections::HashSet<&str> = key_field_names
+            .map(|keys| keys.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+
+        let mut columns: Vec<String> = value_fields
+            .iter()
+            .map(|field| {
+                let is_key = key_set.contains(field.name.as_str());
+                Self::mssql_data_type(&field.type_, false, is_key)
+                    .map(|dtype_str| format!("[{}] {dtype_str}", field.name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if include_special_fields {
+            columns.push("[time] BIGINT NOT NULL".to_string());
+            columns.push("[diff] SMALLINT NOT NULL".to_string());
+        }
+
+        let primary_key_clause =
+            key_field_names
+                .filter(|keys| !keys.is_empty())
+                .map_or(String::new(), |keys| {
+                    let quoted = keys
+                        .iter()
+                        .map(|k| format!("[{k}]"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(", PRIMARY KEY ({quoted})")
+                });
+
+        Ok(format!(
+            "IF OBJECT_ID(N'{full_table_name}', N'U') IS NULL \
+             CREATE TABLE {full_table_name} ({}{primary_key_clause})",
+            columns.join(", ")
+        ))
     }
 
     fn on_insert_conflict_condition(
@@ -793,77 +1166,173 @@ impl MssqlWriter {
         String::new()
     }
 
-    fn mssql_data_type(type_: &Type, is_nested: bool) -> Result<String, WriteError> {
+    fn mssql_data_type(type_: &Type, is_nested: bool, is_key: bool) -> Result<String, WriteError> {
         let not_null_suffix = if is_nested { "" } else { " NOT NULL" };
         Ok(match type_ {
             Type::Bool => format!("BIT{not_null_suffix}"),
-            Type::Int => format!("BIGINT{not_null_suffix}"),
+            Type::Int | Type::Duration => format!("BIGINT{not_null_suffix}"),
             Type::Float => format!("FLOAT{not_null_suffix}"),
-            Type::Pointer | Type::String => format!("NVARCHAR(MAX){not_null_suffix}"),
+            Type::Pointer | Type::String => {
+                if is_key {
+                    format!("NVARCHAR(450){not_null_suffix}")
+                } else {
+                    format!("NVARCHAR(MAX){not_null_suffix}")
+                }
+            }
             Type::Bytes | Type::PyObjectWrapper => format!("VARBINARY(MAX){not_null_suffix}"),
-            Type::Json => format!("NVARCHAR(MAX){not_null_suffix}"),
-            Type::Duration => format!("BIGINT{not_null_suffix}"),
+            Type::Json | Type::Tuple(_) | Type::List(_) | Type::Array(_, _) => {
+                format!("NVARCHAR(MAX){not_null_suffix}")
+            }
             Type::DateTimeNaive => format!("DATETIME2(6){not_null_suffix}"),
             Type::DateTimeUtc => format!("DATETIMEOFFSET(6){not_null_suffix}"),
             Type::Optional(wrapped) => {
                 if let Type::Any = **wrapped {
                     return Err(WriteError::UnsupportedType(type_.clone()));
                 }
-                let wrapped = Self::mssql_data_type(wrapped, true)?;
+                let wrapped = Self::mssql_data_type(wrapped, true, is_key)?;
                 return Ok(wrapped);
             }
-            Type::Any | Type::Tuple(_) | Type::List(_) | Type::Array(_, _) | Type::Future(_) => {
-                return Err(WriteError::UnsupportedType(type_.clone()))
-            }
+            Type::Any | Type::Future(_) => return Err(WriteError::UnsupportedType(type_.clone())),
         })
     }
 
-    fn value_to_sql_literal(value: &Value) -> Result<String, WriteError> {
-        match value {
-            Value::None => Ok("NULL".to_string()),
-            Value::Bool(b) => Ok(if *b { "1".to_string() } else { "0".to_string() }),
-            Value::Int(i) => Ok(i.to_string()),
-            Value::Float(f) => {
-                let f: f64 = (*f).into();
-                Ok(format!("{f}"))
+    fn bind_null_for_type(query: &mut Query<'_>, dtype: &Type) {
+        match dtype {
+            Type::Bool => query.bind(Option::<bool>::None),
+            Type::Int | Type::Duration => query.bind(Option::<i64>::None),
+            Type::Float => query.bind(Option::<f64>::None),
+            Type::Bytes | Type::PyObjectWrapper => query.bind(Option::<Vec<u8>>::None),
+            Type::DateTimeNaive => query.bind(Option::<chrono::NaiveDateTime>::None),
+            Type::DateTimeUtc => {
+                query.bind(Option::<chrono::DateTime<chrono::FixedOffset>>::None);
             }
-            Value::Pointer(p) => Ok(format!("N'{}'", p.to_string().replace('\'', "''"))),
-            Value::String(s) => Ok(format!("N'{}'", s.replace('\'', "''"))),
-            Value::Bytes(b) => {
-                let hex: String = b.iter().map(|byte| format!("{byte:02X}")).collect();
-                Ok(format!("0x{hex}"))
-            }
-            Value::DateTimeNaive(dt) => Ok(format!("'{dt}'")),
-            Value::DateTimeUtc(dt) => Ok(format!("'{dt}'")),
-            Value::Duration(d) => Ok(d.microseconds().to_string()),
-            Value::Json(j) => Ok(format!("N'{}'", j.to_string().replace('\'', "''"))),
-            Value::PyObjectWrapper(_) => {
-                let bytes = bincode::serialize(value).map_err(|e| *e)?;
-                let hex: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
-                Ok(format!("0x{hex}"))
-            }
-            Value::IntArray(_)
-            | Value::FloatArray(_)
-            | Value::Tuple(_)
-            | Value::Error
-            | Value::Pending => Err(WriteError::from(
-                crate::connectors::data_format::FormatterError::ValueNonSerializable(
-                    value.kind(),
-                    "MSSQL",
-                ),
-            )),
+            Type::Optional(inner) => Self::bind_null_for_type(query, inner),
+            // String, Pointer, Json, Tuple, List, Array, and any unknown type
+            _ => query.bind(Option::<String>::None),
         }
     }
 
-    fn flush_impl(&mut self) -> Result<(), WriteError> {
-        let buffer = take(&mut self.buffer);
-        self.runtime.block_on(async {
-            let mut client = connect_mssql(&self.config).await.map_err(|e| {
-                WriteError::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    e.to_string(),
+    fn bind_value(query: &mut Query<'_>, value: &Value, dtype: &Type) -> Result<(), WriteError> {
+        match value {
+            Value::None => {
+                Self::bind_null_for_type(query, dtype);
+            }
+            Value::Bool(b) => query.bind(*b),
+            Value::Int(i) => query.bind(*i),
+            Value::Float(f) => {
+                let f: f64 = (*f).into();
+                query.bind(f);
+            }
+            Value::Pointer(p) => query.bind(p.to_string()),
+            Value::String(s) => query.bind(s.to_string()),
+            Value::Bytes(b) => query.bind(b.to_vec()),
+            Value::DateTimeNaive(dt) => {
+                let ndt: chrono::NaiveDateTime = dt.as_chrono_datetime();
+                query.bind(ndt);
+            }
+            Value::DateTimeUtc(dt) => {
+                let ndt: chrono::NaiveDateTime = dt.as_chrono_datetime();
+                let utc_dt: chrono::DateTime<chrono::FixedOffset> =
+                    chrono::DateTime::from_naive_utc_and_offset(
+                        ndt,
+                        chrono::FixedOffset::east_opt(0).unwrap(),
+                    );
+                query.bind(utc_dt);
+            }
+            Value::Duration(d) => query.bind(d.microseconds()),
+            Value::Json(j) => query.bind(j.to_string()),
+            Value::PyObjectWrapper(_) => {
+                let bytes = bincode::serialize(value).map_err(|e| *e)?;
+                query.bind(bytes);
+            }
+            Value::Tuple(_) | Value::IntArray(_) | Value::FloatArray(_) => {
+                let json_val = crate::connectors::data_format::serialize_value_to_json(value)
+                    .map_err(WriteError::from)?;
+                query.bind(json_val.to_string());
+            }
+            Value::Error | Value::Pending => {
+                return Err(WriteError::from(
+                    crate::connectors::data_format::FormatterError::ValueNonSerializable(
+                        value.kind(),
+                        "MSSQL",
+                    ),
                 ))
-            })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_impl(&mut self) -> Result<(), WriteError> {
+        struct PreparedRow {
+            query_str: String,
+            values: Vec<Value>,
+            value_types: Vec<Type>,
+            time: u64,
+            diff: isize,
+            is_delete: bool,
+        }
+
+        let buffer = take(&mut self.buffer);
+        let snapshot_mode = self.snapshot_mode;
+        let merge_query = self.merge_query.clone();
+        let config = self.config.clone();
+        let value_field_types = self.value_field_types.clone();
+        let pk_field_types = self.pk_field_types.clone();
+
+        // Pre-build query strings and extract PK values outside async block
+
+        let mut prepared: Vec<PreparedRow> = Vec::with_capacity(buffer.len());
+        for data in &buffer {
+            if snapshot_mode && data.diff > 0 {
+                let query_str = if let Some(ref merge_q) = merge_query {
+                    build_merge_query_parameterized(merge_q, data.values.len())
+                } else {
+                    self.query_template.build_query(data.diff)
+                };
+                prepared.push(PreparedRow {
+                    query_str,
+                    values: data.values.clone(),
+                    value_types: value_field_types.clone(),
+                    time: data.time.0,
+                    diff: data.diff,
+                    is_delete: false,
+                });
+            } else if snapshot_mode && data.diff < 0 {
+                let pk_values = self.query_template.primary_key_fields(data.values.clone());
+                let query_str = self.query_template.build_query(-1);
+                prepared.push(PreparedRow {
+                    query_str,
+                    values: pk_values,
+                    value_types: pk_field_types.clone(),
+                    time: data.time.0,
+                    diff: data.diff,
+                    is_delete: true,
+                });
+            } else {
+                let query_str = self.query_template.build_query(data.diff);
+                prepared.push(PreparedRow {
+                    query_str,
+                    values: data.values.clone(),
+                    value_types: value_field_types.clone(),
+                    time: data.time.0,
+                    diff: data.diff,
+                    is_delete: false,
+                });
+            }
+        }
+
+        // Take client out of self so we can pass it into the async block
+        let mut client_opt = self.client.take();
+
+        let result = self.runtime.block_on(async {
+            // Reconnect if needed
+            if client_opt.is_none() {
+                let c = connect_mssql(&config)
+                    .await
+                    .map_err(|e| WriteError::Mssql(classify_mssql_error(e)))?;
+                client_opt = Some(c);
+            }
+            let client = client_opt.as_mut().unwrap();
 
             // Execute all statements in a transaction
             client
@@ -874,36 +1343,18 @@ impl MssqlWriter {
                 .await
                 .map_err(mssql_write_err)?;
 
-            for data in &buffer {
-                let query_str = if self.snapshot_mode && data.diff > 0 {
-                    if let Some(ref merge_q) = self.merge_query {
-                        // Build MERGE with actual values
-                        build_merge_with_values(merge_q, &data.values)?
-                    } else {
-                        build_insert_with_values(
-                            &self.query_template.build_query(data.diff),
-                            &data.values,
-                            self.snapshot_mode,
-                            data.time.0,
-                            data.diff,
-                        )?
-                    }
-                } else if self.snapshot_mode && data.diff < 0 {
-                    build_delete_with_values(&self.query_template, &data.values)?
-                } else {
-                    build_insert_with_values(
-                        &self.query_template.build_query(data.diff),
-                        &data.values,
-                        self.snapshot_mode,
-                        data.time.0,
-                        data.diff,
-                    )?
-                };
-
-                client
-                    .execute(&*query_str, &[])
-                    .await
-                    .map_err(mssql_write_err)?;
+            for row in &prepared {
+                let mut query = Query::new(row.query_str.clone());
+                for (val, dtype) in row.values.iter().zip(row.value_types.iter()) {
+                    Self::bind_value(&mut query, val, dtype)?;
+                }
+                // For stream-of-changes (non-snapshot, non-delete), append time and diff
+                if !snapshot_mode && !row.is_delete {
+                    query.bind(row.time.cast_signed());
+                    #[allow(clippy::cast_possible_truncation)]
+                    query.bind(row.diff as i32);
+                }
+                query.execute(client).await.map_err(mssql_write_err)?;
             }
 
             client
@@ -915,10 +1366,19 @@ impl MssqlWriter {
                 .map_err(mssql_write_err)?;
 
             Ok::<_, WriteError>(())
-        })?;
+        });
 
-        // Only clear buffer on success (it was already taken via take())
-        Ok(())
+        if result.is_err() {
+            // Drop the connection on error so we reconnect on next flush.
+            // Restore the buffer so that retries have data to send.
+            self.client = None;
+            self.buffer = buffer;
+        } else {
+            // Put the client back
+            self.client = client_opt;
+        }
+
+        result
     }
 }
 
@@ -956,136 +1416,109 @@ impl Writer for MssqlWriter {
     }
 }
 
-// ========================= Helpers =========================
+/// SQL Server error 18456: login failed for user.
+const MSSQL_ERR_LOGIN_FAILED: u32 = 18456;
+/// SQL Server error 4060: cannot open database requested by the login.
+const MSSQL_ERR_DATABASE_NOT_FOUND: u32 = 4060;
+/// SQL Server error 208: invalid object name (table/view does not exist).
+const MSSQL_ERR_INVALID_OBJECT_NAME: u32 = 208;
 
-fn mssql_read_err(e: tiberius::error::Error) -> ReadError {
-    ReadError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        e.to_string(),
-    ))
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
-fn mssql_write_err(e: tiberius::error::Error) -> WriteError {
-    WriteError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        e.to_string(),
-    ))
-}
-
-/// Adapt "CREATE TABLE IF NOT EXISTS" to MSSQL syntax.
-/// MSSQL doesn't support IF NOT EXISTS in CREATE TABLE.
-fn adapt_create_table_query(query: &str) -> String {
-    if query.starts_with("CREATE TABLE IF NOT EXISTS") {
-        let table_and_rest = &query["CREATE TABLE IF NOT EXISTS ".len()..];
-        // Extract table name (first whitespace-delimited token)
-        let table_name = table_and_rest
-            .split_whitespace()
-            .next()
-            .unwrap_or(table_and_rest);
-        format!(
-            "IF OBJECT_ID(N'{table_name}', N'U') IS NULL {query}",
-            table_name = table_name.replace('\'', "''"),
-            query = query.replace("IF NOT EXISTS ", ""),
-        )
-    } else {
-        query.to_string()
+/// Classify a raw tiberius error into the most specific [`MssqlError`] variant.
+///
+/// Well-known SQL Server error codes are mapped to named variants with
+/// actionable descriptions; everything else falls back to [`MssqlError::Driver`].
+#[allow(clippy::needless_pass_by_value)]
+fn classify_mssql_error(e: tiberius::error::Error) -> MssqlError {
+    match &e {
+        tiberius::error::Error::Io { .. } | tiberius::error::Error::Tls(_) => {
+            MssqlError::ConnectionFailed {
+                reason: e.to_string(),
+            }
+        }
+        tiberius::error::Error::Server(token_err) => match token_err.code() {
+            MSSQL_ERR_LOGIN_FAILED => MssqlError::AuthenticationFailed {
+                reason: e.to_string(),
+            },
+            MSSQL_ERR_DATABASE_NOT_FOUND => MssqlError::DatabaseNotFound {
+                reason: e.to_string(),
+            },
+            MSSQL_ERR_INVALID_OBJECT_NAME => MssqlError::TableNotFound {
+                reason: e.to_string(),
+            },
+            _ => MssqlError::Driver(e),
+        },
+        _ => MssqlError::Driver(e),
     }
 }
 
-/// Build a MERGE statement template for snapshot upserts.
+#[allow(clippy::needless_pass_by_value)]
+fn mssql_read_err(e: tiberius::error::Error) -> ReadError {
+    ReadError::Mssql(classify_mssql_error(e))
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn mssql_write_err(e: tiberius::error::Error) -> WriteError {
+    WriteError::Mssql(classify_mssql_error(e))
+}
+
+/// Build a MERGE statement template for snapshot upserts with @P placeholders.
 fn build_merge_query(
     table_name: &str,
     value_fields: &[ValueField],
     key_field_names: &[String],
 ) -> String {
     let field_names: Vec<&str> = value_fields.iter().map(|f| f.name.as_str()).collect();
-    let source_cols = field_names.join(", ");
+    let source_cols = field_names
+        .iter()
+        .map(|n| format!("[{n}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let on_clause = key_field_names
         .iter()
-        .map(|k| format!("target.{k} = source.{k}"))
+        .map(|k| format!("target.[{k}] = source.[{k}]"))
         .collect::<Vec<_>>()
         .join(" AND ");
 
     let update_set = value_fields
         .iter()
         .filter(|f| !key_field_names.contains(&f.name))
-        .map(|f| format!("target.{name} = source.{name}", name = f.name))
+        .map(|f| format!("target.[{name}] = source.[{name}]", name = f.name))
         .collect::<Vec<_>>()
         .join(", ");
 
-    let insert_cols = field_names.join(", ");
+    let insert_cols = field_names
+        .iter()
+        .map(|n| format!("[{n}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let insert_source = field_names
         .iter()
-        .map(|n| format!("source.{n}"))
+        .map(|n| format!("source.[{n}]"))
         .collect::<Vec<_>>()
         .join(", ");
 
-    // Template: VALUES placeholders will be replaced at execution time
+    // When all fields are primary keys there are no non-key columns to update.
+    // In that case omit the WHEN MATCHED branch: a matching row is already identical.
+    let when_matched = if update_set.is_empty() {
+        String::new()
+    } else {
+        format!("WHEN MATCHED THEN UPDATE SET {update_set} ")
+    };
+
+    // Template: {PARAMS} will be replaced with actual @P placeholders at execution time
     format!(
         "MERGE INTO {table_name} AS target \
-         USING (SELECT {{VALUES}}) AS source ({source_cols}) \
+         USING (SELECT {{PARAMS}}) AS source ({source_cols}) \
          ON {on_clause} \
-         WHEN MATCHED THEN UPDATE SET {update_set} \
+         {when_matched}\
          WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_source});"
     )
 }
 
-/// Replace {{VALUES}} in a MERGE template with actual SQL literal values.
-fn build_merge_with_values(merge_template: &str, values: &[Value]) -> Result<String, WriteError> {
-    let sql_values: Vec<String> = values
-        .iter()
-        .map(MssqlWriter::value_to_sql_literal)
-        .collect::<Result<_, _>>()?;
-    let values_str = sql_values.join(", ");
-    Ok(merge_template.replace("{VALUES}", &values_str))
-}
-
-/// Build an INSERT statement with literal values (for stream-of-changes mode).
-fn build_insert_with_values(
-    query_template: &str,
-    values: &[Value],
-    snapshot_mode: bool,
-    time: u64,
-    diff: isize,
-) -> Result<String, WriteError> {
-    let mut sql_values: Vec<String> = values
-        .iter()
-        .map(MssqlWriter::value_to_sql_literal)
-        .collect::<Result<_, _>>()?;
-
-    if !snapshot_mode {
-        sql_values.push(time.to_string());
-        sql_values.push(diff.to_string());
-    }
-
-    // Replace @P1, @P2, etc. with actual values
-    let mut result = query_template.to_string();
-    for (i, val) in sql_values.iter().enumerate() {
-        result = result.replace(&format!("@P{}", i + 1), val);
-    }
-    Ok(result)
-}
-
-/// Build a DELETE statement with literal values for snapshot mode deletions.
-fn build_delete_with_values(
-    query_template: &SqlQueryTemplate,
-    values: &[Value],
-) -> Result<String, WriteError> {
-    let pk_values = query_template.primary_key_fields(values.to_vec());
-    let sql_values: Vec<String> = pk_values
-        .iter()
-        .map(MssqlWriter::value_to_sql_literal)
-        .collect::<Result<_, _>>()?;
-
-    let delete_query = query_template.build_query(-1);
-    let mut result = delete_query;
-    for (i, val) in sql_values.iter().enumerate() {
-        result = result.replace(&format!("@P{}", i + 1), val);
-    }
-    Ok(result)
+/// Replace {{PARAMS}} in a MERGE template with @P1, @P2, ... placeholders.
+fn build_merge_query_parameterized(merge_template: &str, param_count: usize) -> String {
+    let params: Vec<String> = (1..=param_count).map(|i| format!("@P{i}")).collect();
+    let params_str = params.join(", ");
+    merge_template.replace("{PARAMS}", &params_str)
 }

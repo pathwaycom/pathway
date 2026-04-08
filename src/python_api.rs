@@ -112,8 +112,8 @@ use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter,
-    MssqlCdcReader, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
-    PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
+    MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader,
+    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
     ReaderBuilder, SqliteReader, TableWriterInitMode, WriteError, Writer,
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
@@ -5734,7 +5734,7 @@ impl DataStorage {
     fn schema_name(&self) -> PyResult<&str> {
         Self::extract_string_field(
             self.schema_name.as_ref(),
-            "For Postgres, the 'schema_name' field must be specified",
+            "The 'schema_name' field must be specified",
         )
     }
 
@@ -6107,43 +6107,31 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
+        scope: &Scope,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["mssql"])?;
+        }
         let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(&connection_string)
+        let config = tiberius::Config::from_ado_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
         let table_name = self.table_name.clone().ok_or_else(|| {
             PyValueError::new_err("For MSSQL connector, table_name should be specified")
         })?;
-
+        let schema_name = self.schema_name()?.to_string();
         let reader = MssqlReader::new(
             config,
+            schema_name,
             table_name,
             data_format.value_fields_type_map(py).into_iter().collect(),
+            data_format.key_field_names.clone(),
+            self.mode,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to create MSSQL reader: {e}")))?;
         Ok((Box::new(reader), 1))
     }
 
-    fn construct_mssql_cdc_reader(
-        &self,
-        py: pyo3::Python,
-        data_format: &DataFormat,
-    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(&connection_string)
-            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
-        let table_name = self.table_name.clone().ok_or_else(|| {
-            PyValueError::new_err("For MSSQL CDC connector, table_name should be specified")
-        })?;
 
-        let reader = MssqlCdcReader::new(
-            config,
-            table_name,
-            data_format.value_fields_type_map(py).into_iter().collect(),
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create MSSQL CDC reader: {e}")))?;
-        Ok((Box::new(reader), 1))
-    }
 
     fn object_downloader(&self) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
@@ -6536,8 +6524,7 @@ impl DataStorage {
             "s3" => self.construct_s3_reader(scope, data_format),
             "kafka" => self.construct_kafka_reader(scope, properties),
             "python" => self.construct_python_reader(py, data_format),
-            "mssql" => self.construct_mssql_reader(py, data_format),
-            "mssql_cdc" => self.construct_mssql_cdc_reader(py, data_format),
+            "mssql" => self.construct_mssql_reader(py, data_format, scope),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
             "nats" => self.construct_nats_reader(py, scope, properties),
@@ -7018,13 +7005,14 @@ impl DataStorage {
             license.check_entitlements(["mssql"])?;
         }
         let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(&connection_string)
+        let config = tiberius::Config::from_ado_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
         let writer = MssqlWriter::new(
             config,
             self.max_batch_size,
             self.snapshot_maintenance_on_output,
-            &self.table_name()?,
+            self.schema_name()?,
+            self.table_name()?,
             &data_format.value_fields_vec(py),
             data_format.key_field_names.as_deref(),
             self.table_writer_init_mode,

@@ -712,10 +712,10 @@ def wrap(input_type) -> DType:
     elif input_type == np.ndarray:
         return ANY_ARRAY
     elif typing.get_origin(input_type) == np.ndarray:
-        dims, wrapped = get_args(input_type)
+        dims, wrapped = typing.get_args(input_type)
         if dims == typing.Any:
-            return Array(n_dim=None, wrapped=wrapped)
-        return Array(n_dim=len(typing.get_args(dims)), wrapped=wrapped)
+            return Array(n_dim=None, wrapped=wrap(wrapped))
+        return Array(n_dim=len(typing.get_args(dims)), wrapped=wrap(wrapped))
     elif input_type == api.PyObjectWrapper:
         return ANY_PY_OBJECT_WRAPPER
     elif typing.get_origin(input_type) == api.PyObjectWrapper:

@@ -13,6 +13,7 @@ import pandas as pd
 import psycopg2
 import requests
 from pymongo import MongoClient
+from pymongo.read_concern import ReadConcern
 
 import pathway as pw
 from pathway.internals import api, dtype
@@ -365,7 +366,7 @@ def _make_milvus_client(uri: str):
                 raise RuntimeError(
                     f"milvus-lite failed to start a local server for: {uri}"
                 )
-            return MilvusClient(uds_uri, address=uds_uri)
+            return MilvusClient(uds_uri)
         except ImportError:
             pass
     return MilvusClient(uri)
@@ -443,11 +444,11 @@ class MongoDBContext:
         return collection_name in db.list_collection_names()
 
     def get_full_collection(self, collection_name):
-        if not self.collection_exists(collection_name):
-            return []
         db = self.client[MONGODB_BASE_NAME]
-        collection = db[collection_name]
-        return [i for i in collection.find({}, {"_id": 0})]  # cast to list
+        collection = db[collection_name].with_options(
+            read_concern=ReadConcern("majority")
+        )
+        return list(collection.find({}, {"_id": 0}))
 
     def get_collection(
         self, collection_name: str, field_names: list[str]
@@ -667,6 +668,7 @@ class MssqlContext:
             password=MSSQL_DB_PASSWORD,
             database=MSSQL_DB_NAME,
             autocommit=True,
+            tds_version="7.3",
         )
         self.cursor = self.connection.cursor()
 
@@ -676,14 +678,45 @@ class MssqlContext:
     def execute_sql(self, query: str):
         self.cursor.execute(query)
 
-    def insert_row(
-        self, table_name: str, values: dict[str, Union[int, bool, str, float]]
+    def enable_cdc(
+        self, table_name: str, max_retries: int = 5, retry_delay: float = 1.0
     ) -> None:
-        field_names = list(values.keys())
-        placeholders = ", ".join(["%s"] * len(values))
-        query = f"INSERT INTO {table_name} ({','.join(field_names)}) VALUES ({placeholders})"
-        print(f"Inserting a row: {query}")
-        self.cursor.execute(query, tuple(values.values()))
+        """Enable CDC on a table, retrying on deadlock (SQL Server error 1205)."""
+        import pymssql
+
+        for attempt in range(max_retries):
+            try:
+                self.cursor.execute(
+                    f"EXEC sys.sp_cdc_enable_table "
+                    f"@source_schema=N'dbo', "
+                    f"@source_name=N'{table_name}', "
+                    f"@role_name=NULL"
+                )
+                return
+            except pymssql.exceptions.OperationalError as e:
+                if attempt < max_retries - 1 and "1205" in str(e):
+                    time.sleep(retry_delay)
+                else:
+                    raise
+
+    def insert_row(
+        self, table_name: str, values: dict[str, Union[int, bool, str, float, bytes]]
+    ) -> None:
+        field_names = []
+        value_exprs = []
+        params = []
+        for k, v in values.items():
+            field_names.append(k)
+            if isinstance(v, (bytes, bytearray)):
+                # pymssql encodes empty bytes b"" as '' (varchar) instead of
+                # 0x (binary), causing SQL Server error 257.  Embed all bytes
+                # values as SQL binary literals to avoid the issue entirely.
+                value_exprs.append(f"0x{v.hex()}")
+            else:
+                value_exprs.append("%s")
+                params.append(v)
+        query = f"INSERT INTO {table_name} ({','.join(field_names)}) VALUES ({','.join(value_exprs)})"
+        self.cursor.execute(query, tuple(params))
 
     def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
         table_name = self.random_table_name()
@@ -818,7 +851,29 @@ def _compare_input_and_output(
 
         actual_type = get_args(ItemType) or (ItemType,)
         if pw.Json in actual_type and isinstance(value, str):
-            value = json.loads(value)
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                pass  # plain string is a valid JSON string value
+        # JSON-parse string values for list/tuple types (e.g. MSSQL stores them as JSON strings)
+        if isinstance(value, str) and get_origin(ItemType) in (list, tuple):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Parse ndarray JSON representation {"shape":[...],"elements":[...]} back to nested lists
+        if isinstance(value, str) and get_origin(ItemType) is np.ndarray:
+            try:
+                parsed = json.loads(value)
+                if (
+                    isinstance(parsed, dict)
+                    and "shape" in parsed
+                    and "elements" in parsed
+                ):
+                    arr = np.array(parsed["elements"]).reshape(parsed["shape"])
+                    return arr.tolist()
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
         if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
             args = get_args(ItemType)
             nested_arg = None

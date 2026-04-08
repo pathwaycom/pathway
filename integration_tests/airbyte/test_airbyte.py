@@ -125,7 +125,10 @@ def test_github_connector_fails_with_broken_cdk(tmp_path):
             streams=["commits"],
             mode="static",
             enforce_method="pypi",
-            dependency_overrides=["airbyte-cdk==7.13.0"],
+            dependency_overrides=[
+                "airbyte-source-github==2.1.13",
+                "airbyte-cdk==7.13.0",
+            ],
         )
 
 

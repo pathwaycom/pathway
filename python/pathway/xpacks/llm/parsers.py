@@ -1305,3 +1305,61 @@ class PaddleOCRParser(pw.UDF):
             docs = [(concatenated_text, {"page_number": 0})]
 
         return docs
+
+
+class AudioParser(pw.UDF):
+    """
+    Parse audio using OpenAI's Whisper API.
+
+    Args:
+        model: Whisper model to use (default: "whisper-1").
+        api_key: OpenAI API key.
+        base_url: OpenAI Base URL.
+        capacity: Maximum number of concurrent operations.
+        retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
+            propriety LLMs is strongly suggested.
+        cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            Defaults to None.
+        async_mode: Mode of execution for the UDF, either ``"batch_async"`` or ``"fully_async"``.
+            Default is ``"batch_async"``.
+        **kwargs: Additional arguments for `audio.transcriptions.create`.
+    """
+
+    def __init__(
+        self,
+        audio_format: Literal[
+            "mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"
+        ] = "mp3",
+        model: str = "whisper-1",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        capacity: int | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
+        **kwargs,
+    ):
+        with optional_imports("xpack-llm"):
+            import openai
+
+        executor = _prepare_executor(
+            async_mode, capacity=capacity, retry_strategy=retry_strategy
+        )
+        super().__init__(executor=executor, cache_strategy=cache_strategy)
+
+        self.client = openai.AsyncOpenAI(
+            api_key=api_key, base_url=base_url, max_retries=0
+        )
+        self.model = model
+        self.audio_format = audio_format
+        self.kwargs = kwargs
+
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        transcript = await self.client.audio.transcriptions.create(
+            model=self.model,
+            file=(f"audio.{self.audio_format}", contents),
+            **self.kwargs,
+        )
+        text = getattr(transcript, "text", str(transcript))
+        return [(text, {})]

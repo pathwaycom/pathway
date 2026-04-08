@@ -99,7 +99,7 @@ pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
-pub use super::mssql::{MssqlCdcReader, MssqlReader};
+pub use super::mssql::{MssqlError, MssqlReader};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{
@@ -344,6 +344,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     MongoDb(#[from] MongoDbError),
+
+    #[error(transparent)]
+    Mssql(#[from] MssqlError),
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
@@ -738,6 +741,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     MongoDB(#[from] MongoDbError),
+
+    #[error(transparent)]
+    Mssql(#[from] MssqlError),
 
     #[error(transparent)]
     Mysql(#[from] MysqlError),

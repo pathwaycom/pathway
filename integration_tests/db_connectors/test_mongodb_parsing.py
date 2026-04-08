@@ -18,7 +18,10 @@ from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import ExceptionAwareThread, run, wait_result_with_checker
 
-pytestmark = pytest.mark.xdist_group("mongodb")
+pytestmark = [
+    pytest.mark.xdist_group("mongodb"),
+    pytest.mark.flaky(reruns=2),
+]
 
 
 class MongoDBRowCountChecker:

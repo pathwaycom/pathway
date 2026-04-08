@@ -3470,7 +3470,7 @@ def test_deltalake_roundtrip(
 @only_with_license_key
 def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
     data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
-    df = pd.DataFrame(data).set_index("k")
+    df = pd.DataFrame(data)
     lake_path = str(tmp_path / "lake")
     output_path = str(tmp_path / "output.csv")
     write_deltalake(lake_path, df)
@@ -3500,7 +3500,7 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
 
     # The second run: only two added rows must be read
     additional_data = [{"k": 7, "v": "seven"}, {"k": 8, "v": "eight"}]
-    df = pd.DataFrame(additional_data).set_index("k")
+    df = pd.DataFrame(additional_data)
     write_deltalake(lake_path, df, mode="append")
     run_pathway_program({7, 8})
 
@@ -3510,14 +3510,14 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
         {"k": 5, "v": "five"},
         {"k": 6, "v": "six"},
     ]
-    df = pd.DataFrame(additional_data).set_index("k")
+    df = pd.DataFrame(additional_data)
     write_deltalake(lake_path, df, mode="append")
     run_pathway_program({4, 5, 6})
 
     # The fourth run: optimize the storage, and then write some data
     DeltaTable(lake_path).optimize()
     additional_data = [{"k": 9, "v": "nine"}]
-    df = pd.DataFrame(additional_data).set_index("k")
+    df = pd.DataFrame(additional_data)
     write_deltalake(lake_path, df, mode="append")
     run_pathway_program({9})
 
@@ -3527,7 +3527,7 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
 
     # The sixth run: add some data on top of the reordered table
     additional_data = [{"k": 10, "v": "ten"}]
-    df = pd.DataFrame(additional_data).set_index("k")
+    df = pd.DataFrame(additional_data)
     write_deltalake(lake_path, df, mode="append")
     run_pathway_program({10})
 
@@ -3548,7 +3548,7 @@ def test_deltalake_read_after_modification(tmp_path):
         {"k": 5, "v": "five"},
         {"k": 6, "v": "six"},
     ]
-    df = pd.DataFrame(data).set_index("k")
+    df = pd.DataFrame(data)
     lake_path = str(tmp_path / "lake")
     output_path = str(tmp_path / "output.csv")
     write_deltalake(lake_path, df)
@@ -4443,7 +4443,7 @@ def test_deltalake_backfilling_thresholds(tmp_path: pathlib.Path):
         {"k": 2, "v": "two"},
         {"k": 3, "v": "three"},
     ]
-    df = pd.DataFrame(lake_initial).set_index("k")
+    df = pd.DataFrame(lake_initial)
     write_deltalake(input_path, df)
 
     class InputSchema(pw.Schema):

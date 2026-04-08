@@ -10,6 +10,7 @@ from typing import Generator
 
 import boto3
 import pytest
+from click.testing import CliRunner
 
 import pathway as pw
 from pathway.internals import parse_graph
@@ -85,3 +86,24 @@ def tcp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
+
+
+@pytest.fixture
+def two_free_ports():
+    import socket
+
+    ports = []
+    sockets = []
+    for _ in range(2):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("", 0))
+        ports.append(s.getsockname()[1])
+        sockets.append(s)
+    for s in sockets:
+        s.close()
+    return ports
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()

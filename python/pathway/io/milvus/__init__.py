@@ -73,7 +73,7 @@ def _make_client(MilvusClient, uri: str):
                 raise RuntimeError(
                     f"milvus-lite failed to start a local server for: {uri}"
                 )
-            return MilvusClient(uds_uri, address=uds_uri)
+            return MilvusClient(uds_uri)
 
     return MilvusClient(uri)
 

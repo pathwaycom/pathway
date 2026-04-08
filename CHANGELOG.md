@@ -6,8 +6,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `pw.io.mssql.read` connector, which reads data from a Microsoft SQL Server table. The connector first delivers a full snapshot of the table and then, if the streaming mode is used, tracks incremental changes via SQL Server Change Data Capture (CDC).
+- `pw.io.mssql.write` connector, which writes a Pathway table to a Microsoft SQL Server table. Row additions and updates are applied as MERGE (upsert) statements keyed on the configured primary key columns, and row deletions are applied as DELETE statements.
 - `pw.io.milvus.write` connector, which writes a Pathway table to a Milvus collection. Row additions are sent as upserts and row deletions are sent as deletes keyed on the configured primary key column. Requires a Pathway Scale license.
-- `pw.io.rabbitmq` connector for reading from and writing to RabbitMQ Streams. Supports JSON, plaintext, and raw formats with TLS/mutual TLS configuration. Includes `pw.io.rabbitmq.simple_read` for quick-start usage.
+- `pathway spawn` now supports the `--addresses` and `--process-id` flags for multi-machine deployments. Pass a comma-separated list of `host:port` addresses for all processes and the index of the local process; Pathway will connect the cluster over TCP without requiring all processes to run on the same machine.
+- `pw.xpacks.llm.parsers.AudioParser`, audio transcription parser based on OpenAI Whisper API. Accepts raw audio bytes and returns transcribed text, following the same interface as other Pathway document parsers.
 
 ## [0.30.0] - 2026-03-24
 

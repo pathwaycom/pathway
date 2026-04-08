@@ -14,6 +14,7 @@ from typing import Iterable, NoReturn, Tuple
 import click
 
 import pathway as pw
+from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
 
 EXIT_CODE_DOWNSCALE = 10  # SIGUSR1
@@ -21,6 +22,8 @@ EXIT_CODE_UPSCALE = 12  # SIGUSR2
 
 UPSCALING_FACTOR = 2.0  # Must be > 1
 DOWNSCALING_FACTOR = 0.5  # Must be < 1
+
+MAX_PORT = 65535
 
 
 def plural(n, singular, plural):
@@ -46,11 +49,68 @@ class ProcessHandlesState:
     has_process_with_error: bool = False
 
 
+def validate_and_resolve_spawn_args(
+    *,
+    threads: int,
+    processes: int | None,
+    first_port: int,
+    addresses: str | None,
+    process_id: int | None,
+) -> tuple[int, int]:
+    """Validate spawn arguments and return the resolved (processes, process_id)."""
+    if threads < 1:
+        raise click.UsageError("--threads must be at least 1")
+    if processes is not None and processes < 1:
+        raise click.UsageError("--processes must be at least 1")
+    if addresses is not None and processes is not None:
+        raise click.UsageError(
+            "--processes and --addresses are mutually exclusive: "
+            "when --addresses is set, the process count is deduced from the address list"
+        )
+    if addresses is not None:
+        if process_id is None:
+            raise click.UsageError("--process-id is required when --addresses is set")
+        address_list = addresses.split(",")
+        for addr in address_list:
+            parts = addr.split(":")
+            if len(parts) != 2 or not parts[1].isdigit():
+                raise click.UsageError(
+                    f"invalid address {addr!r} in --addresses: expected host:port format"
+                )
+            port = int(parts[1])
+            if not (1 <= port <= MAX_PORT):
+                raise click.UsageError(
+                    f"invalid port {port} in --addresses entry {addr!r}: must be in range 1..{MAX_PORT}"
+                )
+        if len(address_list) != len(set(address_list)):
+            raise click.UsageError("--addresses contains duplicate entries")
+        processes = len(address_list)
+        if not (0 <= process_id < processes):
+            raise click.UsageError(
+                f"--process-id {process_id} is out of range: "
+                f"--addresses defines {processes} process(es), valid range is 0..{processes - 1}"
+            )
+    else:
+        if process_id is not None:
+            raise click.UsageError("--process-id requires --addresses")
+        process_id = 0
+        processes = processes or 1
+        last_port = first_port + processes - 1
+        if last_port > MAX_PORT:
+            raise click.UsageError(
+                f"--first-port {first_port} with --processes {processes} requires "
+                f"port {last_port}, which exceeds the maximum of {MAX_PORT}"
+            )
+    return processes, process_id
+
+
 def create_process_handles(
     *,
     processes: int,
     threads: int,
     first_port: int,
+    addresses: str | None = None,
+    process_id: int | None = None,
     run_id: str,
     env_base: dict[str, str],
     program: str,
@@ -60,17 +120,25 @@ def create_process_handles(
     workers_str = plural(processes * threads, "total worker", "total workers")
     click.echo(f"Preparing {processes_str} ({workers_str})", err=True)
 
+    env_common = env_base.copy()
+    env_common["PATHWAY_THREADS"] = str(threads)
+    env_common["PATHWAY_PROCESSES"] = str(processes)
+    env_common["PATHWAY_RUN_ID"] = str(run_id)
+    env_common["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
+    if addresses is not None:
+        _check_entitlements("multiple-machines")
+        env_common["PATHWAY_ADDRESSES"] = addresses
+    else:
+        env_common["PATHWAY_FIRST_PORT"] = str(first_port)
+
+    process_ids = [process_id] if addresses is not None else range(processes)
     process_handles = []
-    for process_id in range(processes):
-        env = env_base.copy()
-        env["PATHWAY_THREADS"] = str(threads)
-        env["PATHWAY_PROCESSES"] = str(processes)
-        env["PATHWAY_FIRST_PORT"] = str(first_port)
-        env["PATHWAY_PROCESS_ID"] = str(process_id)
-        env["PATHWAY_RUN_ID"] = str(run_id)
-        env["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
+    for pid in process_ids:
+        env = env_common.copy()
+        env["PATHWAY_PROCESS_ID"] = str(pid)
         handle = subprocess.Popen([program] + list(arguments), env=env)
         process_handles.append(handle)
+
     return process_handles
 
 
@@ -140,6 +208,8 @@ def spawn_program(
     threads,
     processes,
     first_port,
+    addresses,
+    process_id,
     repository_url,
     branch,
     program,
@@ -177,6 +247,8 @@ def spawn_program(
             processes=processes,
             threads=threads,
             first_port=first_port,
+            addresses=addresses,
+            process_id=process_id,
             run_id=run_id,
             program=program,
             arguments=arguments,
@@ -208,6 +280,7 @@ def spawn_program(
                     processes=processes,
                     threads=threads,
                     first_port=first_port,
+                    addresses=addresses,
                     run_id=run_id,
                     program=program,
                     arguments=arguments,
@@ -245,15 +318,34 @@ def cli() -> None:
     "--processes",
     metavar="N",
     type=int,
-    default=1,
-    help="number of processes",
+    default=None,
+    help="number of processes (mutually exclusive with --addresses; defaults to 1)",
 )
 @click.option(
     "--first-port",
     type=int,
     metavar="PORT",
     default=10000,
-    help="first port to use for communication",
+    help="first port to use for communication (ignored when --addresses is set)",
+)
+@click.option(
+    "--addresses",
+    type=str,
+    default=None,
+    metavar="ADDR",
+    help=(
+        "comma-separated host:port list for each process, e.g. "
+        "'host0:10000,host1:10000'; use instead of --first-port for "
+        "multi-machine deployments; process count is deduced from this list"
+    ),
+)
+@click.option(
+    "-pi",
+    "--process-id",
+    metavar="N",
+    type=int,
+    default=None,
+    help="index of the process on the current machine (required with --addresses)",
 )
 @click.option("--record", is_flag=True, help="record data in the input connectors")
 @click.option(
@@ -278,6 +370,8 @@ def spawn(
     threads,
     processes,
     first_port,
+    addresses,
+    process_id,
     record,
     record_path,
     repository_url,
@@ -285,6 +379,13 @@ def spawn(
     program,
     arguments,
 ):
+    processes, process_id = validate_and_resolve_spawn_args(
+        threads=threads,
+        processes=processes,
+        first_port=first_port,
+        addresses=addresses,
+        process_id=process_id,
+    )
     env = os.environ.copy()
     if record:
         env["PATHWAY_REPLAY_STORAGE"] = record_path
@@ -294,6 +395,8 @@ def spawn(
         threads=threads,
         processes=processes,
         first_port=first_port,
+        addresses=addresses,
+        process_id=process_id,
         repository_url=repository_url,
         branch=branch,
         program=program,
@@ -321,15 +424,33 @@ def spawn(
     "--processes",
     metavar="N",
     type=int,
-    default=1,
-    help="number of processes",
+    default=None,
+    help="number of processes (mutually exclusive with --addresses; defaults to 1)",
 )
 @click.option(
     "--first-port",
     type=int,
     metavar="PORT",
     default=10000,
-    help="first port to use for communication",
+    help="first port to use for communication (ignored when --addresses is set)",
+)
+@click.option(
+    "--addresses",
+    type=str,
+    default=None,
+    metavar="ADDR",
+    help=(
+        "comma-separated host:port list for each process; use instead of "
+        "--first-port for multi-machine deployments; process count is deduced from this list"
+    ),
+)
+@click.option(
+    "-pi",
+    "--process-id",
+    metavar="N",
+    type=int,
+    default=None,
+    help="index of the process on the current machine (required with --addresses)",
 )
 @click.option(
     "--record-path",
@@ -364,6 +485,8 @@ def replay(
     threads,
     processes,
     first_port,
+    addresses,
+    process_id,
     record_path,
     mode,
     continue_after_replay,
@@ -372,6 +495,13 @@ def replay(
     program,
     arguments,
 ):
+    processes, process_id = validate_and_resolve_spawn_args(
+        threads=threads,
+        processes=processes,
+        first_port=first_port,
+        addresses=addresses,
+        process_id=process_id,
+    )
     env = os.environ.copy()
     env["PATHWAY_REPLAY_STORAGE"] = record_path
     env["PATHWAY_SNAPSHOT_ACCESS"] = "replay"
@@ -383,6 +513,8 @@ def replay(
         threads=threads,
         processes=processes,
         first_port=first_port,
+        addresses=addresses,
+        process_id=process_id,
         repository_url=repository_url,
         branch=branch,
         program=program,

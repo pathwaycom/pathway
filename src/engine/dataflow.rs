@@ -6578,6 +6578,7 @@ where
     let connector_synchronizer = Arc::new(Mutex::new(ConnectorSynchronizer::new()));
     let stats_monitor = Arc::new(Mutex::new(stats_monitor));
 
+    config.check_scopes(license)?;
     let scaling_allowed = persistence_config
         .as_ref()
         .is_some_and(|config| config.worker_scaling_enabled);

@@ -21,6 +21,11 @@ from pathway.tests.utils import (
     wait_result_with_checker,
 )
 
+pytestmark = [
+    pytest.mark.xdist_group("mongodb"),
+    pytest.mark.flaky(reruns=2),
+]
+
 # ---------------------------------------------------------------------------
 # Script run inside a fresh subprocess for streaming persistence tests.
 # Using subprocess.Popen (not fork) avoids inheriting Rust/tokio global state
