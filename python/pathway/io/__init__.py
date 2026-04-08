@@ -15,6 +15,7 @@ from pathway.io import (
     jsonlines,
     kafka,
     kinesis,
+    leann,
     logstash,
     milvus,
     minio,
@@ -88,4 +89,5 @@ __all__ = [
     "mssql",
     "mysql",
     "SynchronizedColumn",
+    "leann",
 ]
