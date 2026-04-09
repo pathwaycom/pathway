@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import time
 import uuid
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ import mysql.connector
 import numpy as np
 import pandas as pd
 import psycopg2
+import pymssql
 import requests
 from pymongo import MongoClient
 from pymongo.read_concern import ReadConcern
@@ -662,11 +664,9 @@ class MssqlContext:
         self.cursor.execute(query)
 
     def enable_cdc(
-        self, table_name: str, max_retries: int = 5, retry_delay: float = 1.0
+        self, table_name: str, max_retries: int = 10, retry_delay: float = 1.0
     ) -> None:
         """Enable CDC on a table, retrying on deadlock (SQL Server error 1205)."""
-        import pymssql
-
         for attempt in range(max_retries):
             try:
                 self.cursor.execute(
@@ -678,8 +678,23 @@ class MssqlContext:
                 return
             except pymssql.exceptions.OperationalError as e:
                 if attempt < max_retries - 1 and "1205" in str(e):
-                    time.sleep(retry_delay)
+                    delay = retry_delay * (1.25**attempt) + random.uniform(
+                        0, retry_delay
+                    )
+                    logging.warning(
+                        f"CDC enable deadlock on {table_name} "
+                        f"(attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {delay:.1f}s: {e}"
+                    )
+                    # Recreate the cursor — pymssql leaves it in a bad state after
+                    # a deadlock even with autocommit=True.
+                    self.cursor = self.connection.cursor()
+                    time.sleep(delay)
                 else:
+                    logging.error(
+                        f"CDC enable failed on {table_name} after "
+                        f"{attempt + 1} attempt(s), giving up: {e}"
+                    )
                     raise
 
     def insert_row(
