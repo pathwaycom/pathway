@@ -131,12 +131,20 @@ def create_process_handles(
     else:
         env_common["PATHWAY_FIRST_PORT"] = str(first_port)
 
+    import shutil
+
+    resolved_program = shutil.which(program)
+    if resolved_program is None:
+        raise ValueError(
+            f"Program '{program}' not found or not executable. "
+            "Ensure the program exists and is accessible in PATH."
+        )
     process_ids = [process_id] if addresses is not None else range(processes)
     process_handles = []
     for pid in process_ids:
         env = env_common.copy()
         env["PATHWAY_PROCESS_ID"] = str(pid)
-        handle = subprocess.Popen([program] + list(arguments), env=env)
+        handle = subprocess.Popen([resolved_program] + list(arguments), env=env)
         process_handles.append(handle)
 
     return process_handles
