@@ -17,6 +17,7 @@ use crate::persistence::cached_object_storage::CachedObjectVersion;
 pub enum OffsetKey {
     Kafka(ArcStr, i32),
     Nats(usize),
+    Rabbitmq(usize),
     Empty,
     Kinesis(ArcStr),
     MongoDb,
@@ -29,7 +30,9 @@ impl HashInto for OffsetKey {
                 hasher.update(topic_name.as_bytes());
                 partition.hash_into(hasher);
             }
-            OffsetKey::Nats(worker_index) => worker_index.hash_into(hasher),
+            OffsetKey::Nats(worker_index) | OffsetKey::Rabbitmq(worker_index) => {
+                worker_index.hash_into(hasher);
+            }
             OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
             OffsetKey::Empty | OffsetKey::MongoDb => {}
         }
@@ -68,6 +71,7 @@ pub enum OffsetValue {
         snapshot_id: IcebergSnapshotId,
     },
     NatsReadEntriesCount(usize),
+    RabbitmqOffset(u64),
     MqttReadEntriesCount(usize),
     PostgresReadEntriesCount(usize),
     KinesisOffset(String),
@@ -148,6 +152,9 @@ impl HashInto for OffsetValue {
             | OffsetValue::MqttReadEntriesCount(count)
             | OffsetValue::PostgresReadEntriesCount(count) => {
                 count.hash_into(hasher);
+            }
+            OffsetValue::RabbitmqOffset(offset) => {
+                offset.hash_into(hasher);
             }
             OffsetValue::IcebergSnapshot { snapshot_id } => {
                 snapshot_id.hash_into(hasher);

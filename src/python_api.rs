@@ -114,8 +114,9 @@ use crate::connectors::data_storage::{
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter,
     MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader,
     PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
-    QuestDBWriter, RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqliteReader,
-    TableWriterInitMode, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
+    ReaderBuilder, SqliteReader, TableWriterInitMode, WriteError, Writer,
+    MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::mssql::MssqlWriter;
@@ -160,6 +161,80 @@ use s3::creds::Credentials as AwsCredentials;
 mod external_index_wrappers;
 mod logging;
 pub mod threads;
+
+/// Parse a `RabbitMQ` Streams URI and build an Environment.
+/// URI format: `rabbitmq-stream://user:pass@host:port/vhost`
+async fn build_rabbitmq_environment(
+    uri: &str,
+    tls_root_certs: Option<&str>,
+    tls_client_cert: Option<&str>,
+    tls_client_key: Option<&str>,
+    tls_trust: bool,
+) -> PyResult<rabbitmq_stream_client::Environment> {
+    // Parse URI: rabbitmq-stream://user:pass@host:port/vhost
+    let uri_str = uri.strip_prefix("rabbitmq-stream://").unwrap_or(uri);
+    let mut builder = rabbitmq_stream_client::Environment::builder();
+
+    // Split userinfo from host
+    if let Some((userinfo, rest)) = uri_str.split_once('@') {
+        if let Some((user, pass)) = userinfo.split_once(':') {
+            builder = builder.username(user).password(pass);
+        }
+        // Parse host:port/vhost
+        let (hostport, vhost) = rest.split_once('/').unwrap_or((rest, ""));
+        if let Some((host, port_str)) = hostport.split_once(':') {
+            builder = builder.host(host);
+            if let Ok(port) = port_str.parse::<u16>() {
+                builder = builder.port(port);
+            }
+        } else {
+            builder = builder.host(hostport);
+        }
+        if !vhost.is_empty() {
+            builder = builder.virtual_host(vhost);
+        }
+    } else {
+        // No userinfo, just host:port
+        let (hostport, vhost) = uri_str.split_once('/').unwrap_or((uri_str, ""));
+        if let Some((host, port_str)) = hostport.split_once(':') {
+            builder = builder.host(host);
+            if let Ok(port) = port_str.parse::<u16>() {
+                builder = builder.port(port);
+            }
+        } else {
+            builder = builder.host(uri_str);
+        }
+        if !vhost.is_empty() {
+            builder = builder.virtual_host(vhost);
+        }
+    }
+
+    // Configure TLS if any TLS parameters are provided
+    if tls_root_certs.is_some() || tls_trust || tls_client_cert.is_some() {
+        let mut tls_builder = rabbitmq_stream_client::TlsConfiguration::builder();
+        if let Some(root) = tls_root_certs {
+            // add_root_certificates enables TLS and sets the CA cert path
+            tls_builder = tls_builder.add_root_certificates(root.to_string());
+        }
+        if let (Some(cert), Some(key)) = (tls_client_cert, tls_client_key) {
+            tls_builder =
+                tls_builder.add_client_certificates_keys(cert.to_string(), key.to_string());
+        }
+        if tls_trust && tls_root_certs.is_none() {
+            // enable(true) without root certs produces TlsConfiguration::Untrusted
+            tls_builder = tls_builder.enable(true);
+        }
+        let tls_config = tls_builder.build().map_err(|e| {
+            PyValueError::new_err(format!("Failed to build RabbitMQ TLS configuration: {e}"))
+        })?;
+        builder = builder.tls(tls_config);
+    }
+
+    builder
+        .build()
+        .await
+        .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
+}
 
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
@@ -4600,6 +4675,10 @@ pub struct DataStorage {
     ssl_cert_path: Option<String>,
     psql_replication: Option<PsqlReplicationSettings>,
     schema_name: Option<String>,
+    rabbitmq_tls_root_certificates: Option<String>,
+    rabbitmq_tls_client_cert: Option<String>,
+    rabbitmq_tls_client_key: Option<String>,
+    rabbitmq_tls_trust_certificates: bool,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5162,6 +5241,10 @@ impl DataStorage {
         ssl_cert_path = None,
         psql_replication = None,
         schema_name = None,
+        rabbitmq_tls_root_certificates = None,
+        rabbitmq_tls_client_cert = None,
+        rabbitmq_tls_client_key = None,
+        rabbitmq_tls_trust_certificates = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5208,6 +5291,10 @@ impl DataStorage {
         ssl_cert_path: Option<String>,
         psql_replication: Option<PsqlReplicationSettings>,
         schema_name: Option<String>,
+        rabbitmq_tls_root_certificates: Option<String>,
+        rabbitmq_tls_client_cert: Option<String>,
+        rabbitmq_tls_client_key: Option<String>,
+        rabbitmq_tls_trust_certificates: bool,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -5252,6 +5339,10 @@ impl DataStorage {
             ssl_cert_path,
             psql_replication,
             schema_name,
+            rabbitmq_tls_root_certificates,
+            rabbitmq_tls_client_cert,
+            rabbitmq_tls_client_key,
+            rabbitmq_tls_trust_certificates,
         }
     }
 
@@ -6160,6 +6251,80 @@ impl DataStorage {
         Ok((Box::new(reader), properties.max_parallel_readers(scope)))
     }
 
+    fn construct_rabbitmq_reader(
+        &self,
+        scope: &Scope,
+        properties: &ConnectorProperties,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let uri = self.path()?;
+        let stream_name = self.message_queue_fixed_topic()?;
+        let runtime = create_async_tokio_runtime()?;
+
+        let offset_spec = match self.start_from_timestamp_ms {
+            Some(ts) => rabbitmq_stream_client::types::OffsetSpecification::Timestamp(ts),
+            None => rabbitmq_stream_client::types::OffsetSpecification::First,
+        };
+
+        let (environment, consumer, end_offset) = runtime.block_on(async {
+            let environment = build_rabbitmq_environment(
+                uri,
+                self.rabbitmq_tls_root_certificates.as_deref(),
+                self.rabbitmq_tls_client_cert.as_deref(),
+                self.rabbitmq_tls_client_key.as_deref(),
+                self.rabbitmq_tls_trust_certificates,
+            )
+            .await?;
+            let consumer = environment
+                .consumer()
+                .offset(offset_spec)
+                .build(&stream_name)
+                .await
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create RabbitMQ consumer: {e}"))
+                })?;
+
+            // For static mode, try to determine the last offset to know when to stop.
+            // We create a temporary consumer at the Last offset to discover the boundary.
+            let end_offset = if self.mode == ConnectorMode::Static {
+                let mut probe = environment
+                    .consumer()
+                    .offset(rabbitmq_stream_client::types::OffsetSpecification::Last)
+                    .build(&stream_name)
+                    .await
+                    .ok();
+                if let Some(ref mut p) = probe {
+                    use futures::StreamExt;
+                    // Read one message to get the last offset
+                    const STATIC_MODE_PROBE_TIMEOUT_SECS: u64 = 5;
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(STATIC_MODE_PROBE_TIMEOUT_SECS),
+                        p.next(),
+                    )
+                    .await
+                    {
+                        Ok(Some(Ok(delivery))) => Some(delivery.offset()),
+                        _ => None, // empty stream or timeout
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok::<_, PyErr>((environment, consumer, end_offset))
+        })?;
+
+        let reader = RabbitmqReader::new(
+            runtime,
+            consumer,
+            environment,
+            scope.worker_index(),
+            stream_name.clone(),
+            end_offset,
+        );
+        Ok((Box::new(reader), properties.max_parallel_readers(scope)))
+    }
+
     fn construct_iceberg_reader(
         &self,
         py: pyo3::Python,
@@ -6361,6 +6526,7 @@ impl DataStorage {
             "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
             "nats" => self.construct_nats_reader(py, scope, properties),
+            "rabbitmq" => self.construct_rabbitmq_reader(scope, properties),
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
@@ -6651,6 +6817,39 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_rabbitmq_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let uri = self.path()?;
+        let topic = self.message_queue_topic()?;
+        let stream_name = self.message_queue_fixed_topic()?;
+        let runtime = create_async_tokio_runtime()?;
+        let producer = runtime.block_on(async {
+            let environment = build_rabbitmq_environment(
+                uri,
+                self.rabbitmq_tls_root_certificates.as_deref(),
+                self.rabbitmq_tls_client_cert.as_deref(),
+                self.rabbitmq_tls_client_key.as_deref(),
+                self.rabbitmq_tls_trust_certificates,
+            )
+            .await?;
+            let producer = environment
+                .producer()
+                .build(&stream_name)
+                .await
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create RabbitMQ producer: {e}"))
+                })?;
+            Ok::<_, PyErr>(producer)
+        })?;
+        let writer = RabbitmqWriter::new(
+            runtime,
+            producer,
+            topic,
+            self.header_fields.clone(),
+            self.key_field_index,
+        );
+        Ok(Box::new(writer))
+    }
+
     fn construct_mongodb_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
@@ -6863,6 +7062,7 @@ impl DataStorage {
             "mongodb" => self.construct_mongodb_writer(),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
+            "rabbitmq" => self.construct_rabbitmq_writer(),
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),

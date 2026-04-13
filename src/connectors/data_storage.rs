@@ -105,6 +105,8 @@ pub use super::nats::NatsWriter;
 pub use super::postgres::{
     PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
+pub use super::rabbitmq::RabbitmqReader;
+pub use super::rabbitmq::RabbitmqWriter;
 pub use super::sqlite::SqliteReader;
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
@@ -381,6 +383,9 @@ pub enum ReadError {
 
     #[error("failed to acknowledge read nats message: {0}")]
     NatsMessageAck(async_nats::Error),
+
+    #[error("RabbitMQ consumer error: {0}")]
+    Rabbitmq(String),
 }
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, ReadError>`.
@@ -440,6 +445,7 @@ pub enum StorageType {
     Mssql,
     Postgres,
     MongoDb,
+    Rabbitmq,
 }
 
 impl StorageType {
@@ -465,6 +471,7 @@ impl StorageType {
             StorageType::Mssql => MssqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::MongoDb => MongoReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Rabbitmq => RabbitmqReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -487,6 +494,7 @@ pub trait Reader {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     fn merge_two_frontiers(lhs: &OffsetAntichain, rhs: &OffsetAntichain) -> OffsetAntichain
     where
         Self: Sized,
@@ -498,6 +506,14 @@ pub trait Reader {
                     (
                         OffsetValue::KafkaOffset(offset_position),
                         OffsetValue::KafkaOffset(other_position),
+                    ) => {
+                        if other_position > offset_position {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
+                        OffsetValue::RabbitmqOffset(offset_position),
+                        OffsetValue::RabbitmqOffset(other_position),
                     ) => {
                         if other_position > offset_position {
                             result.advance_offset(offset_key.clone(), other_value.clone());
@@ -677,6 +693,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
+
+    #[error("RabbitMQ publish error: {0}")]
+    RabbitmqPublish(String),
 
     #[error(transparent)]
     JetStream(#[from] NatsError<JetStreamPublishError>),

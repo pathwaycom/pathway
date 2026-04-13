@@ -116,6 +116,23 @@ def is_mysql_reachable():
     return True
 
 
+def is_mssql_reachable():
+    try:
+        import pymssql
+
+        pymssql.connect(
+            server=MSSQL_DB_HOST,
+            port=MSSQL_DB_PORT,
+            user=MSSQL_DB_USER,
+            password=MSSQL_DB_PASSWORD,
+            database=MSSQL_DB_NAME,
+        )
+    except Exception:
+        return False
+
+    return True
+
+
 @dataclass(frozen=True)
 class ColumnProperties:
     type_name: str

@@ -423,6 +423,26 @@ impl FormatterContext {
         }
         nats_headers
     }
+
+    pub fn construct_rabbitmq_properties(
+        &self,
+        header_fields: &[(String, usize)],
+    ) -> Vec<(String, String)> {
+        let raw_headers = self.construct_message_headers(header_fields, true);
+        raw_headers
+            .into_iter()
+            .map(|h| {
+                let value = h.value.map_or_else(
+                    || Value::None.to_string(),
+                    |v| {
+                        String::from_utf8(v)
+                            .expect("all prepared headers must be UTF-8 serializable")
+                    },
+                );
+                (h.key, value)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
