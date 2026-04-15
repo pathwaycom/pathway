@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pathway spawn` now supports the `--addresses` and `--process-id` flags for multi-machine deployments. Pass a comma-separated list of `host:port` addresses for all processes and the index of the local process; Pathway will connect the cluster over TCP without requiring all processes to run on the same machine.
 - `pw.xpacks.llm.parsers.AudioParser`, audio transcription parser based on OpenAI Whisper API. Accepts raw audio bytes and returns transcribed text, following the same interface as other Pathway document parsers.
 - `pw.io.leann.write` connector for writing Pathway tables to LEANN vector indices. LEANN uses graph-based selective recomputation to achieve 97% storage reduction compared to traditional vector databases.
+- `pw.iterate` now supports operator persistence. On restart, the iterate operator loads its previous input from an operator snapshot and reconverges inside the loop, allowing incremental processing of new data without replaying the full input stream.
 
 ## [0.30.0] - 2026-03-24
 

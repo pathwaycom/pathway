@@ -39,14 +39,16 @@ use crate::engine::value::HashInto;
 use crate::engine::workload_tracker::{Advice as ScalingAdvice, WorkloadTracker};
 use crate::persistence::config::PersistenceManagerOuterConfig;
 use crate::persistence::tracker::{RequiredPersistenceMode, SharedWorkerPersistentStorage};
-use crate::persistence::{IntoPersistentId, PersistenceTime, UniqueName};
+use crate::persistence::{
+    IntoPersistentId, PersistenceTime, SharedOperatorSnapshotWriter, UniqueName,
+};
 use crate::retry::{execute_with_retries, RetryConfig};
 
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write;
 use std::hash::Hash;
 use std::iter::once;
@@ -86,8 +88,9 @@ use log::{error, info};
 use ndarray::ArrayD;
 use once_cell::unsync::OnceCell;
 use persist::{
-    effective_persistent_id, EmptyPersistenceWrapper, OldOrNew, PersistableCollection,
-    PersistedStatefulReduce, PersistenceWrapper, TimestampBasedPersistenceWrapper,
+    effective_persistent_id, persist_state, read_persisted_state, EmptyPersistenceWrapper,
+    OldOrNew, PersistableCollection, PersistedStatefulReduce, PersistenceWrapper,
+    TimestampBasedPersistenceWrapper,
 };
 use pyo3::PyObject;
 use serde::{Deserialize, Serialize};
@@ -4500,10 +4503,289 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         Ok(())
     }
 
+    /// Load operator snapshots for iterate's columns and universes.
+    /// In PERSISTING mode (or when operator persistence is disabled),
+    /// returns empty state — all subsequent phases become no-ops.
+    fn load_snapshots_for_iterate(
+        &mut self,
+        iterated: &[LegacyTable],
+        iterated_with_universe: &[LegacyTable],
+    ) -> Result<IterateSnapshots<S>> {
+        let mut snaps = IterateSnapshots::default();
+
+        let Some(worker_storage) = self.persistence_wrapper.get_worker_persistent_storage() else {
+            return Ok(snaps);
+        };
+        let worker_storage = worker_storage.clone();
+        let mut storage_lock = worker_storage.lock().unwrap();
+        if !storage_lock
+            .persistent_id_generation_enabled(RequiredPersistenceMode::OperatorPersistence)
+            || !storage_lock.table_persistence_enabled()
+        {
+            return Ok(snaps);
+        }
+
+        let mut seen_col_handles: HashSet<ColumnHandle> = HashSet::new();
+        let mut seen_univ_handles: HashSet<UniverseHandle> = HashSet::new();
+
+        // Load column snapshots for `iterated` tables (universe is imported, not persisted).
+        for (table_idx, (_univ_handle, col_handles)) in iterated.iter().enumerate() {
+            for (col_idx, col_handle) in col_handles.iter().enumerate() {
+                if seen_col_handles.contains(col_handle) {
+                    snaps.values_writers.push_back(None);
+                    continue;
+                }
+                let next_id = self.persistence_wrapper.next_state_id();
+                let pid =
+                    format!("iterate-{next_id}-col-{table_idx}-{col_idx}").into_persistent_id();
+                let reader = storage_lock
+                    .create_operator_snapshot_reader(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let writer = storage_lock
+                    .create_operator_snapshot_writer(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let (loaded, poller, thread) = read_persisted_state(
+                    &format!("iterate-col-{table_idx}-{col_idx}"),
+                    self.scope.clone(),
+                    reader,
+                );
+                snaps.persisted_values.insert(*col_handle, loaded);
+                self.pollers.push(poller);
+                self.connector_threads.push(thread);
+                seen_col_handles.insert(*col_handle);
+                snaps.values_writers.push_back(Some(writer));
+            }
+        }
+        for (table_idx, (univ_handle, col_handles)) in iterated_with_universe.iter().enumerate() {
+            // Load universe keys so old row IDs exist in the iterative scope.
+            if seen_univ_handles.contains(univ_handle) {
+                snaps.keys_writers.push_back(None);
+            } else {
+                let next_id = self.persistence_wrapper.next_state_id();
+                let pid = format!("iterate-{next_id}-univ-{table_idx}").into_persistent_id();
+                let reader = storage_lock
+                    .create_operator_snapshot_reader(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let writer = storage_lock
+                    .create_operator_snapshot_writer(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let (loaded, poller, thread) = read_persisted_state(
+                    &format!("iterate-univ-{table_idx}"),
+                    self.scope.clone(),
+                    reader,
+                );
+                snaps.persisted_keys.insert(*univ_handle, loaded);
+                self.pollers.push(poller);
+                self.connector_threads.push(thread);
+                seen_univ_handles.insert(*univ_handle);
+                snaps.keys_writers.push_back(Some(writer));
+            }
+            // Load column snapshots for this `iterated_with_universe` table.
+            for (col_idx, col_handle) in col_handles.iter().enumerate() {
+                if seen_col_handles.contains(col_handle) {
+                    snaps.values_writers.push_back(None);
+                    continue;
+                }
+                let next_id = self.persistence_wrapper.next_state_id();
+                let pid =
+                    format!("iterate-{next_id}-iwu-col-{table_idx}-{col_idx}").into_persistent_id();
+                let reader = storage_lock
+                    .create_operator_snapshot_reader(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let writer = storage_lock
+                    .create_operator_snapshot_writer(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let (loaded, poller, thread) = read_persisted_state(
+                    &format!("iterate-iwu-col-{table_idx}-{col_idx}"),
+                    self.scope.clone(),
+                    reader,
+                );
+                snaps.persisted_values.insert(*col_handle, loaded);
+                self.pollers.push(poller);
+                self.connector_threads.push(thread);
+                seen_col_handles.insert(*col_handle);
+                snaps.values_writers.push_back(Some(writer));
+            }
+        }
+
+        Ok(snaps)
+    }
+
+    /// Filter T=0 from upstream input and remap handles.
+    ///
+    /// In `OPERATOR_PERSISTING`, every operator with persistence (sort,
+    /// reduce, groupby) strips T=0 from its output via
+    /// `filter_out_persisted`.  So normally no T=0 reaches downstream.
+    ///
+    /// Iterate is different.  It loads old data at T=0 and reconverges
+    /// inside the loop.  The reconverged output includes T=0 entries.
+    /// Iterate cannot strip T=0 because its columns are separate
+    /// collections — non-iterated columns (like `event_time`) for old
+    /// rows exist only at T=0.  Stripping T=0 from individual columns
+    /// would make them inconsistent: `chunk_start` might have a T2 diff
+    /// for a row whose `event_time` was removed.  The downstream `select`
+    /// join would then drop that row.
+    ///
+    /// This matters when two iterates are chained: the second receives
+    /// upstream T=0 from the first AND loads the same data from its own
+    /// snapshot.  Without this filter the `Variable` would contain every
+    /// old row twice.  When iterate's upstream is sort/reduce/connector
+    /// (the common case), they already strip T=0, so this filter removes
+    /// nothing.
+    fn filter_upstream_t0_for_iterate(
+        &mut self,
+        iterated: &mut [LegacyTable],
+        iterated_with_universe: &mut [LegacyTable],
+        persisted_values: &mut HashMap<ColumnHandle, Collection<S, (Key, Value)>>,
+        persisted_keys: &mut HashMap<UniverseHandle, Keys<S>>,
+    ) {
+        // For each column that has a loaded snapshot, we create a new
+        // collection with T=0 filtered out and allocate a new handle for
+        // it.  We can't mutate the original column — it's shared state in
+        // the graph.  We then replace the old handle with the new one in
+        // `iterated` / `iterated_with_universe` (which feed into
+        // `BeforeIterate`), so the iterative scope sees the filtered
+        // version.  The old→new mapping is recorded in `col_remap` so we
+        // can update `persisted_values` afterward — it's keyed by the old
+        // handle, but `BeforeIterate` will look up by the new one.
+        //
+        // The `iterated_input` / `iterated_with_universe_input` clones (made before this
+        // function is called) still hold the original unfiltered handles —
+        // those are what we persist to the snapshot.
+        // Iterate over the input vectors (deterministic order) rather than
+        // HashMap keys (non-deterministic) — otherwise multi-worker runs would
+        // allocate handles in different order on different workers.
+        let mut col_remap: HashMap<ColumnHandle, ColumnHandle> = HashMap::new();
+        for (_univ_handle, col_handles) in iterated.iter().chain(iterated_with_universe.iter()) {
+            for col_handle in col_handles {
+                if col_remap.contains_key(col_handle) || !persisted_values.contains_key(col_handle)
+                {
+                    continue;
+                }
+                if let Some(column) = self.columns.get(*col_handle) {
+                    let filtered = column
+                        .values()
+                        .deref()
+                        .inner
+                        .filter(|(_data, time, _diff)| !time.is_from_persistence())
+                        .as_collection();
+                    let new_handle = self
+                        .columns
+                        .alloc(Column::from_arranged(column.universe, filtered.arrange()));
+                    col_remap.insert(*col_handle, new_handle);
+                }
+            }
+        }
+        if !col_remap.is_empty() {
+            for (_univ_handle, col_handles) in iterated.iter_mut() {
+                for handle in col_handles.iter_mut() {
+                    if let Some(new) = col_remap.get(handle) {
+                        *handle = *new;
+                    }
+                }
+            }
+            for (_univ_handle, col_handles) in iterated_with_universe.iter_mut() {
+                for handle in col_handles.iter_mut() {
+                    if let Some(new) = col_remap.get(handle) {
+                        *handle = *new;
+                    }
+                }
+            }
+            *persisted_values = persisted_values
+                .drain()
+                .map(|(k, v)| (*col_remap.get(&k).unwrap_or(&k), v))
+                .collect();
+        }
+
+        // Same logic for universe keys — collect handles first to avoid
+        // borrowing iterated_with_universe while also mutating it.
+        let univ_handles_to_filter: Vec<UniverseHandle> = iterated_with_universe
+            .iter()
+            .map(|(uh, _)| *uh)
+            .filter(|uh| persisted_keys.contains_key(uh))
+            .collect();
+        let mut univ_remap: HashMap<UniverseHandle, UniverseHandle> = HashMap::new();
+        for univ_handle in &univ_handles_to_filter {
+            if univ_remap.contains_key(univ_handle) {
+                continue;
+            }
+            if let Some(universe) = self.universes.get(*univ_handle) {
+                let filtered = universe
+                    .keys()
+                    .inner
+                    .filter(|(_data, time, _diff)| !time.is_from_persistence())
+                    .as_collection();
+                let new_handle = self
+                    .universes
+                    .alloc(Universe::from_arranged(filtered.arrange()));
+                univ_remap.insert(*univ_handle, new_handle);
+            }
+        }
+        if !univ_remap.is_empty() {
+            for (handle, _) in iterated_with_universe.iter_mut() {
+                if let Some(new) = univ_remap.get(handle) {
+                    *handle = *new;
+                }
+            }
+            *persisted_keys = persisted_keys
+                .drain()
+                .map(|(k, v)| (*univ_remap.get(&k).unwrap_or(&k), v))
+                .collect();
+        }
+    }
+
+    /// Save iterate's raw input to operator snapshots.
+    /// Writers are consumed in the same order they were created by
+    /// `iterate_load_snapshots`.
+    fn persist_input_for_iterate(
+        &self,
+        iterated_input: &[LegacyTable],
+        iterated_with_universe_input: &[LegacyTable],
+        mut values_writers: VecDeque<Option<SharedOperatorSnapshotWriter<(Key, Value), isize>>>,
+        mut keys_writers: VecDeque<Option<SharedOperatorSnapshotWriter<Key, isize>>>,
+    ) -> Result<()> {
+        for (_univ_handle, col_handles) in iterated_input {
+            for col_handle in col_handles {
+                if let Some(writer) = values_writers.pop_front().flatten() {
+                    let col = self
+                        .columns
+                        .get(*col_handle)
+                        .ok_or(Error::InvalidColumnHandle)?;
+                    persist_state(col.values().deref(), "iterate-col-persist", writer, |v| v)
+                        .inner
+                        .probe_with(&self.output_probe);
+                }
+            }
+        }
+        for (univ_handle, col_handles) in iterated_with_universe_input {
+            if let Some(writer) = keys_writers.pop_front().flatten() {
+                let univ = self
+                    .universes
+                    .get(*univ_handle)
+                    .ok_or(Error::InvalidUniverseHandle)?;
+                persist_state(univ.keys(), "iterate-univ-persist", writer, |k| k)
+                    .inner
+                    .probe_with(&self.output_probe);
+            }
+            for col_handle in col_handles {
+                if let Some(writer) = values_writers.pop_front().flatten() {
+                    let col = self
+                        .columns
+                        .get(*col_handle)
+                        .ok_or(Error::InvalidColumnHandle)?;
+                    persist_state(col.values().deref(), "iterate-col-persist", writer, |v| v)
+                        .inner
+                        .probe_with(&self.output_probe);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn iterate<'a>(
         &'a mut self,
-        iterated: Vec<LegacyTable>,
-        iterated_with_universe: Vec<LegacyTable>,
+        mut iterated: Vec<LegacyTable>,
+        mut iterated_with_universe: Vec<LegacyTable>,
         extra: Vec<LegacyTable>,
         limit: Option<u32>,
         logic: IterationLogic<'a>,
@@ -4514,58 +4796,99 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 return Err(Error::IterationLimitTooSmall);
             }
         }
-        scope.iterative::<u32, _, _>(|subscope| {
-            #[allow(clippy::default_trait_access)] // not really more readable
-            let step = Product::new(Default::default(), 1);
-            let subgraph = InnerDataflowGraph::new(
-                subscope.clone(),
-                self.error_reporter.clone(),
-                self.ignore_asserts,
-                self.config.clone(),
-                self.terminate_on_error,
-                self.current_error_log.clone(),
-                Arc::new(Mutex::new(ConnectorSynchronizer::new())), // doesn't matter since table creation is impossible in iterate
-                self.max_expression_batch_size,
-            )?;
-            let mut subgraph_ref = subgraph.0.borrow_mut();
-            let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
-            let inner_iterated: Vec<IteratedLegacyTable<_, _>> = state.create_tables(iterated)?;
-            let inner_iterated_with_universe: Vec<IteratedWithUniverseLegacyTable<_, _>> =
-                state.create_tables(iterated_with_universe)?;
-            let inner_extra: Vec<ExtraLegacyTable<_, _>> = state.create_tables(extra)?;
-            drop(subgraph_ref);
-            let iterated_handles = extract_handles(inner_iterated.iter());
-            let iterated_with_universe_handles =
-                extract_handles(inner_iterated_with_universe.iter());
-            let extra_handles = extract_handles(inner_extra);
-            let (result, result_with_universe) = logic(
-                &subgraph,
-                iterated_handles,
-                iterated_with_universe_handles,
-                extra_handles,
-            )?;
-            let subgraph_ref = subgraph.0.borrow();
-            let mut state = AfterIterate::new(self, &subgraph_ref, limit);
-            let result = result
-                .into_iter()
-                .zip_longest(inner_iterated)
-                .map(|element| {
-                    let ((universe_handle, column_handles), inner_table) =
-                        element.both().ok_or(Error::LengthMismatch)?;
-                    inner_table.finish(&mut state, universe_handle, column_handles)
-                })
-                .collect::<Result<_>>()?;
-            let result_with_universe = result_with_universe
-                .into_iter()
-                .zip_longest(inner_iterated_with_universe)
-                .map(|element| {
-                    let ((universe_handle, column_handles), inner_table) =
-                        element.both().ok_or(Error::LengthMismatch)?;
-                    inner_table.finish(&mut state, universe_handle, column_handles)
-                })
-                .collect::<Result<_>>()?;
-            Ok((result, result_with_universe))
-        })
+
+        // Phase 1: load operator snapshots (OPERATOR_PERSISTING only).
+        let mut snaps = self.load_snapshots_for_iterate(&iterated, &iterated_with_universe)?;
+
+        // Clone input handles BEFORE filtering — these originals are what
+        // we persist (raw input, not the T=0-filtered version).
+        let iterated_input: Vec<LegacyTable> = iterated.clone();
+        let iterated_with_universe_input: Vec<LegacyTable> = iterated_with_universe.clone();
+
+        // Phase 2: filter T=0 from upstream input to prevent double entries
+        // when chained with another iterate.
+        self.filter_upstream_t0_for_iterate(
+            &mut iterated,
+            &mut iterated_with_universe,
+            &mut snaps.persisted_values,
+            &mut snaps.persisted_keys,
+        );
+
+        // Phase 3: run the iterative scope.
+        let (result, result_with_universe): (Vec<LegacyTable>, Vec<LegacyTable>) = scope
+            .iterative::<u32, _, _>(|subscope| {
+                #[allow(clippy::default_trait_access)]
+                let step = Product::new(Default::default(), 1);
+                let subgraph = InnerDataflowGraph::new(
+                    subscope.clone(),
+                    self.error_reporter.clone(),
+                    self.ignore_asserts,
+                    self.config.clone(),
+                    self.terminate_on_error,
+                    self.current_error_log.clone(),
+                    Arc::new(Mutex::new(ConnectorSynchronizer::new())),
+                    self.max_expression_batch_size,
+                )?;
+                let mut subgraph_ref = subgraph.0.borrow_mut();
+                let mut state = BeforeIterate::new(
+                    self,
+                    &mut subgraph_ref,
+                    step,
+                    snaps.persisted_keys,
+                    snaps.persisted_values,
+                );
+                let inner_iterated: Vec<IteratedLegacyTable<_, _>> =
+                    state.create_tables(iterated)?;
+                let inner_iterated_with_universe: Vec<IteratedWithUniverseLegacyTable<_, _>> =
+                    state.create_tables(iterated_with_universe)?;
+                let inner_extra: Vec<ExtraLegacyTable<_, _>> = state.create_tables(extra)?;
+                drop(subgraph_ref);
+                let iterated_handles = extract_handles(inner_iterated.iter());
+                let iterated_with_universe_handles =
+                    extract_handles(inner_iterated_with_universe.iter());
+                let extra_handles = extract_handles(inner_extra);
+                let (result, result_with_universe) = logic(
+                    &subgraph,
+                    iterated_handles,
+                    iterated_with_universe_handles,
+                    extra_handles,
+                )?;
+                let subgraph_ref = subgraph.0.borrow();
+                let mut state = AfterIterate::new(self, &subgraph_ref, limit);
+                let result = result
+                    .into_iter()
+                    .zip_longest(inner_iterated)
+                    .map(|element| {
+                        let ((universe_handle, column_handles), inner_table) =
+                            element.both().ok_or(Error::LengthMismatch)?;
+                        inner_table.finish(&mut state, universe_handle, column_handles)
+                    })
+                    .collect::<Result<_>>()?;
+                let result_with_universe = result_with_universe
+                    .into_iter()
+                    .zip_longest(inner_iterated_with_universe)
+                    .map(|element| {
+                        let ((universe_handle, column_handles), inner_table) =
+                            element.both().ok_or(Error::LengthMismatch)?;
+                        inner_table.finish(&mut state, universe_handle, column_handles)
+                    })
+                    .collect::<Result<_>>()?;
+                Ok::<_, Error>((result, result_with_universe))
+            })?;
+
+        // Phase 4: save raw input to operator snapshots.
+        // The iterate OUTPUT passes through unfiltered — iterate can't call
+        // filter_out_persisted because its separate column collections can't
+        // be filtered consistently (non-iterated columns for old rows only
+        // exist at T=0). Downstream operators handle T=0 in their input.
+        self.persist_input_for_iterate(
+            &iterated_input,
+            &iterated_with_universe_input,
+            snaps.values_writers,
+            snaps.keys_writers,
+        )?;
+
+        Ok((result, result_with_universe))
     }
 
     fn error_log(
@@ -4785,12 +5108,16 @@ where
                     .universes
                     .get(*v.key())
                     .ok_or(Error::InvalidUniverseHandle)?;
-                let new_keys = universe.keys().enter(&state.inner.scope);
+                let mut keys = universe.keys().enter(&state.inner.scope);
+                // In OPERATOR_PERSISTING: inject old universe keys so the
+                // iterative scope includes old row IDs. Without this, old rows
+                // would be absent from the universe and ix lookups would fail.
+                if let Some(persisted) = state.persisted_keys.get(v.key()) {
+                    keys = keys.concat(&persisted.enter(&state.inner.scope));
+                }
                 // TODO: import the arrangement
-                let new_universe_handle = state
-                    .inner
-                    .universes
-                    .alloc(Universe::from_collection(new_keys));
+                let new_universe_handle =
+                    state.inner.universes.alloc(Universe::from_collection(keys));
                 *v.insert(new_universe_handle)
             }
         };
@@ -4840,10 +5167,13 @@ impl<'c, S: MaybeTotalScope> InnerUniverse
             .universes
             .get(outer_handle)
             .ok_or(Error::InvalidUniverseHandle)?;
-        let keys_var = SafeVariable::new_from(
-            universe.keys().enter(&state.inner.scope),
-            state.step.clone(),
-        );
+        let mut initial_keys = universe.keys().enter(&state.inner.scope);
+        // In OPERATOR_PERSISTING: inject old universe keys into the
+        // Variable's source (same rationale as IteratedColumn).
+        if let Some(persisted) = state.persisted_keys.get(&outer_handle) {
+            initial_keys = initial_keys.concat(&persisted.enter(&state.inner.scope));
+        }
+        let keys_var = SafeVariable::new_from(initial_keys, state.step.clone());
         let inner_handle = state
             .inner
             .universes
@@ -4924,12 +5254,18 @@ where
                     .columns
                     .get(*v.key())
                     .ok_or(Error::InvalidColumnHandle)?;
-                let new_values = column.values().enter(&state.inner.scope);
+                let mut values = column.values().enter(&state.inner.scope);
+                // In OPERATOR_PERSISTING: inject old column values so the
+                // iterate loop body can access them (e.g. via ix lookups on
+                // extra/imported columns that don't iterate).
+                if let Some(persisted) = state.persisted_values.get(v.key()) {
+                    values = values.concat(&persisted.enter(&state.inner.scope));
+                }
                 // TODO: import the arrangement
                 let new_column_handle = state
                     .inner
                     .columns
-                    .alloc(Column::from_collection(universe.inner_handle(), new_values));
+                    .alloc(Column::from_collection(universe.inner_handle(), values));
                 *v.insert(new_column_handle)
             }
         };
@@ -4971,10 +5307,13 @@ where
             .columns
             .get(outer_handle)
             .ok_or(Error::InvalidColumnHandle)?;
-        let values_var = SafeVariable::new_from(
-            column.values().enter(&state.inner.scope),
-            state.step.clone(),
-        );
+        let mut initial_values = column.values().enter(&state.inner.scope);
+        // In OPERATOR_PERSISTING: inject old column values into the Variable's
+        // source so the iterate loop has old rows as context.
+        if let Some(persisted) = state.persisted_values.get(&outer_handle) {
+            initial_values = initial_values.concat(&persisted.enter(&state.inner.scope));
+        }
+        let values_var = SafeVariable::new_from(initial_values, state.step.clone());
         let inner_handle = state.inner.columns.alloc(Column::from_collection(
             universe.inner_handle(),
             values_var.clone(),
@@ -5065,12 +5404,41 @@ where
     }
 }
 
+/// Loaded snapshot data and writers for iterate operator persistence.
+/// Empty when persistence is disabled (PERSISTING mode).
+struct IterateSnapshots<S: MaybeTotalScope> {
+    /// Old column values loaded at T=0, keyed by outer column handle.
+    persisted_values: HashMap<ColumnHandle, Collection<S, (Key, Value)>>,
+    /// Old universe keys loaded at T=0, keyed by outer universe handle.
+    persisted_keys: HashMap<UniverseHandle, Keys<S>>,
+    /// Writers for saving column values, consumed in creation order.
+    values_writers: VecDeque<Option<SharedOperatorSnapshotWriter<(Key, Value), isize>>>,
+    /// Writers for saving universe keys, consumed in creation order.
+    keys_writers: VecDeque<Option<SharedOperatorSnapshotWriter<Key, isize>>>,
+}
+
+impl<S: MaybeTotalScope> Default for IterateSnapshots<S> {
+    fn default() -> Self {
+        Self {
+            persisted_values: HashMap::new(),
+            persisted_keys: HashMap::new(),
+            values_writers: VecDeque::new(),
+            keys_writers: VecDeque::new(),
+        }
+    }
+}
+
 struct BeforeIterate<'g, O: MaybeTotalScope, I: MaybeTotalScope> {
     outer: &'g DataflowGraphInner<O>,
     inner: &'g mut DataflowGraphInner<I>,
     step: <I::Timestamp as TimestampTrait>::Summary,
     universe_cache: HashMap<UniverseHandle, UniverseHandle>,
     column_cache: HashMap<ColumnHandle, ColumnHandle>,
+    // Old converged state loaded from operator snapshots (OPERATOR_PERSISTING only).
+    // Keyed by outer handle so create() methods can look up old data to inject.
+    // Empty in PERSISTING mode.
+    persisted_keys: HashMap<UniverseHandle, Keys<O>>,
+    persisted_values: HashMap<ColumnHandle, Collection<O, (Key, Value)>>,
 }
 
 impl<'g, 'c, S: MaybeTotalScope, T> BeforeIterate<'g, S, Child<'c, S, T>>
@@ -5082,6 +5450,8 @@ where
         outer: &'g DataflowGraphInner<S>,
         inner: &'g mut DataflowGraphInner<Child<'c, S, T>>,
         step: T::Summary,
+        persisted_keys: HashMap<UniverseHandle, Keys<S>>,
+        persisted_values: HashMap<ColumnHandle, Collection<S, (Key, Value)>>,
     ) -> Self {
         Self {
             outer,
@@ -5089,6 +5459,8 @@ where
             step,
             universe_cache: HashMap::new(),
             column_cache: HashMap::new(),
+            persisted_keys,
+            persisted_values,
         }
     }
 

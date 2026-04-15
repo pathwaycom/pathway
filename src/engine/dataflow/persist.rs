@@ -689,7 +689,7 @@ where
     ) -> (Collection<S, D, R>, Poller, thread::JoinHandle<()>);
 }
 
-fn read_persisted_state<S, D, R>(
+pub(super) fn read_persisted_state<S, D, R>(
     name: &str,
     mut scope: S,
     mut reader: Box<dyn OperatorSnapshotReader<D, R> + Send>,
@@ -736,7 +736,7 @@ where
     (state, poller, thread_handle)
 }
 
-fn persist_state<S, D, R>(
+pub(super) fn persist_state<S, D, R>(
     collection: &Collection<S, D, R>,
     name: &str,
     writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
@@ -840,8 +840,20 @@ where
         writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
     ) -> (Collection<S, D, R>, Poller, thread::JoinHandle<()>) {
         let (state, poller, thread_handle) = read_persisted_state(name, self.scope(), reader);
+        // Filter T=0 from the input before concatenating with loaded state.
+        // Without this, both the input's T=0 data and the loaded snapshot
+        // would contribute the same entries, doubling counts/values. For
+        // most upstreams this is a no-op (they already strip T=0 via
+        // filter_out_persisted). It matters when the upstream is iterate,
+        // which passes T=0 through because its separate column collections
+        // can't be filtered consistently (non-iterated columns for old rows
+        // only exist at T=0).
+        let filtered_self: Collection<S, D, R> = self
+            .inner
+            .filter(|(_data, time, _diff)| !time.is_from_persistence())
+            .as_collection();
         let collection_after_saving =
-            persist_state(&self.concat(&state), name, writer, |data| data);
+            persist_state(&filtered_self.concat(&state), name, writer, |data| data);
         (collection_after_saving, poller, thread_handle)
     }
 }
@@ -892,7 +904,11 @@ where
         V2: ExchangeData,
     {
         let (state, poller, thread_handle) = read_persisted_state(name, self.scope(), reader);
-        let new_data = self.map_named("Persist:New", |(key, value)| (key, OldOrNew::New(value)));
+        let new_data = self
+            .inner
+            .filter(|(_data, time, _diff)| !time.is_from_persistence())
+            .as_collection()
+            .map_named("Persist:New", |(key, value)| (key, OldOrNew::New(value)));
         let state = state.map_named("Persist:Old", |(key, value)| (key, OldOrNew::Old(value)));
         let reduced = new_data
             .concat(&state)
