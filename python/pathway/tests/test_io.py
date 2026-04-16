@@ -5740,3 +5740,29 @@ def test_mongodb_read_rejects_user_defined_primary_key():
             collection="test",
             schema=SchemaWithPrimaryKey,
         )
+
+
+@pytest.mark.parametrize("start_from", ["beginning", "end"])
+def test_rabbitmq_read_rejects_timestamp_with_wrong_start_from(start_from):
+    with pytest.raises(
+        ValueError,
+        match="start_from_timestamp_ms must not be set",
+    ):
+        pw.io.rabbitmq.read(
+            uri="rabbitmq-stream://guest:guest@localhost:5552",
+            stream_name="test",
+            start_from=start_from,
+            start_from_timestamp_ms=1000,
+        )
+
+
+def test_rabbitmq_read_requires_timestamp_with_timestamp_start_from():
+    with pytest.raises(
+        ValueError,
+        match="start_from_timestamp_ms is required",
+    ):
+        pw.io.rabbitmq.read(
+            uri="rabbitmq-stream://guest:guest@localhost:5552",
+            stream_name="test",
+            start_from="timestamp",
+        )

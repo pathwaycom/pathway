@@ -15,6 +15,72 @@ S3_DEFAULT_REGION = "us-east-1"
 S3_LOCATION_FIELD = "LocationConstraint"
 
 
+class TLSSettings:
+    """Stores TLS connection settings for connectors that support encrypted
+    communication (e.g. PostgreSQL, RabbitMQ).
+
+    Args:
+        mode: The SSL verification mode. Determines how strictly the server
+            certificate is validated. Possible values: ``"disable"``, ``"allow"``,
+            ``"prefer"`` (default), ``"require"``, ``"verify-ca"``, ``"verify-full"``.
+        root_cert_path: Path to the root CA certificate file used to verify the
+            server's certificate.
+        client_cert_path: Path to the client certificate file for mutual TLS
+            authentication.
+        client_key_path: Path to the client private key file for mutual TLS
+            authentication.
+        trust_certificates: If True, trust server certificates without
+            verification. Use only for development and testing.
+    """
+
+    @trace_user_frame
+    def __init__(
+        self,
+        *,
+        mode: str = "prefer",
+        root_cert_path: str | None = None,
+        client_cert_path: str | None = None,
+        client_key_path: str | None = None,
+        trust_certificates: bool = False,
+    ):
+        self._mode = _parse_ssl_mode(mode)
+        self._root_cert_path = root_cert_path
+        self._client_cert_path = client_cert_path
+        self._client_key_path = client_key_path
+        self._trust_certificates = trust_certificates
+
+    @property
+    def settings(self) -> api.TlsSettings:
+        return api.TlsSettings(
+            mode=self._mode,
+            root_cert_path=self._root_cert_path,
+            client_cert_path=self._client_cert_path,
+            client_key_path=self._client_key_path,
+            trust_certificates=self._trust_certificates,
+        )
+
+
+def _parse_ssl_mode(ssl_mode: str) -> api.SslMode:
+    match ssl_mode.lower():
+        case "disable":
+            return api.SslMode.DISABLE
+        case "allow":
+            return api.SslMode.ALLOW
+        case "prefer":
+            return api.SslMode.PREFER
+        case "require":
+            return api.SslMode.REQUIRE
+        case "verify-ca" | "verify_ca":
+            return api.SslMode.VERIFY_CA
+        case "verify-full" | "verify_full":
+            return api.SslMode.VERIFY_FULL
+        case _:
+            raise ValueError(
+                f"invalid ssl mode '{ssl_mode}', expected one of "
+                "disable, allow, prefer, require, verify-ca, verify-full"
+            )
+
+
 class AwsS3Settings:
     """Stores Amazon S3 connection settings. You may also use this class to store
     configuration settings for any custom S3 installation, however you will need to

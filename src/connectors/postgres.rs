@@ -1206,7 +1206,7 @@ pub struct WalReader {
 
 #[derive(Debug)]
 pub enum PgEventAfterParsing {
-    SimpleChange(ReadResult),
+    SimpleChange(Box<ReadResult>),
     Truncate,
 }
 
@@ -1935,14 +1935,16 @@ impl WalReader {
         }
 
         Ok(match event.event_type {
-            EventType::Begin { transaction_id, .. } => vec![PgEventAfterParsing::SimpleChange(
-                ReadResult::NewSource(PostgresMetadata::new(Some(transaction_id)).into()),
-            )],
-            EventType::Commit { .. } => vec![PgEventAfterParsing::SimpleChange(
+            EventType::Begin { transaction_id, .. } => {
+                vec![PgEventAfterParsing::SimpleChange(Box::new(
+                    ReadResult::NewSource(PostgresMetadata::new(Some(transaction_id)).into()),
+                ))]
+            }
+            EventType::Commit { .. } => vec![PgEventAfterParsing::SimpleChange(Box::new(
                 ReadResult::FinishedSource {
                     commit_possibility: CommitPossibility::Possible,
                 },
-            )],
+            ))],
             EventType::Truncate(tables_from_event) => {
                 let expected_full_name =
                     format!("{}.{}", table_ctx.schema_name, table_ctx.table_name);
@@ -1966,22 +1968,26 @@ impl WalReader {
                 }
                 let mut result = Vec::with_capacity(2);
                 if let Some(old_data) = old_data {
-                    result.push(PgEventAfterParsing::SimpleChange(ReadResult::Data(
+                    result.push(PgEventAfterParsing::SimpleChange(Box::new(
+                        ReadResult::Data(
+                            Self::parse_values_from_event(
+                                DataEventType::Delete,
+                                &old_data.into_hash_map(),
+                                table_ctx,
+                            ),
+                            emit_offset(total_entries_read),
+                        ),
+                    )));
+                }
+                result.push(PgEventAfterParsing::SimpleChange(Box::new(
+                    ReadResult::Data(
                         Self::parse_values_from_event(
-                            DataEventType::Delete,
-                            &old_data.into_hash_map(),
+                            DataEventType::Insert,
+                            &new_data.into_hash_map(),
                             table_ctx,
                         ),
                         emit_offset(total_entries_read),
-                    )));
-                }
-                result.push(PgEventAfterParsing::SimpleChange(ReadResult::Data(
-                    Self::parse_values_from_event(
-                        DataEventType::Insert,
-                        &new_data.into_hash_map(),
-                        table_ctx,
                     ),
-                    emit_offset(total_entries_read),
                 )));
                 result
             }
@@ -2004,9 +2010,8 @@ impl WalReader {
                 }
                 let ctx =
                     Self::parse_values_from_event(event_type, &data.into_hash_map(), table_ctx);
-                vec![PgEventAfterParsing::SimpleChange(ReadResult::Data(
-                    ctx,
-                    emit_offset(total_entries_read),
+                vec![PgEventAfterParsing::SimpleChange(Box::new(
+                    ReadResult::Data(ctx, emit_offset(total_entries_read)),
                 ))]
             }
             _ => Vec::new(),
@@ -2033,9 +2038,9 @@ impl WalReader {
                     }
                     Err(pg_walstream::ReplicationError::Cancelled(_)) => {
                         info!("Cancelled, shutting down gracefully");
-                        return Ok(vec![PgEventAfterParsing::SimpleChange(
+                        return Ok(vec![PgEventAfterParsing::SimpleChange(Box::new(
                             ReadResult::Finished,
-                        )]);
+                        ))]);
                     }
                     Err(e) => return Err(ReadError::PostgresReplication(e.into())),
                 }
@@ -2582,7 +2587,7 @@ impl Reader for PsqlReader {
                 for event in parsed_pg_events {
                     // TODO: have a clearer invariant here (truncate can only be the single item)
                     if let PgEventAfterParsing::SimpleChange(prepared_record) = event {
-                        self.prepared_records.push(prepared_record);
+                        self.prepared_records.push(*prepared_record);
                     } else {
                         for key in &self.collection_keys {
                             self.prepared_records.push(ReadResult::Data(

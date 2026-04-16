@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `pw.io.rabbitmq.read` and `pw.io.rabbitmq.write` connectors for reading from and writing to RabbitMQ Streams. Supports JSON, plaintext, and raw formats; streaming and static modes; persistence with offset recovery; dynamic topics (writing to different streams per row); `start_from` parameter (`"beginning"`, `"end"`, or `"timestamp"`); TLS configuration; and message metadata including AMQP 1.0 properties and application properties. Header values are JSON-encoded for round-trip compatibility. Requires a Pathway Scale or Enterprise license.
 - `pw.io.mssql.read` connector, which reads data from a Microsoft SQL Server table. The connector first delivers a full snapshot of the table and then, if the streaming mode is used, tracks incremental changes via SQL Server Change Data Capture (CDC).
 - `pw.io.mssql.write` connector, which writes a Pathway table to a Microsoft SQL Server table. Row additions and updates are applied as MERGE (upsert) statements keyed on the configured primary key columns, and row deletions are applied as DELETE statements.
 - `pw.io.milvus.write` connector, which writes a Pathway table to a Milvus collection. Row additions are sent as upserts and row deletions are sent as deletes keyed on the configured primary key column. Requires a Pathway Scale license.

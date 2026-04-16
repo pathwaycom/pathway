@@ -31,6 +31,7 @@ from pathway.io import (
     pyfilesystem,
     python,
     questdb,
+    rabbitmq,
     redpanda,
     s3,
     slack,
@@ -46,6 +47,7 @@ from pathway.io._synchronization import (
     SynchronizedColumn,
     register_input_synchronization_group,
 )
+from pathway.internals._io_helpers import TLSSettings
 from pathway.io._utils import CsvParserSettings
 
 __all__ = [
@@ -84,10 +86,12 @@ __all__ = [
     "register_input_synchronization_group",
     "mqtt",
     "questdb",
+    "rabbitmq",
     "dynamodb",
     "kinesis",
     "mssql",
     "mysql",
     "SynchronizedColumn",
+    "TLSSettings",
     "leann",
 ]

@@ -580,7 +580,7 @@ impl DeltaReaderAction {
 
 #[derive(Debug)]
 enum ParquetReaderOutcome {
-    SourceEvent(ReadResult),
+    SourceEvent(Box<ReadResult>),
     Row(ParquetRow),
 }
 
@@ -1294,7 +1294,7 @@ impl DeltaTableReader {
                     self.reader = None;
                     self.current_action = None;
 
-                    return Ok(ParquetReaderOutcome::SourceEvent(source_event));
+                    return Ok(ParquetReaderOutcome::SourceEvent(Box::new(source_event)));
                 }
             };
         }
@@ -1312,7 +1312,7 @@ impl DeltaTableReader {
         self.reader = Some(DeltaLakeParquetReader::try_from(local_object)?.into_iter());
 
         let source_event = ReadResult::NewSource(new_block_metadata.into());
-        Ok(ParquetReaderOutcome::SourceEvent(source_event))
+        Ok(ParquetReaderOutcome::SourceEvent(Box::new(source_event)))
     }
 }
 
@@ -1327,7 +1327,7 @@ impl Reader for DeltaTableReader {
             let parquet_row =
                 match self.read_next_row_native(self.streaming_mode.is_polling_enabled()) {
                     Ok(ParquetReaderOutcome::Row(row)) => row,
-                    Ok(ParquetReaderOutcome::SourceEvent(event)) => return Ok(event),
+                    Ok(ParquetReaderOutcome::SourceEvent(event)) => return Ok(*event),
                     Err(ReadError::NoObjectsToRead) => return Ok(ReadResult::Finished),
                     Err(other) => return Err(other),
                 };

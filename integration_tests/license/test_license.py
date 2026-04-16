@@ -47,6 +47,7 @@ SCALE_TIER_ENTITLEMENTS = [
     "worker-count-scaling",
     "multiple-machines",
     "leann",
+    "rabbitmq",
 ]
 
 
@@ -127,6 +128,7 @@ def test_license_default_policy(caplog):
     _check_entitlements("multiple-machines")
     _check_entitlements("mssql")
     _check_entitlements("leann")
+    _check_entitlements("rabbitmq")
 
     run_all()
     assert "Telemetry enabled" in caplog.text

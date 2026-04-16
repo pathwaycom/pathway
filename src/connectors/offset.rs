@@ -12,6 +12,18 @@ use crate::connectors::data_lake::iceberg::IcebergSnapshotId;
 use crate::engine::value::HashInto;
 use crate::persistence::cached_object_storage::CachedObjectVersion;
 
+/// Identifies the type of `RabbitMQ` stream for offset tracking.
+///
+/// This is `#[non_exhaustive]` to allow adding Super Streams support later
+/// (where each partition is a separate physical stream) without breaking
+/// serialized persistence snapshots.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
+#[non_exhaustive]
+pub enum RabbitmqStreamType {
+    /// A plain `RabbitMQ` stream identified by name.
+    Stream(ArcStr),
+}
+
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum OffsetKey {
@@ -20,6 +32,7 @@ pub enum OffsetKey {
     Empty,
     Kinesis(ArcStr),
     MongoDb,
+    Rabbitmq(RabbitmqStreamType),
 }
 
 impl HashInto for OffsetKey {
@@ -29,7 +42,12 @@ impl HashInto for OffsetKey {
                 hasher.update(topic_name.as_bytes());
                 partition.hash_into(hasher);
             }
-            OffsetKey::Nats(worker_index) => worker_index.hash_into(hasher),
+            OffsetKey::Nats(worker_index) => {
+                worker_index.hash_into(hasher);
+            }
+            OffsetKey::Rabbitmq(RabbitmqStreamType::Stream(stream_name)) => {
+                hasher.update(stream_name.as_bytes());
+            }
             OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
             OffsetKey::Empty | OffsetKey::MongoDb => {}
         }
@@ -76,6 +94,7 @@ pub enum OffsetValue {
     /// so byte-wise comparison is a valid ordering.
     MongoDbOplogToken(Vec<u8>),
     Empty,
+    RabbitmqOffset(u64),
 }
 
 impl OffsetValue {
@@ -148,6 +167,9 @@ impl HashInto for OffsetValue {
             | OffsetValue::MqttReadEntriesCount(count)
             | OffsetValue::PostgresReadEntriesCount(count) => {
                 count.hash_into(hasher);
+            }
+            OffsetValue::RabbitmqOffset(offset) => {
+                offset.hash_into(hasher);
             }
             OffsetValue::IcebergSnapshot { snapshot_id } => {
                 snapshot_id.hash_into(hasher);

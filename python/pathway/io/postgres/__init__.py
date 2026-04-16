@@ -7,7 +7,7 @@ import warnings
 from typing import Any, Iterable, Literal
 
 from pathway.internals import api, datasink, datasource, dtype
-from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals._io_helpers import TLSSettings, _format_output_value_fields
 from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
@@ -43,33 +43,8 @@ def _replication_connection_string_from_settings(settings: dict):
     return connection_string
 
 
-def _parse_engine_ssl_mode(ssl_mode: str) -> api.SslMode:
-    match ssl_mode.lower():
-        case "disable":
-            return api.SslMode.DISABLE
-        case "allow":
-            return api.SslMode.ALLOW
-        case "prefer":
-            return api.SslMode.PREFER
-        case "require":
-            return api.SslMode.REQUIRE
-        case "verify-ca" | "verify_ca":
-            return api.SslMode.VERIFY_CA
-        case "verify-full" | "verify_full":
-            return api.SslMode.VERIFY_FULL
-        case _:
-            raise ValueError(
-                f"invalid sslmode '{ssl_mode}', expected one of "
-                "disable, allow, prefer, require, verify-ca, verify-full"
-            )
-
-
-def _build_ssl_kwargs(owned_postgres_settings: dict):
-    sslmode = owned_postgres_settings.pop("sslmode", None)
-    if sslmode is not None:
-        sslmode = _parse_engine_ssl_mode(sslmode)
-    else:
-        sslmode = api.SslMode.PREFER
+def _build_tls_settings(owned_postgres_settings: dict) -> TLSSettings:
+    sslmode = owned_postgres_settings.pop("sslmode", "prefer")
 
     sslrootcert = owned_postgres_settings.pop("sslrootcert", None)
     if sslrootcert is not None:
@@ -82,10 +57,7 @@ def _build_ssl_kwargs(owned_postgres_settings: dict):
         except OSError as e:
             raise ValueError(f"sslrootcert is not readable: {e}") from e
 
-    return {
-        "ssl_mode": sslmode,
-        "ssl_cert_path": sslrootcert,
-    }
+    return TLSSettings(mode=sslmode, root_cert_path=sslrootcert)
 
 
 def _construct_replication_settings(
@@ -391,7 +363,7 @@ def read(
     _check_entitlements("postgres-wal-reader")
 
     owned_postgres_settings = copy.copy(postgres_settings)
-    ssl_kwargs = _build_ssl_kwargs(owned_postgres_settings)
+    tls = _build_tls_settings(owned_postgres_settings)
     replication_settings = _construct_replication_settings(
         mode=mode,
         postgres_settings=postgres_settings,  # use original settings for libpq
@@ -406,7 +378,7 @@ def read(
         psql_replication=replication_settings,
         table_name=table_name,
         schema_name=schema_name,
-        **ssl_kwargs,
+        tls_settings=tls.settings,
     )
 
     schema, api_schema = read_schema(schema)
@@ -574,7 +546,7 @@ def write(
     ... )
     """
 
-    ssl_kwargs = _build_ssl_kwargs(postgres_settings)
+    tls = _build_tls_settings(postgres_settings)
     is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
     data_storage = api.DataStorage(
         storage_type="postgres",
@@ -583,7 +555,7 @@ def write(
         table_name=table_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
         snapshot_maintenance_on_output=is_snapshot_mode,
-        **ssl_kwargs,
+        tls_settings=tls.settings,
     )
 
     if not is_snapshot_mode:

@@ -9,6 +9,7 @@ from .utils import (
     KafkaTestContext,
     KinesisTestContext,
     MqttTestContext,
+    RabbitmqTestContext,
 )
 
 
@@ -23,6 +24,13 @@ def kafka_context():
 def mqtt_context():
     mqtt_context = MqttTestContext()
     yield mqtt_context
+
+
+@pytest.fixture
+def rabbitmq_context():
+    ctx = RabbitmqTestContext()
+    yield ctx
+    ctx.teardown()
 
 
 @pytest.fixture

@@ -79,6 +79,21 @@ class SslMode(Enum):
     VERIFY_CA: SslMode
     VERIFY_FULL: SslMode
 
+class TlsSettings:
+    mode: SslMode
+    root_cert_path: str | None
+    client_cert_path: str | None
+    client_key_path: str | None
+    trust_certificates: bool
+    def __init__(
+        self,
+        mode: SslMode = SslMode.PREFER,
+        root_cert_path: str | None = None,
+        client_cert_path: str | None = None,
+        client_key_path: str | None = None,
+        trust_certificates: bool = False,
+    ) -> None: ...
+
 class Universe:
     pass
 
@@ -926,10 +941,10 @@ class DataStorage:
         js_stream_name: str | None = None,
         durable_consumer_name: str | None = None,
         iceberg_catalog: IcebergCatalogSettings | None = None,
-        ssl_mode: SslMode = SslMode.PREFER,
-        ssl_cert_path: str | None = None,
+        tls_settings: TlsSettings | None = None,
         psql_replication: PsqlReplicationSettings | None = None,
         schema_name: str | None = None,
+        with_metadata: bool = False,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

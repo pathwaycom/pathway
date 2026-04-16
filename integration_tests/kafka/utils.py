@@ -1,8 +1,11 @@
 # Copyright © 2026 Pathway
 
+import asyncio
 import dataclasses
 import json
+import os
 import pathlib
+import threading
 import time
 import uuid
 from collections.abc import Iterable
@@ -19,6 +22,15 @@ KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
 SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
 KINESIS_ENDPOINT_URL = "http://kinesis:4567"
+
+RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
+RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5552"))
+RABBITMQ_USER = "guest"
+RABBITMQ_PASSWORD = "guest"
+RABBITMQ_STREAM_URI = (
+    f"rabbitmq-stream://{RABBITMQ_USER}:{RABBITMQ_PASSWORD}"
+    f"@{RABBITMQ_HOST}:{RABBITMQ_PORT}/"
+)
 
 
 def random_topic_name():
@@ -368,3 +380,73 @@ def check_keys_in_file(
             else:
                 keys.add(message)
         assert keys == expected_keys
+
+
+class RabbitmqTestContext:
+    """Creates a temporary RabbitMQ stream and provides helpers to send messages."""
+
+    def __init__(self):
+        self.stream_name = f"rmq-{uuid4()}"
+        self.uri = RABBITMQ_STREAM_URI
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+        self._run(self._create_stream())
+
+    def teardown(self):
+        self._run(self._cleanup())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join()
+
+    def _run(self, coro):
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result()
+
+    async def _create_stream(self):
+        from rstream import Producer
+
+        self._producer = Producer(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            username=RABBITMQ_USER,
+            password=RABBITMQ_PASSWORD,
+        )
+        await self._producer.start()
+        try:
+            await self._producer.create_stream(self.stream_name)
+        except Exception:
+            pass  # stream may already exist
+
+    async def _cleanup(self):
+        try:
+            await self._producer.delete_stream(self.stream_name)
+        except Exception:
+            pass
+        await self._producer.close()
+
+    def create_stream(self, name: str) -> None:
+        self._run(self._create_stream_by_name(name))
+
+    async def _create_stream_by_name(self, name: str):
+        try:
+            await self._producer.create_stream(name)
+        except Exception:
+            pass
+
+    def delete_stream(self, name: str) -> None:
+        self._run(self._delete_stream_by_name(name))
+
+    async def _delete_stream_by_name(self, name: str):
+        try:
+            await self._producer.delete_stream(name)
+        except Exception:
+            pass
+
+    def send(self, message: str) -> None:
+        self._run(self._send_async(message))
+
+    async def _send_async(self, message: str) -> None:
+        from rstream import AMQPMessage
+
+        amqp_message = AMQPMessage(body=message.encode())
+        await self._producer.send(self.stream_name, amqp_message)
