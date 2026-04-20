@@ -17,6 +17,8 @@ import requests
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
+from rstream import AMQPMessage, Producer
+from rstream.exceptions import LeaderNotAvailable
 
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
@@ -403,8 +405,6 @@ class RabbitmqTestContext:
         return fut.result()
 
     async def _create_stream(self):
-        from rstream import Producer
-
         self._producer = Producer(
             host=RABBITMQ_HOST,
             port=RABBITMQ_PORT,
@@ -416,13 +416,48 @@ class RabbitmqTestContext:
             await self._producer.create_stream(self.stream_name)
         except Exception:
             pass  # stream may already exist
+        await self._wait_until_stream_ready(self.stream_name)
+
+    # create_stream returns before RabbitMQ elects a leader for the stream.
+    # If a consumer attaches during that window it fails with
+    # "Stream does not exist". Wait until the leader is available.
+    async def _wait_until_stream_ready(self, name: str, timeout: float = 30.0):
+        client = await self._producer.default_client
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                await client.query_leader_and_replicas(name)
+                return
+            except LeaderNotAvailable:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(0.1)
 
     async def _cleanup(self):
+        # Close the producer first so any buffered messages are flushed
+        # while the stream still exists. Otherwise the flush that runs
+        # inside close() races against delete_stream and fails with
+        # StreamDoesNotExist.
         try:
-            await self._producer.delete_stream(self.stream_name)
+            await self._producer.close()
         except Exception:
             pass
-        await self._producer.close()
+        cleanup_producer = Producer(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            username=RABBITMQ_USER,
+            password=RABBITMQ_PASSWORD,
+        )
+        try:
+            await cleanup_producer.start()
+            await cleanup_producer.delete_stream(self.stream_name)
+        except Exception:
+            pass
+        finally:
+            try:
+                await cleanup_producer.close()
+            except Exception:
+                pass
 
     def create_stream(self, name: str) -> None:
         self._run(self._create_stream_by_name(name))
@@ -432,6 +467,7 @@ class RabbitmqTestContext:
             await self._producer.create_stream(name)
         except Exception:
             pass
+        await self._wait_until_stream_ready(name)
 
     def delete_stream(self, name: str) -> None:
         self._run(self._delete_stream_by_name(name))
@@ -446,7 +482,5 @@ class RabbitmqTestContext:
         self._run(self._send_async(message))
 
     async def _send_async(self, message: str) -> None:
-        from rstream import AMQPMessage
-
         amqp_message = AMQPMessage(body=message.encode())
         await self._producer.send(self.stream_name, amqp_message)
