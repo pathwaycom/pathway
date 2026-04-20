@@ -395,7 +395,7 @@ def test_rabbitmq_dynamic_topics(rabbitmq_context, tmp_path: pathlib.Path):
         )
 
         result = pd.read_csv(output_file)
-        ks_by_stream = {}
+        ks_by_stream: dict[str, list[int]] = {}
         for _, row in result.iterrows():
             ks_by_stream.setdefault(row["stream_name"], []).append(row["k"])
         assert sorted(ks_by_stream[stream_1]) == [0, 2]
@@ -418,6 +418,10 @@ def test_rabbitmq_persistence(rabbitmq_context, tmp_path: pathlib.Path, mode):
     persistence_dir = tmp_path / "PStorage"
     runs = [3, 4, 2]
 
+    class InputSchema(pw.Schema):
+        run: int
+        i: int
+
     total_seen = 0
     for run_idx, n_new in enumerate(runs):
         for i in range(n_new):
@@ -428,10 +432,6 @@ def test_rabbitmq_persistence(rabbitmq_context, tmp_path: pathlib.Path, mode):
 
         output_file = tmp_path / f"output_{run_idx}.txt"
         G.clear()
-
-        class InputSchema(pw.Schema):
-            run: int
-            i: int
 
         table = pw.io.rabbitmq.read(
             uri=RABBITMQ_STREAM_URI,
@@ -461,10 +461,6 @@ def test_rabbitmq_persistence(rabbitmq_context, tmp_path: pathlib.Path, mode):
 
     output_all = tmp_path / "output_all.txt"
     G.clear()
-
-    class InputSchema(pw.Schema):
-        run: int
-        i: int
 
     table = pw.io.rabbitmq.read(
         uri=RABBITMQ_STREAM_URI,

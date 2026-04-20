@@ -11,8 +11,8 @@ use native_tls::{Certificate, TlsConnector};
 use ndarray::ArrayD;
 use ordered_float::OrderedFloat;
 use pg_walstream::{
-    CancellationToken, ChangeEvent, EventType, LogicalReplicationStream, ReplicationSlotOptions,
-    ReplicationStreamConfig, RetryConfig, StreamingMode,
+    CancellationToken, ChangeEvent, ColumnValue, EventType, LogicalReplicationStream,
+    ReplicationSlotOptions, ReplicationStreamConfig, RetryConfig, RowData, StreamingMode,
 };
 use postgres::types::ToSql;
 use postgres::Client as PsqlClient;
@@ -1619,7 +1619,17 @@ impl WalReader {
             .ok_or_else(|| err(format!("PyObjectWrapper (Bytea) not in \\x format: {s}")))?;
         let raw_bytes = hex::decode(hex_str)
             .map_err(|e| err(format!("Cannot decode hex for PyObjectWrapper: {e}")))?;
-        let value: Value = bincode::deserialize(&raw_bytes)
+        Self::py_object_wrapper_from_bincode(&raw_bytes, err)
+    }
+
+    fn py_object_wrapper_from_bincode<E>(
+        raw_bytes: &[u8],
+        err: &E,
+    ) -> Result<Value, Box<ConversionError>>
+    where
+        E: Fn(String) -> Box<ConversionError>,
+    {
+        let value: Value = bincode::deserialize(raw_bytes)
             .map_err(|e| err(format!("Bincode deserialization failed: {e}")))?;
         match value {
             Value::PyObjectWrapper(wrapper) => Ok(Value::PyObjectWrapper(wrapper)),
@@ -1882,17 +1892,60 @@ impl WalReader {
         Ok(EngineDuration::new(total_nanos))
     }
 
+    fn parse_value_from_column_value(
+        column_value: &ColumnValue,
+        type_: &Type,
+        field_name: &str,
+    ) -> Result<Value, Box<ConversionError>> {
+        match column_value {
+            ColumnValue::Null => Ok(Value::None),
+            ColumnValue::Text(_) => {
+                let s = column_value.as_str().unwrap_or_default();
+                let err = |msg: String| {
+                    Box::new(ConversionError {
+                        value_repr: s.to_string(),
+                        field_name: field_name.to_string(),
+                        type_: type_.clone(),
+                        original_error_message: msg,
+                    })
+                };
+                Self::parse_value_from_str(s, type_, field_name, &err)
+            }
+            ColumnValue::Binary(bytes) => {
+                let err = |msg: String| {
+                    Box::new(ConversionError {
+                        value_repr: format!("<{} binary bytes>", bytes.len()),
+                        field_name: field_name.to_string(),
+                        type_: type_.clone(),
+                        original_error_message: msg,
+                    })
+                };
+                match type_ {
+                    Type::Bytes => Ok(Value::Bytes(bytes.as_ref().into())),
+                    Type::PyObjectWrapper => {
+                        Self::py_object_wrapper_from_bincode(bytes.as_ref(), &err)
+                    }
+                    other => Err(err(format!(
+                        "Cannot convert binary column data into type: {other}"
+                    ))),
+                }
+            }
+        }
+    }
+
     fn parse_values_from_event(
         event_type: DataEventType,
-        raw: &HashMap<String, JsonValue>,
+        raw: &RowData,
         table_ctx: &TableContext,
     ) -> ReaderContext {
         let values_map: ValuesMap = table_ctx
             .value_fields
             .iter()
             .map(|field| {
-                let json_val = raw.get(&field.name).unwrap_or(&JsonValue::Null);
-                let result = Self::parse_value_from_postgres(json_val, &field.type_, &field.name);
+                let result = match raw.get(&field.name) {
+                    Some(cv) => Self::parse_value_from_column_value(cv, &field.type_, &field.name),
+                    None => Ok(Value::None),
+                };
                 (field.name.clone(), result)
             })
             .collect::<HashMap<_, _>>()
@@ -1972,7 +2025,7 @@ impl WalReader {
                         ReadResult::Data(
                             Self::parse_values_from_event(
                                 DataEventType::Delete,
-                                &old_data.into_hash_map(),
+                                &old_data,
                                 table_ctx,
                             ),
                             emit_offset(total_entries_read),
@@ -1981,11 +2034,7 @@ impl WalReader {
                 }
                 result.push(PgEventAfterParsing::SimpleChange(Box::new(
                     ReadResult::Data(
-                        Self::parse_values_from_event(
-                            DataEventType::Insert,
-                            &new_data.into_hash_map(),
-                            table_ctx,
-                        ),
+                        Self::parse_values_from_event(DataEventType::Insert, &new_data, table_ctx),
                         emit_offset(total_entries_read),
                     ),
                 )));
@@ -2008,8 +2057,7 @@ impl WalReader {
                 {
                     return Ok(Vec::new());
                 }
-                let ctx =
-                    Self::parse_values_from_event(event_type, &data.into_hash_map(), table_ctx);
+                let ctx = Self::parse_values_from_event(event_type, &data, table_ctx);
                 vec![PgEventAfterParsing::SimpleChange(Box::new(
                     ReadResult::Data(ctx, emit_offset(total_entries_read)),
                 ))]

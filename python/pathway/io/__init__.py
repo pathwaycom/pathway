@@ -1,5 +1,6 @@
 # Copyright © 2026 Pathway
 
+from pathway.internals._io_helpers import TLSSettings
 from pathway.io import (
     airbyte,
     bigquery,
@@ -47,7 +48,6 @@ from pathway.io._synchronization import (
     SynchronizedColumn,
     register_input_synchronization_group,
 )
-from pathway.internals._io_helpers import TLSSettings
 from pathway.io._utils import CsvParserSettings
 
 __all__ = [

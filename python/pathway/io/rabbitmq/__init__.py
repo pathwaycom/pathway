@@ -196,6 +196,7 @@ def read(
     ... )
     """
     _check_entitlements("rabbitmq")
+    effective_timestamp: int | None
     if start_from == "timestamp":
         if start_from_timestamp_ms is None:
             raise ValueError(
