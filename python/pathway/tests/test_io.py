@@ -3751,21 +3751,45 @@ def test_deltalake_no_primary_key(tmp_path: pathlib.Path):
         pw.run()
 
 
-def test_iceberg_no_primary_key():
+@pytest.mark.parametrize(
+    "reader_factory,error_match",
+    [
+        pytest.param(
+            lambda schema: pw.io.iceberg.read(
+                catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181"),
+                namespace=["app"],
+                table_name="test",
+                schema=schema,
+            ),
+            "Iceberg reader requires explicit primary key fields specification",
+            id="iceberg",
+        ),
+        pytest.param(
+            lambda schema: pw.io.mssql.read(
+                connection_string=(
+                    "Server=tcp:ignored,1433;Database=x;User Id=u;Password=p"
+                ),
+                table_name="whatever",
+                schema=schema,
+                mode="static",
+            ),
+            "pw.io.mssql.read requires at least one primary key",
+            id="mssql",
+        ),
+    ],
+)
+def test_reader_requires_primary_key(reader_factory, error_match):
+    """Connectors that need a primary key to identify rows must reject a
+    schema that doesn't declare one, at `read()` time, before any I/O —
+    surfacing a clear ValueError rather than a cryptic runtime failure
+    later on."""
+
     class InputSchema(pw.Schema):
         k: int
         v: str
 
-    with pytest.raises(
-        ValueError,
-        match="Iceberg reader requires explicit primary key fields specification",
-    ):
-        pw.io.iceberg.read(
-            catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181"),
-            namespace=["app"],
-            table_name="test",
-            schema=InputSchema,
-        )
+    with pytest.raises(ValueError, match=error_match):
+        reader_factory(InputSchema)
 
 
 @pytest.mark.parametrize("data_format", ["delta", "json", "csv"])

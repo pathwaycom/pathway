@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import functools
 import inspect
+import json
 import multiprocessing
 import os
 import pathlib
@@ -801,6 +802,23 @@ def write_lines(path: str | pathlib.Path, data: str | list[str]):
 def read_lines(path: str | pathlib.Path) -> list[str]:
     with open(path) as f:
         return f.readlines()
+
+
+def read_jsonlines(path: str | pathlib.Path) -> list[dict]:
+    """Return parsed rows from a JSON-Lines file, or `[]` if the file does not
+    exist yet.  Blank lines are skipped.  The missing-file branch matters for
+    streaming-pipeline tests that may poll for output before the first row
+    lands on disk."""
+    path = pathlib.Path(path)
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
 
 
 def get_aws_s3_settings():

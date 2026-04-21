@@ -599,6 +599,9 @@ pub trait Reader {
                     {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
+                    (OffsetValue::MssqlCdcLsn(a), OffsetValue::MssqlCdcLsn(b)) if b > a => {
+                        result.advance_offset(offset_key.clone(), other_value.clone());
+                    }
                     (_, _) => {
                         error!("Incomparable offsets in the frontier: {offset_value:?} and {other_value:?}");
                     }

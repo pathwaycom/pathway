@@ -55,12 +55,33 @@ def read(
     to track which rows have been inserted, updated, or deleted — without them it
     cannot maintain a consistent snapshot of the table.
 
-    **Persistence**: this connector does not support Pathway persistence. On
-    restart, the connector takes a fresh snapshot of the current table state and
-    tracks only new CDC changes from that point forward. Any changes that occurred
-    while the connector was stopped are absorbed into the new snapshot rather than
-    delivered as discrete events. Since Pathway's internal state is also not saved,
-    the entire pipeline reprocesses from scratch on each restart.
+    **Persistence**: when persistence is enabled, the connector saves the CDC
+    Log Sequence Number (LSN) of the last processed change as its offset.  On
+    restart it skips the full table snapshot and resumes from that LSN, so
+    downstream sees only the rows that changed since the last checkpoint — no
+    re-delivery of the original table contents.  Passing an explicit ``name``
+    is optional — Pathway will auto-generate one if omitted — but setting it
+    makes the saved state easier to identify in the persistence directory and
+    protects against accidental mismatches when the pipeline graph changes
+    between runs.
+
+    Persistence applies to both modes.  In ``"streaming"`` mode the connector
+    keeps running after the catch-up and continues delivering live CDC
+    events.  In ``"static"`` mode it emits the delta accumulated since the
+    previous run and terminates.
+
+    Persistence requires CDC on the target table — the LSN comes from CDC.
+    If you pass a ``persistence_config`` to ``pw.run`` but CDC has not been
+    enabled on the table, the pipeline aborts at startup with an error
+    pointing you at ``sp_cdc_enable_table``; it does not silently fall back
+    to re-reading the whole table on every restart.
+
+    If the saved LSN predates the capture instance's current retention window
+    (SQL Server's CDC cleanup job runs independently of any consumer and
+    drops changes older than the configured retention, 4320 minutes by
+    default), the connector raises an error on startup asking you to clear
+    the persistence directory and re-snapshot.  Pick a retention long enough
+    to cover your longest expected downtime.
 
     The connection uses the TDS protocol via a pure Rust implementation
     (no ODBC drivers required), so it works on any Linux environment without
@@ -136,6 +157,44 @@ def read(
     ...     table_name="my_table",
     ...     schema=MySchema,
     ... )
+
+    **Persistence.** Pass a ``persistence_config`` to ``pw.run``.  CDC must
+    be enabled on the table — without it the pipeline aborts at startup with
+    a clear error.  Persistence works the same way in both modes, the only
+    difference is what the pipeline does once the delta is consumed:
+
+    >>> persistence_config = pw.persistence.Config(
+    ...     backend=pw.persistence.Backend.filesystem("./PStorage")
+    ... )
+
+    *Streaming mode* (the default).  The first run delivers the initial
+    snapshot and then keeps running to push live CDC events; every
+    subsequent run skips the snapshot and starts with the delta since the
+    previous checkpoint before continuing to stream:
+
+    >>> table = pw.io.mssql.read(  # doctest: +SKIP
+    ...     connection_string="Server=tcp:localhost,1433;Database=testdb;"
+    ...         "User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=true",
+    ...     table_name="my_table",
+    ...     schema=MySchema,
+    ... )
+    >>> pw.io.jsonlines.write(table, "output.jsonl")  # doctest: +SKIP
+    >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
+
+    *Static mode.* The first run dumps the full table and terminates; every
+    subsequent run emits only the CDC delta accumulated since the previous
+    run and terminates — handy for scheduled batch pipelines that want
+    change-set semantics without a long-lived process:
+
+    >>> table = pw.io.mssql.read(  # doctest: +SKIP
+    ...     connection_string="Server=tcp:localhost,1433;Database=testdb;"
+    ...         "User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=true",
+    ...     table_name="my_table",
+    ...     schema=MySchema,
+    ...     mode="static",
+    ... )
+    >>> pw.io.jsonlines.write(table, "output.jsonl")  # doctest: +SKIP
+    >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
     """
     _check_entitlements("mssql")
 

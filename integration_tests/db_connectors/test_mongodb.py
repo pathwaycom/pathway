@@ -17,6 +17,7 @@ from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     ExceptionAwareThread,
     FileLinesNumberChecker,
+    read_jsonlines,
     run,
     wait_result_with_checker,
 )
@@ -296,19 +297,6 @@ def test_mongodb_snapshot_remove(tmp_path, mongodb):
     check_special_fields(mongodb, output_collection, are_expected=False)
 
 
-def _read_jsonlines(output_path: pathlib.Path) -> list[dict]:
-    """Return parsed rows from a jsonlines file, or [] if the file doesn't exist."""
-    if not output_path.exists():
-        return []
-    rows = []
-    with open(output_path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
 # ---------------------------------------------------------------------------
 # Persistence plans for test_mongodb_read_persistence
 #
@@ -520,7 +508,7 @@ def test_mongodb_streaming_persistence(tmp_path, mongodb, plan):
             p1.wait()
 
     assert _sort_rows(
-        [_extract_row(r) for r in _read_jsonlines(output_path_1)]
+        [_extract_row(r) for r in read_jsonlines(output_path_1)]
     ) == _sort_rows(run1_expected), f"Run 1: expected {run1_expected}"
 
     # Apply changes to the MongoDB collection between the two runs.
@@ -558,7 +546,7 @@ def test_mongodb_streaming_persistence(tmp_path, mongodb, plan):
             p2.wait()
 
     assert _sort_rows(
-        [_extract_row(r) for r in _read_jsonlines(output_path_2)]
+        [_extract_row(r) for r in read_jsonlines(output_path_2)]
     ) == _sort_rows(run2_expected), f"Run 2: expected {run2_expected}"
 
 
@@ -599,7 +587,7 @@ def test_mongodb_read_persistence(tmp_path, mongodb, plan):
     # --- Run 1: full collection must be reflected ---
     output_path_1 = tmp_path / "output_1.jsonl"
     run_read(output_path_1)
-    run1_rows = _read_jsonlines(output_path_1)
+    run1_rows = read_jsonlines(output_path_1)
     assert _sort_rows([_extract_row(r) for r in run1_rows]) == _sort_rows(
         plan["run1_expected"]
     ), f"Run 1: expected {plan['run1_expected']}, got {run1_rows}"
@@ -616,7 +604,7 @@ def test_mongodb_read_persistence(tmp_path, mongodb, plan):
     # --- Run 2: only the delta must appear ---
     output_path_2 = tmp_path / "output_2.jsonl"
     run_read(output_path_2)
-    run2_rows = _read_jsonlines(output_path_2)
+    run2_rows = read_jsonlines(output_path_2)
     assert _sort_rows([_extract_row(r) for r in run2_rows]) == _sort_rows(
         plan["run2_expected"]
     ), f"Run 2: expected {plan['run2_expected']}, got {run2_rows}"
@@ -715,7 +703,7 @@ def test_mongodb_invalid_resume_token(tmp_path, mongodb):
     # Run 1: populate persistence with a valid resume token.
     output_path_1 = tmp_path / "output_1.jsonl"
     run_read(output_path_1)
-    assert len(_read_jsonlines(output_path_1)) == 2
+    assert len(read_jsonlines(output_path_1)) == 2
 
     # Corrupt the persisted token so it is no longer valid BSON.
     _corrupt_mongodb_resume_token(pstorage_path)

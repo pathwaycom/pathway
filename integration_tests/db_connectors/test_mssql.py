@@ -2,16 +2,32 @@
 
 import datetime
 import json
+import multiprocessing
+import pathlib
 import threading
 import time
+import traceback
+import uuid
 
 import pandas as pd
 import pytest
-from utils import MSSQL_CONNECTION_STRING, SimpleObject
+from utils import (
+    MSSQL_CONNECTION_STRING,
+    MSSQL_DB_HOST,
+    MSSQL_DB_PASSWORD,
+    MSSQL_DB_PORT,
+    MSSQL_DB_USER,
+    SimpleObject,
+)
 
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
+from pathway.tests.utils import (
+    FileLinesNumberChecker,
+    read_jsonlines,
+    wait_result_with_checker,
+)
 
 pytestmark = pytest.mark.xdist_group("mssql")
 
@@ -846,3 +862,681 @@ def test_mssql_write_null_non_string_columns(mssql):
     assert r2_float is None
     assert r2_bool is None
     assert r2_bytes is None
+
+
+def test_mssql_streaming_requires_cdc_on_table(tmp_path, mssql):
+    """Streaming mode on a table without `sp_cdc_enable_table` must fail with
+    the specific `CdcNotEnabledOnTable` error.  The database does have CDC
+    enabled (docker init runs `sp_cdc_enable_db`), so this exercises the
+    table-level branch of `probe_cdc_availability`."""
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE {table_name} ("
+        f"  id INT PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    # Deliberately NOT calling mssql.enable_cdc(table_name).
+
+    error_path = tmp_path / "error.log"
+    output_path = tmp_path / "output.jsonl"
+    p = multiprocessing.Process(
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path),
+            "mode": "streaming",
+            # Any persistence_config; we only want to observe the probe error.
+            "persistence_config": pw.persistence.Config(
+                backend=pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+            ),
+            "error_path": str(error_path),
+        },
+    )
+    p.start()
+    p.join(timeout=60)
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        raise AssertionError("worker should have failed fast, not hung")
+    assert p.exitcode not in (None, 0)
+    error_text = error_path.read_text() if error_path.exists() else ""
+    assert (
+        "CDC is not enabled on table" in error_text
+    ), f"expected CdcNotEnabledOnTable error, got:\n{error_text}"
+
+
+def test_mssql_streaming_requires_cdc_on_database(tmp_path, mssql):
+    """Streaming mode against a database where `sp_cdc_enable_db` was never
+    run must fail with `CdcNotEnabledOnDatabase`.  We can't disable CDC on
+    the shared `testdb` without breaking every other test, so the test
+    creates a throw-away database, connects to *that*, and tears it down in
+    a finally."""
+    db_name = f"nocdc_{uuid.uuid4().hex[:12]}"
+    import pymssql
+
+    mssql.cursor.execute(f"CREATE DATABASE {db_name}")
+    try:
+        # Create a table inside the new DB via its own connection.
+        db_conn = pymssql.connect(
+            server=MSSQL_DB_HOST,
+            port=MSSQL_DB_PORT,
+            user=MSSQL_DB_USER,
+            password=MSSQL_DB_PASSWORD,
+            database=db_name,
+            autocommit=True,
+            tds_version="7.3",
+        )
+        db_cur = db_conn.cursor()
+        db_cur.execute(
+            "CREATE TABLE dbo.t ("
+            " id INT PRIMARY KEY,"
+            " name NVARCHAR(100) NOT NULL"
+            ")"
+        )
+        db_cur.execute("INSERT INTO dbo.t VALUES (1, 'x')")
+        db_conn.close()
+
+        no_cdc_connection_string = (
+            f"Server=tcp:{MSSQL_DB_HOST},{MSSQL_DB_PORT};"
+            f"Database={db_name};"
+            f"User Id={MSSQL_DB_USER};Password={MSSQL_DB_PASSWORD};"
+            f"TrustServerCertificate=true"
+        )
+
+        error_path = tmp_path / "error.log"
+        output_path = tmp_path / "output.jsonl"
+        p = multiprocessing.Process(
+            target=_mssql_persistence_worker,
+            kwargs={
+                "connection_string": no_cdc_connection_string,
+                "table_name": "t",
+                "output_path": str(output_path),
+                "mode": "streaming",
+                "persistence_config": pw.persistence.Config(
+                    backend=pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+                ),
+                "error_path": str(error_path),
+            },
+        )
+        p.start()
+        p.join(timeout=60)
+        if p.is_alive():
+            p.terminate()
+            p.join()
+            raise AssertionError("worker should have failed fast, not hung")
+        assert p.exitcode not in (None, 0)
+        error_text = error_path.read_text() if error_path.exists() else ""
+        assert (
+            "CDC is not enabled on the current database" in error_text
+        ), f"expected CdcNotEnabledOnDatabase error, got:\n{error_text}"
+    finally:
+        mssql.cursor.execute(
+            f"ALTER DATABASE {db_name} SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+        )
+        mssql.cursor.execute(f"DROP DATABASE {db_name}")
+
+
+def test_mssql_read_custom_schema_name(mssql, tmp_path):
+    """The `schema_name` parameter must be threaded through to both the
+    `SELECT` against the table and the `OBJECT_ID` lookup used by CDC
+    queries.  This test creates a non-`dbo` schema, puts a table in it,
+    and reads it back in static mode."""
+    schema_name = f"s_{uuid.uuid4().hex[:8]}"
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(f"CREATE SCHEMA {schema_name}")
+    try:
+        mssql.execute_sql(
+            f"CREATE TABLE {schema_name}.{table_name} ("
+            f"  id INT PRIMARY KEY,"
+            f"  name NVARCHAR(100) NOT NULL"
+            f")"
+        )
+        mssql.execute_sql(
+            f"INSERT INTO {schema_name}.{table_name} VALUES "
+            f"(1, N'alpha'), (2, N'beta')"
+        )
+
+        class TableSchema(pw.Schema):
+            id: int = pw.column_definition(primary_key=True)
+            name: str
+
+        output_path = tmp_path / "output.jsonl"
+        G.clear()
+        table = pw.io.mssql.read(
+            connection_string=MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            schema=TableSchema,
+            schema_name=schema_name,
+            mode="static",
+            autocommit_duration_ms=100,
+        )
+        pw.io.jsonlines.write(table, str(output_path))
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+        rows = sorted((r["id"], r["name"]) for r in read_jsonlines(output_path))
+        assert rows == [(1, "alpha"), (2, "beta")]
+    finally:
+        # Drop the schema's objects before the schema itself.
+        mssql.execute_sql(f"DROP TABLE IF EXISTS {schema_name}.{table_name}")
+        mssql.execute_sql(f"DROP SCHEMA {schema_name}")
+
+
+# ---------------------------------------------------------------------------
+# CDC persistence tests.
+#
+# The MSSQL CDC reader persists the last consumed LSN as an MssqlCdcLsn
+# offset.  On restart seek() picks the LSN up, skips the full table snapshot,
+# and replays the CDC window (saved_lsn, current_max_lsn] as a single
+# NewSource/FinishedSource block.  The same mechanism works in both reader
+# modes: in streaming mode the worker keeps running after the catch-up, in
+# static mode it emits the delta and terminates.
+# ---------------------------------------------------------------------------
+
+
+def _mssql_persistence_worker(
+    connection_string: str,
+    table_name: str,
+    output_path: str,
+    mode: str,
+    persistence_config: pw.persistence.Config,
+    error_path: str | None = None,
+) -> None:
+    """Build the CDC-read pipeline used by the persistence tests.
+
+    Invoked both directly by `test_mssql_cdc_persistence` (static mode, which
+    terminates on its own) and via `wait_result_with_checker` +
+    `multiprocessing.Process` (streaming mode, which runs until killed).  It
+    must therefore be importable at module scope — the forked child
+    re-invokes the same callable by reference.
+
+    If `error_path` is provided, any exception raised by `pw.run` is written
+    to that file before being re-raised — this lets the expired-LSN test
+    assert on the specific error message without having to tap into pytest's
+    stderr capture, which doesn't cover multiprocessing child processes.
+    """
+    G.clear()
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    table = pw.io.mssql.read(
+        connection_string=connection_string,
+        table_name=table_name,
+        schema=InputSchema,
+        mode=mode,
+        autocommit_duration_ms=100,
+        name="mssql_persistence_source",
+    )
+    pw.io.jsonlines.write(table, output_path)
+    try:
+        pw.run(
+            persistence_config=persistence_config,
+            monitoring_level=pw.MonitoringLevel.NONE,
+        )
+    except Exception:
+        if error_path is not None:
+            with open(error_path, "w") as f:
+                traceback.print_exc(file=f)
+        raise
+
+
+def _extract_row(r: dict) -> dict:
+    return {"id": r["id"], "name": r["name"], "diff": r["diff"]}
+
+
+def _sort_rows(rows: list[dict]) -> list[dict]:
+    return sorted(rows, key=lambda r: (r["id"], r["name"], r["diff"]))
+
+
+# Each plan:
+#   initial   – rows inserted before run 1
+#   changes   – (op, payload) tuples applied between runs; payload is a dict
+#               interpreted per-op:
+#                 insert  -> INSERT {id, name}
+#                 delete  -> DELETE WHERE id = {id}
+#                 update  -> UPDATE SET name = {name} WHERE id = {id}
+#   run1_expected – expected jsonl rows after run 1 (all diff=+1 because the
+#                   connector dumps the full table snapshot)
+#   run2_expected – expected jsonl rows after run 2 (only the CDC delta)
+_MSSQL_CDC_PERSISTENCE_PLANS = [
+    pytest.param(
+        {
+            "initial": [(1, "Alice"), (2, "Bob")],
+            "changes": [
+                ("insert", {"id": 3, "name": "Charlie"}),
+                ("insert", {"id": 4, "name": "Dana"}),
+            ],
+            "run1_expected": [
+                {"id": 1, "name": "Alice", "diff": 1},
+                {"id": 2, "name": "Bob", "diff": 1},
+            ],
+            "run2_expected": [
+                {"id": 3, "name": "Charlie", "diff": 1},
+                {"id": 4, "name": "Dana", "diff": 1},
+            ],
+        },
+        id="inserts_only",
+    ),
+    pytest.param(
+        {
+            "initial": [(1, "Alice"), (2, "Bob"), (3, "Charlie")],
+            "changes": [
+                ("delete", {"id": 2}),
+            ],
+            "run1_expected": [
+                {"id": 1, "name": "Alice", "diff": 1},
+                {"id": 2, "name": "Bob", "diff": 1},
+                {"id": 3, "name": "Charlie", "diff": 1},
+            ],
+            "run2_expected": [
+                {"id": 2, "name": "Bob", "diff": -1},
+            ],
+        },
+        id="deletes_only",
+    ),
+    pytest.param(
+        {
+            "initial": [(1, "Alice"), (2, "Bob")],
+            "changes": [
+                ("update", {"id": 1, "name": "Alicia"}),
+            ],
+            "run1_expected": [
+                {"id": 1, "name": "Alice", "diff": 1},
+                {"id": 2, "name": "Bob", "diff": 1},
+            ],
+            "run2_expected": [
+                {"id": 1, "name": "Alice", "diff": -1},
+                {"id": 1, "name": "Alicia", "diff": 1},
+            ],
+        },
+        id="updates_only",
+    ),
+    pytest.param(
+        {
+            "initial": [(1, "Alice"), (2, "Bob"), (3, "Charlie")],
+            "changes": [
+                ("insert", {"id": 4, "name": "Dana"}),
+                ("delete", {"id": 2}),
+                ("update", {"id": 3, "name": "Chuck"}),
+            ],
+            "run1_expected": [
+                {"id": 1, "name": "Alice", "diff": 1},
+                {"id": 2, "name": "Bob", "diff": 1},
+                {"id": 3, "name": "Charlie", "diff": 1},
+            ],
+            "run2_expected": [
+                {"id": 2, "name": "Bob", "diff": -1},
+                {"id": 3, "name": "Charlie", "diff": -1},
+                {"id": 3, "name": "Chuck", "diff": 1},
+                {"id": 4, "name": "Dana", "diff": 1},
+            ],
+        },
+        id="mixed",
+    ),
+    pytest.param(
+        {
+            "initial": [(1, "Alice"), (2, "Bob")],
+            "changes": [],
+            "run1_expected": [
+                {"id": 1, "name": "Alice", "diff": 1},
+                {"id": 2, "name": "Bob", "diff": 1},
+            ],
+            "run2_expected": [],
+        },
+        id="no_changes",
+    ),
+]
+
+
+def _apply_mssql_change(mssql, table_name: str, op: str, payload: dict) -> None:
+    if op == "insert":
+        mssql.insert_row(table_name, payload)
+    elif op == "delete":
+        mssql.execute_sql(f"DELETE FROM {table_name} WHERE id = {int(payload['id'])}")
+    elif op == "update":
+        name = str(payload["name"]).replace("'", "''")
+        mssql.execute_sql(
+            f"UPDATE {table_name} SET name = N'{name}' "
+            f"WHERE id = {int(payload['id'])}"
+        )
+    else:
+        raise AssertionError(f"unsupported op {op!r}")
+
+
+def _mssql_current_max_lsn(mssql) -> bytes | None:
+    mssql.cursor.execute("SELECT sys.fn_cdc_get_max_lsn()")
+    row = mssql.cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return bytes(row[0])
+
+
+def _wait_for_mssql_cdc_capture(
+    mssql, baseline_max_lsn: bytes | None, timeout_sec: float = 30.0
+) -> None:
+    """Wait until the CDC capture agent has advanced past `baseline_max_lsn`.
+
+    SQL Server's CDC capture agent polls the transaction log asynchronously
+    (default ~5 s), so `fn_cdc_get_max_lsn()` lags committed writes.  The
+    static-mode reader queries max LSN exactly once per run: if the agent
+    hasn't caught up, the resume window is empty and the worker terminates
+    without emitting the pending changes.  Callers that just wrote rows
+    must poll until max LSN moves past the pre-write reference before
+    kicking off the next static run.
+    """
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        current = _mssql_current_max_lsn(mssql)
+        if current is not None and (
+            baseline_max_lsn is None or current > baseline_max_lsn
+        ):
+            return
+        time.sleep(0.25)
+    raise AssertionError(
+        f"CDC capture did not advance past {baseline_max_lsn!r} within "
+        f"{timeout_sec}s"
+    )
+
+
+def _run_mssql_streaming_pipeline(
+    *,
+    table_name: str,
+    output_path: pathlib.Path,
+    persistence_config: pw.persistence.Config,
+    expected_lines: int,
+    double_check_interval: float | None,
+) -> None:
+    """Start the streaming worker, wait for `expected_lines` to appear, then
+    let `wait_result_with_checker` flush + terminate it."""
+    if expected_lines == 0:
+        # Pre-create the output file so the zero-lines checker can see it.
+        output_path.touch()
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path, expected_lines),
+        timeout_sec=60,
+        double_check_interval=double_check_interval,
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path),
+            "mode": "streaming",
+            "persistence_config": persistence_config,
+        },
+    )
+
+
+def _run_mssql_static_pipeline(
+    *,
+    table_name: str,
+    output_path: pathlib.Path,
+    persistence_config: pw.persistence.Config,
+) -> None:
+    """Run the static-mode pipeline to completion.  Static reads terminate on
+    their own after the full snapshot (or resume delta) has been written, so
+    a plain `pw.run` in a forked child is all we need — no polling."""
+    p = multiprocessing.Process(
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path),
+            "mode": "static",
+            "persistence_config": persistence_config,
+        },
+    )
+    p.start()
+    p.join(timeout=60)
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        raise AssertionError("static-mode worker did not terminate within 60 s")
+    assert p.exitcode == 0, f"static-mode worker exited with code {p.exitcode}"
+
+
+@pytest.mark.parametrize("mode", ["streaming", "static"])
+@pytest.mark.parametrize("plan", _MSSQL_CDC_PERSISTENCE_PLANS)
+def test_mssql_cdc_persistence(tmp_path, mssql, mode, plan):
+    """Two-run CDC persistence test for pw.io.mssql.read.
+
+    Run 1: full table snapshot is emitted (all diff=+1).
+    Run 2: only the CDC delta since the persisted LSN is emitted.
+
+    Verified in both reader modes — streaming (worker keeps running, polled
+    via `wait_result_with_checker`) and static (worker terminates on its
+    own once the delta is consumed)."""
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE {table_name} ("
+        f"  id INT PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.enable_cdc(table_name)
+
+    for row_id, name in plan["initial"]:
+        mssql.insert_row(table_name, {"id": row_id, "name": name})
+
+    pstorage_path = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config(
+        backend=pw.persistence.Backend.filesystem(pstorage_path)
+    )
+
+    def run(output_path: pathlib.Path, expected: list[dict]) -> None:
+        if mode == "streaming":
+            _run_mssql_streaming_pipeline(
+                table_name=table_name,
+                output_path=output_path,
+                persistence_config=persistence_config,
+                expected_lines=len(expected),
+                # In the no_changes plan we must prove the output stays
+                # empty.  double_check_interval gives the engine a second
+                # chance to (not) produce output before we declare success.
+                double_check_interval=5.0 if not expected else None,
+            )
+        else:
+            _run_mssql_static_pipeline(
+                table_name=table_name,
+                output_path=output_path,
+                persistence_config=persistence_config,
+            )
+
+    # Run 1.
+    output_path_1 = tmp_path / "output_1.jsonl"
+    run(output_path_1, plan["run1_expected"])
+    assert _sort_rows(
+        [_extract_row(r) for r in read_jsonlines(output_path_1)]
+    ) == _sort_rows(plan["run1_expected"]), f"Run 1: expected {plan['run1_expected']}"
+
+    # Record the CDC max LSN before applying changes so we can wait for
+    # the capture agent to pick them up before Run 2 starts.  Without this,
+    # in CI the agent occasionally hasn't caught up by the time the static
+    # reader queries fn_cdc_get_max_lsn(), which makes it read an empty
+    # window and terminate with no output.
+    baseline_max_lsn = _mssql_current_max_lsn(mssql)
+
+    for op, payload in plan["changes"]:
+        _apply_mssql_change(mssql, table_name, op, payload)
+
+    if plan["changes"]:
+        _wait_for_mssql_cdc_capture(mssql, baseline_max_lsn)
+
+    # Run 2.
+    output_path_2 = tmp_path / "output_2.jsonl"
+    run(output_path_2, plan["run2_expected"])
+    assert _sort_rows(
+        [_extract_row(r) for r in read_jsonlines(output_path_2)]
+    ) == _sort_rows(plan["run2_expected"]), f"Run 2: expected {plan['run2_expected']}"
+
+
+def test_mssql_static_persistence_without_cdc_errors(tmp_path, mssql):
+    """Static mode + persistence enabled + CDC *not* enabled on the table.
+
+    Without CDC there is no LSN to persist, so the connector refuses the
+    configuration at `seek` time — probing CDC with `cdc_required=true`
+    surfaces the same `CdcNotEnabledOnTable` error a streaming-mode user
+    would get.  The message points at `sp_cdc_enable_table`, which is the
+    action either user has to take.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE {table_name} ("
+        f"  id INT PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    # Deliberately NOT calling mssql.enable_cdc(table_name) — that's the
+    # scenario under test.
+    mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
+
+    pstorage_path = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config(
+        backend=pw.persistence.Backend.filesystem(pstorage_path)
+    )
+
+    output_path = tmp_path / "output.jsonl"
+    error_path = tmp_path / "error.log"
+    p = multiprocessing.Process(
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path),
+            "mode": "static",
+            "persistence_config": persistence_config,
+            "error_path": str(error_path),
+        },
+    )
+    p.start()
+    p.join(timeout=60)
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        raise AssertionError("worker should have failed fast, not hung")
+    assert p.exitcode not in (None, 0), "persistence-without-CDC must fail"
+    error_text = error_path.read_text() if error_path.exists() else ""
+    assert (
+        "CDC is not enabled on table" in error_text
+    ), f"expected CdcNotEnabledOnTable error, got:\n{error_text}"
+
+
+def test_mssql_cdc_expired_lsn(tmp_path, mssql):
+    """A persisted LSN that predates the CDC retention window must surface
+    a specific CdcLsnOutOfRetention error on restart so the user knows to
+    drop the persistence directory.
+
+    The test reproduces the scenario without patching persistence files: after
+    run 1 is over we insert additional rows to advance the CDC max LSN, then
+    call `sys.sp_cdc_cleanup_change_table` with that newer LSN as the low
+    water mark.  The procedure moves the capture instance's `start_lsn`
+    forward, so `fn_cdc_get_min_lsn` in run 2 reports a value strictly
+    greater than the persisted LSN — exactly the condition the retention
+    check catches.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE {table_name} ("
+        f"  id INT PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.enable_cdc(table_name)
+    mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
+    mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
+
+    pstorage_path = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config(
+        backend=pw.persistence.Backend.filesystem(pstorage_path)
+    )
+
+    # Run 1: populate persistence with a valid LSN.
+    output_path_1 = tmp_path / "output_1.jsonl"
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path_1, 2),
+        timeout_sec=60,
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path_1),
+            "mode": "streaming",
+            "persistence_config": persistence_config,
+        },
+    )
+    assert len(read_jsonlines(output_path_1)) == 2
+
+    # Force fn_cdc_get_min_lsn for this capture instance past the persisted
+    # value.  `sys.sp_cdc_cleanup_change_table` advances the capture
+    # instance's `start_lsn` to its `@low_water_mark`, which is exactly what
+    # `fn_cdc_get_min_lsn` reads — so after the call the new minimum reported
+    # to the connector is strictly greater than the LSN run 1 persisted.
+    mssql.insert_row(table_name, {"id": 3, "name": "Charlie"})
+    mssql.insert_row(table_name, {"id": 4, "name": "Dana"})
+
+    capture_instance = f"dbo_{table_name}"
+    deadline = time.time() + 30
+    advanced = False
+    while time.time() < deadline:
+        mssql.cursor.execute("SELECT sys.fn_cdc_get_max_lsn()")
+        max_row = mssql.cursor.fetchone()
+        if max_row is not None and max_row[0] is not None:
+            max_lsn = max_row[0]
+            try:
+                mssql.cursor.execute(
+                    "EXEC sys.sp_cdc_cleanup_change_table "
+                    "@capture_instance=%s, @low_water_mark=%s",
+                    (capture_instance, max_lsn),
+                )
+                while mssql.cursor.nextset():
+                    pass
+            except Exception:
+                pass
+            mssql.cursor.execute(
+                "SELECT sys.fn_cdc_get_min_lsn(%s)", (capture_instance,)
+            )
+            min_row = mssql.cursor.fetchone()
+            if (
+                min_row is not None
+                and min_row[0] is not None
+                and bytes(min_row[0]) >= bytes(max_lsn)
+            ):
+                advanced = True
+                break
+        time.sleep(1)
+    assert advanced, "CDC cleanup did not advance fn_cdc_get_min_lsn within 30s"
+
+    # Run 2: must fail fast with the specific retention error, not hang or
+    # silently produce an empty delta.  We bypass wait_result_with_checker here
+    # because it asserts the child exited with code 0, which contradicts the
+    # expected behavior of this test.
+    output_path_2 = tmp_path / "output_2.jsonl"
+    error_path = tmp_path / "run2_error.log"
+    p2 = multiprocessing.Process(
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path_2),
+            "mode": "streaming",
+            "persistence_config": persistence_config,
+            "error_path": str(error_path),
+        },
+    )
+    p2.start()
+    try:
+        p2.join(timeout=60)
+    finally:
+        if p2.is_alive():
+            p2.terminate()
+            p2.join()
+    error_text = error_path.read_text() if error_path.exists() else ""
+    assert (
+        p2.exitcode is not None and p2.exitcode != 0
+    ), f"Run 2 should have failed with CdcLsnOutOfRetention.\n{error_text}"
+    assert (
+        "persisted CDC position is outside the SQL Server retention window"
+        in error_text
+    ), f"Expected CdcLsnOutOfRetention error, got:\n{error_text}"

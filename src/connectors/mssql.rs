@@ -19,7 +19,7 @@ use crate::connectors::data_storage::{
     ValuesMap,
 };
 use crate::connectors::metadata::MssqlMetadata;
-use crate::connectors::offset::EMPTY_OFFSET;
+use crate::connectors::offset::{Offset, OffsetKey, OffsetValue, EMPTY_OFFSET};
 use crate::connectors::{DataEventType, ReadError, ReadResult, Reader, ReaderContext, StorageType};
 use crate::connectors::{WriteError, Writer};
 use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
@@ -103,6 +103,19 @@ pub enum MssqlError {
          @source_schema=N'{schema}', @source_name=N'{table}', @role_name=NULL"
     )]
     CdcNotEnabledOnTable { schema: String, table: String },
+
+    /// The persisted CDC LSN is older than the retention window of the capture
+    /// instance.  SQL Server's CDC cleanup job drops rows from `cdc.*_CT` once
+    /// they are older than the configured retention (default 4320 minutes),
+    /// independently of any consumer.  When the engine tries to resume from a
+    /// saved LSN that has already been purged, SQL Server raises error 313.
+    /// To recover, delete the persistence directory and restart — the connector
+    /// will then re-snapshot the source table from scratch.
+    #[error(
+        "the persisted CDC position is outside the SQL Server retention window; \
+         delete the persistence directory and restart to trigger a full table rescan"
+    )]
+    CdcLsnOutOfRetention,
 }
 
 /// Build a schema-qualified table name using MSSQL bracket quoting.
@@ -156,11 +169,23 @@ pub struct MssqlReader {
     mode: ConnectorMode,
     snapshot: Vec<ReadResult>,
     is_initialized: bool,
-    // CDC-only state — unused in static mode.
     client: Option<MssqlClient>,
     capture_instance: String,
     last_lsn: Option<Vec<u8>>,
     snapshot_version: u64,
+    /// True when CDC is enabled on the target table and the connector is
+    /// therefore able to track LSNs.  In streaming mode this is always `true`
+    /// once `initialize` succeeds (CDC is mandatory).  In static mode it
+    /// reflects whether CDC happens to be enabled: when it is, snapshot rows
+    /// are stamped with an LSN so persistence can resume from there; when it
+    /// is not, rows carry `EMPTY_OFFSET`.  `seek` forces this to `true` (or
+    /// errors) when persistence is configured — the engine only calls `seek`
+    /// in that case.
+    tracks_lsn: bool,
+    /// Persisted CDC LSN from a previous run, populated by `seek()`.  When set,
+    /// `initialize()` skips the full table snapshot and instead replays CDC
+    /// changes in (`saved_last_lsn`, current max LSN] as one block.
+    saved_last_lsn: Option<Vec<u8>>,
 }
 
 impl MssqlReader {
@@ -188,6 +213,8 @@ impl MssqlReader {
             capture_instance: String::new(),
             last_lsn: None,
             snapshot_version: 0,
+            tracks_lsn: false,
+            saved_last_lsn: None,
         })
     }
 
@@ -421,63 +448,249 @@ impl MssqlReader {
         }
     }
 
-    /// Initialize the reader: verify CDC setup (streaming mode only), then load
-    /// the table snapshot.  Sets `is_initialized = true` on success.
-    fn initialize(&mut self) -> Result<(), ReadError> {
-        if self.mode.is_polling_enabled() {
-            let schema_name = self.schema_name.clone();
-            let table_name = self.table_name.clone();
-            let capture_instance = self.runtime.block_on(async {
-                let mut client = connect_mssql(&self.config)
-                    .await
-                    .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?;
+    /// Probe CDC availability for the target table.
+    ///
+    /// In streaming mode CDC is mandatory — any missing prerequisite is an
+    /// error.  In static mode CDC is optional: when present it enables LSN
+    /// tracking and therefore persistence, when absent the connector simply
+    /// reads the table and emits rows with `EMPTY_OFFSET`.
+    ///
+    /// On success `self.capture_instance` is populated iff the returned flag
+    /// is `true`.
+    fn probe_cdc_availability(&mut self, cdc_required: bool) -> Result<bool, ReadError> {
+        let schema_name = self.schema_name.clone();
+        let table_name = self.table_name.clone();
+        let config = self.config.clone();
 
-                let row = client
-                    .simple_query("SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()")
-                    .await
-                    .map_err(mssql_read_err)?
-                    .into_row()
-                    .await
-                    .map_err(mssql_read_err)?;
-                if let Some(row) = &row {
-                    let enabled: Option<bool> = row.get(0);
-                    if enabled != Some(true) {
+        let outcome = self.runtime.block_on(async {
+            let mut client = connect_mssql(&config)
+                .await
+                .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?;
+
+            let row = client
+                .simple_query("SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()")
+                .await
+                .map_err(mssql_read_err)?
+                .into_row()
+                .await
+                .map_err(mssql_read_err)?;
+            if let Some(row) = &row {
+                let enabled: Option<bool> = row.get(0);
+                if enabled != Some(true) {
+                    if cdc_required {
                         return Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnDatabase));
                     }
+                    return Ok::<Option<String>, ReadError>(None);
                 }
+            }
 
-                let qualified_name = qualified_table_name(&schema_name, &table_name);
-                let query = format!(
-                    "SELECT capture_instance FROM cdc.change_tables \
-                     WHERE source_object_id = OBJECT_ID(N'{qualified_name}')"
-                );
-                let row = client
-                    .simple_query(&query)
-                    .await
-                    .map_err(mssql_read_err)?
-                    .into_row()
-                    .await
-                    .map_err(mssql_read_err)?;
+            let qualified_name = qualified_table_name(&schema_name, &table_name);
+            let query = format!(
+                "SELECT capture_instance FROM cdc.change_tables \
+                 WHERE source_object_id = OBJECT_ID(N'{qualified_name}')"
+            );
+            let row = client
+                .simple_query(&query)
+                .await
+                .map_err(mssql_read_err)?
+                .into_row()
+                .await
+                .map_err(mssql_read_err)?;
 
-                match row {
-                    Some(row) => {
-                        let instance: Option<&str> = row.get(0);
-                        Ok(instance.unwrap_or("").to_string())
-                    }
-                    None => Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnTable {
-                        schema: schema_name,
-                        table: table_name,
-                    })),
+            match row {
+                Some(row) => {
+                    let instance: Option<&str> = row.get(0);
+                    Ok(Some(instance.unwrap_or("").to_string()))
                 }
-            })?;
+                None if cdc_required => Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnTable {
+                    schema: schema_name,
+                    table: table_name,
+                })),
+                None => Ok(None),
+            }
+        })?;
+
+        if let Some(capture_instance) = outcome {
             self.capture_instance = capture_instance;
+            self.tracks_lsn = true;
             info!(
-                "MSSQL CDC reader initialized for table '{}.{}', capture_instance='{}'",
+                "MSSQL reader initialized for table '{}.{}', capture_instance='{}' (LSN tracking enabled)",
                 self.schema_name, self.table_name, self.capture_instance
             );
+            Ok(true)
+        } else {
+            self.tracks_lsn = false;
+            info!(
+                "MSSQL reader initialized for table '{}.{}' (static mode, no CDC — LSN tracking disabled)",
+                self.schema_name, self.table_name
+            );
+            Ok(false)
+        }
+    }
+
+    /// Initialize the reader: probe CDC setup (unless `seek` already did),
+    /// then either resume from a persisted LSN or load the table snapshot.
+    /// Sets `is_initialized = true` on success.
+    fn initialize(&mut self) -> Result<(), ReadError> {
+        // `seek` probes with `cdc_required=true` when persistence is on, so
+        // by the time we're here `tracks_lsn` is already set iff persistence
+        // is configured.  Probe now only when that didn't happen (no
+        // persistence), and use the mode-based requirement: streaming needs
+        // CDC, static doesn't.
+        if !self.tracks_lsn {
+            let cdc_required = self.mode.is_polling_enabled();
+            self.probe_cdc_availability(cdc_required)?;
+        }
+
+        // Resume path: a previous run persisted an LSN.  Skip the full table
+        // dump and replay only the CDC window strictly after the saved LSN.
+        //
+        // Clone (rather than `take`) so that retries still see the saved
+        // LSN: if `load_resume_delta` fails — for example because the LSN
+        // is outside the CDC retention window — the engine will retry up
+        // to `max_allowed_consecutive_errors` times and must get the same
+        // error each time.  Clearing the LSN on the first attempt would
+        // silently fall back to `load_snapshot` and mask the problem.
+        if self.tracks_lsn {
+            if let Some(saved_lsn) = self.saved_last_lsn.clone() {
+                self.load_resume_delta(&saved_lsn)?;
+                self.saved_last_lsn = None;
+                self.is_initialized = true;
+                return Ok(());
+            }
         }
         self.load_snapshot()?;
         self.is_initialized = true;
+        Ok(())
+    }
+
+    /// Query the capture instance's validity interval: the minimum LSN
+    /// retained (`fn_cdc_get_min_lsn`) and the current maximum LSN
+    /// (`fn_cdc_get_max_lsn`).  Either value can be `None` — the minimum is
+    /// `None` for a capture instance that has not produced any rows yet, the
+    /// maximum is `None` before the capture agent has processed its first
+    /// transaction.
+    async fn fetch_capture_instance_lsn_bounds(
+        client: &mut MssqlClient,
+        capture_instance: &str,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), ReadError> {
+        let min_lsn_row = client
+            .simple_query(&format!(
+                "SELECT sys.fn_cdc_get_min_lsn(N'{capture_instance}')"
+            ))
+            .await
+            .map_err(mssql_read_err)?
+            .into_row()
+            .await
+            .map_err(mssql_read_err)?;
+        let min_lsn: Option<Vec<u8>> =
+            min_lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
+
+        let max_lsn_row = client
+            .simple_query("SELECT sys.fn_cdc_get_max_lsn()")
+            .await
+            .map_err(mssql_read_err)?
+            .into_row()
+            .await
+            .map_err(mssql_read_err)?;
+        let max_lsn: Option<Vec<u8>> =
+            max_lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
+
+        Ok((min_lsn, max_lsn))
+    }
+
+    /// Resume-path loader: fetch the CDC changes in (`saved_lsn`, current max
+    /// LSN] and emit them as a single `NewSource`/`FinishedSource` block
+    /// stamped with the current max LSN, so the whole catch-up window commits
+    /// as one transaction.
+    ///
+    /// Before issuing the CDC query, verify that `saved_lsn` has not been
+    /// purged by the SQL Server cleanup job: if it predates
+    /// `fn_cdc_get_min_lsn(capture_instance)`, return
+    /// [`MssqlError::CdcLsnOutOfRetention`] instead of silently losing data.
+    fn load_resume_delta(&mut self, saved_lsn: &[u8]) -> Result<(), ReadError> {
+        let capture_instance = self.capture_instance.clone();
+        let schema = self.schema.clone();
+        let key_column_names = self.key_column_names.clone();
+
+        let mut client_opt = self.client.take();
+        let config = self.config.clone();
+
+        let result = self.runtime.block_on(async {
+            if client_opt.is_none() {
+                client_opt = Some(
+                    connect_mssql(&config)
+                        .await
+                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
+                );
+            }
+            let client = client_opt.as_mut().unwrap();
+
+            let (min_lsn, max_lsn) =
+                Self::fetch_capture_instance_lsn_bounds(client, &capture_instance).await?;
+
+            // Retention check: reject saved LSNs that predate the capture
+            // instance's minimum LSN — those rows have been cleaned up and we
+            // cannot reconstruct a correct delta from them.
+            if let Some(ref min) = min_lsn {
+                if saved_lsn < min.as_slice() {
+                    return Err(ReadError::Mssql(MssqlError::CdcLsnOutOfRetention));
+                }
+            }
+
+            let Some(to_lsn) = max_lsn else {
+                // Capture agent has not produced any LSN yet; nothing to do.
+                return Ok::<_, ReadError>((Vec::new(), Some(saved_lsn.to_vec())));
+            };
+
+            if saved_lsn >= to_lsn.as_slice() {
+                // Already caught up; resume live polling from the saved LSN.
+                return Ok((Vec::new(), Some(saved_lsn.to_vec())));
+            }
+
+            let rows = Self::fetch_cdc_rows_in_range(
+                client,
+                saved_lsn,
+                &to_lsn,
+                &schema,
+                &capture_instance,
+            )
+            .await
+            .map_err(classify_resume_cdc_error)?;
+            Ok((rows, Some(to_lsn)))
+        });
+
+        if result.is_err() {
+            self.client = None;
+        } else {
+            self.client = client_opt;
+        }
+        let (changes, new_max_lsn) = result?;
+
+        if !changes.is_empty() {
+            self.snapshot_version += 1;
+            let block_offset = match new_max_lsn.as_deref() {
+                Some(lsn) => Self::lsn_offset(lsn),
+                None => EMPTY_OFFSET,
+            };
+            let mut results = Vec::with_capacity(changes.len() + 2);
+            results.push(ReadResult::NewSource(
+                MssqlMetadata::new(self.snapshot_version).into(),
+            ));
+            results.extend(Self::build_gap_results(
+                &changes,
+                &schema,
+                &key_column_names,
+                &block_offset,
+            ));
+            results.push(ReadResult::FinishedSource {
+                commit_possibility: CommitPossibility::Possible,
+            });
+            results.reverse();
+            self.snapshot = results;
+        }
+
+        self.last_lsn = new_max_lsn;
         Ok(())
     }
 
@@ -645,19 +858,22 @@ impl MssqlReader {
 
     /// Step 5a: Convert raw snapshot rows into `ReadResult::Data(Insert)` entries.
     ///
-    /// All snapshot rows are emitted as inserts regardless of their prior state.
-    /// In streaming mode a composite key is derived from `key_column_names` so
-    /// that Pathway can correlate them with subsequent CDC deletes/inserts.
+    /// All snapshot rows are emitted as inserts regardless of their prior
+    /// state.  When `emit_keys` is `true` a composite key is derived from
+    /// `key_column_names` so that Pathway can correlate these rows with
+    /// subsequent CDC deletes/inserts — required whenever LSN tracking is
+    /// active, i.e. streaming mode and static mode on a CDC-enabled table.
     fn build_snapshot_results(
         rows: &[tiberius::Row],
         schema: &[(String, Type)],
         key_column_names: &[String],
-        streaming: bool,
+        emit_keys: bool,
+        offset: &Offset,
     ) -> Vec<ReadResult> {
         rows.iter()
             .map(|row| {
                 let row_values = Self::extract_row_values(row, schema, 0);
-                let key = if streaming {
+                let key = if emit_keys {
                     Some(
                         key_column_names
                             .iter()
@@ -675,7 +891,7 @@ impl MssqlReader {
                 let values: ValuesMap = row_values.into();
                 ReadResult::Data(
                     ReaderContext::from_diff(DataEventType::Insert, key, values),
-                    EMPTY_OFFSET,
+                    offset.clone(),
                 )
             })
             .collect()
@@ -693,6 +909,7 @@ impl MssqlReader {
         gap_changes: &[tiberius::Row],
         schema: &[(String, Type)],
         key_column_names: &[String],
+        offset: &Offset,
     ) -> Vec<ReadResult> {
         gap_changes
             .iter()
@@ -717,10 +934,17 @@ impl MssqlReader {
                 let values: ValuesMap = row_values.into();
                 Some(ReadResult::Data(
                     ReaderContext::from_diff(event_type, Some(key), values),
-                    EMPTY_OFFSET,
+                    offset.clone(),
                 ))
             })
             .collect()
+    }
+
+    /// Build the persistence offset for a CDC read window whose upper bound
+    /// (inclusive) is `lsn`.  A block of rows stamped with this offset is
+    /// reconstructible on restart by replaying everything strictly after `lsn`.
+    fn lsn_offset(lsn: &[u8]) -> Offset {
+        (OffsetKey::Mssql, OffsetValue::MssqlCdcLsn(lsn.to_vec()))
     }
 
     /// Load the current table contents into `self.snapshot`.
@@ -750,12 +974,20 @@ impl MssqlReader {
             .join(",");
         let full_table_name = qualified_table_name(&self.schema_name, &self.table_name);
         let query_str = format!("SELECT {columns_str} FROM {full_table_name}");
+        let tracks_lsn = self.tracks_lsn;
         let streaming = self.mode.is_polling_enabled();
         let key_column_names = self.key_column_names.clone();
         let schema = self.schema.clone();
         let capture_instance = self.capture_instance.clone();
 
-        let mut client_opt = if streaming { self.client.take() } else { None };
+        // Keep the client around when we intend to keep polling (streaming)
+        // or when we needed CDC to capture an LSN (static + CDC).  A plain
+        // static read on a non-CDC table can discard the client afterwards.
+        let mut client_opt = if streaming || tracks_lsn {
+            self.client.take()
+        } else {
+            None
+        };
         let config = self.config.clone();
 
         let result = self.runtime.block_on(async {
@@ -771,7 +1003,7 @@ impl MssqlReader {
             // Step 1: record LSN before snapshot read.
             // Retry until the CDC capture agent has processed at least one
             // transaction (fn_cdc_get_max_lsn returns NULL until then).
-            let lsn_before: Option<Vec<u8>> = if streaming {
+            let lsn_before: Option<Vec<u8>> = if tracks_lsn {
                 Self::fetch_lsn_before(client).await?
             } else {
                 None
@@ -781,7 +1013,7 @@ impl MssqlReader {
             let rows = Self::fetch_snapshot_rows(client, &query_str).await?;
 
             // Step 3: record LSN after snapshot read.
-            let lsn_after: Option<Vec<u8>> = if streaming {
+            let lsn_after: Option<Vec<u8>> = if tracks_lsn {
                 Self::fetch_lsn_after(client).await?
             } else {
                 None
@@ -789,7 +1021,7 @@ impl MssqlReader {
 
             // Step 4: fetch CDC changes that raced with the snapshot read.
             let gap_changes: Vec<tiberius::Row> =
-                match (streaming, lsn_before.as_deref(), lsn_after.as_deref()) {
+                match (tracks_lsn, lsn_before.as_deref(), lsn_after.as_deref()) {
                     (true, Some(before), Some(after)) => {
                         Self::fetch_gap_cdc_changes(
                             client,
@@ -806,7 +1038,7 @@ impl MssqlReader {
             Ok::<_, ReadError>((rows, lsn_after.or(lsn_before), gap_changes))
         });
 
-        if streaming {
+        if streaming || tracks_lsn {
             if result.is_err() {
                 self.client = None;
             } else {
@@ -816,17 +1048,28 @@ impl MssqlReader {
         let (rows, max_lsn, gap_changes) = result?;
 
         self.snapshot_version += 1;
+        // Stamp the whole snapshot block — original rows + gap CDC rows — with
+        // the post-snapshot LSN.  On restart from this offset, poll_cdc_changes
+        // will resume strictly after this LSN and will therefore not replay
+        // either the snapshot or the gap.
+        let block_offset = match max_lsn.as_deref() {
+            Some(lsn) => Self::lsn_offset(lsn),
+            None => EMPTY_OFFSET,
+        };
         let mut results = Vec::with_capacity(rows.len() + gap_changes.len() + 2);
         results.push(ReadResult::NewSource(
             MssqlMetadata::new(self.snapshot_version).into(),
         ));
 
-        // Step 5a: snapshot rows — all emitted as inserts.
+        // Step 5a: snapshot rows — all emitted as inserts.  Keys are needed
+        // whenever we track LSNs (streaming, or static + CDC) so that CDC
+        // deletes/inserts delivered on restart match the snapshot rows.
         results.extend(Self::build_snapshot_results(
             &rows,
             &schema,
             &key_column_names,
-            streaming,
+            tracks_lsn,
+            &block_offset,
         ));
 
         // Step 5b: gap CDC rows — changes that raced with the snapshot read, emitted in
@@ -835,6 +1078,7 @@ impl MssqlReader {
             &gap_changes,
             &schema,
             &key_column_names,
+            &block_offset,
         ));
 
         results.push(ReadResult::FinishedSource {
@@ -917,6 +1161,10 @@ impl MssqlReader {
 
         if !changes.is_empty() {
             self.snapshot_version += 1;
+            let block_offset = match new_max_lsn.as_deref() {
+                Some(lsn) => Self::lsn_offset(lsn),
+                None => EMPTY_OFFSET,
+            };
             let mut results = Vec::with_capacity(changes.len() + 2);
             results.push(ReadResult::NewSource(
                 MssqlMetadata::new(self.snapshot_version).into(),
@@ -925,6 +1173,7 @@ impl MssqlReader {
                 &changes,
                 &schema,
                 &key_column_names,
+                &block_offset,
             ));
             results.push(ReadResult::FinishedSource {
                 commit_possibility: CommitPossibility::Possible,
@@ -946,8 +1195,19 @@ impl MssqlReader {
 }
 
 impl Reader for MssqlReader {
-    fn seek(&mut self, _frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        Err(ReadError::PersistenceNotSupported(StorageType::Mssql))
+    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
+        // The engine only calls `seek` when persistence is configured.  In
+        // that case CDC is mandatory — the LSN we persist comes from CDC —
+        // so probe for it right here and let the generic
+        // `CdcNotEnabledOn{Database,Table}` errors fire if it's missing.
+        // This also populates `self.capture_instance`, which
+        // `load_resume_delta` needs below.  `initialize()` will notice that
+        // `tracks_lsn` is already set and skip a redundant probe.
+        self.probe_cdc_availability(true)?;
+        if let Some(OffsetValue::MssqlCdcLsn(bytes)) = frontier.get_offset(&OffsetKey::Mssql) {
+            self.saved_last_lsn = Some(bytes.clone());
+        }
+        Ok(())
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
@@ -1422,6 +1682,13 @@ const MSSQL_ERR_LOGIN_FAILED: u32 = 18456;
 const MSSQL_ERR_DATABASE_NOT_FOUND: u32 = 4060;
 /// SQL Server error 208: invalid object name (table/view does not exist).
 const MSSQL_ERR_INVALID_OBJECT_NAME: u32 = 208;
+/// SQL Server error 313: LSN specified in the parameters to `fn_cdc_get_all_changes`
+/// is not within the range of valid change-tracking LSNs for the capture
+/// instance.  We only interpret this as a retention problem on the resume
+/// path via [`classify_resume_cdc_error`]; everywhere else we leave it
+/// unmapped so a programming bug that queries CDC with a bad LSN surfaces
+/// as a generic driver error rather than a misleading retention message.
+const MSSQL_ERR_LSN_OUT_OF_RANGE: u32 = 313;
 
 /// Classify a raw tiberius error into the most specific [`MssqlError`] variant.
 ///
@@ -1449,6 +1716,21 @@ fn classify_mssql_error(e: tiberius::error::Error) -> MssqlError {
         },
         _ => MssqlError::Driver(e),
     }
+}
+
+/// Remap a `ReadError` coming from a resume-path CDC query: SQL Server error
+/// 313 ("LSN specified is not within the range …") is translated to
+/// [`MssqlError::CdcLsnOutOfRetention`] because on the resume path it
+/// unambiguously means the saved LSN was dropped by the CDC cleanup job
+/// between our pre-check and the actual CDC query.  All other errors pass
+/// through untouched.
+fn classify_resume_cdc_error(err: ReadError) -> ReadError {
+    if let ReadError::Mssql(MssqlError::Driver(tiberius::error::Error::Server(ref token))) = err {
+        if token.code() == MSSQL_ERR_LSN_OUT_OF_RANGE {
+            return ReadError::Mssql(MssqlError::CdcLsnOutOfRetention);
+        }
+    }
+    err
 }
 
 #[allow(clippy::needless_pass_by_value)]

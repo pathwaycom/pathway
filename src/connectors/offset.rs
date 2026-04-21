@@ -33,6 +33,7 @@ pub enum OffsetKey {
     Kinesis(ArcStr),
     MongoDb,
     Rabbitmq(RabbitmqStreamType),
+    Mssql,
 }
 
 impl HashInto for OffsetKey {
@@ -49,7 +50,7 @@ impl HashInto for OffsetKey {
                 hasher.update(stream_name.as_bytes());
             }
             OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
-            OffsetKey::Empty | OffsetKey::MongoDb => {}
+            OffsetKey::Empty | OffsetKey::MongoDb | OffsetKey::Mssql => {}
         }
     }
 }
@@ -95,6 +96,13 @@ pub enum OffsetValue {
     MongoDbOplogToken(Vec<u8>),
     Empty,
     RabbitmqOffset(u64),
+    /// Raw bytes of a SQL Server Change Data Capture Log Sequence Number
+    /// (10-byte fixed-width big-endian triple of VLF sequence / log block / slot).
+    /// `fn_cdc_get_max_lsn` returns LSNs in this exact binary layout.  Because
+    /// SQL Server guarantees LSNs are monotonically increasing and fixed-width,
+    /// byte-wise comparison is a valid ordering — the same strategy used for
+    /// [`Self::MongoDbOplogToken`].
+    MssqlCdcLsn(Vec<u8>),
 }
 
 impl OffsetValue {
@@ -177,7 +185,7 @@ impl HashInto for OffsetValue {
             OffsetValue::KinesisOffset(offset) => {
                 offset.hash_into(hasher);
             }
-            OffsetValue::MongoDbOplogToken(bytes) => {
+            OffsetValue::MongoDbOplogToken(bytes) | OffsetValue::MssqlCdcLsn(bytes) => {
                 hasher.update(bytes);
             }
             OffsetValue::Empty => {}
