@@ -28,19 +28,19 @@
 # Imagine you've just been assigned a new project: analyzing salary statistics in your company.
 # In particular, your goal is to determine the number of employees who earn more than the average salary in each department.
 #
-# Let's consider the following table:
+# Let's consider the following table, where each row represents an employee identified by their `name`, along with their `salary` and `department`:
 
 # %%
 import pathway as pw
 
 salaries = pw.debug.table_from_markdown(
     """
- salary   | department
- 1800   | Sales
- 2000   | Finance
- 2300   | Sales
- 2700   | Finance
- 1900   | Finance
+ name      | salary | department
+ Alice     | 1800   | Sales
+ Bob       | 2000   | Finance
+ Charlie   | 2300   | Sales
+ Dave      | 2700   | Finance
+ Eve       | 1900   | Finance
  """
 )
 pw.debug.compute_and_print(salaries)
@@ -101,17 +101,17 @@ pw.debug.compute_and_print(number_employees)
 #
 # We can also use `ix_ref` to index using tuples of values by using `ix_ref(*args)`.
 #
-# For example, let's say we have an extra column `position`:
+# For example, let's say we have an extra column `position` alongside the existing `name`, `salary`, and `department` columns:
 
 # %%
 salaries_with_position = pw.debug.table_from_markdown(
     """
- salary | department | position
- 1800   | Sales | junior
- 2000   | Finance | junior
- 2300   | Sales | senior
- 2700   | Finance | senior
- 1900   | Finance | junior
+ name      | salary | department | position
+ Alice     | 1800   | Sales      | junior
+ Bob       | 2000   | Finance    | junior
+ Charlie   | 2300   | Sales      | senior
+ Dave      | 2700   | Finance    | senior
+ Eve       | 1900   | Finance    | junior
  """
 )
 
