@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.30.1] - 2026-04-23
+
 ### Added
 - `pw.io.rabbitmq.read` and `pw.io.rabbitmq.write` connectors for reading from and writing to RabbitMQ Streams. Supports JSON, plaintext, and raw formats; streaming and static modes; persistence with offset recovery; dynamic topics (writing to different streams per row); `start_from` parameter (`"beginning"`, `"end"`, or `"timestamp"`); TLS configuration; and message metadata including AMQP 1.0 properties and application properties. Header values are JSON-encoded for round-trip compatibility. Requires a Pathway Scale or Enterprise license.
 - `pw.io.mssql.read` connector, which reads data from a Microsoft SQL Server table. The connector first delivers a full snapshot of the table and then, if the streaming mode is used, tracks incremental changes via SQL Server Change Data Capture (CDC).
