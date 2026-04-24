@@ -407,7 +407,7 @@ impl Reader for KinesisReader {
                         .limit(MAX_KINESIS_RECORDS_PER_REQUEST)
                         .send()
                         .await
-                        .map_err(|e| ReadError::Kinesis(e.into()))?;
+                        .map_err(|e| ReadError::Kinesis(Box::new(e.into())))?;
 
                     for record in records_response.records() {
                         let key = record.partition_key.as_bytes();

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -35,7 +36,17 @@ def root_s3_path() -> str:
 def s3_path(
     request: pytest.FixtureRequest, root_s3_path: str
 ) -> Generator[str, None, None]:
-    node_name = request.node.name
+    # pytest test IDs for parametrized tests contain `[`/`]` (e.g.
+    # `test_snapshot_mode[1-2]`). deltalake-core 0.31's DataFusion integration
+    # builds a synthetic `delta-rs://<scheme>-<host>-<path>` URL where `/` in
+    # the path is replaced by `-`, so any path char that isn't valid in a URL
+    # *host* panics with `InvalidDomainCharacter`. Brackets specifically
+    # trigger it on the 2nd+ pass over a snapshot-mode table. Strip them (and
+    # anything else that could end up in the synthetic URL's host segment) so
+    # we don't hit the upstream bug.
+    #
+    # Critical for runs with --count.
+    node_name = re.sub(r"[^A-Za-z0-9._-]", "_", request.node.name)
     path = f"{root_s3_path}/{node_name}/{uuid.uuid4()}"
     yield path
 

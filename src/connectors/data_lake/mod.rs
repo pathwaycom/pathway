@@ -353,11 +353,17 @@ fn column_into_pathway_values(
         (ArrowDataType::LargeUtf8, Type::String | Type::Json | Type::Pointer | Type::Any) => {
             convert_arrow_string_array::<i64>(column, column_name, expected_type_unopt)
         }
+        (ArrowDataType::Utf8View, Type::String | Type::Json | Type::Pointer | Type::Any) => {
+            convert_arrow_string_view_array(column, column_name, expected_type_unopt)
+        }
         (ArrowDataType::Binary, Type::Bytes | Type::PyObjectWrapper | Type::Any) => {
             convert_arrow_bytes_array::<i32>(column, column_name, expected_type_unopt)
         }
         (ArrowDataType::LargeBinary, Type::Bytes | Type::PyObjectWrapper | Type::Any) => {
             convert_arrow_bytes_array::<i64>(column, column_name, expected_type_unopt)
+        }
+        (ArrowDataType::BinaryView, Type::Bytes | Type::PyObjectWrapper | Type::Any) => {
+            convert_arrow_binary_view_array(column, column_name, expected_type_unopt)
         }
         (ArrowDataType::Duration(time_unit), Type::Duration | Type::Any) => {
             convert_arrow_duration_array(column, *time_unit)
@@ -564,6 +570,40 @@ fn convert_arrow_string_array<OffsetType: OffsetSizeTrait>(
         .collect()
 }
 
+fn convert_arrow_string_view_array(
+    column: &Arc<dyn ArrowArray>,
+    name: &str,
+    expected_type: &Type,
+) -> Vec<ParsedValue> {
+    column
+        .as_string_view()
+        .into_iter()
+        .map(|v| match v {
+            Some(v) => match expected_type {
+                Type::String | Type::Any => Ok(Value::String(v.into())),
+                Type::Json => serde_json::from_str::<serde_json::Value>(v)
+                    .map(Value::from)
+                    .map_err(|_| {
+                        Box::new(conversion_error(
+                            &limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+                            name,
+                            expected_type,
+                        ))
+                    }),
+                Type::Pointer => parse_pathway_pointer(v).map_err(|_| {
+                    Box::new(conversion_error(
+                        &limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+                        name,
+                        expected_type,
+                    ))
+                }),
+                _ => unreachable!("must not be used for type {expected_type}"),
+            },
+            None => Ok(Value::None),
+        })
+        .collect()
+}
+
 fn convert_arrow_boolean_array(column: &Arc<dyn ArrowArray>) -> Vec<ParsedValue> {
     column
         .as_boolean()
@@ -582,6 +622,43 @@ fn convert_arrow_bytes_array<OffsetType: OffsetSizeTrait>(
 ) -> Vec<ParsedValue> {
     column
         .as_binary::<OffsetType>()
+        .into_iter()
+        .map(|v| match v {
+            Some(v) => {
+                if expected_type == &Type::Bytes {
+                    Ok(Value::Bytes(v.into()))
+                } else {
+                    let maybe_value = bincode::deserialize::<Value>(v);
+                    if let Ok(value) = maybe_value {
+                        match (value.kind(), expected_type) {
+                            (Kind::PyObjectWrapper, Type::PyObjectWrapper) => Ok(value),
+                            _ => Err(Box::new(conversion_error(
+                                &format!("{value}"),
+                                field_name,
+                                expected_type,
+                            ))),
+                        }
+                    } else {
+                        Err(Box::new(conversion_error(
+                            &format!("{maybe_value:?}"),
+                            field_name,
+                            expected_type,
+                        )))
+                    }
+                }
+            }
+            None => Ok(Value::None),
+        })
+        .collect()
+}
+
+fn convert_arrow_binary_view_array(
+    column: &Arc<dyn ArrowArray>,
+    field_name: &str,
+    expected_type: &Type,
+) -> Vec<ParsedValue> {
+    column
+        .as_binary_view()
         .into_iter()
         .map(|v| match v {
             Some(v) => {

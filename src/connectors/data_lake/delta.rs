@@ -7,7 +7,6 @@ use std::fs::File;
 use std::hash::RandomState;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -18,6 +17,7 @@ use deltalake::datafusion::logical_expr::col;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
 use deltalake::datafusion::prelude::Expr;
 use deltalake::datafusion::scalar::ScalarValue;
+use deltalake::delta_datafusion::engine::AsObjectStoreUrl;
 use deltalake::kernel::Action as DeltaLakeAction;
 use deltalake::kernel::ArrayType as DeltaTableArrayType;
 use deltalake::kernel::CommitInfo as DeltaTableCommitInfo;
@@ -25,17 +25,18 @@ use deltalake::kernel::DataType as DeltaTableKernelType;
 use deltalake::kernel::PrimitiveType as DeltaTablePrimitiveType;
 use deltalake::kernel::StructField as DeltaTableStructField;
 use deltalake::kernel::StructType as DeltaTableStructType;
+use deltalake::logstore::get_actions as get_delta_actions;
 use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
-use deltalake::operations::optimize::OptimizeBuilder;
-use deltalake::operations::vacuum::VacuumBuilder;
 use deltalake::operations::vacuum::VacuumMetrics;
 use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
 use deltalake::parquet::record::Row as ParquetRow;
 use deltalake::protocol::SaveMode as DeltaTableSaveMode;
-use deltalake::table::PeekCommit as DeltaLakePeekCommit;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
-use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, TableProperty};
-use deltalake::{DeltaOps, DeltaTableError, PartitionFilter, PartitionValue};
+use deltalake::{
+    ensure_table_uri, open_table_with_storage_options as open_delta_table, DeltaTable,
+    TableProperty,
+};
+use deltalake::{DeltaTableError, PartitionFilter, PartitionValue};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use s3::bucket::Bucket as S3Bucket;
@@ -65,6 +66,7 @@ use crate::engine::time::{DateTime, DateTimeNaive};
 use crate::engine::{Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::{BackfillingThreshold, ValueField};
+use crate::retry::{execute_with_retries, RetryConfig};
 use crate::timestamp::current_unix_timestamp_ms;
 
 #[derive(Debug)]
@@ -236,6 +238,7 @@ impl DeltaBatchWriter {
         })
     }
 
+    #[allow(clippy::needless_pass_by_value)] // cloned on each retry attempt
     pub fn open_table(
         path: &str,
         schema_fields: &Vec<ValueField>,
@@ -285,15 +288,25 @@ impl DeltaBatchWriter {
             .or_else(
                 |e| {
                     warn!("Unable to create DeltaTable for output: {e}. Trying to open the existing one by this path.");
-                    runtime.block_on(async {
-                        open_delta_table(path, storage_options).await
-                    })
+                    let table_url = ensure_table_uri(path)?;
+                    execute_with_retries(
+                        || runtime.block_on(async {
+                            open_delta_table(table_url.clone(), storage_options.clone()).await
+                        }),
+                        RetryConfig::default(),
+                        MAX_DELTA_OPEN_RETRIES,
+                    )
                 }
             )?;
 
-        let existing_schema = &table.schema().unwrap().fields;
+        let existing_schema: IndexMap<String, DeltaTableStructField> = table
+            .snapshot()?
+            .schema()
+            .fields()
+            .map(|field| (field.name().clone(), field.clone()))
+            .collect();
         let metadata_per_column: HashMap<_, _> = existing_schema
-            .into_iter()
+            .iter()
             .map(|(name, column)| {
                 let arrow_metadata = column
                     .metadata()
@@ -304,7 +317,7 @@ impl DeltaBatchWriter {
             })
             .collect();
 
-        Self::ensure_schema_compliance(existing_schema, &struct_fields)?;
+        Self::ensure_schema_compliance(&existing_schema, &struct_fields)?;
         Ok((table, metadata_per_column))
     }
 
@@ -400,14 +413,15 @@ impl DeltaBatchWriter {
                 let elements_data_type = DeltaTableKernelType::Array(
                     DeltaTableArrayType::new(elements_kernel_type, true).into(),
                 );
-                let struct_descriptor = DeltaTableStructType::new(vec![
+                let struct_descriptor = DeltaTableStructType::try_new(vec![
                     DeltaTableStructField::new(NDARRAY_SHAPE_FIELD_NAME, shape_data_type, false),
                     DeltaTableStructField::new(
                         NDARRAY_ELEMENTS_FIELD_NAME,
                         elements_data_type,
                         false,
                     ),
-                ]);
+                ])
+                .map_err(DeltaTableError::from)?;
                 DeltaTableKernelType::Struct(struct_descriptor.into())
             }
             Type::Tuple(nested_types) => {
@@ -421,7 +435,8 @@ impl DeltaBatchWriter {
                         nested_type_is_optional,
                     ));
                 }
-                let struct_descriptor = DeltaTableStructType::new(struct_fields);
+                let struct_descriptor =
+                    DeltaTableStructType::try_new(struct_fields).map_err(DeltaTableError::from)?;
                 DeltaTableKernelType::Struct(struct_descriptor.into())
             }
             Type::Optional(wrapped) => return Self::delta_table_type(wrapped),
@@ -450,6 +465,25 @@ impl DeltaBatchWriter {
         result
     }
 
+    /// `DeltaTable::load` walks the `_delta_log/` object store prefix to pick up the
+    /// current log tip. In `object_store` 0.13 some transient reqwest send errors
+    /// aren't retried (they map to `HttpErrorKind::Unknown`), so we retry at our
+    /// layer — same rationale as `MAX_DELTA_OPEN_RETRIES` in the reader path.
+    async fn load_table_with_retries(&mut self) -> Result<(), WriteError> {
+        let mut retry_config = RetryConfig::default();
+        for _ in 0..MAX_DELTA_OPEN_RETRIES {
+            match self.table.load().await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    warn!("DeltaTable load failed: {e}. Retrying.");
+                    retry_config.sleep_after_error_async().await;
+                }
+            }
+        }
+        self.table.load().await?;
+        Ok(())
+    }
+
     async fn maybe_optimize_table(&mut self) -> Result<(), WriteError> {
         // Saving the name for logs before the mutable borrow
         let connector_name = self.name();
@@ -458,27 +492,27 @@ impl DeltaBatchWriter {
             if let Some(cutoff_to_apply) = cutoff_to_apply {
                 let filters_to_apply =
                     optimizer_rule.optimizer_filters_for_cutoff_value(&cutoff_to_apply);
-                let (optimized_table, metrics) =
-                    OptimizeBuilder::new(self.table.log_store(), self.table.snapshot()?.clone())
-                        .with_filters(&filters_to_apply)
-                        .await?;
+                let (optimized_table, metrics) = self
+                    .table
+                    .clone()
+                    .optimize()
+                    .with_filters(&filters_to_apply)
+                    .await?;
                 info!("Table {connector_name}: has been optimized. Metrics: {metrics:?}");
 
-                let (_vacuumed_table, metrics) = VacuumBuilder::new(
-                    optimized_table.log_store(),
-                    optimized_table.snapshot()?.clone(),
-                )
-                .with_retention_period(optimizer_rule.retention_period)
-                .with_enforce_retention_duration(false)
-                .with_dry_run(false)
-                .await?;
+                let (_vacuumed_table, metrics) = optimized_table
+                    .vacuum()
+                    .with_retention_period(optimizer_rule.retention_period)
+                    .with_enforce_retention_duration(false)
+                    .with_dry_run(false)
+                    .await?;
 
                 info!(
                     "Table {connector_name}: outdated Parquet blocks have been removed. {}",
                     Self::format_vacuum_metrics(metrics)
                 );
                 optimizer_rule.on_cutoff_value_optimized(cutoff_to_apply);
-                self.table.update().await?;
+                self.load_table_with_retries().await?;
             }
         }
         Ok(())
@@ -492,21 +526,77 @@ impl LakeBatchWriter for DeltaBatchWriter {
         payload_type: PayloadType,
     ) -> Result<(), WriteError> {
         create_async_tokio_runtime()?.block_on(async {
-            self.table.update().await?;
-            match payload_type {
-                PayloadType::FullSnapshot => {
-                    DeltaOps(self.table.clone())
-                        .write(vec![batch])
-                        .with_save_mode(DeltaTableSaveMode::Overwrite)
-                        .await?;
-                }
-                PayloadType::Diff => {
-                    self.writer = DTRecordBatchWriter::for_table(&self.table)?;
-                    self.writer.write(batch).await?;
-                    self.writer.flush_and_commit(&mut self.table).await?;
+            self.load_table_with_retries().await?;
+            // The actual parquet PUT + log commit is where Jenkins runs see
+            // `HttpErrorKind::Unknown` (reqwest `Kind::Request`) most often,
+            // likely a stale keep-alive connection picked from the pool under
+            // concurrent-worker S3 load. Deltalake randomizes each attempt's
+            // parquet filename (UUID-based), so a retry produces a fresh file
+            // and leaves no committed state on a failed attempt — orphaned
+            // blobs get reaped by vacuum. Retry the write (and Diff's
+            // flush_and_commit) with explicit per-attempt logging so a future
+            // failure shows exactly which attempt hit which error.
+            let mut retry_config = RetryConfig::default();
+            let connector_name = self.name();
+            for attempt in 0..=MAX_DELTA_OPEN_RETRIES {
+                let attempt_result: Result<(), WriteError> = match payload_type {
+                    PayloadType::FullSnapshot => {
+                        match self
+                            .table
+                            .clone()
+                            .write(vec![batch.clone()])
+                            .with_save_mode(DeltaTableSaveMode::Overwrite)
+                            .await
+                        {
+                            Ok(updated_table) => {
+                                self.table = updated_table;
+                                Ok(())
+                            }
+                            Err(e) => Err(e.into()),
+                        }
+                    }
+                    PayloadType::Diff => {
+                        async {
+                            let mut writer = DTRecordBatchWriter::for_table(&self.table)?;
+                            writer.write(batch.clone()).await?;
+                            writer.flush_and_commit(&mut self.table).await?;
+                            self.writer = writer;
+                            Ok::<(), WriteError>(())
+                        }
+                        .await
+                    }
+                };
+                match attempt_result {
+                    Ok(()) => {
+                        if attempt > 0 {
+                            info!(
+                                "{connector_name}: write succeeded on attempt {} of {}",
+                                attempt + 1,
+                                MAX_DELTA_OPEN_RETRIES + 1
+                            );
+                        }
+                        break;
+                    }
+                    Err(e) if attempt < MAX_DELTA_OPEN_RETRIES => {
+                        warn!(
+                            "{connector_name}: write failed on attempt {} of {} \
+                             (payload={payload_type:?}): {e:?}. Retrying.",
+                            attempt + 1,
+                            MAX_DELTA_OPEN_RETRIES + 1
+                        );
+                        retry_config.sleep_after_error_async().await;
+                    }
+                    Err(e) => {
+                        error!(
+                            "{connector_name}: write failed after {} attempts \
+                             (payload={payload_type:?}): {e:?}",
+                            MAX_DELTA_OPEN_RETRIES + 1
+                        );
+                        return Err(e);
+                    }
                 }
             }
-            self.table.update().await?;
+            self.load_table_with_retries().await?;
 
             if let Err(e) = self.maybe_optimize_table().await {
                 warn!("Failed to optimize table {}: {e}", self.name());
@@ -528,7 +618,7 @@ impl LakeBatchWriter for DeltaBatchWriter {
     }
 
     fn name(&self) -> String {
-        format!("DeltaTable({})", self.table.table_uri())
+        format!("DeltaTable({})", self.table.table_url())
     }
 }
 
@@ -590,6 +680,7 @@ enum BackfillingEntry {
     Entry(ValuesMap),
 }
 
+#[allow(clippy::needless_pass_by_value)] // cloned on each retry attempt
 pub fn open_and_read_delta_table<S: ::std::hash::BuildHasher>(
     uri: &str,
     storage_options: HashMap<String, String, RandomState>,
@@ -597,20 +688,58 @@ pub fn open_and_read_delta_table<S: ::std::hash::BuildHasher>(
     column_order: &[String],
 ) -> Result<Vec<Vec<Value>>, DeltaTableError> {
     let runtime = create_async_tokio_runtime()?;
-    let table = runtime.block_on(async { open_delta_table(uri, storage_options).await })?;
-    read_delta_table(&runtime, table, column_types, column_order)
+    let table_url = ensure_table_uri(uri)?;
+    // The reading (`read_delta_table`) fetches the actual parquet data files over
+    // S3, which is subject to the same unretriable `HttpErrorKind::Unknown` that
+    // affects `open_delta_table`. Retry the open+read pair together so a transient
+    // data-file fetch error doesn't kill the snapshot read.
+    execute_with_retries(
+        || {
+            let table = runtime.block_on(async {
+                open_delta_table(table_url.clone(), storage_options.clone()).await
+            })?;
+            read_delta_table(&runtime, &table, column_types, column_order)
+        },
+        RetryConfig::default(),
+        MAX_DELTA_OPEN_RETRIES,
+    )
 }
 
 const MAX_ENTRY_PARSING_ERRORS: usize = 10;
 
+// The object_store crate (via deltalake 0.31) silently drops reqwest `Kind::Request`
+// errors into its `Unknown` retry bucket, so transient failures on the very first
+// `_delta_log/` listing aren't retried by the inner stack. Wrap the initial open with
+// our own retry loop, mirroring `IcebergBatchWriter::new`.
+const MAX_DELTA_OPEN_RETRIES: usize = 5;
+
+// DataFusion's `SessionContext` owns its own `ObjectStoreRegistry`. Since deltalake 0.31
+// the S3 object store registered globally via `deltalake::aws::register_handlers` is no
+// longer picked up automatically when we hand a `DeltaTable` to DataFusion through
+// `table_provider()`; the session has to have the bucket's object store registered
+// explicitly or planning fails with "No suitable object store found for s3://...".
+//
+// Registration must happen at the bucket-level URL (`s3://<bucket>`) with the non-prefixed
+// (`root_object_store`) store, since the parquet paths DataFusion resolves are already
+// absolute relative to the bucket; using the table-prefixed store duplicates the prefix
+// and produces 404s. This mirrors `DeltaTable::update_datafusion_session` in deltalake 0.31.
+fn register_table_object_store(ctx: &DeltaSessionContext, table: &DeltaTable) {
+    let log_store = table.log_store();
+    let store_url = log_store.root_url().as_object_store_url();
+    ctx.runtime_env()
+        .register_object_store(store_url.as_ref(), log_store.root_object_store(None));
+}
+
 pub fn read_delta_table<S: std::hash::BuildHasher>(
     runtime: &TokioRuntime,
-    table: DeltaTable,
+    table: &DeltaTable,
     column_types: &HashMap<String, Type, S>,
     column_order: &[String],
 ) -> Result<Vec<Vec<Value>>, DeltaTableError> {
     let ctx = DeltaSessionContext::new();
-    let df = ctx.read_table(Arc::new(table))?;
+    register_table_object_store(&ctx, table);
+    let provider = runtime.block_on(async { table.table_provider().await })?;
+    let df = ctx.read_table(provider)?;
 
     let map_entries = runtime.block_on(async {
         let results = df.collect().await?;
@@ -678,6 +807,7 @@ const DELTA_LAKE_POLL_BACKOFF: u32 = 2;
 
 impl DeltaTableReader {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::needless_pass_by_value)] // storage_options is cloned on each retry attempt
     pub fn new(
         path: &str,
         object_downloader: ObjectDownloader,
@@ -689,21 +819,25 @@ impl DeltaTableReader {
         backfilling_thresholds: Vec<BackfillingThreshold>,
     ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
-        let mut table =
-            runtime.block_on(async { open_delta_table(path, storage_options).await })?;
-        let table_props = &table.metadata()?.configuration;
+        let table_url = ensure_table_uri(path)?;
+        let mut table = execute_with_retries(
+            || {
+                runtime.block_on(async {
+                    open_delta_table(table_url.clone(), storage_options.clone()).await
+                })
+            },
+            RetryConfig::default(),
+            MAX_DELTA_OPEN_RETRIES,
+        )?;
+        let table_props = table.snapshot()?.metadata().configuration();
         let append_only_property = table_props.get(APPEND_ONLY_PROPERTY_NAME);
-        let is_append_only = {
-            if let Some(Some(append_only_property)) = append_only_property {
-                parse_bool_advanced(append_only_property).unwrap_or(false)
-            } else {
-                false
-            }
-        };
+        let is_append_only = append_only_property
+            .and_then(|v| parse_bool_advanced(v).ok())
+            .unwrap_or(false);
         if !has_primary_key && !is_append_only {
             return Err(ReadError::PrimaryKeyRequired);
         }
-        let mut current_version = table.version();
+        let mut current_version = table.version().unwrap_or(0);
 
         let mut parquet_files_queue = VecDeque::new();
         let mut backfilling_entries_queue = VecDeque::new();
@@ -731,7 +865,7 @@ impl DeltaTableReader {
             parquet_files_queue.clear();
             backfilling_entries_queue = Self::create_backfilling_files_queue(
                 &runtime,
-                table.clone(),
+                &table,
                 backfilling_thresholds,
                 &mut column_types,
             )?;
@@ -765,12 +899,16 @@ impl DeltaTableReader {
         if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
             warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
         }
-        let (earliest_version, latest_version) = runtime.block_on(async {
-            Ok::<(i64, i64), ReadError>((
-                table.get_earliest_version().await?,
-                table.get_latest_version().await?,
-            ))
-        })?;
+        // `get_earliest_version` was removed from DeltaTable in deltalake 0.31; start scanning from
+        // version 0 and let `version_timestamp` skip over versions that are no longer available.
+        let earliest_version: i64 = 0;
+        // `get_latest_version` hits `_delta_log/` over S3 — same unretriable
+        // `HttpErrorKind::Unknown` risk as other open-path calls.
+        let latest_version = execute_with_retries(
+            || runtime.block_on(async { table.get_latest_version().await }),
+            RetryConfig::default(),
+            MAX_DELTA_OPEN_RETRIES,
+        )?;
         let snapshot = table.snapshot()?;
 
         let mut last_version_below_threshold = None;
@@ -808,7 +946,12 @@ impl DeltaTableReader {
             *snapshot_loading_needed = false;
         }
 
-        runtime.block_on(async { table.load_version(*current_version).await })?;
+        // `load_version` also hits `_delta_log/` — wrap it for the same reason.
+        execute_with_retries(
+            || runtime.block_on(async { table.load_version(*current_version).await }),
+            RetryConfig::default(),
+            MAX_DELTA_OPEN_RETRIES,
+        )?;
         Ok(())
     }
 
@@ -828,12 +971,12 @@ impl DeltaTableReader {
     #[allow(clippy::too_many_lines)]
     fn create_backfilling_files_queue(
         runtime: &TokioRuntime,
-        table: DeltaTable,
+        table: &DeltaTable,
         backfilling_thresholds: Vec<BackfillingThreshold>,
         column_types: &mut HashMap<String, Type>,
     ) -> Result<VecDeque<BackfillingEntry>, ReadError> {
         let mut binary_partition_columns = Vec::new();
-        for partition_column in table.metadata()?.partition_columns.clone() {
+        for partition_column in table.snapshot()?.metadata().partition_columns().clone() {
             let Some(type_) = column_types.get(&partition_column) else {
                 continue;
             };
@@ -844,10 +987,12 @@ impl DeltaTableReader {
 
         let backfilling_started_at = Instant::now();
         let ctx = DeltaSessionContext::new();
-        ctx.register_table("table", Arc::new(table))?;
+        register_table_object_store(&ctx, table);
+        let provider = runtime.block_on(async { table.table_provider().await })?;
+        ctx.register_table("table", provider)?;
         let mut df = runtime.block_on(async { ctx.table("table").await })?;
         for threshold in backfilling_thresholds {
-            let literal = Expr::Literal(Self::scalar_value_for_queries(&threshold.threshold));
+            let literal = Expr::Literal(Self::scalar_value_for_queries(&threshold.threshold), None);
             let column = col(threshold.field);
             df = match threshold.comparison_op.as_str() {
                 ">=" => df.filter(column.gt_eq(literal))?,
@@ -993,18 +1138,57 @@ impl DeltaTableReader {
         base_path: &str,
         column_types: &HashMap<String, Type>,
     ) -> Result<VecDeque<DeltaReaderAction>, ReadError> {
-        let history = runtime.block_on(async {
-            Ok::<Vec<DeltaTableCommitInfo>, ReadError>(table.history(None).await?)
-        })?;
-        Self::get_reader_actions(table, base_path, history, column_types)
+        // Read Add/Remove actions directly from the commit log instead of going through
+        // `EagerSnapshot::file_views()`. The latter re-encodes Binary partition values via
+        // `Scalar::serialize()`, producing a doubly-escaped string that cannot be decoded
+        // correctly on our side; reading the raw log bypasses this conversion.
+        let current_version = table.version().unwrap_or(-1);
+        // `table.history(None)` lists `_delta_log/` over S3 and `read_commit_entry`
+        // GETs each version file. Both are subject to the same unretriable
+        // `HttpErrorKind::Unknown` condition as `open_delta_table`; retry the whole
+        // read-only block on any error (idempotent — it just re-fetches log state).
+        let (history, file_actions) = execute_with_retries(
+            || {
+                runtime.block_on(async {
+                    let history: Vec<DeltaTableCommitInfo> = table.history(None).await?.collect();
+                    let mut adds: HashMap<String, deltalake::kernel::Add> = HashMap::new();
+                    for version in 0..=current_version {
+                        let Some(bytes) = table.log_store().read_commit_entry(version).await?
+                        else {
+                            continue;
+                        };
+                        for action in get_delta_actions(version, &bytes)? {
+                            match action {
+                                DeltaLakeAction::Add(add) => {
+                                    adds.insert(add.path.clone(), add);
+                                }
+                                DeltaLakeAction::Remove(remove) => {
+                                    adds.remove(&remove.path);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Ok::<_, ReadError>((history, adds.into_values().collect::<Vec<_>>()))
+                })
+            },
+            RetryConfig::default(),
+            MAX_DELTA_OPEN_RETRIES,
+        )?;
+        Ok(Self::get_reader_actions(
+            base_path,
+            history,
+            file_actions,
+            column_types,
+        ))
     }
 
     fn get_reader_actions(
-        table: &DeltaTable,
         base_path: &str,
         mut history: Vec<DeltaTableCommitInfo>,
+        file_actions: Vec<deltalake::kernel::Add>,
         column_types: &HashMap<String, Type>,
-    ) -> Result<VecDeque<DeltaReaderAction>, ReadError> {
+    ) -> VecDeque<DeltaReaderAction> {
         // Historical events without timestamps are useless for grouping parquet files
         // into atomically processed versions, therefore there is a need to remove them
         let original_history_len = history.len();
@@ -1014,9 +1198,7 @@ impl DeltaTableReader {
         }
         history.sort_by_key(|item| item.timestamp);
 
-        let mut actions_with_timestamp: Vec<_> = table
-            .snapshot()?
-            .file_actions()?
+        let mut actions_with_timestamp: Vec<_> = file_actions
             .into_iter()
             .map(|action| {
                 let partition_values =
@@ -1069,7 +1251,7 @@ impl DeltaTableReader {
         }
 
         info!("The first read of Delta table at {base_path} uses {n_total_versions} versions and {} parquet files", actions.len());
-        Ok(actions)
+        actions
     }
 
     fn ensure_absolute_path(&self, path: &str) -> String {
@@ -1192,12 +1374,13 @@ impl DeltaTableReader {
             self.parquet_files_queue.clear();
             let mut sleep_duration = DELTA_LAKE_INITIAL_POLL_DURATION;
             while self.parquet_files_queue.is_empty() {
-                let diff = self
+                let next_version = self.current_version + 1;
+                let commit_bytes = self
                     .table
                     .log_store()
-                    .peek_next_commit(self.current_version)
+                    .read_commit_entry(next_version)
                     .await?;
-                let DeltaLakePeekCommit::New(next_version, txn_actions) = diff else {
+                let Some(commit_bytes) = commit_bytes else {
                     if !is_polling_enabled {
                         break;
                     }
@@ -1209,6 +1392,7 @@ impl DeltaTableReader {
                     }
                     continue;
                 };
+                let txn_actions = get_delta_actions(next_version, &commit_bytes)?;
 
                 let mut added_blocks = VecDeque::new();
                 let mut data_changed = false;

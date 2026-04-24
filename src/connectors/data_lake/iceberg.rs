@@ -22,6 +22,7 @@ use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::location_generator::{
     DefaultFileNameGenerator, DefaultLocationGenerator,
 };
+use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::Catalog as IcebergCatalog;
@@ -254,7 +255,9 @@ impl IcebergBatchWriter {
         table: &IcebergTable,
     ) -> Result<
         DataFileWriterBuilder<
-            ParquetWriterBuilder<DefaultLocationGenerator, DefaultFileNameGenerator>,
+            ParquetWriterBuilder,
+            DefaultLocationGenerator,
+            DefaultFileNameGenerator,
         >,
         WriteError,
     > {
@@ -264,20 +267,17 @@ impl IcebergBatchWriter {
             None,
             iceberg::spec::DataFileFormat::Parquet,
         );
-        let partition_spec_id = table.metadata().default_partition_spec_id();
         let parquet_writer_builder = ParquetWriterBuilder::new(
             WriterProperties::default(),
             table.metadata().current_schema().clone(),
-            None,
-            table.file_io().clone(),
-            location_generator.clone(),
-            file_name_generator.clone(),
         );
-        Ok(DataFileWriterBuilder::new(
+        let rolling_file_writer_builder = RollingFileWriterBuilder::new_with_default_file_size(
             parquet_writer_builder,
-            None,
-            partition_spec_id,
-        ))
+            table.file_io().clone(),
+            location_generator,
+            file_name_generator,
+        );
+        Ok(DataFileWriterBuilder::new(rolling_file_writer_builder))
     }
 }
 
@@ -291,7 +291,7 @@ impl LakeBatchWriter for IcebergBatchWriter {
         let writer_builder = Self::create_writer_builder(&self.table)?;
         self.runtime.block_on(async {
             // Prepare a new data block
-            let mut data_file_writer = writer_builder.clone().build().await?;
+            let mut data_file_writer = writer_builder.build(None).await?;
             data_file_writer.write(batch).await?;
             let data_file = data_file_writer.close().await?;
 

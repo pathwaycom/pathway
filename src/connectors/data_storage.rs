@@ -354,7 +354,7 @@ pub enum ReadError {
     PersistenceNotSupported(StorageType),
 
     #[error(transparent)]
-    Kinesis(#[from] AwsKinesisError),
+    Kinesis(#[from] Box<AwsKinesisError>),
 
     #[error("malformed data")]
     MalformedData,
@@ -385,6 +385,14 @@ pub enum ReadError {
 
     #[error(transparent)]
     Rabbitmq(#[from] RabbitmqError),
+}
+
+// Allow `?` on unboxed `AwsKinesisError` in functions returning `Result<_, ReadError>`.
+// The variant holds a `Box` to keep the enum size small.
+impl From<AwsKinesisError> for ReadError {
+    fn from(e: AwsKinesisError) -> Self {
+        ReadError::Kinesis(Box::new(e))
+    }
 }
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, ReadError>`.

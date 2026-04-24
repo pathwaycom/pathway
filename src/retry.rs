@@ -25,6 +25,15 @@ impl RetryConfig {
 
     pub fn sleep_after_error(&mut self) {
         std::thread::sleep(self.sleep_duration);
+        self.advance_backoff();
+    }
+
+    pub async fn sleep_after_error_async(&mut self) {
+        tokio::time::sleep(self.sleep_duration).await;
+        self.advance_backoff();
+    }
+
+    fn advance_backoff(&mut self) {
         self.sleep_duration = self.sleep_duration.mul_f64(self.backoff_factor)
             + rng().random_range(Duration::ZERO..self.jitter);
     }

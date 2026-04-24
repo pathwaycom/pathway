@@ -341,10 +341,16 @@ def test_iceberg_different_types_serialization(backend, tmp_path, s3_path):
         "string": "abcdef",
         "binary_data": b"fedcba",
         "datetime_naive": pw.DateTimeNaive(year=2025, month=1, day=17),
-        "datetime_utc_aware": pw.DateTimeUtc(year=2025, month=1, day=17, tz=tz.UTC),
         "duration": pw.Duration(days=5),
         "json_data": pw.Json.parse('{"a": 15, "b": "hello"}'),
     }
+    # Glue/Hive has no type that preserves timezone on read-back; iceberg-rust 0.8+
+    # rejects Timestamptz/TimestamptzNs at write time instead of silently dropping the
+    # zone (apache/iceberg-rust#1925). Exercise the tz-aware roundtrip only on REST.
+    if backend != GLUE_BACKEND_NAME:
+        column_values["datetime_utc_aware"] = pw.DateTimeUtc(
+            year=2025, month=1, day=17, tz=tz.UTC
+        )
     table = pw.io.plaintext.read(input_path, mode="static")
     table = table.select(
         data=pw.this.data,
@@ -360,7 +366,7 @@ def test_iceberg_different_types_serialization(backend, tmp_path, s3_path):
     run()
     G.clear()
 
-    class InputSchema(pw.Schema):
+    class InputSchemaBase(pw.Schema):
         data: str = pw.column_definition(primary_key=True)
         boolean: bool
         integer: int
@@ -368,9 +374,15 @@ def test_iceberg_different_types_serialization(backend, tmp_path, s3_path):
         string: str
         binary_data: bytes
         datetime_naive: pw.DateTimeNaive
-        datetime_utc_aware: pw.DateTimeUtc
         duration: pw.Duration
         json_data: pw.Json
+
+    if backend == GLUE_BACKEND_NAME:
+        InputSchema = InputSchemaBase
+    else:
+
+        class InputSchema(InputSchemaBase):  # type: ignore[no-redef]
+            datetime_utc_aware: pw.DateTimeUtc
 
     class Checker:
         def __init__(self):

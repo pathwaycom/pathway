@@ -155,7 +155,8 @@ fn read_from_deltalake(path: &str, type_: &Type) -> Vec<Result<Value, Box<Conver
         .build()
         .unwrap()
         .block_on(async {
-            let table = deltalake::open_table(path).await.unwrap();
+            let table_url = deltalake::ensure_table_uri(path).unwrap();
+            let table = deltalake::open_table(table_url).await.unwrap();
             let mut parquet_files = Vec::<String>::new();
             for file_name in table.get_file_uris().unwrap() {
                 let full_path = Path::new(path).join(file_name);

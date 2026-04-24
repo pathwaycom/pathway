@@ -1,3 +1,5 @@
+import shutil
+
 import pytest
 
 from pathway.tests.utils import UniquePortDispenser
@@ -15,3 +17,12 @@ PORT_DISPENSER = UniquePortDispenser(
 @pytest.fixture
 def port(testrun_uid):
     yield PORT_DISPENSER.get_unique_port(testrun_uid)
+
+
+# Each wordcount case dumps hundreds of MB into tmp_path (input files and fs pstorage).
+# pytest's tmp_path is session-scoped for cleanup, so without this the whole suite's
+# ~100 cases pile up on disk and sporadically fill the Jenkins scratch partition.
+@pytest.fixture(autouse=True)
+def _cleanup_tmp_path(tmp_path):
+    yield
+    shutil.rmtree(tmp_path, ignore_errors=True)

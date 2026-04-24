@@ -338,17 +338,23 @@ impl Reader for RabbitmqReader {
                 // Validate: the saved offset must not exceed the stream's
                 // current last offset. A larger value indicates corrupted
                 // persistence data or a mismatched stream.
+                //
+                // If `probe_last_offset` returns `None` the stream is either empty
+                // or didn't deliver within the probe timeout; in both cases we
+                // can't positively confirm a message at `saved_offset` exists.
+                // Treating the tail as 0 means any `saved_offset > 0` fails fast
+                // here instead of letting the main consumer block forever on a
+                // seek to an out-of-range offset (static mode hangs otherwise).
                 let stream_last = self
                     .runtime
-                    .block_on(probe_last_offset(&self.environment, &self.stream_name));
-                if let Some(last) = stream_last {
-                    if *saved_offset > last {
-                        return Err(RabbitmqError::InvalidPersistedOffset {
-                            saved: *saved_offset,
-                            stream_last: last,
-                        }
-                        .into());
+                    .block_on(probe_last_offset(&self.environment, &self.stream_name))
+                    .unwrap_or(0);
+                if *saved_offset > stream_last {
+                    return Err(RabbitmqError::InvalidPersistedOffset {
+                        saved: *saved_offset,
+                        stream_last,
                     }
+                    .into());
                 }
 
                 let new_consumer = self

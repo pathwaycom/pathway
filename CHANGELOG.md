@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `pw.io.iceberg.write` to a Glue catalog no longer accepts `DateTimeUtc` columns. Glue's metastore has no timezone-aware timestamp type, so previous versions silently dropped the timezone on read-back; writes now fail with an explicit error instead of corrupting the zone. To store UTC timestamps in Glue, convert to `DateTimeNaive` with UTC-normalized values, or write through the REST catalog, which preserves the timezone.
+
 ## [0.30.1] - 2026-04-23
 
 ### Added
