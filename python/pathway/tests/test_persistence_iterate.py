@@ -971,8 +971,6 @@ def test_reduce_iterate_reduce_pipeline(persistence_mode, tmp_path):
         return {(grand,)}
 
     def do_run(changes, expected_diffs):
-        nonlocal all_sales
-
         for sid, data in changes.items():
             all_sales[sid] = data
             product, amount = data
