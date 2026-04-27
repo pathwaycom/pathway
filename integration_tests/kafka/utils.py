@@ -18,7 +18,11 @@ from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
 from rstream import AMQPMessage, Producer
-from rstream.exceptions import LeaderNotAvailable
+from rstream.exceptions import (
+    LeaderNotAvailable,
+    StreamDoesNotExist,
+    StreamNotAvailable,
+)
 
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
@@ -418,9 +422,18 @@ class RabbitmqTestContext:
             pass  # stream may already exist
         await self._wait_until_stream_ready(self.stream_name)
 
-    # create_stream returns before RabbitMQ elects a leader for the stream.
-    # If a consumer attaches during that window it fails with
-    # "Stream does not exist". Wait until the leader is available.
+    # create_stream returns before RabbitMQ has finished propagating the
+    # stream's metadata and electing a leader. During that window, querying
+    # the stream can yield any of:
+    #   * StreamDoesNotExist  — metadata not yet replicated to the broker
+    #     we're talking to (more likely on a multi-node cluster, but does
+    #     occur on a single node under load too);
+    #   * StreamNotAvailable  — metadata exists, but the stream's underlying
+    #     resources aren't ready (response_code 6, leader_ref=65535);
+    #   * LeaderNotAvailable  — leader election in progress.
+    # All three are transient. Retry until one of them clears or the
+    # timeout fires. Without this, the rabbitmq fixture errors at setup
+    # under heavy CI load.
     async def _wait_until_stream_ready(self, name: str, timeout: float = 30.0):
         client = await self._producer.default_client
         deadline = time.monotonic() + timeout
@@ -428,7 +441,7 @@ class RabbitmqTestContext:
             try:
                 await client.query_leader_and_replicas(name)
                 return
-            except LeaderNotAvailable:
+            except (StreamDoesNotExist, StreamNotAvailable, LeaderNotAvailable):
                 if time.monotonic() >= deadline:
                     raise
                 await asyncio.sleep(0.1)
