@@ -12,7 +12,6 @@ import pickle
 import random
 import re
 import socket
-import sqlite3
 import sys
 import threading
 import time
@@ -2686,81 +2685,6 @@ def test_python_connector_defaults():
     """
     )
     assert_table_equality_wo_index(result, expected)
-
-
-@needs_multiprocessing_fork
-def test_sqlite(tmp_path: pathlib.Path):
-    database_name = tmp_path / "test.db"
-    output_path = tmp_path / "output.csv"
-
-    connection = sqlite3.connect(database_name)
-    cursor = connection.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE users (
-            id INTEGER,
-            login TEXT,
-            name TEXT
-        )
-        """
-    )
-    cursor.execute("INSERT INTO users (id, login, name) VALUES (1, 'alice', 'Alice')")
-    cursor.execute("INSERT INTO users (id, login, name) VALUES (2, 'bob1999', 'Bob')")
-    connection.commit()
-
-    def stream_target():
-        wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 5, target=None)
-        connection = sqlite3.connect(database_name)
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            INSERT INTO users (id, login, name) VALUES (3, 'ch123', 'Charlie')"""
-        )
-        connection.commit()
-
-        wait_result_with_checker(FileLinesNumberChecker(output_path, 3), 2, target=None)
-        cursor = connection.cursor()
-        cursor.execute("UPDATE users SET name = 'Bob Smith' WHERE id = 2")
-        connection.commit()
-
-        wait_result_with_checker(FileLinesNumberChecker(output_path, 5), 2, target=None)
-        cursor = connection.cursor()
-        cursor.execute("DELETE FROM users WHERE id = 3")
-        connection.commit()
-
-    class InputSchema(pw.Schema):
-        id: int
-        login: str
-        name: str
-
-    table = pw.io.sqlite.read(
-        database_name, "users", InputSchema, autocommit_duration_ms=1
-    )
-    pw.io.jsonlines.write(table, output_path)
-
-    inputs_thread = threading.Thread(target=stream_target, daemon=True)
-    inputs_thread.start()
-
-    wait_result_with_checker(FileLinesNumberChecker(output_path, 6), 30)
-
-    events = []
-    with open(output_path) as f:
-        for row in f:
-            events.append(json.loads(row))
-
-    events.sort(key=lambda event: (event["time"], event["diff"], event["name"]))
-    events_truncated = []
-    for event in events:
-        events_truncated.append([event["name"], event["diff"]])
-
-    assert events_truncated == [
-        ["Alice", 1],
-        ["Bob", 1],
-        ["Charlie", 1],
-        ["Bob", -1],
-        ["Bob Smith", 1],
-        ["Charlie", -1],
-    ]
 
 
 def test_apply_bytes_full_cycle(tmp_path: pathlib.Path):

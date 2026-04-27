@@ -38,7 +38,7 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
         ("price".to_string(), Type::Float),
         ("photo".to_string(), Type::Optional(Type::Bytes.into())),
     ];
-    let mut reader = SqliteReader::new(connection, "goods".to_string(), value_field_names);
+    let mut reader = SqliteReader::new(connection, "goods".to_string(), value_field_names, None)?;
     let mut read_results = Vec::new();
     loop {
         let entry = reader.read()?;
@@ -125,7 +125,7 @@ fn test_sqlite_read_table_with_parser() -> eyre::Result<()> {
         .into_iter()
         .map(|(name, dtype)| (name, InnerSchemaField::new(dtype, None)))
         .collect();
-    let mut reader = SqliteReader::new(connection, "goods".to_string(), schema);
+    let mut reader = SqliteReader::new(connection, "goods".to_string(), schema, None)?;
     let mut parser =
         TransparentParser::new(None, value_field_names, schema_map, SessionType::Native)?;
 
@@ -187,7 +187,7 @@ fn test_sqlite_read_table_nonparsable() -> eyre::Result<()> {
         .into_iter()
         .map(|(name, dtype)| (name, InnerSchemaField::new(dtype, None)))
         .collect();
-    let mut reader = SqliteReader::new(connection, "goods".to_string(), schema.clone());
+    let mut reader = SqliteReader::new(connection, "goods".to_string(), schema.clone(), None)?;
     let parser = TransparentParser::new(None, value_field_names, schema_map, SessionType::Native)?;
 
     reader.read()?;

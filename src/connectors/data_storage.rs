@@ -89,7 +89,6 @@ use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedPr
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
 use rdkafka::Message;
 use rdkafka::TopicPartitionList;
-use rusqlite::Error as SqliteError;
 use serde::{Deserialize, Serialize};
 
 pub use super::data_lake::delta::{
@@ -106,7 +105,7 @@ pub use super::postgres::{
     PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
 pub use super::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
-pub use super::sqlite::SqliteReader;
+pub use super::sqlite::{SqliteError, SqliteReader, SqliteWriter};
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -308,7 +307,7 @@ pub enum ReadError {
     #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
     S3(S3CommandName, S3Error),
 
-    #[error("failed to perform Sqlite request: {0}")]
+    #[error(transparent)]
     Sqlite(#[from] SqliteError),
 
     #[error(transparent)]
@@ -757,6 +756,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     Mysql(#[from] MysqlError),
+
+    #[error(transparent)]
+    Sqlite(#[from] SqliteError),
 
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
@@ -2002,10 +2004,20 @@ impl SqlQueryTemplate {
             };
 
             let primary_key_indices = Self::primary_key_indices(value_fields, key_field_names)?;
-            let tokens: Vec<_> = key_field_names
+            // DELETE tokens must follow `primary_key_indices` order rather
+            // than the user-supplied `key_field_names` order, because
+            // `primary_key_fields` (the function that selects the bound
+            // parameters for DELETE) permutes the parameter vector into
+            // the sorted-positional order that `primary_key_indices`
+            // encodes. If the two disagreed, the DELETE would compare
+            // each column against the wrong value on retractions,
+            // silently failing to remove the row.
+            let tokens: Vec<_> = primary_key_indices
                 .iter()
                 .enumerate()
-                .map(|(i, name)| format!("{name}={}", wildcard_by_index(i)))
+                .map(|(i, pkey_idx)| {
+                    format!("{}={}", value_fields[*pkey_idx].name, wildcard_by_index(i))
+                })
                 .collect();
             let deletion = format!("DELETE FROM {table_name} WHERE {}", tokens.join(" AND "));
             Ok(SqlQueryTemplate::Snapshot {

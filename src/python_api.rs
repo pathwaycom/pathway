@@ -115,7 +115,7 @@ use crate::connectors::data_storage::{
     MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader,
     PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, TableWriterInitMode, WriteError, Writer,
+    ReaderBuilder, SqliteReader, SqliteWriter, TableWriterInitMode, WriteError, Writer,
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
@@ -6135,8 +6135,34 @@ impl DataStorage {
             connection,
             table_name,
             data_format.value_fields_type_map(py).into_iter().collect(),
-        );
+            data_format.key_field_names.clone(),
+        )
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok((Box::new(reader), 1))
+    }
+
+    fn construct_sqlite_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<Box<dyn Writer>> {
+        let connection = SqliteConnection::open(self.path()?).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to open Sqlite connection: {e}"))
+        })?;
+        let table_name = self.table_name.clone().ok_or_else(|| {
+            PyValueError::new_err("For Sqlite connector, table_name should be specified")
+        })?;
+        let writer = SqliteWriter::new(
+            connection,
+            table_name,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+            self.snapshot_maintenance_on_output,
+            self.table_writer_init_mode,
+            self.max_batch_size,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Unable to initialize SQLite table: {e}")))?;
+        Ok(Box::new(writer))
     }
 
     fn construct_mssql_reader(
@@ -7090,6 +7116,7 @@ impl DataStorage {
             "kinesis" => self.construct_kinesis_writer(license),
             "mssql" => self.construct_mssql_writer(py, data_format, license),
             "mysql" => self.construct_mysql_writer(py, data_format, license),
+            "sqlite" => self.construct_sqlite_writer(py, data_format),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
