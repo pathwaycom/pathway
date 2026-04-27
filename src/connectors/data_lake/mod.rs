@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use arcstr::ArcStr;
 use deltalake::arrow::array::types::{
-    ArrowDictionaryKeyType, DurationMicrosecondType, DurationMillisecondType,
-    DurationNanosecondType, DurationSecondType, Float16Type, Float32Type, Float64Type, Int16Type,
-    Int32Type, Int64Type, Int8Type, TimestampMicrosecondType, TimestampMillisecondType,
-    TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+    ArrowDictionaryKeyType, Decimal128Type, Decimal256Type, DurationMicrosecondType,
+    DurationMillisecondType, DurationNanosecondType, DurationSecondType, Float16Type, Float32Type,
+    Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type,
+    UInt64Type, UInt8Type,
 };
 use deltalake::arrow::array::{
     Array as ArrowArray, ArrowPrimitiveType, AsArray, OffsetSizeTrait,
@@ -99,6 +100,17 @@ pub trait LakeBatchWriter: Send {
     fn settings(&self) -> LakeWriterSettings;
 
     fn name(&self) -> String;
+
+    /// Override the Arrow storage type for individual user columns. Returned by writers
+    /// that want to coerce a Pathway column onto an existing destination column whose
+    /// type is more specific than what `arrow_data_type` would derive from the Pathway
+    /// type alone — for example, writing a Pathway `str` column into an existing Delta
+    /// `decimal(p, s)` column. The conversion at row time is performed by the matching
+    /// arm of `array_for_type`. Default: empty (use the type derived from the Pathway
+    /// schema).
+    fn arrow_type_overrides(&self) -> HashMap<String, ArrowDataType> {
+        HashMap::new()
+    }
 }
 
 type ParsedValue = Result<Value, Box<ConversionError>>;
@@ -132,10 +144,38 @@ pub fn parquet_value_into_pathway_value(
         (ParquetValue::Null, _) => Some(Value::None),
         (ParquetValue::Bool(b), Type::Bool | Type::Any) => Some(Value::from(*b)),
         (ParquetValue::Long(i), Type::Int | Type::Any) => Some(Value::from(*i)),
+        (ParquetValue::Int(i), Type::Int | Type::Any) => Some(Value::from(i64::from(*i))),
+        (ParquetValue::Short(i), Type::Int | Type::Any) => Some(Value::from(i64::from(*i))),
+        (ParquetValue::Byte(i), Type::Int | Type::Any) => Some(Value::from(i64::from(*i))),
+        (ParquetValue::UInt(i), Type::Int | Type::Any) => Some(Value::from(i64::from(*i))),
+        (ParquetValue::UShort(i), Type::Int | Type::Any) => Some(Value::from(i64::from(*i))),
+        (ParquetValue::UByte(i), Type::Int | Type::Any) => Some(Value::from(i64::from(*i))),
+        (ParquetValue::ULong(i), Type::Int | Type::Any) => i64::try_from(*i).ok().map(Value::from),
         (ParquetValue::Long(i), Type::Duration) => Some(Value::from(
             EngineDuration::new_with_unit(*i, "us").unwrap(),
         )),
         (ParquetValue::Double(f), Type::Float | Type::Any) => Some(Value::Float((*f).into())),
+        (ParquetValue::Float(f), Type::Float | Type::Any) => {
+            Some(Value::Float(f64::from(*f).into()))
+        }
+        (ParquetValue::Float16(f), Type::Float | Type::Any) => {
+            Some(Value::Float(f64::from(*f).into()))
+        }
+        // Pathway has no Decimal type. Delta `decimal(p,s)` columns are commonly produced
+        // by Spark / pandas / DuckDB. Two read mappings are supported, depending on the
+        // Pathway type the user declared in their schema:
+        //   - Type::Float | Type::Any: convert through f64. Lossy in general (binary
+        //     representation, ~15-17 significant decimal digits of mantissa). The reader
+        //     emits a one-shot warning at startup naming the affected columns.
+        //   - Type::String: format the unscaled integer with the column's scale and pass
+        //     the resulting decimal text through unchanged. Lossless for the full
+        //     precision range supported by Delta (up to 38 digits).
+        (ParquetValue::Decimal(d), Type::Float | Type::Any) => {
+            decimal_field_to_f64(d).map(|f| Value::Float(f.into()))
+        }
+        (ParquetValue::Decimal(d), Type::String) => {
+            decimal_field_to_string(d).map(|s| Value::String(s.into()))
+        }
         (ParquetValue::Str(s), Type::String | Type::Any) => Some(Value::String(s.into())),
         (ParquetValue::Str(s), Type::Pointer) => parse_pathway_pointer(s).ok(),
         (ParquetValue::Str(s), Type::Json) => serde_json::from_str::<serde_json::Value>(s)
@@ -146,6 +186,28 @@ pub fn parquet_value_into_pathway_value(
         )),
         (ParquetValue::TimestampMicros(us), Type::DateTimeUtc) => {
             Some(Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap()))
+        }
+        // Delta Lake's spec says timestamps are microsecond precision; Pathway always
+        // writes them that way. External tools sometimes produce parquet files with
+        // millisecond-precision timestamps — accept those too on read.
+        (ParquetValue::TimestampMillis(ms), Type::DateTimeNaive | Type::Any) => Some(Value::from(
+            DateTimeNaive::from_timestamp(*ms, "ms").unwrap(),
+        )),
+        (ParquetValue::TimestampMillis(ms), Type::DateTimeUtc) => {
+            Some(Value::from(DateTimeUtc::from_timestamp(*ms, "ms").unwrap()))
+        }
+        // Pathway has no native Date type; Delta `date` columns are days since the Unix epoch.
+        // Materialize them at midnight so they fit DateTimeNaive / DateTimeUtc — the only
+        // sensible mapping that preserves the calendar day.
+        (ParquetValue::Date(days), Type::DateTimeNaive | Type::Any) => {
+            DateTimeNaive::from_timestamp(i64::from(*days), "D")
+                .ok()
+                .map(Value::from)
+        }
+        (ParquetValue::Date(days), Type::DateTimeUtc) => {
+            DateTimeUtc::from_timestamp(i64::from(*days), "D")
+                .ok()
+                .map(Value::from)
         }
         (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => Some(Value::Bytes(b.data().into())),
         (ParquetValue::Bytes(b), Type::PyObjectWrapper) => {
@@ -345,6 +407,57 @@ fn column_into_pathway_values(
             convert_arrow_array::<f16, Float16Type>(column, |v| {
                 Ok(Value::Float(Into::<f64>::into(v).into()))
             })
+        }
+        (ArrowDataType::Decimal128(_, scale), Type::Float | Type::Any) => {
+            let divisor = 10f64.powi(i32::from(*scale));
+            convert_arrow_array::<i128, Decimal128Type>(column, |v| {
+                // The cast is documented-lossy: this whole arm is the "decimal as
+                // float" path that warns at startup. Arm for Type::String just below
+                // is the lossless route.
+                #[allow(clippy::cast_precision_loss)]
+                let unscaled = v as f64;
+                Ok(Value::Float((unscaled / divisor).into()))
+            })
+        }
+        (ArrowDataType::Decimal128(_, scale), Type::String) => {
+            let scale = i32::from(*scale);
+            convert_arrow_array::<i128, Decimal128Type>(column, |v| {
+                Ok(Value::String(
+                    format_decimal_str(&v.to_string(), scale).into(),
+                ))
+            })
+        }
+        (ArrowDataType::Decimal256(_, scale), Type::Float | Type::Any) => {
+            // arrow's i256 doesn't expose a native `as f64` — go through its `to_string`
+            // and re-parse, which is exact for values fitting f64 and a graceful approximation
+            // for the (rare) larger ones.
+            let scale_div = 10f64.powi(i32::from(*scale));
+            let arr = column.as_primitive::<Decimal256Type>();
+            arr.into_iter()
+                .map(|v| match v {
+                    Some(v) => match v.to_string().parse::<f64>() {
+                        Ok(f) => Ok(Value::Float((f / scale_div).into())),
+                        Err(_) => Err(Box::new(conversion_error(
+                            &v.to_string(),
+                            column_name,
+                            expected_type,
+                        ))),
+                    },
+                    None => Ok(Value::None),
+                })
+                .collect()
+        }
+        (ArrowDataType::Decimal256(_, scale), Type::String) => {
+            let scale = i32::from(*scale);
+            let arr = column.as_primitive::<Decimal256Type>();
+            arr.into_iter()
+                .map(|v| match v {
+                    Some(v) => Ok(Value::String(
+                        format_decimal_str(&v.to_string(), scale).into(),
+                    )),
+                    None => Ok(Value::None),
+                })
+                .collect()
         }
         (ArrowDataType::Boolean, Type::Bool | Type::Any) => convert_arrow_boolean_array(column),
         (ArrowDataType::Utf8, Type::String | Type::Json | Type::Pointer | Type::Any) => {
@@ -757,6 +870,85 @@ fn convert_arrow_timestamp_array_utc(
             Err(e) => Err(e),
         })
         .collect()
+}
+
+/// Insert the implicit decimal point into the textual unscaled value, padding with
+/// leading zeros when the magnitude is below 1. Lossless for any precision: the
+/// caller hands us the unscaled integer formatted as decimal text (e.g. via
+/// `i128::to_string()` or `arrow::i256::to_string()`), so this routine never goes
+/// through floating-point.
+fn format_decimal_str(unscaled_str: &str, scale: i32) -> String {
+    if scale <= 0 {
+        return unscaled_str.to_string();
+    }
+    // Bounded by Delta's spec maximum precision of 38, so safe to widen.
+    let scale_u = usize::try_from(scale).expect("scale is non-negative above");
+    let (sign, abs) = unscaled_str
+        .strip_prefix('-')
+        .map_or(("", unscaled_str), |s| ("-", s));
+    if abs.len() > scale_u {
+        let split = abs.len() - scale_u;
+        format!("{}{}.{}", sign, &abs[..split], &abs[split..])
+    } else {
+        let zeros = "0".repeat(scale_u - abs.len());
+        format!("{sign}0.{zeros}{abs}")
+    }
+}
+
+fn decimal_field_to_string(d: &deltalake::parquet::data_type::Decimal) -> Option<String> {
+    let bytes = d.data();
+    let unscaled = match bytes.len() {
+        n @ 1..=16 => {
+            let mut buf = if (bytes[0] & 0x80) != 0 {
+                [0xffu8; 16]
+            } else {
+                [0u8; 16]
+            };
+            buf[16 - n..].copy_from_slice(bytes);
+            i128::from_be_bytes(buf)
+        }
+        // Larger fixed-len-byte-array encodings (Decimal up to 38 digits fit in 16
+        // bytes; anything wider is non-spec for Delta). Fall through and let the
+        // caller surface a conversion error.
+        _ => return None,
+    };
+    Some(format_decimal_str(&unscaled.to_string(), d.scale()))
+}
+
+// Cast to f64 is documented-lossy: Pathway warns at startup that values exceeding
+// f64's mantissa lose precision through this path, and the lossless alternative
+// (read the column as Pathway `str`) is right above this function.
+#[allow(clippy::cast_precision_loss)]
+fn decimal_field_to_f64(d: &deltalake::parquet::data_type::Decimal) -> Option<f64> {
+    // Delta `decimal(p, s)` is encoded by the parquet writer as INT32 / INT64 /
+    // FIXED_LEN_BYTE_ARRAY of the unscaled big-endian two's-complement value, with
+    // `precision` and `scale` carried as logical-type metadata. Reconstruct the
+    // unscaled integer in the widest representation we can fit and divide by 10^scale.
+    let bytes = d.data();
+    let unscaled = match bytes.len() {
+        n @ 1..=8 => {
+            // Sign-extend big-endian two's-complement into i64.
+            let mut buf = if (bytes[0] & 0x80) != 0 {
+                [0xffu8; 8]
+            } else {
+                [0u8; 8]
+            };
+            buf[8 - n..].copy_from_slice(bytes);
+            i64::from_be_bytes(buf) as f64
+        }
+        n @ 9..=16 => {
+            let mut buf = if (bytes[0] & 0x80) != 0 {
+                [0xffu8; 16]
+            } else {
+                [0u8; 16]
+            };
+            buf[16 - n..].copy_from_slice(bytes);
+            i128::from_be_bytes(buf) as f64
+        }
+        _ => return None,
+    };
+    let divisor = 10f64.powi(d.scale());
+    Some(unscaled / divisor)
 }
 
 fn conversion_error(v: &str, name: &str, expected_type: &Type) -> ConversionError {

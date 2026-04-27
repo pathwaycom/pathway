@@ -4,9 +4,10 @@ use std::sync::Arc;
 use deltalake::arrow::array::Array as ArrowArray;
 use deltalake::arrow::array::{
     BinaryArray as ArrowBinaryArray, BooleanArray as ArrowBooleanArray, BooleanBufferBuilder,
-    Float64Array as ArrowFloat64Array, Int64Array as ArrowInt64Array,
-    LargeBinaryArray as ArrowLargeBinaryArray, LargeListArray as ArrowLargeListArray,
-    ListArray as ArrowListArray, StringArray as ArrowStringArray, StructArray as ArrowStructArray,
+    Decimal128Array as ArrowDecimal128Array, Float64Array as ArrowFloat64Array,
+    Int64Array as ArrowInt64Array, LargeBinaryArray as ArrowLargeBinaryArray,
+    LargeListArray as ArrowLargeListArray, ListArray as ArrowListArray,
+    StringArray as ArrowStringArray, StructArray as ArrowStructArray,
     TimestampMicrosecondArray as ArrowTimestampMsArray,
     TimestampNanosecondArray as ArrowTimestampNsArray,
 };
@@ -28,6 +29,7 @@ use crate::engine::value::Handle;
 use crate::engine::{Type, Value};
 use crate::python_api::ValueField;
 
+#[allow(clippy::too_many_lines)] // one match arm per supported Arrow type — reads naturally as a long table.
 pub fn array_for_type(
     type_: &ArrowDataType,
     values: &[Value],
@@ -118,11 +120,117 @@ pub fn array_for_type(
                 ArrowTimestampNsArray::from(v).with_timezone(&**tz),
             ))
         }
+        ArrowDataType::Decimal128(precision, scale) => {
+            let precision = *precision;
+            let scale = *scale;
+            let v = array_of_simple_type::<i128>(values, |v| match v {
+                Value::String(s) => parse_decimal_string(s, precision, scale).map_err(|reason| {
+                    WriteError::from(DecimalSerializationError {
+                        value: s.to_string(),
+                        precision,
+                        scale,
+                        reason,
+                    })
+                }),
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            let array = ArrowDecimal128Array::from(v).with_precision_and_scale(precision, scale)?;
+            Ok(Arc::new(array))
+        }
         ArrowDataType::List(nested_type) => array_of_lists(values, nested_type, false),
         ArrowDataType::LargeList(nested_type) => array_of_lists(values, nested_type, true),
         ArrowDataType::Struct(nested_struct) => array_of_structs(values, nested_struct.as_ref()),
         _ => panic!("provided type {type_} is unknown to the engine"),
     }
+}
+
+/// Reasons a Pathway `str` value can't be encoded into a Delta `decimal(p, s)`
+/// column at write time. Wrapped by `DeltaError::DecimalSerialization` (and
+/// thus surfaced as `WriteError::Delta`), naming the offending value, the
+/// column's precision and scale, and the specific constraint it violated.
+#[derive(Debug, thiserror::Error)]
+#[error("value {value:?} cannot be encoded as decimal({precision}, {scale}): {reason}")]
+pub struct DecimalSerializationError {
+    pub value: String,
+    pub precision: u8,
+    pub scale: i8,
+    pub reason: String,
+}
+
+/// Parse decimal text (e.g. `"100.50"`, `"-200.25"`, `"0.001"`) into the unscaled
+/// `i128` representation Arrow's `Decimal128` array expects, validated against the
+/// column's precision and scale. The returned `Err(reason)` is just the textual
+/// explanation; the caller wraps it into `DecimalSerializationError` together
+/// with the offending value and the target column's shape.
+///
+/// Accepted forms: optional leading `+` / `-`; one optional decimal point; ASCII
+/// digits only on either side. Scientific notation, currency symbols, thousand
+/// separators, and trailing whitespace beyond what `str::trim` removes are all
+/// rejected. Fractional digits beyond the column's `scale` are rejected (we error
+/// rather than round, so the round-trip preserves the user's input bit-for-bit
+/// when it fits, and surfaces precision loss when it doesn't).
+pub(crate) fn parse_decimal_string(s: &str, precision: u8, scale: i8) -> Result<i128, String> {
+    if scale < 0 {
+        return Err(format!("negative scale {scale} is not supported"));
+    }
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("empty string".to_string());
+    }
+    let (negative, body) = match trimmed.as_bytes()[0] {
+        b'-' => (true, &trimmed[1..]),
+        b'+' => (false, &trimmed[1..]),
+        _ => (false, trimmed),
+    };
+    if body.is_empty() {
+        return Err("missing digits after sign".to_string());
+    }
+    let (int_part, frac_part) = match body.find('.') {
+        Some(idx) => (&body[..idx], &body[idx + 1..]),
+        None => (body, ""),
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
+        return Err("missing digits".to_string());
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err("contains non-digit characters".to_string());
+    }
+    // We rejected `scale < 0` above, so the cast is safe — bounded by `i8::MAX`.
+    let scale_usize = usize::try_from(scale).expect("scale is non-negative");
+    let frac_len = frac_part.len();
+    if frac_len > scale_usize {
+        return Err(format!(
+            "{frac_len} fractional digits exceeds column scale {scale}"
+        ));
+    }
+    let int_significant = int_part.trim_start_matches('0');
+    let pad = scale_usize - frac_len;
+    let total_significant = int_significant.len() + frac_len + pad;
+    if total_significant > usize::from(precision) {
+        return Err(format!(
+            "{total_significant} significant digits exceeds column precision {precision}"
+        ));
+    }
+    // Build the unscaled integer string. `int_part` may be empty (".5") and
+    // `frac_part` may be shorter than `scale` (we right-pad with zeros). Keep
+    // leading zeros on `int_part` here — they don't affect the value.
+    let mut combined = String::with_capacity(int_part.len() + frac_part.len() + pad);
+    combined.push_str(int_part);
+    combined.push_str(frac_part);
+    for _ in 0..pad {
+        combined.push('0');
+    }
+    let combined = if combined.is_empty() {
+        "0"
+    } else {
+        combined.as_str()
+    };
+    let unscaled: i128 = combined
+        .parse()
+        .map_err(|_| format!("internal parse error for unscaled string {combined:?}"))?;
+    Ok(if negative { -unscaled } else { unscaled })
 }
 
 fn array_of_simple_type<ElementType>(
@@ -351,19 +459,25 @@ pub fn construct_schema(
 ) -> Result<ArrowSchema, WriteError> {
     let settings = writer.settings();
     let metadata_per_column = writer.metadata_per_column();
+    let arrow_type_overrides = writer.arrow_type_overrides();
     let mut schema_fields: Vec<ArrowField> = Vec::new();
     for field in value_fields {
         let metadata = metadata_per_column
             .get(&field.name)
             .unwrap_or(&HashMap::new())
             .clone();
+        // The writer may override the storage type for individual columns to match
+        // an existing destination schema (e.g. a Pathway `str` column written into a
+        // pre-existing Delta `decimal(p, s)` column). The user-declared Pathway type
+        // and the Arrow type can therefore disagree; the row-conversion path in
+        // `array_for_type` decides whether the value is convertible.
+        let arrow_type = match arrow_type_overrides.get(&field.name) {
+            Some(t) => t.clone(),
+            None => arrow_data_type(&field.type_, &settings)?,
+        };
         schema_fields.push(
-            ArrowField::new(
-                field.name.clone(),
-                arrow_data_type(&field.type_, &settings)?,
-                field.type_.can_be_none(),
-            )
-            .with_metadata(metadata),
+            ArrowField::new(field.name.clone(), arrow_type, field.type_.can_be_none())
+                .with_metadata(metadata),
         );
     }
     for (field, type_) in mode.additional_output_fields() {
@@ -377,4 +491,91 @@ pub fn construct_schema(
         );
     }
     Ok(ArrowSchema::new(schema_fields))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_decimal_string;
+
+    #[test]
+    fn decimal_string_happy_path() {
+        // Pathway str -> Arrow Decimal128 unscaled i128, with various shapes.
+        assert_eq!(parse_decimal_string("100.50", 8, 2), Ok(10050));
+        assert_eq!(parse_decimal_string("-200.25", 8, 2), Ok(-20025));
+        assert_eq!(parse_decimal_string("100", 8, 2), Ok(10000));
+        assert_eq!(parse_decimal_string("100.5", 8, 2), Ok(10050));
+        assert_eq!(parse_decimal_string("0", 4, 2), Ok(0));
+        assert_eq!(parse_decimal_string("0.00", 4, 2), Ok(0));
+        assert_eq!(parse_decimal_string(".5", 3, 2), Ok(50));
+        assert_eq!(parse_decimal_string("1.", 3, 2), Ok(100));
+        assert_eq!(parse_decimal_string("+100.50", 8, 2), Ok(10050));
+        assert_eq!(parse_decimal_string("  100.50  ", 8, 2), Ok(10050));
+        // 38-digit decimal value at the edge of Decimal128's range.
+        assert_eq!(
+            parse_decimal_string("1234567890123456789012345678.9012345678", 38, 10),
+            Ok(12_345_678_901_234_567_890_123_456_789_012_345_678),
+        );
+        // Leading zeros don't count toward precision.
+        assert_eq!(parse_decimal_string("00001.5", 3, 2), Ok(150));
+    }
+
+    #[test]
+    fn decimal_string_too_many_fractional_digits_errors_clearly() {
+        let err = parse_decimal_string("100.555", 8, 2).unwrap_err();
+        assert!(
+            err.contains("fractional digits") && err.contains("scale"),
+            "expected scale-violation message, got {err}"
+        );
+    }
+
+    #[test]
+    fn decimal_string_exceeds_precision_errors_clearly() {
+        let err = parse_decimal_string("10000.00", 6, 2).unwrap_err();
+        assert!(
+            err.contains("precision"),
+            "expected precision-violation message, got {err}"
+        );
+    }
+
+    #[test]
+    fn decimal_string_non_digit_errors_clearly() {
+        let err = parse_decimal_string("abc", 8, 2).unwrap_err();
+        assert!(
+            err.contains("non-digit"),
+            "expected non-digit message, got {err}"
+        );
+        let err = parse_decimal_string("1.5e2", 8, 2).unwrap_err();
+        assert!(
+            err.contains("non-digit"),
+            "scientific notation is rejected, got {err}"
+        );
+        let err = parse_decimal_string("1,000.5", 8, 2).unwrap_err();
+        assert!(
+            err.contains("non-digit"),
+            "thousand separators rejected, got {err}"
+        );
+    }
+
+    #[test]
+    fn decimal_string_empty_errors_clearly() {
+        assert!(parse_decimal_string("", 8, 2)
+            .unwrap_err()
+            .contains("empty"));
+        assert!(parse_decimal_string("   ", 8, 2)
+            .unwrap_err()
+            .contains("empty"));
+        assert!(parse_decimal_string("-", 8, 2)
+            .unwrap_err()
+            .contains("missing"));
+        assert!(parse_decimal_string(".", 8, 2)
+            .unwrap_err()
+            .contains("missing digits"));
+    }
+
+    #[test]
+    fn decimal_string_negative_scale_unsupported() {
+        assert!(parse_decimal_string("100", 8, -2)
+            .unwrap_err()
+            .contains("negative scale"));
+    }
 }

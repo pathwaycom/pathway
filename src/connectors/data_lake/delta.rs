@@ -44,8 +44,9 @@ use tempfile::tempfile;
 use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
-    columns_into_pathway_values, parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings,
-    MaintenanceMode, MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
+    arrow::DecimalSerializationError, columns_into_pathway_values, parquet_row_into_values_map,
+    LakeBatchWriter, LakeWriterSettings, MaintenanceMode, MetadataPerColumn,
+    PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{
@@ -63,7 +64,8 @@ use crate::connectors::{
     StorageType, WriteError, SPECIAL_FIELD_TIME,
 };
 use crate::engine::time::{DateTime, DateTimeNaive};
-use crate::engine::{Type, Value};
+use crate::engine::value::parse_pathway_pointer;
+use crate::engine::{Duration as EngineDuration, Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::{BackfillingThreshold, ValueField};
 use crate::retry::{execute_with_retries, RetryConfig};
@@ -205,12 +207,86 @@ impl fmt::Display for SchemaMismatchDetails {
     }
 }
 
+/// Aggregate of every Delta-Lake-related failure surfaced by the connector. Lives
+/// at the `data_lake::delta` level so `WriteError` and `ReadError` each only need
+/// a single `Delta(DeltaError)` variant; the specific failure mode (deltalake-rs
+/// backend error, schema mismatch on an existing table, an unsupported feature
+/// like deletion vectors, or a value that can't be encoded as a particular
+/// `decimal(p, s)` shape) is captured here.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DeltaError {
+    #[error(transparent)]
+    Backend(#[from] DeltaTableError),
+
+    #[error("delta table schema mismatch: {0}")]
+    SchemaMismatch(SchemaMismatchDetails),
+
+    #[error(transparent)]
+    DecimalSerialization(#[from] DecimalSerializationError),
+
+    #[error("deletion vectors in delta tables are not supported")]
+    DeletionVectorsNotSupported,
+}
+
+// `?` on `DeltaTableError` / `DecimalSerializationError` only walks one `From`
+// step, so it cannot reach `WriteError`/`ReadError` through `DeltaError` on its
+// own. These bridge impls let any `?` site inside delta.rs (and the few in
+// arrow.rs) stay clean while still routing through `DeltaError`.
+
+impl From<DeltaTableError> for ReadError {
+    fn from(e: DeltaTableError) -> Self {
+        ReadError::Delta(DeltaError::Backend(e))
+    }
+}
+
+impl From<DeltaTableError> for WriteError {
+    fn from(e: DeltaTableError) -> Self {
+        WriteError::Delta(DeltaError::Backend(e))
+    }
+}
+
+impl From<DecimalSerializationError> for WriteError {
+    fn from(e: DecimalSerializationError) -> Self {
+        WriteError::Delta(DeltaError::DecimalSerialization(e))
+    }
+}
+
+/// Precision and scale of a Delta `decimal(precision, scale)` column, in the
+/// shapes Arrow's `Decimal128` expects (`precision: u8`, `scale: i8`).
+#[derive(Clone, Copy, Debug)]
+pub struct DecimalShape {
+    pub precision: u8,
+    pub scale: i8,
+}
+
+/// Result of opening (or creating) the destination Delta table for a write,
+/// returned by `DeltaBatchWriter::open_table`. Carries the table handle plus
+/// the bits the writer needs at row time:
+///
+/// * `metadata_per_column` — the Arrow metadata recorded on each column of the
+///   existing table, surfaced to the writer so column-level metadata such as
+///   the Pathway-attached schema description survives a round-trip.
+/// * `decimal_overrides` — for each user-declared Pathway `str` column whose
+///   existing destination column is a Delta `decimal(p, s)`, the
+///   (precision, scale) pair to encode values into. Surfaced via
+///   `LakeBatchWriter::arrow_type_overrides` so `construct_schema` builds the
+///   matching `Decimal128` Arrow type and `array_for_type` parses string
+///   values into the unscaled `i128`. Empty in the common case where types
+///   match between Pathway schema and existing Delta column.
+pub struct OpenedDeltaTable {
+    pub table: DeltaTable,
+    pub metadata_per_column: MetadataPerColumn,
+    pub decimal_overrides: HashMap<String, DecimalShape>,
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct DeltaBatchWriter {
     table: DeltaTable,
     writer: DTRecordBatchWriter,
     metadata_per_column: MetadataPerColumn,
     optimizer_rule: Option<DeltaOptimizerRule>,
+    decimal_overrides: HashMap<String, DecimalShape>,
 }
 
 impl DeltaBatchWriter {
@@ -222,30 +298,32 @@ impl DeltaBatchWriter {
         table_type: MaintenanceMode,
         optimizer_rule: Option<DeltaOptimizerRule>,
     ) -> Result<Self, WriteError> {
-        let (table, metadata_per_column) = Self::open_table(
+        let opened = Self::open_table(
             path,
             value_fields,
             storage_options,
             partition_columns,
             table_type,
         )?;
-        let writer = DTRecordBatchWriter::for_table(&table)?;
+        let writer = DTRecordBatchWriter::for_table(&opened.table)?;
         Ok(Self {
-            table,
+            table: opened.table,
             writer,
-            metadata_per_column,
+            metadata_per_column: opened.metadata_per_column,
             optimizer_rule,
+            decimal_overrides: opened.decimal_overrides,
         })
     }
 
     #[allow(clippy::needless_pass_by_value)] // cloned on each retry attempt
+    #[allow(clippy::too_many_lines)] // table-creation flow with retries + schema-compatibility detection.
     pub fn open_table(
         path: &str,
         schema_fields: &Vec<ValueField>,
         storage_options: HashMap<String, String>,
         partition_columns: Vec<String>,
         table_type: MaintenanceMode,
-    ) -> Result<(DeltaTable, MetadataPerColumn), WriteError> {
+    ) -> Result<OpenedDeltaTable, WriteError> {
         let mut struct_fields = Vec::new();
         for field in schema_fields {
             let mut metadata = Vec::new();
@@ -317,8 +395,53 @@ impl DeltaBatchWriter {
             })
             .collect();
 
+        // Detect-and-cast: when the user declares a column as Pathway `str` but the
+        // existing Delta column is `decimal(p, s)`, treat the pair as compatible and
+        // record the (precision, scale) so the writer knows to parse each row's
+        // string into the unscaled integer at write time. Anything else still goes
+        // through the standard schema-compliance check below.
+        let mut decimal_overrides: HashMap<String, DecimalShape> = HashMap::new();
+        for field in schema_fields {
+            if !matches!(field.type_.unoptionalize(), Type::String) {
+                continue;
+            }
+            let Some(existing) = existing_schema.get(&field.name) else {
+                continue;
+            };
+            if let DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Decimal(d)) =
+                existing.data_type()
+            {
+                // The Delta protocol caps `decimal(p, s)` at p ≤ 38 and 0 ≤ s ≤ p,
+                // well within i8's range, so this conversion can't fail for any
+                // table that conforms to the spec.
+                let scale =
+                    i8::try_from(d.scale()).expect("Delta-spec decimal scale always fits in i8");
+                decimal_overrides.insert(
+                    field.name.clone(),
+                    DecimalShape {
+                        precision: d.precision(),
+                        scale,
+                    },
+                );
+            }
+        }
+        // Patch the user-derived struct_fields so the existing Delta column's type
+        // matches what we'll actually write. Leaves user-side metadata in place; only
+        // the data_type is replaced.
+        for sf in &mut struct_fields {
+            if decimal_overrides.contains_key(&sf.name) {
+                if let Some(existing) = existing_schema.get(&sf.name) {
+                    sf.data_type = existing.data_type().clone();
+                }
+            }
+        }
+
         Self::ensure_schema_compliance(&existing_schema, &struct_fields)?;
-        Ok((table, metadata_per_column))
+        Ok(OpenedDeltaTable {
+            table,
+            metadata_per_column,
+            decimal_overrides,
+        })
     }
 
     fn ensure_schema_compliance(
@@ -362,9 +485,9 @@ impl DeltaBatchWriter {
                 missing_in_user_schema,
                 mismatching_types,
             };
-            Err(WriteError::DeltaTableSchemaMismatch(
+            Err(WriteError::Delta(DeltaError::SchemaMismatch(
                 schema_mismatch_details,
-            ))
+            )))
         } else {
             Ok(())
         }
@@ -620,6 +743,18 @@ impl LakeBatchWriter for DeltaBatchWriter {
     fn name(&self) -> String {
         format!("DeltaTable({})", self.table.table_url())
     }
+
+    fn arrow_type_overrides(&self) -> HashMap<String, ArrowDataType> {
+        self.decimal_overrides
+            .iter()
+            .map(|(name, shape)| {
+                (
+                    name.clone(),
+                    ArrowDataType::Decimal128(shape.precision, shape.scale),
+                )
+            })
+            .collect()
+    }
 }
 
 pub enum ObjectDownloader {
@@ -836,6 +971,31 @@ impl DeltaTableReader {
             .unwrap_or(false);
         if !has_primary_key && !is_append_only {
             return Err(ReadError::PrimaryKeyRequired);
+        }
+        // Preflight: if any Delta `decimal(p, s)` column is being read into Pathway
+        // `Float`, warn once at construction time. The conversion goes through f64 and
+        // is lossy in general — the user can opt into the lossless path by declaring
+        // the column as `str` in their Pathway schema, in which case the value is
+        // formatted as decimal text and passed through unchanged.
+        for field in table.snapshot()?.schema().fields() {
+            let Some(user_type) = column_types.get(field.name()) else {
+                continue;
+            };
+            if !matches!(user_type.unoptionalize(), Type::Float) {
+                continue;
+            }
+            if let DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Decimal(dec)) =
+                field.data_type()
+            {
+                warn!(
+                    "DeltaTable column '{}' is decimal({}, {}); reading it as Pathway 'float' \
+                     will lose precision. Declare the column as 'str' in the Pathway schema \
+                     to read it losslessly as decimal text.",
+                    field.name(),
+                    dec.precision(),
+                    dec.scale(),
+                );
+            }
         }
         let mut current_version = table.version().unwrap_or(0);
 
@@ -1349,6 +1509,19 @@ impl DeltaTableReader {
                 Type::Bytes => {
                     Self::decode_escaped_binary(serialized_value).map(|x| Value::Bytes(x.into()))
                 }
+                // Pathway types stored as primitive Delta types: their delta_table_type maps
+                // them to string/long, which are valid Delta partition columns.
+                // The serialized partition value is a plain string (Pointer / JSON) or the
+                // decimal text of a microsecond Long (Duration); decode them with the same
+                // routines used for non-partition columns so writes round-trip on read.
+                Type::Pointer => parse_pathway_pointer(serialized_value).ok(),
+                Type::Json => serde_json::from_str::<serde_json::Value>(serialized_value)
+                    .ok()
+                    .map(Value::from),
+                Type::Duration => serialized_value
+                    .parse::<i64>()
+                    .ok()
+                    .map(|us| Value::from(EngineDuration::new_with_unit(us, "us").unwrap())),
                 _ => None,
             };
             if let Some(parsed_value) = parsed_value {
@@ -1402,7 +1575,9 @@ impl DeltaTableReader {
                     let action = match action {
                         DeltaLakeAction::Remove(action) => {
                             if action.deletion_vector.is_some() {
-                                return Err(ReadError::DeltaDeletionVectorsNotSupported);
+                                return Err(ReadError::Delta(
+                                    DeltaError::DeletionVectorsNotSupported,
+                                ));
                             }
                             data_changed |= action.data_change;
                             let action_path = self.ensure_absolute_path(&action.path);
@@ -1542,9 +1717,15 @@ impl Reader for DeltaTableReader {
     }
 
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        // The offset denotes the last fully processed Delta Table version.
-        // Then, the `seek` loads this checkpoint and ensures that no diffs
-        // from the current version will be applied.
+        // Delta versions are transactional, so persisted offsets are committed
+        // only at version boundaries (`CommitPossibility::Forced` is emitted by
+        // `read_next_row_native` only on the last block of a version). Seek
+        // therefore resumes from the next version regardless of where within
+        // the saved version the previous run was: just position at
+        // `saved_version` and let the streaming path pull `saved_version + 1`
+        // onward. `rows_read_within_version` stays in the offset payload for
+        // back-compat and for emitting unique offsets at runtime, but it does
+        // not steer recovery here.
         let offset_value = frontier.get_offset(&OffsetKey::Empty);
         let Some(OffsetValue::DeltaTablePosition { version, .. }) = offset_value else {
             if offset_value.is_some() {
@@ -1556,10 +1737,15 @@ impl Reader for DeltaTableReader {
         self.reader = None;
         let runtime = create_async_tokio_runtime()?;
 
-        // The last saved offset corresponds to the last version that has been read in full
         self.current_version = *version;
         runtime.block_on(async { self.table.load_version(self.current_version).await })?;
         self.parquet_files_queue.clear();
+        // The constructor populates `backfilling_entries_queue` from the table's
+        // snapshot at construction time; re-emitting it on restart would replay
+        // rows the previous run already committed via persistence. Drop it and
+        // let the streaming path emit anything from `saved_version + 1` onward.
+        self.backfilling_entries_queue.clear();
+        self.rows_read_within_version = 0;
 
         Ok(())
     }

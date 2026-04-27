@@ -28,7 +28,6 @@ use deltalake::arrow::error::ArrowError;
 use deltalake::datafusion::common::DataFusionError;
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::parquet::errors::ParquetError;
-use deltalake::DeltaTableError;
 use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
@@ -91,9 +90,7 @@ use rdkafka::Message;
 use rdkafka::TopicPartitionList;
 use serde::{Deserialize, Serialize};
 
-pub use super::data_lake::delta::{
-    DeltaTableReader, ObjectDownloader, SchemaMismatchDetails as DeltaSchemaMismatchDetails,
-};
+pub use super::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
 pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
@@ -311,7 +308,7 @@ pub enum ReadError {
     Sqlite(#[from] SqliteError),
 
     #[error(transparent)]
-    DeltaTable(#[from] DeltaTableError),
+    Delta(#[from] DeltaError),
 
     #[error(transparent)]
     Postgres(#[from] postgres::Error),
@@ -366,9 +363,6 @@ pub enum ReadError {
 
     #[error("parquet value type mismatch: got {0:?} expected {1:?}")]
     WrongParquetType(ParquetValue, Type),
-
-    #[error("deletion vectors in delta tables are not supported")]
-    DeltaDeletionVectorsNotSupported,
 
     #[error("explicit primary key specification is required for non-append-only tables")]
     PrimaryKeyRequired,
@@ -686,7 +680,7 @@ pub enum WriteError {
     Bincode(#[from] BincodeError),
 
     #[error(transparent)]
-    DeltaTable(#[from] DeltaTableError),
+    Delta(#[from] DeltaError),
 
     #[error(transparent)]
     Arrow(#[from] ArrowError),
@@ -762,9 +756,6 @@ pub enum WriteError {
 
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
-
-    #[error("delta table schema mismatch: {0}")]
-    DeltaTableSchemaMismatch(DeltaSchemaMismatchDetails),
 
     #[error("table {0} doesn't exist in the destination storage")]
     TableDoesNotExist(String),

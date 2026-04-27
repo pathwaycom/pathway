@@ -418,6 +418,23 @@ def read(
     or ``s3a://``, and provide the credentials object as a parameter. If no credentials
     are provided but the path starts with ``s3://`` or ``s3a://``, Pathway will use the
     credentials of the currently authenticated user.
+
+    **Reading Delta** ``decimal(p, s)`` **columns.** Pathway has no native ``Decimal`` type,
+    so a Delta ``decimal`` column has to be projected onto something else, and the choice
+    is driven by the Pathway type declared in the schema:
+
+    * Declaring the column as ``float`` converts each value through ``f64``. This is
+      lossy in general — both because ``f64`` is binary (e.g. ``0.1`` is not exact) and
+      because its mantissa carries only ~15-17 significant decimal digits. The reader
+      emits a one-time warning at startup naming each affected column.
+    * Declaring the column as ``str`` formats the unscaled integer with the column's
+      scale and passes the resulting decimal text through unchanged (e.g.
+      ``decimal(8, 2)`` value ``10050`` becomes ``"100.50"``). This is lossless for the
+      full Delta precision range (up to 38 digits).
+
+    The symmetric write path, described in ``pw.io.deltalake.write``, lets you preserve
+    a Delta ``decimal(p, s)`` column type across a Pathway pipeline: read it as ``str``,
+    process it as text, and write it back into the same Delta column.
     """
     _check_entitlements("deltalake")
     prepared_connection_settings = _prepare_s3_connection_settings(
@@ -594,6 +611,23 @@ def write(
     can be simplified as follows:
 
     >>> pw.io.deltalake.write(access_log, "s3://logs/access-log/")  # doctest: +SKIP
+
+    **Writing to existing Delta** ``decimal(p, s)`` **columns.** When the destination
+    Delta table already has a ``decimal(p, s)`` column and the Pathway column written
+    into it has type ``str``, the writer parses each row's decimal text into the
+    underlying unscaled integer and stores it as a fixed-point value of the column's
+    declared precision and scale — no f64 detour, no precision loss. This is the
+    symmetric counterpart to reading a Delta ``decimal`` column as ``str``: a Delta
+    ``decimal`` column read into Pathway, processed as text, and written back into the
+    same Delta column round-trips with no loss.
+
+    A string that can't be parsed as a decimal of the column's shape (non-digit
+    characters, more fractional digits than the column's scale, or more total digits
+    than its precision) fails the write with an error message naming the offending
+    value, the column's precision and scale, and the specific constraint it violated.
+    Tables that don't contain a ``decimal`` column are unaffected: writing a Pathway
+    ``str`` column into a fresh table or into an existing Delta ``string`` column
+    behaves exactly as before.
     """
     _check_entitlements("deltalake")
     prepared_connection_settings = _prepare_s3_connection_settings(

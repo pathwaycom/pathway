@@ -110,10 +110,10 @@ use crate::connectors::data_lake::delta::DeltaOptimizerRule;
 use crate::connectors::data_lake::iceberg::{IcebergBatchWriter, IcebergTableParams};
 use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
-    ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
-    KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter,
-    MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader,
-    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
+    ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader,
+    KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader,
+    MqttWriter, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
+    PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
     ReaderBuilder, SqliteReader, SqliteWriter, TableWriterInitMode, WriteError, Writer,
     MQTT_CLIENT_MAX_CHANNEL_SIZE,
@@ -6772,7 +6772,9 @@ impl DataStorage {
         .map_err(|e| {
             let error_text = format!("Unable to create DeltaTable writer: {e}");
             match e {
-                WriteError::DeltaTableSchemaMismatch(_) => PyTypeError::new_err(error_text),
+                WriteError::Delta(DeltaError::SchemaMismatch(_)) => {
+                    PyTypeError::new_err(error_text)
+                }
                 _ => PyIOError::new_err(error_text),
             }
         })?;
