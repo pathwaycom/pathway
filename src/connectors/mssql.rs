@@ -27,9 +27,43 @@ use crate::engine::time::DateTime as DateTimeTrait;
 use crate::engine::{Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
-use crate::retry::{execute_with_retries, RetryConfig};
+use crate::retry::{execute_with_retries_if, RetryConfig};
 
 const MAX_MSSQL_RETRIES: usize = 3;
+
+/// SQL Server error 1205: transaction chosen as deadlock victim.  Microsoft's
+/// documented contract is "rerun the transaction"; the read/write paths here
+/// hit it under heavy parallelism because every CREATE/DROP fires
+/// `sys.sp_cdc_ddl_event_internal` (database-level CDC trigger) and every
+/// `cdc.fn_cdc_get_all_changes_*` query competes with the capture agent for
+/// the same metadata locks.
+const MSSQL_ERR_DEADLOCK_VICTIM: u32 = 1205;
+
+/// Classify an MSSQL error as transient: only deadlock-victim (1205) and the
+/// kernel-level ephemeral-port exhaustion that surfaces inside tiberius's
+/// `connect(2)` as `EADDRNOTAVAIL` ("Cannot assign requested address").
+/// Everything else — auth failures, missing tables, syntax errors, persisted
+/// LSN out of retention — is permanent and propagates on the first attempt
+/// so callers see real bugs without backoff latency.
+fn is_transient_mssql(err: &MssqlError) -> bool {
+    match err {
+        MssqlError::ConnectionFailed { reason } => {
+            reason.contains("Cannot assign requested address")
+        }
+        MssqlError::Driver(tiberius::error::Error::Server(token)) => {
+            token.code() == MSSQL_ERR_DEADLOCK_VICTIM
+        }
+        _ => false,
+    }
+}
+
+fn is_transient_read(err: &ReadError) -> bool {
+    matches!(err, ReadError::Mssql(m) if is_transient_mssql(m))
+}
+
+fn is_transient_write(err: &WriteError) -> bool {
+    matches!(err, WriteError::Mssql(m) if is_transient_mssql(m))
+}
 
 type MssqlClient = Client<Compat<TcpStream>>;
 
@@ -461,54 +495,68 @@ impl MssqlReader {
         let schema_name = self.schema_name.clone();
         let table_name = self.table_name.clone();
         let config = self.config.clone();
+        let runtime = &self.runtime;
 
-        let outcome = self.runtime.block_on(async {
-            let mut client = connect_mssql(&config)
-                .await
-                .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?;
+        // Retry the whole probe on 1205/EADDRNOTAVAIL — both read-only,
+        // idempotent, with a fresh connection per attempt.
+        let outcome = execute_with_retries_if(
+            || {
+                runtime.block_on(async {
+                    let mut client = connect_mssql(&config)
+                        .await
+                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?;
 
-            let row = client
-                .simple_query("SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()")
-                .await
-                .map_err(mssql_read_err)?
-                .into_row()
-                .await
-                .map_err(mssql_read_err)?;
-            if let Some(row) = &row {
-                let enabled: Option<bool> = row.get(0);
-                if enabled != Some(true) {
-                    if cdc_required {
-                        return Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnDatabase));
+                    let row = client
+                        .simple_query(
+                            "SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()",
+                        )
+                        .await
+                        .map_err(mssql_read_err)?
+                        .into_row()
+                        .await
+                        .map_err(mssql_read_err)?;
+                    if let Some(row) = &row {
+                        let enabled: Option<bool> = row.get(0);
+                        if enabled != Some(true) {
+                            if cdc_required {
+                                return Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnDatabase));
+                            }
+                            return Ok::<Option<String>, ReadError>(None);
+                        }
                     }
-                    return Ok::<Option<String>, ReadError>(None);
-                }
-            }
 
-            let qualified_name = qualified_table_name(&schema_name, &table_name);
-            let query = format!(
-                "SELECT capture_instance FROM cdc.change_tables \
-                 WHERE source_object_id = OBJECT_ID(N'{qualified_name}')"
-            );
-            let row = client
-                .simple_query(&query)
-                .await
-                .map_err(mssql_read_err)?
-                .into_row()
-                .await
-                .map_err(mssql_read_err)?;
+                    let qualified_name = qualified_table_name(&schema_name, &table_name);
+                    let query = format!(
+                        "SELECT capture_instance FROM cdc.change_tables \
+                         WHERE source_object_id = OBJECT_ID(N'{qualified_name}')"
+                    );
+                    let row = client
+                        .simple_query(&query)
+                        .await
+                        .map_err(mssql_read_err)?
+                        .into_row()
+                        .await
+                        .map_err(mssql_read_err)?;
 
-            match row {
-                Some(row) => {
-                    let instance: Option<&str> = row.get(0);
-                    Ok(Some(instance.unwrap_or("").to_string()))
-                }
-                None if cdc_required => Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnTable {
-                    schema: schema_name,
-                    table: table_name,
-                })),
-                None => Ok(None),
-            }
-        })?;
+                    match row {
+                        Some(row) => {
+                            let instance: Option<&str> = row.get(0);
+                            Ok(Some(instance.unwrap_or("").to_string()))
+                        }
+                        None if cdc_required => {
+                            Err(ReadError::Mssql(MssqlError::CdcNotEnabledOnTable {
+                                schema: schema_name.clone(),
+                                table: table_name.clone(),
+                            }))
+                        }
+                        None => Ok(None),
+                    }
+                })
+            },
+            is_transient_read,
+            RetryConfig::default(),
+            MAX_MSSQL_RETRIES,
+        )?;
 
         if let Some(capture_instance) = outcome {
             self.capture_instance = capture_instance;
@@ -599,6 +647,50 @@ impl MssqlReader {
         Ok((min_lsn, max_lsn))
     }
 
+    /// Run `body` against a tiberius client, retrying on transient errors
+    /// (1205 deadlock victim, EADDRNOTAVAIL on connect).  Reuses the cached
+    /// connection from `self.client` for the first attempt; on retry drops it
+    /// and reconnects (a tiberius session can be left in a poisoned state
+    /// after a server-side rollback).  Restores the working connection to
+    /// `self.client` on success and clears it on permanent failure.
+    fn block_on_with_retry<T, F>(&mut self, mut body: F) -> Result<T, ReadError>
+    where
+        F: AsyncFnMut(&mut MssqlClient) -> Result<T, ReadError>,
+    {
+        let mut client_opt = self.client.take();
+        let config = self.config.clone();
+        let runtime = &self.runtime;
+        let mut attempt: usize = 0;
+        let result = execute_with_retries_if(
+            || {
+                if attempt > 0 {
+                    client_opt = None;
+                }
+                attempt += 1;
+                runtime.block_on(async {
+                    if client_opt.is_none() {
+                        client_opt = Some(
+                            connect_mssql(&config)
+                                .await
+                                .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
+                        );
+                    }
+                    let client = client_opt.as_mut().unwrap();
+                    body(client).await
+                })
+            },
+            is_transient_read,
+            RetryConfig::default(),
+            MAX_MSSQL_RETRIES,
+        );
+        if result.is_err() {
+            self.client = None;
+        } else {
+            self.client = client_opt;
+        }
+        result
+    }
+
     /// Resume-path loader: fetch the CDC changes in (`saved_lsn`, current max
     /// LSN] and emit them as a single `NewSource`/`FinishedSource` block
     /// stamped with the current max LSN, so the whole catch-up window commits
@@ -613,19 +705,7 @@ impl MssqlReader {
         let schema = self.schema.clone();
         let key_column_names = self.key_column_names.clone();
 
-        let mut client_opt = self.client.take();
-        let config = self.config.clone();
-
-        let result = self.runtime.block_on(async {
-            if client_opt.is_none() {
-                client_opt = Some(
-                    connect_mssql(&config)
-                        .await
-                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
-                );
-            }
-            let client = client_opt.as_mut().unwrap();
-
+        let (changes, new_max_lsn) = self.block_on_with_retry(async |client| {
             let (min_lsn, max_lsn) =
                 Self::fetch_capture_instance_lsn_bounds(client, &capture_instance).await?;
 
@@ -658,14 +738,7 @@ impl MssqlReader {
             .await
             .map_err(classify_resume_cdc_error)?;
             Ok((rows, Some(to_lsn)))
-        });
-
-        if result.is_err() {
-            self.client = None;
-        } else {
-            self.client = client_opt;
-        }
-        let (changes, new_max_lsn) = result?;
+        })?;
 
         if !changes.is_empty() {
             self.snapshot_version += 1;
@@ -980,26 +1053,7 @@ impl MssqlReader {
         let schema = self.schema.clone();
         let capture_instance = self.capture_instance.clone();
 
-        // Keep the client around when we intend to keep polling (streaming)
-        // or when we needed CDC to capture an LSN (static + CDC).  A plain
-        // static read on a non-CDC table can discard the client afterwards.
-        let mut client_opt = if streaming || tracks_lsn {
-            self.client.take()
-        } else {
-            None
-        };
-        let config = self.config.clone();
-
-        let result = self.runtime.block_on(async {
-            if client_opt.is_none() {
-                client_opt = Some(
-                    connect_mssql(&config)
-                        .await
-                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
-                );
-            }
-            let client = client_opt.as_mut().unwrap();
-
+        let (rows, max_lsn, gap_changes) = self.block_on_with_retry(async |client| {
             // Step 1: record LSN before snapshot read.
             // Retry until the CDC capture agent has processed at least one
             // transaction (fn_cdc_get_max_lsn returns NULL until then).
@@ -1036,16 +1090,7 @@ impl MssqlReader {
                 };
 
             Ok::<_, ReadError>((rows, lsn_after.or(lsn_before), gap_changes))
-        });
-
-        if streaming || tracks_lsn {
-            if result.is_err() {
-                self.client = None;
-            } else {
-                self.client = client_opt;
-            }
-        }
-        let (rows, max_lsn, gap_changes) = result?;
+        })?;
 
         self.snapshot_version += 1;
         // Stamp the whole snapshot block — original rows + gap CDC rows — with
@@ -1108,19 +1153,7 @@ impl MssqlReader {
         let schema = self.schema.clone();
         let key_column_names = self.key_column_names.clone();
 
-        let mut client_opt = self.client.take();
-        let config = self.config.clone();
-
-        let result = self.runtime.block_on(async {
-            if client_opt.is_none() {
-                client_opt = Some(
-                    connect_mssql(&config)
-                        .await
-                        .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
-                );
-            }
-            let client = client_opt.as_mut().unwrap();
-
+        let (changes, new_max_lsn) = self.block_on_with_retry(async |client| {
             let lsn_row = client
                 .simple_query("SELECT sys.fn_cdc_get_max_lsn()")
                 .await
@@ -1133,7 +1166,7 @@ impl MssqlReader {
                 lsn_row.and_then(|r| r.get::<&[u8], _>(0).map(<[u8]>::to_vec));
 
             if new_max_lsn.as_ref() == Some(&from_lsn) {
-                return Ok::<_, ReadError>((Vec::new(), Some(from_lsn)));
+                return Ok::<_, ReadError>((Vec::new(), Some(from_lsn.clone())));
             }
 
             let Some(to_lsn) = &new_max_lsn else {
@@ -1150,14 +1183,7 @@ impl MssqlReader {
             .await?;
 
             Ok((rows, new_max_lsn))
-        });
-
-        if result.is_err() {
-            self.client = None;
-        } else {
-            self.client = client_opt;
-        }
-        let (changes, new_max_lsn) = result?;
+        })?;
 
         if !changes.is_empty() {
             self.snapshot_version += 1;
@@ -1309,24 +1335,40 @@ impl MssqlWriter {
             }
         }
 
-        // Establish connection and execute initialization queries
-        let client = runtime.block_on(async {
-            let mut client = connect_mssql(&config)
-                .await
-                .map_err(|e| WriteError::Mssql(classify_mssql_error(e)))?;
+        // Establish connection and execute initialization queries with
+        // 1205/EADDRNOTAVAIL retry.  Both init queries are idempotent —
+        // ``DROP TABLE IF EXISTS`` is a no-op when the table is already
+        // gone, and ``IF OBJECT_ID(N'…', N'U') IS NULL CREATE TABLE …`` is
+        // a no-op when it already exists — so re-running the whole sequence
+        // is safe.  Each retry opens a fresh tiberius connection: the
+        // ``sys.sp_cdc_ddl_event_internal`` trigger that fires on every
+        // CREATE/DROP (in databases with database-level CDC enabled) is the
+        // dominant 1205 source here, and a clean session avoids carrying
+        // any post-rollback state forward.
+        let client = execute_with_retries_if(
+            || {
+                runtime.block_on(async {
+                    let mut client = connect_mssql(&config)
+                        .await
+                        .map_err(|e| WriteError::Mssql(classify_mssql_error(e)))?;
 
-            if let Ok((version, edition)) = detect_server_version(&mut client).await {
-                info!("Connected to MSSQL Server: version={version}, edition={edition}");
-            }
+                    if let Ok((version, edition)) = detect_server_version(&mut client).await {
+                        info!("Connected to MSSQL Server: version={version}, edition={edition}");
+                    }
 
-            for query in &init_queries {
-                client
-                    .execute(query.as_str(), &[])
-                    .await
-                    .map_err(mssql_write_err)?;
-            }
-            Ok::<_, WriteError>(client)
-        })?;
+                    for query in &init_queries {
+                        client
+                            .execute(query.as_str(), &[])
+                            .await
+                            .map_err(mssql_write_err)?;
+                    }
+                    Ok::<_, WriteError>(client)
+                })
+            },
+            is_transient_write,
+            RetryConfig::default(),
+            MAX_MSSQL_RETRIES,
+        )?;
 
         let merge_query = if snapshot_mode {
             key_field_names.map(|keys| build_merge_query(&full_table_name, value_fields, keys))
@@ -1658,8 +1700,9 @@ impl Writer for MssqlWriter {
             return Ok(());
         }
 
-        execute_with_retries(
+        execute_with_retries_if(
             || self.flush_impl(),
+            is_transient_write,
             RetryConfig::default(),
             MAX_MSSQL_RETRIES,
         )?;

@@ -4,6 +4,7 @@ import datetime
 import json
 import multiprocessing
 import pathlib
+import random
 import threading
 import time
 import traceback
@@ -466,20 +467,10 @@ def test_mssql_read_basic(mssql, tmp_path):
     t = threading.Thread(target=run_pw, daemon=True)
     t.start()
 
-    # Wait for output to appear
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if output_path.exists():
-            lines = output_path.read_text().strip().split("\n")
-            if len(lines) >= 3:
-                break
-        time.sleep(0.5)
-
-    assert output_path.exists()
-    lines = output_path.read_text().strip().split("\n")
-    assert len(lines) >= 3
-
-    records = [json.loads(line) for line in lines]
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path, 3), timeout_sec=30, target=None
+    )
+    records = [json.loads(line) for line in output_path.read_text().splitlines()]
     sensor_names = sorted([r["sensor_name"] for r in records])
     assert sensor_names == ["A", "B", "C"]
 
@@ -531,19 +522,16 @@ def test_mssql_read_write_roundtrip(mssql, tmp_path):
     t = threading.Thread(target=run_pw, daemon=True)
     t.start()
 
-    # Wait for output table to be populated
-    deadline = time.time() + 30
-    while time.time() < deadline:
+    def _output_table_has_three_rows() -> bool:
         try:
-            contents = mssql.get_table_contents(
-                output_table, ["name", "value", "score"]
+            return (
+                len(mssql.get_table_contents(output_table, ["name", "value", "score"]))
+                >= 3
             )
-            if len(contents) >= 3:
-                break
         except Exception:
-            pass
-        time.sleep(0.5)
+            return False
 
+    wait_result_with_checker(_output_table_has_three_rows, timeout_sec=30, target=None)
     contents = mssql.get_table_contents(output_table, ["name", "value", "score"])
     contents.sort(key=lambda item: item["name"])
     assert len(contents) == 3
@@ -558,6 +546,57 @@ def test_mssql_read_write_roundtrip(mssql, tmp_path):
     assert contents[2]["score"] == 255
 
 
+def _start_mssql_cdc_streaming_reader(
+    table_name: str,
+    schema: type[pw.Schema],
+    output_path: pathlib.Path,
+) -> multiprocessing.Process:
+    """Start ``pw.io.mssql.read(mode='streaming') -> jsonlines.write`` in a
+    forked process.
+
+    A forked subprocess (instead of a daemon thread) is mandatory: the engine
+    keeps polling CDC indefinitely, and the test must be able to *stop* it
+    before the fixture cleanup drops the table.  With a daemon thread there
+    was no way to signal the engine to quit — the cleanup dropped the table
+    while the thread was still polling, and the engine then thrashed CDC
+    queries against a non-existent capture instance for as long as the thread
+    survived (every retry opening a fresh TCP connection).  Across xdist
+    workers that thrash exhausted the host's ephemeral source-port range and
+    starved unrelated tests of MSSQL connections, which is what was tipping
+    the persistence tests over their 60 s checker timeout.
+
+    Caller is responsible for terminating + joining the returned process.
+    """
+
+    def worker():
+        G.clear()
+        table = pw.io.mssql.read(
+            connection_string=MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            schema=schema,
+            mode="streaming",
+            autocommit_duration_ms=100,
+        )
+        pw.io.jsonlines.write(table, str(output_path))
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    proc = multiprocessing.Process(target=worker, daemon=True)
+    proc.start()
+    return proc
+
+
+def _stop_mssql_cdc_streaming_reader(proc: multiprocessing.Process) -> None:
+    """Reverse of ``_start_mssql_cdc_streaming_reader``: SIGTERM, fall back to
+    SIGKILL if the engine doesn't exit promptly.  Always called in a finally
+    so a failing assertion still drains the engine before fixture teardown.
+    """
+    proc.terminate()
+    proc.join(timeout=10)
+    if proc.is_alive():
+        proc.kill()
+        proc.join()
+
+
 def test_mssql_cdc_read_inserts(mssql, tmp_path):
     """Test CDC reader detects inserts in real-time."""
     table_name = mssql.random_table_name()
@@ -567,10 +606,7 @@ def test_mssql_cdc_read_inserts(mssql, tmp_path):
         f"  name NVARCHAR(100) NOT NULL"
         f")"
     )
-    # Enable CDC on the table
     mssql.enable_cdc(table_name)
-
-    # Insert initial data
     mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
     mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
 
@@ -579,49 +615,20 @@ def test_mssql_cdc_read_inserts(mssql, tmp_path):
         name: str
 
     output_path = tmp_path / "cdc_output.jsonl"
-
-    table = pw.io.mssql.read(
-        connection_string=MSSQL_CONNECTION_STRING,
-        table_name=table_name,
-        schema=TestSchema,
-        mode="streaming",
-        autocommit_duration_ms=100,
-    )
-    pw.io.jsonlines.write(table, str(output_path))
-
-    def run_pw():
-        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
-
-    t = threading.Thread(target=run_pw, daemon=True)
-    t.start()
-
-    # Wait for initial snapshot
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if output_path.exists():
-            lines = output_path.read_text().strip().split("\n")
-            if len(lines) >= 2:
-                break
-        time.sleep(0.5)
-
-    assert output_path.exists()
-    lines = output_path.read_text().strip().split("\n")
-    assert len(lines) >= 2
-
-    # Insert more data — CDC should pick it up
-    mssql.insert_row(table_name, {"id": 3, "name": "Charlie"})
-
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        lines = output_path.read_text().strip().split("\n")
-        if len(lines) >= 3:
-            break
-        time.sleep(0.5)
-
-    lines = output_path.read_text().strip().split("\n")
-    records = [json.loads(line) for line in lines]
-    names = sorted([r["name"] for r in records])
-    assert "Charlie" in names
+    proc = _start_mssql_cdc_streaming_reader(table_name, TestSchema, output_path)
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), timeout_sec=30, target=None
+        )
+        mssql.insert_row(table_name, {"id": 3, "name": "Charlie"})
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), timeout_sec=30, target=None
+        )
+        records = [json.loads(line) for line in output_path.read_text().splitlines()]
+        names = sorted(r["name"] for r in records)
+        assert "Charlie" in names
+    finally:
+        _stop_mssql_cdc_streaming_reader(proc)
 
 
 def test_mssql_cdc_read_updates(mssql, tmp_path):
@@ -634,7 +641,6 @@ def test_mssql_cdc_read_updates(mssql, tmp_path):
         f")"
     )
     mssql.enable_cdc(table_name)
-
     mssql.insert_row(table_name, {"id": 1, "value": "original"})
 
     class TestSchema(pw.Schema):
@@ -642,46 +648,22 @@ def test_mssql_cdc_read_updates(mssql, tmp_path):
         value: str
 
     output_path = tmp_path / "cdc_update_output.jsonl"
-
-    table = pw.io.mssql.read(
-        connection_string=MSSQL_CONNECTION_STRING,
-        table_name=table_name,
-        schema=TestSchema,
-        mode="streaming",
-        autocommit_duration_ms=100,
-    )
-    pw.io.jsonlines.write(table, str(output_path))
-
-    def run_pw():
-        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
-
-    t = threading.Thread(target=run_pw, daemon=True)
-    t.start()
-
-    # Wait for initial snapshot
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if output_path.exists():
-            lines = output_path.read_text().strip().split("\n")
-            if len(lines) >= 1:
-                break
-        time.sleep(0.5)
-
-    # Update the row — CDC should emit delete (old) + insert (new)
-    mssql.execute_sql(f"UPDATE {table_name} SET value = 'updated' WHERE id = 1")
-
-    # Wait for the update events
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        lines = output_path.read_text().strip().split("\n")
-        if len(lines) >= 2:
-            break
-        time.sleep(0.5)
-
-    lines = output_path.read_text().strip().split("\n")
-    records = [json.loads(line) for line in lines]
-    values = [r["value"] for r in records]
-    assert "updated" in values
+    proc = _start_mssql_cdc_streaming_reader(table_name, TestSchema, output_path)
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), timeout_sec=30, target=None
+        )
+        # An UPDATE under "all update old" emits two CDC events — pre-image
+        # (delete) and post-image (insert) — so the file grows from 1 to 3 lines.
+        mssql.execute_sql(f"UPDATE {table_name} SET value = 'updated' WHERE id = 1")
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), timeout_sec=30, target=None
+        )
+        records = [json.loads(line) for line in output_path.read_text().splitlines()]
+        values = [r["value"] for r in records]
+        assert "updated" in values
+    finally:
+        _stop_mssql_cdc_streaming_reader(proc)
 
 
 def test_mssql_cdc_read_deletes(mssql, tmp_path):
@@ -694,7 +676,6 @@ def test_mssql_cdc_read_deletes(mssql, tmp_path):
         f")"
     )
     mssql.enable_cdc(table_name)
-
     mssql.insert_row(table_name, {"id": 1, "name": "ToDelete"})
     mssql.insert_row(table_name, {"id": 2, "name": "ToKeep"})
 
@@ -703,46 +684,17 @@ def test_mssql_cdc_read_deletes(mssql, tmp_path):
         name: str
 
     output_path = tmp_path / "cdc_delete_output.jsonl"
-
-    table = pw.io.mssql.read(
-        connection_string=MSSQL_CONNECTION_STRING,
-        table_name=table_name,
-        schema=TestSchema,
-        mode="streaming",
-        autocommit_duration_ms=100,
-    )
-    pw.io.jsonlines.write(table, str(output_path))
-
-    def run_pw():
-        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
-
-    t = threading.Thread(target=run_pw, daemon=True)
-    t.start()
-
-    # Wait for initial snapshot
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if output_path.exists():
-            lines = output_path.read_text().strip().split("\n")
-            if len(lines) >= 2:
-                break
-        time.sleep(0.5)
-
-    initial_count = len(output_path.read_text().strip().split("\n"))
-
-    # Delete a row
-    mssql.execute_sql(f"DELETE FROM {table_name} WHERE id = 1")
-
-    # Wait for the delete event
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        lines = output_path.read_text().strip().split("\n")
-        if len(lines) > initial_count:
-            break
-        time.sleep(0.5)
-
-    lines = output_path.read_text().strip().split("\n")
-    assert len(lines) > initial_count
+    proc = _start_mssql_cdc_streaming_reader(table_name, TestSchema, output_path)
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), timeout_sec=30, target=None
+        )
+        mssql.execute_sql(f"DELETE FROM {table_name} WHERE id = 1")
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), timeout_sec=30, target=None
+        )
+    finally:
+        _stop_mssql_cdc_streaming_reader(proc)
 
 
 def test_mssql_read_reserved_word_columns(mssql, tmp_path):
@@ -916,7 +868,11 @@ def test_mssql_streaming_requires_cdc_on_database(tmp_path, mssql):
     db_name = f"nocdc_{uuid.uuid4().hex[:12]}"
     import pymssql
 
-    mssql.cursor.execute(f"CREATE DATABASE {db_name}")
+    # CREATE/ALTER/DROP DATABASE all hold heavy locks on master.sys.databases;
+    # under concurrent CDC test load they're occasionally elected as deadlock
+    # victims.  The retry-aware ``execute_sql`` reruns the statement on 1205,
+    # which is what SQL Server's deadlock-victim contract asks for.
+    mssql.execute_sql(f"CREATE DATABASE {db_name}")
     try:
         # Create a table inside the new DB via its own connection.
         db_conn = pymssql.connect(
@@ -972,10 +928,10 @@ def test_mssql_streaming_requires_cdc_on_database(tmp_path, mssql):
             "CDC is not enabled on the current database" in error_text
         ), f"expected CdcNotEnabledOnDatabase error, got:\n{error_text}"
     finally:
-        mssql.cursor.execute(
+        mssql.execute_sql(
             f"ALTER DATABASE {db_name} SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
         )
-        mssql.cursor.execute(f"DROP DATABASE {db_name}")
+        mssql.execute_sql(f"DROP DATABASE {db_name}")
 
 
 def test_mssql_read_custom_schema_name(mssql, tmp_path):
@@ -1018,9 +974,13 @@ def test_mssql_read_custom_schema_name(mssql, tmp_path):
         rows = sorted((r["id"], r["name"]) for r in read_jsonlines(output_path))
         assert rows == [(1, "alpha"), (2, "beta")]
     finally:
-        # Drop the schema's objects before the schema itself.
-        mssql.execute_sql(f"DROP TABLE IF EXISTS {schema_name}.{table_name}")
-        mssql.execute_sql(f"DROP SCHEMA {schema_name}")
+        # Drop the schema's objects before the schema itself.  Both DROPs go
+        # through the deadlock-retry helper — concurrent xdist workers fight
+        # on system-table locks, and a bare ``DROP TABLE`` would surface the
+        # 1205 deadlock victim error as a test failure even though the test
+        # body succeeded.
+        mssql.drop_table(table_name, schema_name=schema_name)
+        mssql.drop_schema(schema_name)
 
 
 # ---------------------------------------------------------------------------
@@ -1051,36 +1011,65 @@ def _mssql_persistence_worker(
     must therefore be importable at module scope — the forked child
     re-invokes the same callable by reference.
 
-    If `error_path` is provided, any exception raised by `pw.run` is written
-    to that file before being re-raised — this lets the expired-LSN test
-    assert on the specific error message without having to tap into pytest's
-    stderr capture, which doesn't cover multiprocessing child processes.
+    Retries ``pw.run`` on transient OS-level TCP source-port exhaustion: under
+    heavy CI parallelism (multiple xdist workers spawning Pathway subprocesses,
+    each opening fresh connections to MSSQL), ``connect(2)`` occasionally
+    returns ``EADDRNOTAVAIL`` because the ephemeral source-port range is
+    saturated by sockets sitting in ``TIME_WAIT``.  Tiberius surfaces this as
+    ``EngineError("Cannot assign requested address (os error 99)")`` — a short
+    backoff lets the kernel recycle source ports.  Persistence makes the retry
+    safe: if Run 1 dies before any rows are written, the persistence directory
+    is empty and we re-emit the full snapshot; if Run 2 dies, the saved offset
+    from Run 1 is still on disk and the retry resumes from there.
+
+    If `error_path` is provided, any exception raised by `pw.run` after the
+    last attempt is written to that file before being re-raised — this lets
+    the expired-LSN test assert on the specific error message without having
+    to tap into pytest's stderr capture, which doesn't cover multiprocessing
+    child processes.
     """
-    G.clear()
 
-    class InputSchema(pw.Schema):
-        id: int = pw.column_definition(primary_key=True)
-        name: str
+    def _build_and_run():
+        G.clear()
 
-    table = pw.io.mssql.read(
-        connection_string=connection_string,
-        table_name=table_name,
-        schema=InputSchema,
-        mode=mode,
-        autocommit_duration_ms=100,
-        name="mssql_persistence_source",
-    )
-    pw.io.jsonlines.write(table, output_path)
-    try:
+        class InputSchema(pw.Schema):
+            id: int = pw.column_definition(primary_key=True)
+            name: str
+
+        table = pw.io.mssql.read(
+            connection_string=connection_string,
+            table_name=table_name,
+            schema=InputSchema,
+            mode=mode,
+            autocommit_duration_ms=100,
+            name="mssql_persistence_source",
+        )
+        pw.io.jsonlines.write(table, output_path)
         pw.run(
             persistence_config=persistence_config,
             monitoring_level=pw.MonitoringLevel.NONE,
         )
-    except Exception:
-        if error_path is not None:
-            with open(error_path, "w") as f:
-                traceback.print_exc(file=f)
-        raise
+
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        try:
+            _build_and_run()
+            return
+        except Exception as e:
+            transient = "Cannot assign requested address" in str(e)
+            if transient and attempt < max_attempts - 1:
+                # The previous attempt may have written partial output.  Reset
+                # so the test sees a clean output file from the successful run.
+                try:
+                    open(output_path, "w").close()
+                except Exception:
+                    pass
+                time.sleep(2.0 * (attempt + 1) + random.uniform(0, 1.0))
+                continue
+            if error_path is not None:
+                with open(error_path, "w") as f:
+                    traceback.print_exc(file=f)
+            raise
 
 
 def _extract_row(r: dict) -> dict:
@@ -1206,39 +1195,23 @@ def _apply_mssql_change(mssql, table_name: str, op: str, payload: dict) -> None:
         raise AssertionError(f"unsupported op {op!r}")
 
 
+# CDC change-table row count produced by each operation when the reader queries
+# ``fn_cdc_get_all_changes`` with ``'all update old'`` (the mode used by the
+# Rust connector): inserts and deletes contribute one row, updates contribute
+# two — pre-image (op=3) and post-image (op=4).
+_MSSQL_CT_ROWS_PER_OP = {"insert": 1, "delete": 1, "update": 2}
+
+
+def _expected_ct_row_count(plan_changes: list[tuple[str, dict]]) -> int:
+    return sum(_MSSQL_CT_ROWS_PER_OP[op] for op, _ in plan_changes)
+
+
 def _mssql_current_max_lsn(mssql) -> bytes | None:
-    mssql.cursor.execute("SELECT sys.fn_cdc_get_max_lsn()")
+    mssql.execute_sql("SELECT sys.fn_cdc_get_max_lsn()")
     row = mssql.cursor.fetchone()
     if row is None or row[0] is None:
         return None
     return bytes(row[0])
-
-
-def _wait_for_mssql_cdc_capture(
-    mssql, baseline_max_lsn: bytes | None, timeout_sec: float = 30.0
-) -> None:
-    """Wait until the CDC capture agent has advanced past `baseline_max_lsn`.
-
-    SQL Server's CDC capture agent polls the transaction log asynchronously
-    (default ~5 s), so `fn_cdc_get_max_lsn()` lags committed writes.  The
-    static-mode reader queries max LSN exactly once per run: if the agent
-    hasn't caught up, the resume window is empty and the worker terminates
-    without emitting the pending changes.  Callers that just wrote rows
-    must poll until max LSN moves past the pre-write reference before
-    kicking off the next static run.
-    """
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        current = _mssql_current_max_lsn(mssql)
-        if current is not None and (
-            baseline_max_lsn is None or current > baseline_max_lsn
-        ):
-            return
-        time.sleep(0.25)
-    raise AssertionError(
-        f"CDC capture did not advance past {baseline_max_lsn!r} within "
-        f"{timeout_sec}s"
-    )
 
 
 def _run_mssql_streaming_pipeline(
@@ -1320,6 +1293,16 @@ def test_mssql_cdc_persistence(tmp_path, mssql, mode, plan):
     for row_id, name in plan["initial"]:
         mssql.insert_row(table_name, {"id": row_id, "name": name})
 
+    # The Rust reader's ``load_snapshot`` persists an offset derived from
+    # ``fn_cdc_get_max_lsn()`` (database-wide).  If the capture agent has not
+    # yet processed our inserts, that max reflects only *other* xdist workers'
+    # captured transactions — and the persisted offset can sit below the LSNs
+    # of the rows we are about to insert between Run 1 and Run 2, so Run 2's
+    # ``(saved_lsn, current_max_lsn]`` window misses them.  Wait until the
+    # capture agent has actually produced a CT row for each of our inserts.
+    if plan["initial"]:
+        mssql.wait_for_capture_count(table_name, len(plan["initial"]))
+
     pstorage_path = tmp_path / "PStorage"
     persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(pstorage_path)
@@ -1351,18 +1334,16 @@ def test_mssql_cdc_persistence(tmp_path, mssql, mode, plan):
         [_extract_row(r) for r in read_jsonlines(output_path_1)]
     ) == _sort_rows(plan["run1_expected"]), f"Run 1: expected {plan['run1_expected']}"
 
-    # Record the CDC max LSN before applying changes so we can wait for
-    # the capture agent to pick them up before Run 2 starts.  Without this,
-    # in CI the agent occasionally hasn't caught up by the time the static
-    # reader queries fn_cdc_get_max_lsn(), which makes it read an empty
-    # window and terminate with no output.
-    baseline_max_lsn = _mssql_current_max_lsn(mssql)
-
     for op, payload in plan["changes"]:
         _apply_mssql_change(mssql, table_name, op, payload)
 
     if plan["changes"]:
-        _wait_for_mssql_cdc_capture(mssql, baseline_max_lsn)
+        # Same rationale as the pre-Run-1 wait: we need the capture agent to
+        # actually produce CT rows for each of our changes before Run 2 queries
+        # ``fn_cdc_get_max_lsn()``.  Updates show up as two CT rows under
+        # ``all update old`` (pre + post images); inserts and deletes as one.
+        target_count = len(plan["initial"]) + _expected_ct_row_count(plan["changes"])
+        mssql.wait_for_capture_count(table_name, target_count)
 
     # Run 2.
     output_path_2 = tmp_path / "output_2.jsonl"
@@ -1447,6 +1428,12 @@ def test_mssql_cdc_expired_lsn(tmp_path, mssql):
     mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
     mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
 
+    # Same race as in ``test_mssql_cdc_persistence``: until the agent has
+    # actually written CT rows for our inserts, the LSN Run 1 persists is
+    # determined by other workers' captured transactions and may sit below
+    # our own LSNs.
+    mssql.wait_for_capture_count(table_name, 2)
+
     pstorage_path = tmp_path / "PStorage"
     persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(pstorage_path)
@@ -1468,45 +1455,58 @@ def test_mssql_cdc_expired_lsn(tmp_path, mssql):
     )
     assert len(read_jsonlines(output_path_1)) == 2
 
-    # Force fn_cdc_get_min_lsn for this capture instance past the persisted
-    # value.  `sys.sp_cdc_cleanup_change_table` advances the capture
-    # instance's `start_lsn` to its `@low_water_mark`, which is exactly what
-    # `fn_cdc_get_min_lsn` reads — so after the call the new minimum reported
-    # to the connector is strictly greater than the LSN run 1 persisted.
+    # The database-wide max LSN sampled *immediately after* Run 1 finished is
+    # an UPPER bound on whatever LSN Run 1 persisted (Run 1 cannot persist a
+    # future LSN).  Use it as the target for cleanup: driving the capture
+    # instance's min_lsn strictly past this point guarantees that Run 2 will
+    # see ``saved_lsn < fn_cdc_get_min_lsn(instance)``.  A pre-Run-1 snapshot
+    # would be a *lower* bound and leave the race unsolved.
+    post_run1_max = _mssql_current_max_lsn(mssql)
+    assert post_run1_max is not None, "expected CDC activity after Run 1"
+
+    # Generate additional CDC traffic so the cleanup target advances beyond
+    # post_run1_max.  Then wait for this instance's agent to pick them up so
+    # sp_cdc_cleanup_change_table has something to cleanup strictly past
+    # post_run1_max.
     mssql.insert_row(table_name, {"id": 3, "name": "Charlie"})
     mssql.insert_row(table_name, {"id": 4, "name": "Dana"})
+    mssql.wait_for_capture_count(table_name, 4)
 
     capture_instance = f"dbo_{table_name}"
-    deadline = time.time() + 30
-    advanced = False
-    while time.time() < deadline:
-        mssql.cursor.execute("SELECT sys.fn_cdc_get_max_lsn()")
-        max_row = mssql.cursor.fetchone()
-        if max_row is not None and max_row[0] is not None:
-            max_lsn = max_row[0]
-            try:
-                mssql.cursor.execute(
-                    "EXEC sys.sp_cdc_cleanup_change_table "
-                    "@capture_instance=%s, @low_water_mark=%s",
-                    (capture_instance, max_lsn),
-                )
-                while mssql.cursor.nextset():
-                    pass
-            except Exception:
-                pass
-            mssql.cursor.execute(
-                "SELECT sys.fn_cdc_get_min_lsn(%s)", (capture_instance,)
-            )
-            min_row = mssql.cursor.fetchone()
-            if (
-                min_row is not None
-                and min_row[0] is not None
-                and bytes(min_row[0]) >= bytes(max_lsn)
-            ):
-                advanced = True
-                break
-        time.sleep(1)
-    assert advanced, "CDC cleanup did not advance fn_cdc_get_min_lsn within 30s"
+    # Once all four CT rows are present, ``fn_cdc_get_max_lsn()`` is at least
+    # the LSN of id=4's commit, which is strictly greater than
+    # ``post_run1_max``.  Re-poll briefly to absorb the small window between
+    # the CT INSERT and the lsn_time_mapping update on the same transaction.
+    wait_result_with_checker(
+        lambda: (_mssql_current_max_lsn(mssql) or b"") > post_run1_max,
+        timeout_sec=10,
+        step=0.1,
+        target=None,
+    )
+    max_lsn = _mssql_current_max_lsn(mssql)
+    assert max_lsn is not None and max_lsn > post_run1_max
+
+    # Drive the capture instance's start_lsn forward.  ``sp_cdc_cleanup_change_table``
+    # competes with the capture agent for system-table locks under concurrent
+    # test load and is occasionally elected as the deadlock victim — execute_sql
+    # retries on 1205.  drain_status_rows discards the proc's "(N rows
+    # affected)" output that pymssql would otherwise leave pending and trip up
+    # the next statement.
+    mssql.execute_sql(
+        "EXEC sys.sp_cdc_cleanup_change_table "
+        "@capture_instance=%s, @low_water_mark=%s",
+        (capture_instance, max_lsn),
+        drain_status_rows=True,
+    )
+
+    # Verify: the new min_lsn is strictly greater than post_run1_max — hence
+    # strictly greater than anything Run 1 could have persisted.
+    def _min_lsn_advanced() -> bool:
+        mssql.execute_sql("SELECT sys.fn_cdc_get_min_lsn(%s)", (capture_instance,))
+        row = mssql.cursor.fetchone()
+        return row is not None and row[0] is not None and bytes(row[0]) > post_run1_max
+
+    wait_result_with_checker(_min_lsn_advanced, timeout_sec=30, step=0.25, target=None)
 
     # Run 2: must fail fast with the specific retention error, not hang or
     # silently produce an empty delta.  We bypass wait_result_with_checker here

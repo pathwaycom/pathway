@@ -57,7 +57,15 @@ def mysql():
 
 @pytest.fixture
 def mssql():
-    return MssqlContext()
+    ctx = MssqlContext()
+    try:
+        yield ctx
+    finally:
+        # Drop every table + CDC capture instance the test created so the
+        # database stays clean between runs.  Orphan capture instances
+        # accumulate work in cdc.lsn_time_mapping and the SQL Agent's
+        # per-instance scan, slowing every subsequent CDC test.
+        ctx.cleanup()
 
 
 @pytest.fixture

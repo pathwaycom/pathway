@@ -49,15 +49,27 @@ impl Default for RetryConfig {
     }
 }
 
-pub fn execute_with_retries<T, E: std::fmt::Debug>(
-    mut func: impl FnMut() -> Result<T, E>,
+/// Retry `func` up to `max_retries` times when the error matches
+/// `should_retry`.  Errors for which `should_retry` returns `false` propagate
+/// immediately so permanent failures (bad SQL syntax, missing tables, auth
+/// errors, …) don't waste backoff on a guaranteed-fail rerun.
+pub fn execute_with_retries_if<T, E, F, P>(
+    mut func: F,
+    mut should_retry: P,
     mut retry_config: RetryConfig,
     max_retries: usize,
-) -> Result<T, E> {
+) -> Result<T, E>
+where
+    E: std::fmt::Debug,
+    F: FnMut() -> Result<T, E>,
+    P: FnMut(&E) -> bool,
+{
     let mut exec_result = func();
     for _ in 0..max_retries {
-        if exec_result.is_ok() {
-            return exec_result;
+        match exec_result {
+            Ok(_) => return exec_result,
+            Err(ref e) if !should_retry(e) => return exec_result,
+            Err(_) => {}
         }
         retry_config.sleep_after_error();
         exec_result = func();
@@ -67,4 +79,14 @@ pub fn execute_with_retries<T, E: std::fmt::Debug>(
     }
 
     exec_result
+}
+
+/// Retry `func` up to `max_retries` times on any error.  Equivalent to
+/// [`execute_with_retries_if`] with an always-true predicate.
+pub fn execute_with_retries<T, E: std::fmt::Debug>(
+    func: impl FnMut() -> Result<T, E>,
+    retry_config: RetryConfig,
+    max_retries: usize,
+) -> Result<T, E> {
+    execute_with_retries_if(func, |_| true, retry_config, max_retries)
 }

@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.io.sqlite.read` now parses every Pathway `Value` variant. In addition to `int`, `float`, `str`, `bytes`, `pw.Json`, and their `Optional` forms, the reader now accepts `bool`, `pw.DateTimeNaive`, `pw.DateTimeUtc`, `pw.Duration`, `pw.Pointer`, `pw.PyObjectWrapper`, homogeneous `tuple` / `list`, and `np.ndarray`. Composite types are stored as `TEXT` using the same JSON encoding that `pw.io.jsonlines.write` emits. Booleans additionally accept PostgreSQL-style textual literals (`true`/`false`, `yes`/`no`, `on`/`off`, `t`/`f`, `y`/`n`; case-insensitive, whitespace-trimmed), and `float` columns tolerate values stored with `INTEGER` storage class.
 - **BREAKING**: `pw.io.iceberg.write` to a Glue catalog no longer accepts `DateTimeUtc` columns. Glue's metastore has no timezone-aware timestamp type, so previous versions silently dropped the timezone on read-back; writes now fail with an explicit error instead of corrupting the zone. To store UTC timestamps in Glue, convert to `DateTimeNaive` with UTC-normalized values, or write through the REST catalog, which preserves the timezone.
+- `pw.io.mssql.read` and `pw.io.mssql.write` now retry transient SQL Server errors automatically.
 
 ## [0.30.1] - 2026-04-23
 

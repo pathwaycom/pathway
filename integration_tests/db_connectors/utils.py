@@ -656,12 +656,123 @@ class MssqlContext:
             tds_version="7.3",
         )
         self.cursor = self.connection.cursor()
+        # Tables and CDC capture instances we've registered.  ``cleanup()``
+        # tears them all down on fixture teardown, so a crashed/skipped test
+        # cannot leave orphan capture instances behind — orphans inflate
+        # ``cdc.lsn_time_mapping`` and the SQL Agent's per-instance scan, which
+        # is what made later runs of CDC tests time out waiting for the agent
+        # to catch up.
+        self._tracked_tables: set[str] = set()
+        self._tracked_cdc: set[str] = set()
 
     def random_table_name(self) -> str:
-        return f"mssql_{uuid.uuid4().hex}"
+        name = f"mssql_{uuid.uuid4().hex}"
+        # Track every name handed out: every existing caller of this method
+        # uses the returned name in a CREATE TABLE on this same context.
+        self._tracked_tables.add(name)
+        return name
 
-    def execute_sql(self, query: str):
-        self.cursor.execute(query)
+    def execute_sql(
+        self,
+        query: str,
+        params: tuple | None = None,
+        drain_status_rows: bool = False,
+        max_retries: int = 6,
+        retry_delay: float = 0.5,
+    ) -> None:
+        """Execute a single statement, retrying on deadlock victim (1205).
+
+        Under heavy xdist parallelism every statement that touches CDC system
+        metadata (sp_cdc_* procs, DDL on CDC-enabled objects, queries against
+        cdc.* tables) competes with the capture agent for system-table locks
+        and SQL Server occasionally elects it as the deadlock victim.  Heavy
+        DDL on master.sys.databases (CREATE/ALTER/DROP DATABASE) and on
+        sys.objects/sys.schemas (CREATE/DROP TABLE/SCHEMA) is similarly
+        vulnerable.  The recommended response per Microsoft is to rerun the
+        transaction, which is what we do here.
+
+        A fresh cursor is opened per attempt — pymssql leaves the cursor in a
+        state where the next statement reports "Statement(s) could not be
+        prepared" after a 1205.  On success ``self.cursor`` is updated to the
+        cursor that ran the statement, so callers can immediately
+        ``self.cursor.fetchone()`` / ``self.cursor.fetchall()`` to read result
+        rows from a SELECT.
+
+        ``drain_status_rows=True`` discards every rowset produced by the
+        statement (use for sp_cdc_* procs that emit "(N rows affected)"
+        rowsets pymssql leaves pending — the next statement on the same
+        connection would otherwise fail with "Statement(s) could not be
+        prepared").  Do not pass this for SELECT — it would discard the data.
+
+        Non-1205 exceptions propagate immediately — this is for transient
+        contention, not for swallowing real errors.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            cur = self.connection.cursor()
+            try:
+                if params is None:
+                    cur.execute(query)
+                else:
+                    cur.execute(query, params)
+                if drain_status_rows:
+                    while cur.nextset():
+                        pass
+                self.cursor = cur
+                return
+            except pymssql.exceptions.OperationalError as e:
+                if "1205" in str(e) and attempt < max_retries - 1:
+                    last_exc = e
+                    logging.warning(
+                        f"deadlock victim on attempt {attempt + 1}/"
+                        f"{max_retries}, retrying: {e}"
+                    )
+                    time.sleep(retry_delay * (1.25**attempt))
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+
+    def wait_for_capture_count(
+        self, table_name: str, target_count: int, timeout_sec: float = 90.0
+    ) -> None:
+        """Block until ``cdc.dbo_<table_name>_CT`` contains at least
+        ``target_count`` rows.
+
+        SQL Server's CDC capture agent processes transactions asynchronously
+        from the log, in LSN order.  Under heavy concurrent write load
+        (multiple xdist workers writing to multiple CDC-enabled tables in the
+        same database) the agent can be many seconds behind — a freshly
+        committed insert may not appear in its capture instance's change table
+        for a while.
+
+        Weaker waits (e.g. polling ``fn_cdc_get_min_lsn`` for non-NULL, which
+        only proves the *capture instance* exists, or polling
+        ``MAX(__$start_lsn)`` for any non-NULL value, which trips on the very
+        first row regardless of how many we expect) accept the partial state
+        and let the test continue with stale CDC contents — the persisted
+        offset and the data the resume path replays end up disagreeing.
+
+        Counting against an expected target (one row per insert, one per
+        delete, two per update with ``all update old``) is the only check that
+        proves *our* writes are captured before the next test step.
+        """
+        capture_instance = f"dbo_{table_name}"
+        query = f"SELECT COUNT(*) FROM cdc.{capture_instance}_CT"
+        deadline = time.time() + timeout_sec
+        last_count = -1
+        while time.time() < deadline:
+            self.execute_sql(query)
+            row = self.cursor.fetchone()
+            count = row[0] if row is not None else 0
+            if count >= target_count:
+                return
+            last_count = count
+            time.sleep(0.25)
+        raise AssertionError(
+            f"CDC capture agent did not produce {target_count} rows for "
+            f"'{capture_instance}' within {timeout_sec}s — last seen: {last_count}"
+        )
 
     def enable_cdc(
         self, table_name: str, max_retries: int = 10, retry_delay: float = 1.0
@@ -675,6 +786,10 @@ class MssqlContext:
                     f"@source_name=N'{table_name}', "
                     f"@role_name=NULL"
                 )
+                # Drain any status rows the proc emitted.
+                while self.cursor.nextset():
+                    pass
+                self._tracked_cdc.add(table_name)
                 return
             except pymssql.exceptions.OperationalError as e:
                 if attempt < max_retries - 1 and "1205" in str(e):
@@ -697,6 +812,167 @@ class MssqlContext:
                     )
                     raise
 
+    def disable_cdc(
+        self, table_name: str, max_retries: int = 6, retry_delay: float = 0.5
+    ) -> None:
+        """Disable every capture instance on ``table_name``.  Idempotent — a
+        second call (or a call against a never-enabled table) is a no-op.
+        Retries on deadlock victim (1205): under concurrent CDC test load,
+        ``sp_cdc_disable_table`` competes with the capture agent for system
+        metadata locks and is occasionally chosen as the victim.
+        """
+        if table_name not in self._tracked_cdc:
+            return
+        for attempt in range(max_retries):
+            cur = self.connection.cursor()
+            try:
+                cur.execute(
+                    "EXEC sys.sp_cdc_disable_table "
+                    "@source_schema=%s, @source_name=%s, @capture_instance=%s",
+                    ("dbo", table_name, "all"),
+                )
+                # ``sp_cdc_disable_table`` emits status row(s).  pymssql leaves
+                # them pending until the next statement, where they surface as
+                # "Statement(s) could not be prepared" — drain them now so the
+                # subsequent DROP TABLE actually runs.
+                while cur.nextset():
+                    pass
+                self._tracked_cdc.discard(table_name)
+                return
+            except pymssql.exceptions.OperationalError as e:
+                if attempt < max_retries - 1 and "1205" in str(e):
+                    time.sleep(retry_delay * (1.25**attempt))
+                    continue
+                logging.warning(f"sp_cdc_disable_table failed on {table_name}: {e}")
+                break
+            except Exception as e:
+                logging.warning(f"sp_cdc_disable_table failed on {table_name}: {e}")
+                break
+        self._tracked_cdc.discard(table_name)
+
+    def drop_table(self, table_name: str, schema_name: str = "dbo") -> None:
+        """Disable CDC on ``schema_name.table_name`` (if any) and drop it.
+
+        Retries on deadlock victim (1205) — concurrent CDC-enabled tests fight
+        each other on system-table locks (sys.objects etc.), and the system
+        lock contention occasionally elects the DROP as the deadlock victim.
+        Idempotent: a second call (or a call against a non-existent table) is
+        a no-op.
+        """
+        if schema_name == "dbo":
+            self.disable_cdc(table_name)
+        self._drop_with_retry(self.connection, table_name, schema_name)
+        self._tracked_tables.discard(table_name)
+
+    @contextmanager
+    def cdc_table(self, columns_sql: str):
+        """Context-manager guard for CDC-enabled test tables.
+
+        Creates a fresh table with the given column definition, enables CDC on
+        it, yields the table name, and on exit (success or exception) disables
+        CDC and drops the table — so a failing or interrupted test cannot
+        leave behind a capture instance for the SQL Agent to keep scanning.
+        Equivalent to writing the create / ``enable_cdc`` / ``drop_table``
+        sequence by hand, but the cleanup is guaranteed.
+        """
+        table_name = self.random_table_name()
+        self.execute_sql(f"CREATE TABLE {table_name} ({columns_sql})")
+        try:
+            self.enable_cdc(table_name)
+            yield table_name
+        finally:
+            self.drop_table(table_name)
+
+    def cleanup(self) -> None:
+        """Disable every CDC instance and drop every table this context
+        registered, then close the connection.  Called by the ``mssql``
+        fixture on teardown — runs even if the test errored out.
+
+        Drops use the test's own connection (a fresh per-cleanup connection
+        was tried but produced thousands of TDS handshakes per suite run that
+        SQL Server occasionally rejected).  Each DROP is paired with a
+        verify-and-retry against ``sys.tables``: ``sp_cdc_disable_table``
+        sometimes returns before SQL Server has fully released the source
+        table's schema lock, and a DROP issued in that window completes
+        without error but leaves the table.  Re-polling for tens of ms
+        catches that.
+        """
+        for t in list(self._tracked_cdc):
+            self.disable_cdc(t)
+        for t in list(self._tracked_tables):
+            self._drop_with_retry(self.connection, t)
+            self._tracked_tables.discard(t)
+        try:
+            self.connection.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _drop_with_retry(
+        connection, table_name: str, schema_name: str = "dbo", attempts: int = 8
+    ) -> None:
+        """DROP TABLE with deadlock-victim retry.
+
+        SQL Server occasionally aborts the DROP with error 1205 ("deadlock
+        victim") when many CDC-enabled test tables are dropped concurrently —
+        the system-table locks acquired by the DROP fight with the locks the
+        capture agent holds on the same metadata.  pymssql also leaves the
+        cursor in a state where the next statement reports "Statement(s) could
+        not be prepared", so we recreate the cursor between attempts.
+        """
+        for i in range(attempts):
+            cur = connection.cursor()
+            try:
+                cur.execute(f"DROP TABLE IF EXISTS [{schema_name}].[{table_name}]")
+            except Exception as e:
+                logging.warning(
+                    f"cleanup: DROP TABLE attempt {i + 1} failed on "
+                    f"{schema_name}.{table_name}: {e}"
+                )
+            try:
+                cur = connection.cursor()
+                cur.execute(
+                    "SELECT 1 FROM sys.tables WHERE name = %s "
+                    "AND schema_id = SCHEMA_ID(%s)",
+                    (table_name, schema_name),
+                )
+                if cur.fetchone() is None:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.1 * (i + 1))
+        logging.error(
+            f"cleanup: {schema_name}.{table_name} still present after "
+            f"{attempts} drop attempts"
+        )
+
+    def drop_schema(self, schema_name: str, attempts: int = 8) -> None:
+        """DROP SCHEMA with deadlock-victim retry.  Same rationale as
+        ``_drop_with_retry`` for tables — SQL Server elects the DROP as the
+        deadlock victim under concurrent test load.
+        """
+        for i in range(attempts):
+            cur = self.connection.cursor()
+            try:
+                cur.execute(f"DROP SCHEMA IF EXISTS [{schema_name}]")
+            except Exception as e:
+                logging.warning(
+                    f"cleanup: DROP SCHEMA attempt {i + 1} failed on "
+                    f"{schema_name}: {e}"
+                )
+            try:
+                cur = self.connection.cursor()
+                cur.execute("SELECT 1 FROM sys.schemas WHERE name = %s", (schema_name,))
+                if cur.fetchone() is None:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.1 * (i + 1))
+        logging.error(
+            f"cleanup: schema {schema_name} still present after "
+            f"{attempts} drop attempts"
+        )
+
     def insert_row(
         self, table_name: str, values: dict[str, Union[int, bool, str, float, bytes]]
     ) -> None:
@@ -714,7 +990,7 @@ class MssqlContext:
                 value_exprs.append("%s")
                 params.append(v)
         query = f"INSERT INTO {table_name} ({','.join(field_names)}) VALUES ({','.join(value_exprs)})"
-        self.cursor.execute(query, tuple(params))
+        self.execute_sql(query, tuple(params))
 
     def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
         table_name = self.random_table_name()
@@ -749,7 +1025,7 @@ class MssqlContext:
             f"IF OBJECT_ID(N'{table_name}', N'U') IS NULL "
             f"CREATE TABLE {table_name} ({','.join(fields)})"
         )
-        self.cursor.execute(create_sql)
+        self.execute_sql(create_sql)
         return table_name
 
     def get_table_contents(
@@ -759,7 +1035,7 @@ class MssqlContext:
         sort_by: Union[str, tuple, None] = None,
     ) -> list[dict[str, Union[str, int, bool, float]]]:
         select_query = f"SELECT {','.join(column_names)} FROM {table_name};"
-        self.cursor.execute(select_query)
+        self.execute_sql(select_query)
         rows = self.cursor.fetchall()
         result = []
         for row in rows:
@@ -779,7 +1055,7 @@ class MssqlContext:
             WHERE table_name = %s AND table_schema = 'dbo'
             ORDER BY ordinal_position;
         """
-        self.cursor.execute(query, (table_name,))
+        self.execute_sql(query, (table_name,))
         rows = self.cursor.fetchall()
 
         schema_props = {}

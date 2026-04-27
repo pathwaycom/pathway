@@ -35,7 +35,9 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _MSSQL_CDC_SCRIPT = textwrap.dedent(
     """\
     import json
+    import random
     import sys
+    import time
 
     cfg = json.loads(sys.argv[1])
     sys.path.insert(0, cfg["test_dir"])
@@ -46,20 +48,38 @@ _MSSQL_CDC_SCRIPT = textwrap.dedent(
 
     exec(cfg["schema_code"], globals())
 
-    G.clear()
-    table = pw.io.mssql.read(
-        cfg["connection_string"],
-        cfg["input_table_name"],
-        InputSchemaWithPkey,
-        mode="streaming",
-    )
-    pw.io.mssql.write(
-        table,
-        cfg["connection_string"],
-        table_name=cfg["output_table_name"],
-        init_mode="create_if_not_exists",
-    )
-    run()
+    # Retry the entire pipeline on transient TCP source-port exhaustion
+    # (EADDRNOTAVAIL).  Under heavy CI parallelism, the host occasionally
+    # cannot allocate an ephemeral source port for tiberius's connect, and
+    # the engine surfaces it as 'Cannot assign requested address'.  The CDC
+    # writer is in ``create_if_not_exists`` mode, so a retried run that hits
+    # an existing output table just reuses it.
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        G.clear()
+        table = pw.io.mssql.read(
+            cfg["connection_string"],
+            cfg["input_table_name"],
+            InputSchemaWithPkey,
+            mode="streaming",
+        )
+        pw.io.mssql.write(
+            table,
+            cfg["connection_string"],
+            table_name=cfg["output_table_name"],
+            init_mode="create_if_not_exists",
+        )
+        try:
+            run()
+            sys.exit(0)
+        except Exception as e:
+            if (
+                "Cannot assign requested address" in str(e)
+                and attempt < max_attempts - 1
+            ):
+                time.sleep(2.0 * (attempt + 1) + random.uniform(0, 1.0))
+                continue
+            raise
     """
 )
 
@@ -332,8 +352,13 @@ def _test_mssql_streaming(
     mssql.enable_cdc(input_table_name)
     # Speed up the CDC capture job for tests: pollinginterval=0 means no sleep
     # between scan cycles (~500 ms effective latency instead of the 5 s default).
+    # execute_sql retries on 1205 — sp_cdc_change_job touches msdb job metadata
+    # and competes with concurrent CDC traffic under xdist parallelism.
+    # drain_status_rows clears the proc's status output so the next statement
+    # on this connection isn't refused with "Statement(s) could not be prepared".
     mssql.execute_sql(
-        "EXEC sys.sp_cdc_change_job @job_type = N'capture', @pollinginterval = 0"
+        "EXEC sys.sp_cdc_change_job @job_type = N'capture', @pollinginterval = 0",
+        drain_status_rows=True,
     )
 
     output_table_name = mssql.random_table_name()
