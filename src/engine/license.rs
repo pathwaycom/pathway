@@ -6,6 +6,7 @@ use std::fs;
 use std::time::Duration;
 
 use crate::engine::error::DynResult;
+use crate::retry::{execute_with_retries_if, RetryConfig};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use cached::proc_macro::cached;
 use chrono::{DateTime, Utc};
@@ -155,13 +156,26 @@ impl ValidationResponse {
     }
 }
 
-#[cached]
+// `result = true` makes the cached macro store only successful validations;
+// transient `Err`s are NOT cached, so a one-off network blip on the very first
+// call doesn't poison every subsequent license check in the process.
+//
+// On top of that, retry only the transient `LicenseValidation` variant
+// (network / timeout against license.pathway.com) via `execute_with_retries_if`.
+// `InsufficientLicenseEntitlements` and other non-transient errors fail the
+// predicate, propagate immediately, and don't burn retry budget.
+#[cached(result = true)]
 fn check_license_key_entitlements(
     license_key: String,
     entitlements: Vec<String>,
 ) -> Result<ValidationResponse, Error> {
-    KeygenLicenseChecker::new(PATHWAY_LICENSE_SERVER.to_string())
-        .check_entitlements(&license_key, entitlements)
+    let checker = KeygenLicenseChecker::new(PATHWAY_LICENSE_SERVER.to_string());
+    execute_with_retries_if(
+        || checker.check_entitlements(&license_key, entitlements.clone()),
+        |e| matches!(e, Error::LicenseValidation(_)),
+        RetryConfig::default(),
+        3,
+    )
 }
 
 struct KeygenLicenseChecker {
