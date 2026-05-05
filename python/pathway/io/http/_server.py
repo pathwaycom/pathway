@@ -477,6 +477,8 @@ class ServerSubject(io.python.ConnectorSubject, ABC):
                 continue
             try:
                 exact_type = unoptionalize(dtype).typehint
+                if exact_type is Any:
+                    continue
                 payload[column] = exact_type(payload[column])
             except Exception:
                 logging.exception(

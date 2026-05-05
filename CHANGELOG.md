@@ -17,6 +17,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.mssql.read` and `pw.io.mssql.write` now retry transient SQL Server errors automatically.
 
 ### Fixed
+- `pw.io.http.rest_connector` no longer raises `TypeError: Cannot instantiate typing.Any` when a request column has the inferred default schema type (`Any`). The cast step now skips columns typed as `Any` instead of attempting to call the type as a constructor.
 - `pw.io.deltalake.read` now accepts Delta tables whose integer columns use any of the standard Parquet integer widths (`INT_8`, `INT_16`, `INT_32`, unsigned variants), and whose floating-point columns use `FLOAT` (32-bit) or `FLOAT16`. Previously the row-level reader only matched `INT_64` and `DOUBLE`, so tables produced by Spark / DuckDB / pandas with explicit narrower casts read back as zero rows with per-row conversion errors.
 - `pw.io.deltalake.write` partition columns of type `pw.Pointer`, `pw.Duration`, and `pw.Json` now round-trip correctly through `pw.io.deltalake.read`. Previously the values were correctly placed in the partition path on write, but the reader had no decoder for those types and produced a conversion error for every row.
 
