@@ -21,7 +21,14 @@ def _repr_mimebundle_(self: pw.Table, include, exclude):
 @check_arg_types
 @trace_user_frame
 def show(
-    self: pw.Table, *, snapshot=True, include_id=True, short_pointers=True, sorters=None
+    self: pw.Table,
+    *,
+    snapshot: bool = True,
+    include_id: bool = True,
+    short_pointers: bool = True,
+    sorters: list[dict[str, str]] | None = None,
+    page_size: int = 10,
+    table_height: int = 400,
 ):
     """
     Allows for displaying table visually in e.g. jupyter. If the table
@@ -34,6 +41,10 @@ def show(
             Defaults to True.
         include_id (bool, optional): whether to show ids of rows. Defaults to True.
         short_pointers (bool, optional): whether to shorten printed ids. Defaults to True.
+        sorters (list, optional): a list of sorter definitions mapping where each item should declare
+            the column to sort on and the direction to sort. Defaults to None.
+        page_size (int, optional): number of rows on each page. Defaults to 10.
+        table_height (int, optional): fixed height of the table widget. Defaults to 400.
 
     Returns:
         pn.Column: visualization which can be displayed immediately or passed as a dashboard widget
@@ -94,10 +105,10 @@ def show(
         pd.DataFrame(columns=col_names),
         disabled=True,
         show_index=False,
-        height=400,
+        height=table_height,
         sorters=sorters,
         pagination="local",
-        page_size=10,
+        page_size=page_size,
         sizing_mode="stretch_width",
     )
 
