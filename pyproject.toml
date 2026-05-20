@@ -114,6 +114,7 @@ tests = [
     "pytest-xdist >= 3.3.1, < 4.0.0",
     "pytest-rerunfailures >= 13.0, < 14.0",
     "pytest-asyncio >= 1.2.0",
+    "pytest-timeout >= 2.3.0, < 3.0.0",
     "python-louvain",
     "openapi_spec_validator",
     "kafka-python >= 2.0.2",
