@@ -5,6 +5,7 @@ import base64
 import copy
 import datetime
 import json
+import logging
 import multiprocessing
 import os
 import pathlib
@@ -30,6 +31,7 @@ from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.io.airbyte.logic import _PathwayAirbyteDestination
+from pathway.io.http._server import RestServerSubject
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
     CountDifferentTimestampsCallback,
@@ -2828,6 +2830,29 @@ def test_server_fail_on_duplicate_route():
             schema=InputSchema,
             delete_completed_queries=False,
         )
+
+
+def test_rest_connector_default_schema_skips_any_cast(caplog):
+    default_schema = pw.schema_builder({"query": pw.column_definition()})
+    subject = RestServerSubject.__new__(RestServerSubject)
+    subject._schema = default_schema
+
+    payload = {"query": "hello"}
+    with caplog.at_level(logging.ERROR):
+        subject._cast_types_to_schema(payload)
+
+    assert payload == {"query": "hello"}
+    assert not any(
+        "Failed to cast column" in record.getMessage() for record in caplog.records
+    )
+
+    class TypedSchema(pw.Schema):
+        n: int
+
+    subject._schema = TypedSchema
+    typed_payload = {"n": "42"}
+    subject._cast_types_to_schema(typed_payload)
+    assert typed_payload == {"n": 42}
 
 
 def test_pyfilesystem_simple(tmp_path: pathlib.Path):
