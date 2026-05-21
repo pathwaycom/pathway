@@ -1,15 +1,38 @@
 # Copyright © 2026 Pathway
 
+import functools
 import json
+import os
 import uuid
 
 import pytest
 
 import pathway as pw
-from pathway.engine import ExternalIndexFactory
+from pathway.engine import EngineError, ExternalIndexFactory
 from pathway.tests.utils import assert_table_equality
 
-QDRANT_URL = "http://qdrant:6334"
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6334")
+
+_TRANSIENT_QDRANT_PATTERNS = (
+    "Timeout expired",
+    "The operation was cancelled",
+    "transport error",
+    "tcp connect error",
+    "channel closed",
+)
+
+
+def xfail_on_connection_failure(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except EngineError as e:
+            if any(p in str(e) for p in _TRANSIENT_QDRANT_PATTERNS):
+                pytest.xfail(f"transient qdrant connection failure: {e}")
+            raise
+
+    return wrapper
 
 
 def make_list(vector_as_str: str) -> list[float]:
@@ -31,7 +54,7 @@ class QuerySchema(pw.Schema):
     limit: int
 
 
-@pytest.mark.flaky(reruns=5)
+@xfail_on_connection_failure
 def test_basic_search():
     index = pw.debug.table_from_markdown(
         """
@@ -80,7 +103,7 @@ def test_basic_search():
     assert_table_equality(result, expected)
 
 
-@pytest.mark.flaky(reruns=5)
+@xfail_on_connection_failure
 def test_with_deletions():
     index = pw.debug.table_from_markdown(
         """
@@ -130,7 +153,7 @@ def test_with_deletions():
     assert_table_equality(result, expected)
 
 
-@pytest.mark.flaky(reruns=5)
+@xfail_on_connection_failure
 def test_filter():
     class InputSchemaWithFilter(pw.Schema):
         pk_source: int = pw.column_definition(primary_key=True)
