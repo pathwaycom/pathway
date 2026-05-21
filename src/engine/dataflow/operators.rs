@@ -276,7 +276,7 @@ where
                         output.session(&time).give_iterator(
                             results
                                 .into_iter()
-                                .zip_eq(times_diffs.into_iter())
+                                .zip_eq(times_diffs)
                                 .map(|(result, (time, diff))| (result, time, diff)),
                         );
                     }

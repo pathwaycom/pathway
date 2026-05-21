@@ -189,7 +189,7 @@ impl ReadersQueryPurpose {
 }
 
 impl PersistenceManagerConfig {
-    const MIN_SNAPSHOT_MERGING_FREQUENCY: Duration = Duration::from_secs(30 * 60);
+    const MIN_SNAPSHOT_MERGING_FREQUENCY: Duration = Duration::from_mins(30);
 
     pub fn new(
         outer_config: PersistenceManagerOuterConfig,

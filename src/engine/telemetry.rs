@@ -36,7 +36,7 @@ use tonic::transport::ClientTlsConfig;
 use uuid::Uuid;
 
 const PATHWAY_TELEMETRY_SERVER: &str = "https://usage.pathway.com";
-const PERIODIC_READER_INTERVAL: Duration = Duration::from_secs(60);
+const PERIODIC_READER_INTERVAL: Duration = Duration::from_mins(1);
 const OPENTELEMETRY_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";

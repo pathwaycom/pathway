@@ -504,7 +504,7 @@ where
                 if let Some(ref carry_entry_key) = carry_entry.key {
                     move_to_key_or_upper_bound(input_wrapper, carry_entry_key);
                     let weight = key_val_weight_up_to_time(input_wrapper, time);
-                    log::debug!("pushing carry entry {carry_entry:?}",);
+                    log::debug!("pushing carry entry {carry_entry:?}");
                     push_insert_replace(
                         output_wrapper,
                         &carry_entry_key.clone(),

@@ -1710,7 +1710,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
                             for (result_i, (position, key)) in result_for_expression
                                 .into_iter()
-                                .zip_eq(rows_for_expression.into_iter())
+                                .zip_eq(rows_for_expression)
                             {
                                 let result_i = result_i.unwrap_or_log_with_trace(
                                     error_logger.as_ref(),

@@ -122,7 +122,7 @@ impl ConnectorMonitor {
         self.stats.num_messages_recently_committed = self.current_num_messages;
         let now = Instant::now();
         while let Some(elem) = self.last_minute_queue.front() {
-            if now.duration_since(elem.1) < Duration::from_secs(60) {
+            if now.duration_since(elem.1) < Duration::from_mins(1) {
                 break;
             }
             self.stats.num_messages_in_last_minute -= elem.0;

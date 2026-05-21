@@ -58,6 +58,8 @@ impl PersistenceTime for Timestamp {
         Self(0)
     }
 
+    // checked_div rewrite hurts readability here: the div==0 branch differs in shape from the success branch.
+    #[allow(clippy::manual_checked_ops)]
     fn should_be_saved_together(&self, other: &Self, snapshot_interval: Duration) -> bool {
         // note: when changing granulaty of Timestamp, change num_milliseconds to a new granularity
         #[allow(clippy::cast_sign_loss)]
@@ -70,6 +72,7 @@ impl PersistenceTime for Timestamp {
         }
     }
 
+    #[allow(clippy::manual_checked_ops)]
     fn most_recent_possible_snapshot_time(&self, snapshot_interval: Duration) -> Timestamp {
         #[allow(clippy::cast_sign_loss)]
         let div = u64::try_from(snapshot_interval.as_millis())

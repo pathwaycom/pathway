@@ -1229,7 +1229,7 @@ impl WalReader {
             StreamingMode::Off,
             Duration::from_secs(10),
             Duration::from_secs(30),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             RetryConfig::default(),
         )
         .with_slot_options(ReplicationSlotOptions {

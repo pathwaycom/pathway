@@ -1831,8 +1831,7 @@ impl Parser for JsonLinesParser {
         let payload = if self.has_fields_from_payload() {
             if prepare_plaintext_string(&raw_bytes_payload)
                 .as_ref()
-                .map(|s| s.as_str() == COMMIT_LITERAL)
-                .unwrap_or(false)
+                .is_ok_and(|s| s.as_str() == COMMIT_LITERAL)
             {
                 return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
             }

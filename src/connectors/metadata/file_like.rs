@@ -99,7 +99,7 @@ mod file_owner {
 
     use crate::retry::{execute_with_retries, RetryConfig};
 
-    const ERROR_THROTTLE_INTERVAL_PER_UID: Duration = Duration::from_secs(60);
+    const ERROR_THROTTLE_INTERVAL_PER_UID: Duration = Duration::from_mins(1);
     thread_local! {
         static UID_USER_CACHE: RefCell<HashMap<u32, String>> = RefCell::new(HashMap::new());
         static LAST_ERROR_REPORTED_AT: RefCell<HashMap<u32, Instant>> = RefCell::new(HashMap::new());
