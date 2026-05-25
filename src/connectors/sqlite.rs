@@ -13,8 +13,8 @@ use crate::connectors::data_format::{
     FormatterContext,
 };
 use crate::connectors::data_storage::{
-    CommitPossibility, ConversionError, SqlQueryTemplate, TableWriterInitMode, ValuesMap,
-    WriteError, Writer,
+    CommitPossibility, ConversionError, SqlQueryTemplate, TableContext, TableWriterInitMode,
+    ValuesMap, WriteError, Writer,
 };
 use crate::connectors::metadata::SQLiteMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
@@ -1265,13 +1265,23 @@ pub struct SqliteWriter {
 impl SqliteWriter {
     pub fn new(
         connection: SqliteConnection,
-        table_name: String,
-        value_fields: &[ValueField],
-        key_field_names: Option<&[String]>,
+        table_ctx: TableContext,
         snapshot_mode: bool,
         init_mode: TableWriterInitMode,
         max_batch_size: Option<usize>,
     ) -> Result<Self, WriteError> {
+        // `TableContext::schema_name` carries the schema for connectors
+        // that have a schema concept (PostgreSQL, SQL Server). SQLite
+        // does not, so the field is set to an empty string by the Python
+        // bridge and ignored here.
+        let TableContext {
+            table_name,
+            value_fields,
+            key_field_names,
+            ..
+        } = table_ctx;
+        let value_fields = value_fields.as_slice();
+        let key_field_names = key_field_names.as_deref();
         // The shared SQL builders (`TableWriterInitMode::initialize` and
         // `SqlQueryTemplate::new`) interpolate identifiers unquoted, which
         // is the right thing for dialects that use backticks / square
@@ -1305,20 +1315,11 @@ impl SqliteWriter {
         }
 
         let quoted_table_name = quote_sqlite_identifier(&table_name);
-        let quoted_value_fields: Vec<ValueField> = value_fields
-            .iter()
-            .map(|f| {
-                let mut cloned = f.clone();
-                cloned.name = quote_sqlite_identifier(&f.name);
-                cloned
-            })
-            .collect();
-        let quoted_key_field_names: Option<Vec<String>> = key_field_names.map(|names| {
-            names
-                .iter()
-                .map(|name| quote_sqlite_identifier(name))
-                .collect()
-        });
+        // ``SqlQueryTemplate::new`` and ``TableWriterInitMode::initialize``
+        // take a ``quote_ident`` callback now and apply it themselves
+        // to every column / key field. We don't pre-quote here — that
+        // would double-quote into ``"""name"""`` once the shared
+        // builders apply ``quote_sqlite_identifier`` on top.
 
         // For snapshot writes against a pre-existing table, verify the
         // destination carries a UNIQUE/PRIMARY KEY constraint that matches
@@ -1359,14 +1360,15 @@ impl SqliteWriter {
 
         init_mode.initialize(
             &quoted_table_name,
-            &quoted_value_fields,
-            quoted_key_field_names.as_deref(),
+            value_fields,
+            key_field_names,
             !snapshot_mode,
             |query| {
                 connection.execute(query, [])?;
                 Ok(())
             },
             Self::sqlite_data_type,
+            quote_sqlite_identifier,
         )?;
 
         // After init_mode has had its say, verify the destination table
@@ -1387,11 +1389,12 @@ impl SqliteWriter {
         let query_template = SqlQueryTemplate::new(
             snapshot_mode,
             &quoted_table_name,
-            &quoted_value_fields,
-            quoted_key_field_names.as_deref(),
+            value_fields,
+            key_field_names,
             false,
             |_| "?".to_string(),
             Self::on_insert_conflict_condition,
+            quote_sqlite_identifier,
         )?;
 
         Ok(Self {

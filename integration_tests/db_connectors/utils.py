@@ -261,6 +261,41 @@ class WireProtocolSupporterContext:
     def execute_sql(self, query: str):
         self.cursor.execute(query)
 
+    def execute_sql_with_retry(self, query: str, max_retries: int = 6) -> None:
+        """``execute_sql`` with retry on PostgreSQL catalog concurrency
+        errors.
+
+        ``REASSIGN OWNED BY`` / ``DROP OWNED BY`` / ``DROP USER`` /
+        ``DROP DATABASE`` mutate ``pg_authid``/``pg_database``
+        system tables. When two test workers call these concurrently
+        — even for *different* role names — PostgreSQL occasionally
+        fails one of them with ``tuple concurrently updated`` (or
+        ``deadlock detected``). The error is transient: re-running
+        the same command immediately succeeds. This helper keeps
+        per-test cleanup deterministic without serializing the whole
+        suite.
+        """
+        TRANSIENT = (
+            "tuple concurrently updated",
+            "deadlock detected",
+            "could not serialize",
+        )
+        for attempt in range(max_retries):
+            try:
+                self.cursor.execute(query)
+                return
+            except psycopg2.Error as e:
+                msg = str(e)
+                if not any(s in msg for s in TRANSIENT) or attempt + 1 == max_retries:
+                    raise
+                # The cursor may be in an aborted state after the
+                # failed transaction. Recreate it before retrying.
+                try:
+                    self.cursor = self.connection.cursor()
+                except Exception:
+                    pass
+                time.sleep(0.1 * (1.5**attempt) + random.uniform(0, 0.05))
+
     def random_table_name(self) -> str:
         return f'wire_{str(uuid.uuid4()).replace("-", "")}'
 
@@ -278,6 +313,32 @@ class WireProtocolSupporterContext:
                 self.execute_sql(drop_sql)
             except Exception as e:
                 logging.warning(f"Warning: Failed to drop publication {pub_name}: {e}")
+
+    @contextmanager
+    def temporary_table(self, ddl_fmt: str | None = None):
+        """Yield a randomly-generated table name and drop the table
+        unconditionally afterwards. If ``ddl_fmt`` is provided, it is
+        executed first with a single ``{t}`` placeholder replaced by
+        the generated name, e.g.
+        ``"CREATE TABLE {t} (k BIGINT, v TEXT)"``. Pass ``ddl_fmt=None``
+        to skip the CREATE — useful when the test lets Pathway create
+        the table via ``init_mode="replace"`` /
+        ``"create_if_not_exists"`` and only needs the cleanup.
+
+        Replaces the ``table_name = random_table_name() / execute_sql
+        CREATE / try ... finally DROP TABLE IF EXISTS`` boilerplate."""
+        table_name = self.random_table_name()
+        if ddl_fmt is not None:
+            self.execute_sql(ddl_fmt.format(t=table_name))
+        try:
+            yield table_name
+        finally:
+            try:
+                self.execute_sql(f"DROP TABLE IF EXISTS {table_name}")
+            except Exception as e:
+                logging.warning(
+                    f"Warning: Failed to drop temporary table {table_name}: {e}"
+                )
 
 
 class PostgresContext(WireProtocolSupporterContext):
@@ -1236,3 +1297,112 @@ def _create_ndarray_table(ItemType: type, input_rows: list[dict]) -> pw.Table:
         InputSchemaWithPkey,
         [tuple(row.values()) for row in input_rows],
     ).update_types(item=ItemType)
+
+
+def check_write_quotes_table_name_with_special_characters(
+    *,
+    write,
+    db_context,
+    quote_ident,
+    init_mode="replace",
+):
+    """Shared regression for the SQL writers: a ``table_name`` that
+    PostgreSQL / MySQL / SQL Server accept only when quoted (here a
+    hyphen, which is legal in all three when double-quoted / backticked
+    / bracketed) must be interpolated safely into the generated
+    ``CREATE TABLE`` + ``INSERT`` statements. Before the shared
+    ``quote_ident`` callback on ``SqlQueryTemplate::new`` /
+    ``TableWriterInitMode::initialize`` this failed at pipeline start
+    with an opaque engine-worker ``db error``.
+
+    ``write`` is a callable ``(table, table_name, init_mode)`` that
+    forwards to the connector's ``write`` (bound over connection
+    settings by the caller). ``quote_ident`` is the per-DB identifier
+    quoter used to construct the ``SELECT`` that reads the row back
+    (the test driver does raw string interpolation into SQL).
+    """
+    table = pw.debug.table_from_markdown(
+        """
+        k | v
+        1 | hello
+        """
+    )
+    # Use a randomized name with the hyphen embedded so two parallel
+    # pytest pipelines (or repeat-mode within one) cannot race on the
+    # same destination table.
+    name = f"my-pw-{uuid.uuid4().hex[:8]}"
+    write(table, table_name=name, init_mode=init_mode)
+    try:
+        rows = db_context.get_table_contents(
+            quote_ident(name),
+            ["k", "v"],
+        )
+        assert rows == [{"k": 1, "v": "hello"}]
+    finally:
+        try:
+            db_context.execute_sql(f"DROP TABLE IF EXISTS {quote_ident(name)}")
+        except Exception:
+            pass
+
+
+def check_write_quotes_reserved_word_column_name(
+    *,
+    write,
+    db_context,
+    quote_ident,
+    reserved_word="user",
+    table_name=None,
+    init_mode="replace",
+):
+    """Shared regression for the SQL writers: a column whose name is a
+    reserved word (``user`` is reserved in PostgreSQL, MySQL, and SQL
+    Server) must survive CREATE TABLE and every generated INSERT. The
+    bug was that ``field_list``, ``PRIMARY KEY (...)``, ``ON
+    CONFLICT``/``MERGE ON``, and ``UPDATE SET``/``DELETE WHERE`` tokens
+    were all emitted as raw column names.
+
+    The ``quote_ident`` callback is the per-DB identifier quoter used
+    to build the ``SELECT`` that reads the column back; the shared
+    writer-side fix lives inside ``SqlQueryTemplate::new`` /
+    ``TableWriterInitMode::initialize``.
+    """
+
+    class InputSchema(pw.Schema):
+        user: str
+        v: int
+
+    # ``user`` is a reserved word but is accepted as a Pathway schema
+    # field name; rebind the field name if the caller overrides.
+    if reserved_word != "user":
+        raise NotImplementedError(
+            "helper currently fixes the schema field to 'user'; "
+            "extend with dynamic rebinding if another reserved word is needed"
+        )
+
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [("alice", 1), ("bob", 2)],
+    )
+    if table_name is None:
+        # Random per-invocation name so concurrent invocations of this
+        # helper (parallel pytest pipelines, repeat mode) do not race
+        # on the same destination table.
+        table_name = f"reserved_word_col_{uuid.uuid4().hex[:8]}"
+    write(table, table_name=table_name, init_mode=init_mode)
+
+    quoted_col = quote_ident(reserved_word)
+    try:
+        rows = db_context.get_table_contents(
+            table_name,
+            [quoted_col, "v"],
+            sort_by="v",
+        )
+        assert rows == [
+            {quoted_col: "alice", "v": 1},
+            {quoted_col: "bob", "v": 2},
+        ]
+    finally:
+        try:
+            db_context.execute_sql(f"DROP TABLE IF EXISTS {table_name}")
+        except Exception:
+            pass

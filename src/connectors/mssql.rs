@@ -15,8 +15,8 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::{
-    CommitPossibility, ConnectorMode, ConversionError, SqlQueryTemplate, TableWriterInitMode,
-    ValuesMap,
+    CommitPossibility, ConnectorMode, ConversionError, SqlQueryTemplate, TableContext,
+    TableWriterInitMode, ValuesMap,
 };
 use crate::connectors::metadata::MssqlMetadata;
 use crate::connectors::offset::{Offset, OffsetKey, OffsetValue, EMPTY_OFFSET};
@@ -154,7 +154,20 @@ pub enum MssqlError {
 
 /// Build a schema-qualified table name using MSSQL bracket quoting.
 fn qualified_table_name(schema_name: &str, table_name: &str) -> String {
-    format!("[{schema_name}].[{table_name}]")
+    format!(
+        "{}.{}",
+        mssql_quote_identifier(schema_name),
+        mssql_quote_identifier(table_name),
+    )
+}
+
+/// Escapes a SQL Server identifier with brackets and doubles any internal
+/// closing brackets (`]` → `]]`). Used everywhere the MSSQL writer
+/// interpolates a user-supplied table, schema, or column name into
+/// generated T-SQL so reserved words and characters that require
+/// quoting survive round-tripping.
+fn mssql_quote_identifier(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
 }
 
 async fn connect_mssql(config: &Config) -> Result<MssqlClient, tiberius::error::Error> {
@@ -1293,17 +1306,21 @@ pub struct MssqlWriter {
 }
 
 impl MssqlWriter {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Config,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
-        schema_name: &str,
-        table_name: &str,
-        value_fields: &[ValueField],
-        key_field_names: Option<&[String]>,
+        table_ctx: &TableContext,
         mode: TableWriterInitMode,
     ) -> Result<MssqlWriter, WriteError> {
+        let TableContext {
+            schema_name,
+            table_name,
+            value_fields,
+            key_field_names,
+        } = table_ctx;
+        let value_fields = value_fields.as_slice();
+        let key_field_names = key_field_names.as_deref();
         let runtime = create_async_tokio_runtime()?;
         let full_table_name = qualified_table_name(schema_name, table_name);
 
@@ -1384,6 +1401,7 @@ impl MssqlWriter {
             false,
             |i| format!("@P{}", i + 1),
             Self::on_insert_conflict_condition,
+            mssql_quote_identifier,
         )?;
 
         let value_field_types: Vec<Type> = value_fields.iter().map(|f| f.type_.clone()).collect();

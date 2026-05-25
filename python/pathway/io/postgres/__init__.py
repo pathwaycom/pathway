@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import urllib.parse
 import warnings
 from typing import Any, Iterable, Literal
 
@@ -22,25 +23,203 @@ from pathway.io._utils import (
 )
 
 
+def _quote_libpq_value(value) -> str:
+    """Serialize a libpq connection-string value safely.
+
+    libpq parses keyword/value connection strings by splitting on
+    whitespace, so any value that contains a space, a backslash, or a
+    single quote must be wrapped in single quotes with ``\\`` and ``'``
+    escaped. Quoting unconditionally is equally valid and keeps the
+    code simple. Non-string values fall through ``str()`` first.
+    """
+    escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def _build_application_name(unique_name: str | None) -> str:
+    """Build the ``application_name`` libpq parameter so that every
+    Pathway connection is identifiable in ``pg_stat_activity`` /
+    ``pg_stat_replication`` and in ``log_line_prefix`` lines that
+    include ``%a``.
+
+    PostgreSQL stores up to ``NAMEDATALEN - 1`` = 63 bytes and silently
+    truncates the rest; non-printable bytes (anything outside the
+    printable ASCII range ``0x20``–``0x7E``) get replaced with ``?``
+    on the server side, which is useless for log filtering. We
+    pre-sanitize and pre-truncate so operators see the value the
+    Python side intended rather than PG's ``?``-mangling.
+
+    The value is ``pathway`` when no ``unique_name`` is given, and
+    ``pathway:<unique_name>`` otherwise. Uniqueness is *not* a
+    PostgreSQL requirement — pid + start time uniquely identify a
+    session in ``pg_stat_activity`` regardless — so duplicate names
+    are allowed; they just lose the operator-readable
+    name-to-connector mapping for the duplicates.
+    """
+    prefix = "pathway"
+    if not unique_name:
+        return prefix
+    suffix = ":" + unique_name
+    sanitized = "".join(c if 0x20 <= ord(c) <= 0x7E else "_" for c in suffix)
+    return (prefix + sanitized)[:63]
+
+
+# Defaults injected into ``postgres_settings`` for any key the user
+# has not set. ``application_name`` is filled in by
+# :func:`_augment_postgres_settings` per-call because it depends on
+# the connector's ``name`` parameter.
+#
+# These keys follow libpq's canonical spelling (and libpq's unit for
+# ``tcp_user_timeout``: milliseconds). The streaming reader goes
+# through libpq directly, so the URL form accepts them verbatim.
+# The static reader/writer KV form is consumed by a parser whose
+# name set and ``tcp_user_timeout`` unit differ from libpq — those
+# differences are absorbed inside
+# :func:`_connection_string_from_settings`, so the same libpq-style
+# dict produces equivalent TCP-keepalive behavior on both paths.
+#
+# Detection-time math: with ``keepalives_idle=300`` and
+# ``keepalives_interval=30 × keepalives_count=3``, an idle but
+# half-broken connection is declared dead at 300 + 3 × 30 = 390 s
+# (~6.5 min). ``tcp_user_timeout=300000`` ms (= 5 min) covers the
+# active-connection case where the wal_sender is shipping bytes but
+# the client isn't ACKing (keepalives don't fire on active
+# connections).
+#
+# These are tuned to be conservative on the "minimize false
+# positives" axis: routine network blips (NAT rebinding, brief
+# routing changes, single-AZ failover) typically resolve in under a
+# minute, and Pathway's temporary replication slots auto-clean on
+# the next disconnect, so the cost of a slow detection is just a
+# bit more WAL pinned briefly — not the days-long retention you'd
+# get from a leaked persistent slot.
+_LIBPQ_TIMEOUT_DEFAULTS = {
+    "keepalives": "1",
+    "keepalives_idle": "300",
+    "keepalives_interval": "30",
+    "keepalives_count": "3",
+    "tcp_user_timeout": "300000",
+}
+
+
+# Translation applied when serializing ``postgres_settings`` to the
+# KV form consumed by the static reader/writer. The streaming reader
+# goes through libpq (URL form) and accepts the libpq spellings
+# verbatim; the KV parser does not — it spells ``keepalives_count``
+# as ``keepalives_retries`` and interprets ``tcp_user_timeout`` as
+# seconds, not the milliseconds documented in libpq. Translating
+# here lets the user (and the defaults above) speak a single
+# libpq-canonical dialect.
+_KV_KEY_RENAME = {
+    "keepalives_count": "keepalives_retries",
+}
+
+
+def _kv_translate_value(key: str, value):
+    """Apply libpq → KV-parser unit conversions for select keys.
+    Returns the value unchanged when no translation applies.
+    """
+    if key == "tcp_user_timeout":
+        try:
+            ms = int(str(value))
+        except (TypeError, ValueError):
+            return value
+        return str(ms // 1000)
+    return value
+
+
+def _augment_postgres_settings(settings: dict, unique_name: str | None) -> dict:
+    """Return a copy of ``settings`` with the Pathway-managed defaults
+    (``application_name`` and TCP-keepalive tuning) injected for any
+    key the user did not provide. The user's explicit values always
+    win — :py:meth:`dict.setdefault` is the explicit Python idiom for
+    "set if absent" and is what we rely on here.
+    """
+    augmented = dict(settings)
+    augmented.setdefault("application_name", _build_application_name(unique_name))
+    for key, value in _LIBPQ_TIMEOUT_DEFAULTS.items():
+        augmented.setdefault(key, value)
+    return augmented
+
+
 def _connection_string_from_settings(settings: dict):
-    return " ".join(k + "=" + str(v) for (k, v) in settings.items())
+    out = []
+    for k, v in settings.items():
+        kv_key = _KV_KEY_RENAME.get(k, k)
+        kv_value = _kv_translate_value(k, v)
+        out.append(f"{kv_key}={_quote_libpq_value(kv_value)}")
+    return " ".join(out)
 
 
 def _replication_connection_string_from_settings(settings: dict):
     owned_settings = copy.copy(settings)
 
-    user = owned_settings.pop("user")
-    password = owned_settings.pop("password")
-    host = owned_settings.pop("host")
-    port = owned_settings.pop("port", 5432)
-    dbname = owned_settings.pop("dbname", user)
+    # URL-form connection strings require percent-encoding of
+    # user-supplied components — otherwise characters like ``@``, ``:``,
+    # ``/``, ``?``, ``#``, or whitespace inside a password silently
+    # corrupt the parsed URL.
+    def enc(v) -> str:
+        return urllib.parse.quote(str(v), safe="")
 
-    connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}?"
+    # Every URL component is optional. We mirror the static path
+    # (which builds a libpq keyword/value string and lets libpq apply
+    # its own defaults for missing keys) by omitting absent components
+    # from the URL — libpq then resolves them through the normal
+    # mechanisms (OS user for ``user``, ``~/.pgpass`` for
+    # ``password``, UNIX socket for ``host``, ``5432`` for ``port``,
+    # ``user`` for ``dbname``). The server-side ``pg_hba.conf``
+    # decides whether the resulting connection is authorized; for
+    # ``trust`` / ``peer`` / ``cert`` auth modes the absence of a
+    # password is the normal case, and rejecting at the Python
+    # boundary would lock those configurations out.
+    user = owned_settings.pop("user", None)
+    password = owned_settings.pop("password", None)
+    host = owned_settings.pop("host", None)
+    port = owned_settings.pop("port", None)
+    dbname = owned_settings.pop("dbname", None)
+
+    userinfo = ""
+    if user is not None:
+        userinfo = enc(user)
+        if password is not None:
+            userinfo += ":" + enc(password)
+        userinfo += "@"
+    elif password is not None:
+        # The URL userinfo slot is ``user[:password]@`` — there is no
+        # legal form for a password without a user. libpq's KV format
+        # accepts ``password=...`` standalone (letting it pair with
+        # libpq's default user), so push the password into the URL
+        # query string, which libpq treats identically.
+        owned_settings["password"] = password
+
+    hostport = ""
+    if host is not None:
+        hostport = enc(host)
+        if port is not None:
+            hostport += f":{port}"
+    elif port is not None:
+        # ``postgresql://:5432`` would be parsed as
+        # ``host="", port=5432``, which is ambiguous. Push the port
+        # into the query string where its meaning is unambiguous.
+        owned_settings["port"] = port
+
+    if dbname is not None:
+        path = "/" + enc(dbname)
+    elif not hostport and not userinfo:
+        # Without any authority component the URL would otherwise
+        # render as ``postgresql://?<query>``. libpq's URI grammar
+        # accepts the empty-authority form, but every documented
+        # example uses ``postgresql:///<query>`` instead — emit the
+        # explicit path separator so the URL stays in the documented
+        # shape.
+        path = "/"
+    else:
+        path = ""
 
     owned_settings["replication"] = "database"
-    connection_string += "&".join(k + "=" + str(v) for (k, v) in owned_settings.items())
+    query = "&".join(f"{enc(k)}={enc(v)}" for (k, v) in owned_settings.items())
 
-    return connection_string
+    return f"postgresql://{userinfo}{hostport}{path}?{query}"
 
 
 def _build_tls_settings(owned_postgres_settings: dict) -> TLSSettings:
@@ -148,8 +327,19 @@ def read(
             dictionary of key-value pairs. The connection string is assembled by joining
             all pairs with spaces, each formatted as ``key=value``. Keys must be strings;
             values of other types are converted via Python's ``str()``.
-        table_name: Name of the PostgreSQL table to read from.
+            Pathway injects conservative TCP-keepalive defaults (``keepalives``,
+            ``keepalives_idle=300``, ``keepalives_interval=30``, ``keepalives_count=3``,
+            and ``tcp_user_timeout=300000``) so that an unreachable
+            Pathway process is detected by PostgreSQL within minutes rather than
+            the OS-inherited ~2-hour default; any of these can be overridden by
+            passing the same key in ``postgres_settings``.
+        table_name: Name of the PostgreSQL table to read from. Any PostgreSQL
+            identifier is accepted — the connector quotes the name before
+            interpolating it into generated SQL, so hyphens, mixed case, and
+            reserved words round-trip as-is.
         schema: Pathway schema describing the table's columns and their types.
+            Column names may be any PostgreSQL identifier for the same reason
+            as ``table_name``.
         mode: Polling mode for the connector. Accepted values are ``"streaming"``
             (default) and ``"static"``. In ``"streaming"`` mode, the connector tracks
             changes in the table via the WAL, reflecting insertions, updates, deletions,
@@ -173,6 +363,9 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
+            It is also surfaced to PostgreSQL as part of the connection's ``application_name``
+            (``pathway:<name>``), so operators can filter ``pg_stat_activity`` and server logs
+            by connector.
         max_backlog_size: Limit on the number of entries read from the input source and kept
             in processing at any moment. Reading pauses when the limit is reached and resumes
             as processing of some entries completes. Useful with large sources that
@@ -362,6 +555,7 @@ def read(
     """
     _check_entitlements("postgres-wal-reader")
 
+    postgres_settings = _augment_postgres_settings(postgres_settings, name)
     owned_postgres_settings = copy.copy(postgres_settings)
     tls = _build_tls_settings(owned_postgres_settings)
     replication_settings = _construct_replication_settings(
@@ -413,6 +607,7 @@ def write(
     postgres_settings: dict,
     table_name: str,
     *,
+    schema_name: str | None = "public",
     max_batch_size: int | None = None,
     init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
@@ -440,7 +635,20 @@ def write(
             with each pair formatted as `key=value`. Keys must be strings. Values can be
             of any type; if a value is not a string, it will be converted using Python's
             `str()` function.
-        table_name: Name of the target table.
+            Pathway injects conservative TCP-keepalive defaults (``keepalives``,
+            ``keepalives_idle=300``, ``keepalives_interval=30``, ``keepalives_count=3``,
+            and ``tcp_user_timeout=300000``) so that an unreachable
+            Pathway process is detected by PostgreSQL within minutes rather than
+            the OS-inherited ~2-hour default; any of these can be overridden by
+            passing the same key in ``postgres_settings``.
+        table_name: Name of the target table. Any PostgreSQL identifier is
+            accepted — the connector quotes the name before interpolating it
+            into generated SQL, so hyphens, mixed case, and reserved words
+            round-trip as-is. Column names in ``table`` and in ``primary_key``
+            are quoted the same way.
+        schema_name: Name of the PostgreSQL schema that owns the target table.
+            Defaults to ``"public"``. Set this when writing to a non-default
+            schema; the name is quoted identically to ``table_name``.
         max_batch_size: Maximum number of entries allowed to be committed within a
             single transaction.
         init_mode: "default": The default initialization mode;
@@ -457,7 +665,9 @@ def write(
         primary_key: When using snapshot mode, one or more columns that form the primary
             key in the target Postgres table.
         name: A unique name for the connector. If provided, this name will be used in
-            logs and monitoring dashboards.
+            logs and monitoring dashboards. It is also surfaced to PostgreSQL as part of
+            the connection's ``application_name`` (``pathway:<name>``), so operators can
+            filter ``pg_stat_activity`` and server logs by connector.
         sort_by: If specified, the output will be sorted in ascending order based on the
             values of the given columns within each minibatch. When multiple columns are provided,
             the corresponding value tuples will be compared lexicographically.
@@ -495,9 +705,10 @@ def write(
 
     In order to output the table, we will need to create a new table in the database. The table
     would need to have all the columns that the output data has. Moreover it will need
-    integer columns ``time`` and ``diff``, because these values are an essential part of the
-    output. Finally, it is also a good idea to create the sequential primary key for
-    our changes so that we know the updates' order.
+    a ``time`` column of type ``BIGINT`` (Pathway timestamps are milliseconds since epoch and
+    routinely exceed the 32-bit range) and a ``diff`` column of type ``SMALLINT``. Finally,
+    it is also a good idea to create the sequential primary key for our changes so that we
+    know the updates' order.
 
     To sum things up, the table creation boils down to the following SQL command:
 
@@ -505,9 +716,9 @@ def write(
 
         CREATE TABLE pets (
             id SERIAL PRIMARY KEY,
-            time INTEGER NOT NULL,
-            diff INTEGER NOT NULL,
-            age INTEGER,
+            time BIGINT NOT NULL,
+            diff SMALLINT NOT NULL,
+            age BIGINT,
             owner TEXT,
             pet TEXT
         );
@@ -546,13 +757,52 @@ def write(
     ... )
     """
 
+    postgres_settings = _augment_postgres_settings(postgres_settings, name)
     tls = _build_tls_settings(postgres_settings)
     is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
+
+    # Stream-of-changes mode appends `time BIGINT NOT NULL, diff SMALLINT
+    # NOT NULL` metadata columns to the generated CREATE TABLE. A user
+    # column with one of those names (case-insensitive — PostgreSQL
+    # folds unquoted identifiers to lowercase) would otherwise land
+    # twice in the DDL and the engine worker would panic at pipeline
+    # start with an opaque `db error`. Snapshot mode does not append
+    # these columns, so the check only applies in stream mode.
+    if not is_snapshot_mode:
+        offending = sorted(
+            {
+                name
+                for name in table.schema.column_names()
+                if name.lower() in ("time", "diff")
+            }
+        )
+        if offending:
+            raise ValueError(
+                f"Pathway schema column(s) {offending} collide with "
+                "the 'time' and 'diff' metadata columns appended in "
+                "stream_of_changes mode. Rename the column(s) in your "
+                "schema or switch to output_table_type='snapshot' "
+                "which does not append these metadata columns."
+            )
+
+    # ``max_batch_size`` is the buffer threshold at which the writer
+    # triggers a flush. Pass 0 and the buffer would grow without bound
+    # because the threshold can never be reached, so ``pw.run()`` would
+    # never commit a single row. Reject explicitly with an actionable
+    # message; 0 has no obvious "batch" semantics, so we don't try to
+    # map it to "no batching" silently.
+    if max_batch_size is not None and max_batch_size <= 0:
+        raise ValueError(
+            "max_batch_size must be a positive integer (pass None to "
+            "disable size-based batching)"
+        )
+
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
         table_name=table_name,
+        schema_name=schema_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
         snapshot_maintenance_on_output=is_snapshot_mode,
         tls_settings=tls.settings,
@@ -567,6 +817,22 @@ def write(
             raise ValueError(
                 "primary_key can only be specified for the snapshot table type"
             )
+    else:
+        # Snapshot mode requires at least one primary-key column —
+        # the writer's INSERT ... ON CONFLICT (...) DO UPDATE
+        # statement is malformed without one. If we let an empty list
+        # reach the engine it would error out only AFTER ``init_mode``
+        # has already mutated the destination (CREATE TABLE for
+        # ``"replace"`` / ``"create_if_not_exists"``), and under
+        # multi-worker (PATHWAY_THREADS > 1) the worker that loses the
+        # CREATE race observes the partially-created table and
+        # surfaces a less specific error instead — making any
+        # message-based test flaky. Reject at call time so no DB side
+        # effect happens.
+        if primary_key is None or len(primary_key) == 0:
+            raise ValueError(
+                "primary key field names must be specified for a snapshot mode"
+            )
     if (
         _external_diff_column is not None
         and _external_diff_column._column.dtype != dtype.INT
@@ -576,9 +842,49 @@ def write(
     external_diff_column_index = get_column_index(table, _external_diff_column)
     key_field_names = None
     if primary_key is not None:
-        key_field_names = []
-        for pkey_field in primary_key:
-            key_field_names.append(pkey_field.name)
+        key_field_names = [pkey_field.name for pkey_field in primary_key]
+        # `primary_key=[other_table.col]` (or a reference whose name
+        # simply isn't in `table`) is accepted today but then either
+        # generates a malformed CREATE TABLE (``PRIMARY KEY
+        # ("unknown")``) on init or produces an UPSERT that panics at
+        # flush. Reject up-front with a clear message.
+        table_columns = set(table.schema.column_names())
+        foreign = sorted(n for n in key_field_names if n not in table_columns)
+        if foreign:
+            raise ValueError(
+                f"primary_key references column(s) {foreign} that are "
+                "not present in the written table; pass ColumnReferences "
+                "from the table being written, e.g. primary_key=[table.k]."
+            )
+        # A duplicate reference like `primary_key=[t.k, t.k]` would slip
+        # through to `SqlQueryTemplate` and either yield malformed SQL
+        # (``PRIMARY KEY ("k", "k")``) on CREATE TABLE or corrupt the
+        # ``primary_key_fields`` index-swap used on DELETE. Reject it
+        # here with a clear message instead.
+        duplicates = sorted(
+            {name for name in key_field_names if key_field_names.count(name) > 1}
+        )
+        if duplicates:
+            raise ValueError(f"primary_key contains duplicate column(s) {duplicates}")
+        # A nullable primary-key column in snapshot mode is silently
+        # broken: either the `NOT NULL` PRIMARY KEY we emit on
+        # create_if_not_exists / replace rejects the NULL row at
+        # insert time, or (against a pre-existing table that allows
+        # NULL in the PK) the retraction ``DELETE ... WHERE pkey=$1``
+        # never matches anything because SQL ``= NULL`` is always
+        # false. Both are data-loss footguns, so we refuse the setup
+        # here with an actionable message.
+        if is_snapshot_mode:
+            for pkey_field in primary_key:
+                if isinstance(pkey_field._column.dtype, dtype.Optional):
+                    raise ValueError(
+                        f"primary_key column '{pkey_field.name}' is "
+                        "declared nullable; primary_key columns must be "
+                        "non-nullable in snapshot mode. Either remove "
+                        "the Optional wrapper in the schema or filter "
+                        "out nulls upstream via "
+                        ".filter(t.pkey.is_not_none())."
+                    )
     data_format = api.DataFormat(
         format_type="identity",
         key_field_names=key_field_names,
@@ -658,9 +964,9 @@ def write_snapshot(
 
         CREATE TABLE user_stats (
             user_id TEXT PRIMARY KEY,
-            number_of_requests INTEGER,
-            time INTEGER NOT NULL,
-            diff INTEGER NOT NULL
+            number_of_requests BIGINT,
+            time BIGINT NOT NULL,
+            diff SMALLINT NOT NULL
         );
 
 
@@ -688,12 +994,54 @@ def write_snapshot(
         stacklevel=5,
     )
 
+    duplicates = sorted({name for name in primary_key if primary_key.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"primary_key contains duplicate column(s) {duplicates}")
+
+    # ``write_snapshot`` runs in ``legacy_mode=True`` which keeps the
+    # ``time``/``diff`` metadata columns on the writer's INSERT — and
+    # the generated SQL becomes ``INSERT INTO foo ("time", "value",
+    # "time", "diff") VALUES (...)`` if the user schema also carries a
+    # ``time`` or ``diff`` column, which PostgreSQL rejects with
+    # ``column "time" specified more than once``. The non-legacy
+    # sibling ``write`` runs the same check (and is already pinned by
+    # ``test_psql_write_stream_mode_rejects_reserved_column_name``);
+    # mirror it here so the deprecated path doesn't surface an opaque
+    # engine-worker ``db error``.
+    offending = sorted(
+        {
+            cname
+            for cname in table.schema.column_names()
+            if cname.lower() in ("time", "diff")
+        }
+    )
+    if offending:
+        raise ValueError(
+            f"Pathway schema column(s) {offending} collide with "
+            "the 'time' and 'diff' metadata columns appended by "
+            "`pw.io.postgres.write_snapshot`. Rename the column(s) "
+            "in your schema or migrate to `pw.io.postgres.write` "
+            "with output_table_type='snapshot' (no metadata "
+            "columns appended)."
+        )
+
+    # Same rationale as the sibling check in ``write`` above: a
+    # ``max_batch_size`` of 0 (or negative) silently breaks the
+    # writer's buffer-flush trigger and leaves rows piling up forever.
+    if max_batch_size is not None and max_batch_size <= 0:
+        raise ValueError(
+            "max_batch_size must be a positive integer (pass None to "
+            "disable size-based batching)"
+        )
+
+    postgres_settings = _augment_postgres_settings(postgres_settings, name)
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
         snapshot_maintenance_on_output=True,
         table_name=table_name,
+        schema_name="public",
         table_writer_init_mode=init_mode_from_str(init_mode),
         legacy_mode=True,
     )

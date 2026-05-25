@@ -8,6 +8,8 @@ from utils import (
     MYSQL_CONNECTION_STRING,
     MYSQL_DB_NAME,
     SimpleObject,
+    check_write_quotes_reserved_word_column_name,
+    check_write_quotes_table_name_with_special_characters,
     is_mysql_reachable,
 )
 
@@ -432,3 +434,40 @@ def test_mysql_single_column_snapshot_mode(mysql):
     contents = mysql.get_table_contents(table_name, ["x"])
     contents.sort(key=lambda item: item["x"])
     assert contents == [{"x": 0}, {"x": 1}, {"x": 2}, {"x": 3}, {"x": 4}]
+
+
+def _mysql_quote_ident(name: str) -> str:
+    """Escape a MySQL identifier with backticks."""
+    return "`" + name.replace("`", "``") + "`"
+
+
+def _mysql_write(table, *, table_name, init_mode):
+    pw.io.mysql.write(
+        table,
+        MYSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode=init_mode,
+    )
+    pw.run()
+
+
+@xfail_if_mysql_failed_to_start
+def test_mysql_write_table_name_with_special_characters(mysql):
+    """Shared regression for identifier quoting in SQL writers.
+    Unverified in this harness — see
+    ``check_write_quotes_table_name_with_special_characters`` in
+    ``utils.py`` and the Postgres counterpart in ``test_postgres.py``."""
+    check_write_quotes_table_name_with_special_characters(
+        write=_mysql_write, db_context=mysql, quote_ident=_mysql_quote_ident
+    )
+
+
+@xfail_if_mysql_failed_to_start
+def test_mysql_write_column_name_is_reserved_word(mysql):
+    """Shared regression for identifier quoting in SQL writers.
+    Unverified in this harness — see
+    ``check_write_quotes_reserved_word_column_name`` in ``utils.py``
+    and the Postgres counterpart in ``test_postgres.py``."""
+    check_write_quotes_reserved_word_column_name(
+        write=_mysql_write, db_context=mysql, quote_ident=_mysql_quote_ident
+    )

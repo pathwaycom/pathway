@@ -3,6 +3,8 @@ use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io;
+use std::mem::take;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +26,8 @@ use uuid::Uuid;
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::{
-    CommitPossibility, ConversionError, SqlQueryTemplate, TableWriterInitMode, ValuesMap,
+    format_error_chain, CommitPossibility, ConversionError, SqlQueryTemplate, TableContext,
+    TableWriterInitMode, ValuesMap,
 };
 use crate::connectors::metadata::PostgresMetadata;
 use crate::connectors::{
@@ -35,6 +38,7 @@ use crate::engine::value::parse_pathway_pointer;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
+use crate::retry::execute_with_retries_if;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SslError {
@@ -48,9 +52,157 @@ pub enum SslError {
     UnexpectedSslMode,
 }
 
+/// Top-level `PostgreSQL` error type. Every postgres-specific failure
+/// — raw driver errors, TLS handshake failures, WAL replication
+/// errors, query/preflight validation errors — lives here so that
+/// `ReadError` and `WriteError` only need to carry a single
+/// `Postgres(#[from] PostgresError)` variant.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PostgresError {
+    #[error(transparent)]
+    Postgres(#[from] postgres::Error),
+
+    #[error(transparent)]
+    Ssl(#[from] SslError),
+
+    #[error(transparent)]
+    Replication(#[from] ReplicationError),
+
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    #[error("query {query:?} failed: {}", format_error_chain(.error))]
+    PsqlQueryFailed {
+        query: String,
+        error: postgres::Error,
+    },
+
+    #[error(
+        "destination table \"{schema}\".\"{table}\" has generated column(s) {columns:?} \
+         (GENERATED ALWAYS AS ... / AS IDENTITY) that pw.Schema also names; \
+         drop them from the schema — the reader will still return their computed \
+         values on SELECT, or use init_mode=\"replace\"/\"create_if_not_exists\" to \
+         have Pathway recreate the table without generated columns"
+    )]
+    GeneratedColumnInSchema {
+        schema: String,
+        table: String,
+        columns: Vec<String>,
+    },
+
+    #[error(
+        "primary_key columns {primary_key:?} do not correspond to any UNIQUE or \
+         PRIMARY KEY constraint on \"{schema}\".\"{table}\". Add one in PostgreSQL \
+         (ALTER TABLE ... ADD PRIMARY KEY (...) or ALTER TABLE ... ADD UNIQUE (...)) \
+         or set init_mode=\"replace\" / \"create_if_not_exists\" to have Pathway \
+         recreate the table with a matching PRIMARY KEY"
+    )]
+    NoMatchingUniqueConstraint {
+        schema: String,
+        table: String,
+        primary_key: Vec<String>,
+    },
+
+    #[error(
+        "destination table \"{schema}\".\"{table}\" has NOT NULL column(s) \
+         {columns:?} without a DEFAULT value that pw.Schema does not name; \
+         add them to the Pathway schema, give them a DEFAULT in PostgreSQL, \
+         or use init_mode=\"replace\" / \"create_if_not_exists\" to have \
+         Pathway recreate the table"
+    )]
+    ExtraNotNullColumns {
+        schema: String,
+        table: String,
+        columns: Vec<String>,
+    },
+
+    #[error(
+        "pw.Schema references column(s) {columns:?} that do not exist in \
+         destination table \"{schema}\".\"{table}\"; check the spelling, \
+         or use init_mode=\"replace\" / \"create_if_not_exists\" to have \
+         Pathway recreate the table with these columns"
+    )]
+    WriterMissingDestinationColumns {
+        schema: String,
+        table: String,
+        columns: Vec<String>,
+    },
+
+    #[error(
+        "destination \"{schema}\".\"{table}\" is a {kind}, not a regular \
+         table; choose a different table_name, drop the {kind} in \
+         PostgreSQL first, or refine your pipeline to read from it instead"
+    )]
+    DestinationIsNotATable {
+        schema: String,
+        table: String,
+        kind: &'static str,
+    },
+
+    #[error(
+        "schema \"{schema}\" does not exist in the PostgreSQL database; \
+         create it (CREATE SCHEMA \"{schema}\") or fix the schema_name parameter"
+    )]
+    SchemaDoesNotExist { schema: String },
+
+    #[error(
+        "destination column \"{schema}\".\"{table}\".\"{column}\" has \
+         PostgreSQL type '{actual_udt}' which is not compatible with the \
+         declared Pathway type '{declared}'"
+    )]
+    WriterColumnTypeMismatch {
+        schema: String,
+        table: String,
+        column: String,
+        declared: String,
+        actual_udt: String,
+    },
+
+    #[error(
+        "destination table \"{schema}\".\"{table}\" has metadata column \
+         \"{column}\" declared as '{actual_udt}', which is too narrow — \
+         Pathway emits a 64-bit '{expected}' value there (timestamps in \
+         milliseconds since epoch). Use BIGINT for 'time' / SMALLINT or \
+         BIGINT for 'diff'"
+    )]
+    MetadataColumnTooNarrow {
+        schema: String,
+        table: String,
+        column: String,
+        actual_udt: String,
+        expected: &'static str,
+    },
+
+    #[error(
+        "pw.Schema declares nullable column(s) {columns:?}, but destination \
+         \"{schema}\".\"{table}\" marks them NOT NULL. A None row would be \
+         rejected by PostgreSQL at flush time and panic the writer worker. \
+         Either drop the Optional wrapper in the schema (after filtering out \
+         nulls upstream, e.g. via .filter(t.x.is_not_none())), make the \
+         destination column nullable (ALTER TABLE ... ALTER COLUMN ... DROP \
+         NOT NULL), or use init_mode=\"replace\" / \"create_if_not_exists\" \
+         so Pathway recreates the table with matching nullability"
+    )]
+    OptionalSchemaVsNotNullDestination {
+        schema: String,
+        table: String,
+        columns: Vec<String>,
+    },
+}
+
 const SSLMODE_PARAM: &str = "sslmode=";
 const SSLMODE_DISABLE: &str = "sslmode=disable";
 const SSLMODE_REQUIRE: &str = "sslmode=require";
+
+/// Escapes a `PostgreSQL` identifier by wrapping it in double quotes
+/// and doubling any internal double-quote characters. Shared by the
+/// reader and writer so that table and schema names containing
+/// characters that require quoting (hyphens, mixed case, reserved
+/// words, ...) are accepted uniformly on both sides.
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum SslMode {
@@ -67,9 +219,9 @@ impl SslMode {
         self,
         connection_string: &str,
         ssl_cert_path: Option<String>,
-    ) -> Result<PsqlClient, WriteError> {
+    ) -> Result<PsqlClient, PostgresError> {
         if connection_string.contains(SSLMODE_PARAM) {
-            return Err(WriteError::Ssl(SslError::UnexpectedSslMode));
+            return Err(PostgresError::Ssl(SslError::UnexpectedSslMode));
         }
 
         match self {
@@ -116,7 +268,7 @@ impl SslMode {
     fn build_connector(
         self,
         ssl_cert_path: Option<String>,
-    ) -> Result<MakeTlsConnector, WriteError> {
+    ) -> Result<MakeTlsConnector, PostgresError> {
         let mut builder = TlsConnector::builder();
         match self {
             Self::Disable => unreachable!("Disable uses NoTls"),
@@ -136,7 +288,7 @@ impl SslMode {
             }
             Self::VerifyCa | Self::VerifyFull => {
                 let path =
-                    ssl_cert_path.ok_or(WriteError::Ssl(SslError::CertificateNotProvided))?;
+                    ssl_cert_path.ok_or(PostgresError::Ssl(SslError::CertificateNotProvided))?;
                 let cert = std::fs::read(path)?;
                 let cert = Certificate::from_pem(&cert).map_err(SslError::Tls)?;
                 builder.add_root_certificate(cert);
@@ -154,12 +306,95 @@ pub fn create_psql_client(
     connection_string: &str,
     ssl_mode: SslMode,
     ssl_cert_path: Option<String>,
-) -> Result<PsqlClient, WriteError> {
+) -> Result<PsqlClient, PostgresError> {
     ssl_mode.connect(connection_string, ssl_cert_path)
 }
 
+/// Bundle of inputs sufficient to (re)open a `PostgreSQL` connection.
+/// Held by `PsqlWriter` so that a transient failure on the flush path
+/// can drop the current `PsqlClient` and rebuild a fresh one from the
+/// same parameters without plumbing four positional arguments through
+/// every retry call site.
+#[derive(Clone)]
+pub struct PsqlConnectionConfig {
+    pub connection_string: String,
+    pub ssl_mode: SslMode,
+    pub ssl_cert_path: Option<String>,
+}
+
+impl PsqlConnectionConfig {
+    pub fn connect(&self) -> Result<PsqlClient, PostgresError> {
+        create_psql_client(
+            &self.connection_string,
+            self.ssl_mode,
+            self.ssl_cert_path.clone(),
+        )
+    }
+}
+
+/// Number of times the writer retries a transient failure before giving
+/// up. Matches the MSSQL connector's `MAX_MSSQL_RETRIES` so operators see
+/// comparable behavior across the two SQL backends.
+const MAX_PSQL_RETRIES: usize = 3;
+
+/// Classify a `postgres::Error` as transient — i.e. the operation has a
+/// realistic chance of succeeding on a fresh connection. Used to gate
+/// the writer's retry loop so that real bugs (syntax errors,
+/// constraint violations, missing tables, type mismatches) propagate
+/// on the first attempt without burning backoff latency.
+///
+/// Two signals make an error transient:
+/// 1. `postgres::Error::is_closed()` — the underlying TCP/TLS stream
+///    is gone (PG restart, network blip, server-side timeout). The
+///    next attempt will reconnect from scratch.
+/// 2. SQLSTATE class `08` (connection exceptions) or class `57`
+///    (operator intervention: `admin_shutdown`, `crash_shutdown`,
+///    `cannot_connect_now`). Both are universally documented as
+///    "retry the operation." `40001` (`serialization_failure`) and
+///    `40P01` (`deadlock_detected`) are listed as "rerun the
+///    transaction" by `PostgreSQL` and benefit from a backoff.
+fn is_transient_pg_error(err: &postgres::Error) -> bool {
+    if err.is_closed() {
+        return true;
+    }
+    if let Some(db_err) = err.as_db_error() {
+        let code = db_err.code().code();
+        let class = code.get(..2).unwrap_or("");
+        return class == "08" || class == "57" || code == "40001" || code == "40P01";
+    }
+    false
+}
+
+fn is_transient_pg_write(err: &WriteError) -> bool {
+    let WriteError::Postgres(pg) = err else {
+        return false;
+    };
+    match pg {
+        PostgresError::Postgres(e) => is_transient_pg_error(e),
+        PostgresError::PsqlQueryFailed { error, .. } => is_transient_pg_error(error),
+        // A TLS handshake error during reconnect is transient — the
+        // certificate / mode is unchanged across retries, so a
+        // failure here is a transport-level issue (the freshly
+        // reconnected stream failed to negotiate). Try again.
+        PostgresError::Ssl(_) => true,
+        _ => false,
+    }
+}
+
 pub struct PsqlWriter {
-    client: PsqlClient,
+    /// `None` between a failed flush and the next reconnect. Held as
+    /// `Option` so that the retry loop can drop a poisoned connection
+    /// and reconnect on the next attempt without forcing an explicit
+    /// `is_closed()` probe.
+    client: Option<PsqlClient>,
+    /// Stored for reconnect after a transient failure drops `client`.
+    /// We can't keep the original `PsqlClient` factory closure on the
+    /// struct (the closure captures `tls.root_cert_path` which is
+    /// non-`Copy`), so we just keep the inputs and re-call
+    /// `create_psql_client` on the retry path.
+    connection_string: String,
+    ssl_mode: SslMode,
+    ssl_cert_path: Option<String>,
     max_batch_size: Option<usize>,
     buffer: Vec<FormatterContext>,
     snapshot_mode: bool,
@@ -172,7 +407,7 @@ mod to_sql {
     use std::error::Error;
 
     use bytes::{BufMut, BytesMut};
-    use chrono::{DateTime, NaiveDateTime, Utc};
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
     use half::f16;
     use ndarray::ArrayD;
     use numpy::Ix1;
@@ -478,11 +713,24 @@ mod to_sql {
     }
 
     impl ToSql for Value {
+        #[allow(clippy::too_many_lines)]
         fn to_sql(
             &self,
             ty: &Type,
             out: &mut BytesMut,
         ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+            // PostgreSQL ``DOMAIN`` types share the wire format of the
+            // wrapped base type. rust-postgres' built-in ``ToSql``
+            // ``accepts`` impls match the *exact* ``Type`` (not the
+            // kind), so they reject every domain — without this
+            // unwrap, writing into a DOMAIN column would fall through
+            // every branch and surface as an opaque
+            // ``WrongPathwayType`` error at flush time. Recurse with
+            // the base type so the rest of the function sees the
+            // unwrapped scalar.
+            if let postgres::types::Kind::Domain(base) = ty.kind() {
+                return self.to_sql(base, out);
+            }
             macro_rules! try_forward {
                 ($type:ty, $expr:expr) => {
                     if <$type as ToSql>::accepts(ty) {
@@ -527,6 +775,97 @@ mod to_sql {
                     "pointer"
                 }
                 Self::String(s) => {
+                    // PostgreSQL UUID binary layout is the raw 16
+                    // bytes of the uuid. Parse the user's string here
+                    // (accepting both canonical `xxxxxxxx-xxxx-…` and
+                    // hyphen-less hex forms, same as uuid::parse_str)
+                    // when the destination column is UUID. A malformed
+                    // value surfaces as a uuid::Error via `?` and gets
+                    // wrapped into `PostgresError::PsqlQueryFailed` by
+                    // the flush path — no opaque driver panic. TEXT
+                    // remains the default for `str` when Pathway
+                    // creates the table itself.
+                    if matches!(*ty, Type::UUID) {
+                        let uuid = uuid::Uuid::parse_str(s)?;
+                        out.extend_from_slice(uuid.as_bytes());
+                        return Ok(IsNull::No);
+                    }
+                    // ENUM types accept the raw UTF-8 label as their
+                    // binary representation. rust-postgres' `&str`
+                    // ToSql rejects `Kind::Enum`, so without this
+                    // branch writing a Pathway `str` column into an
+                    // ENUM column panicked the worker.
+                    if let postgres::types::Kind::Enum(_) = ty.kind() {
+                        out.extend_from_slice(s.as_bytes());
+                        return Ok(IsNull::No);
+                    }
+                    // INET / CIDR binary wire format:
+                    //   family (u8: 2=AF_INET, 3=AF_INET6)
+                    //   prefix_len (u8)
+                    //   is_cidr (u8: 0 for INET, 1 for CIDR)
+                    //   addr_len (u8: 4 for IPv4, 16 for IPv6)
+                    //   raw address bytes
+                    // The reader side already emits the host/prefix
+                    // form the same way libpq's `inet_out` does —
+                    // matching it here closes the round-trip.
+                    if matches!(*ty, Type::INET | Type::CIDR) {
+                        let (host_str, prefix_override) = match s.split_once('/') {
+                            Some((h, p)) => (
+                                h,
+                                Some(
+                                    p.parse::<u8>()
+                                        .map_err(|e| format!("Cannot parse prefix '{p}': {e}"))?,
+                                ),
+                            ),
+                            None => (s.as_str(), None),
+                        };
+                        let ip: std::net::IpAddr = host_str
+                            .parse()
+                            .map_err(|e| format!("Cannot parse IP '{host_str}': {e}"))?;
+                        let (family, addr_bytes): (u8, Vec<u8>) = match ip {
+                            std::net::IpAddr::V4(v4) => (2, v4.octets().to_vec()),
+                            std::net::IpAddr::V6(v6) => (3, v6.octets().to_vec()),
+                        };
+                        let max_prefix: u8 = if family == 2 { 32 } else { 128 };
+                        let prefix_len = prefix_override.unwrap_or(max_prefix);
+                        if prefix_len > max_prefix {
+                            return Err(format!(
+                                "prefix length {prefix_len} exceeds {max_prefix} for family {family}"
+                            )
+                            .into());
+                        }
+                        let addr_len = u8::try_from(addr_bytes.len()).expect("4 or 16");
+                        let is_cidr = u8::from(matches!(*ty, Type::CIDR));
+                        out.put_u8(family);
+                        out.put_u8(prefix_len);
+                        out.put_u8(is_cidr);
+                        out.put_u8(addr_len);
+                        out.extend_from_slice(&addr_bytes);
+                        return Ok(IsNull::No);
+                    }
+                    // MACADDR: 6 raw bytes, MACADDR8: 8 raw bytes.
+                    // The reader already formats as lowercase
+                    // colon-separated hex, so we accept that form
+                    // here (plus the hyphen separator that libpq
+                    // also tolerates).
+                    if matches!(*ty, Type::MACADDR | Type::MACADDR8) {
+                        let expected_len = if matches!(*ty, Type::MACADDR) { 6 } else { 8 };
+                        let hex_only: String = s
+                            .chars()
+                            .filter(|c| !matches!(c, ':' | '-' | '.'))
+                            .collect();
+                        if hex_only.len() != expected_len * 2 {
+                            return Err(format!(
+                                "MAC address '{s}' does not have {} hex digits",
+                                expected_len * 2
+                            )
+                            .into());
+                        }
+                        let bytes = hex::decode(&hex_only)
+                            .map_err(|e| format!("Cannot decode MAC '{s}': {e}"))?;
+                        out.extend_from_slice(&bytes);
+                        return Ok(IsNull::No);
+                    }
                     try_forward!(&str, s.as_str());
                     "string"
                 }
@@ -546,6 +885,22 @@ mod to_sql {
                     "float array"
                 }
                 Self::DateTimeNaive(dt) => {
+                    // PostgreSQL DATE binary layout is an i32 count of
+                    // days since 2000-01-01. Emit that directly when
+                    // the destination column is DATE; any non-midnight
+                    // time components are silently truncated, matching
+                    // PostgreSQL's own implicit TIMESTAMP→DATE cast.
+                    // TIMESTAMP remains the default CREATE TABLE type
+                    // for DateTimeNaive (see `postgres_data_type`).
+                    if matches!(*ty, Type::DATE) {
+                        let naive_date = dt.as_chrono_datetime().date();
+                        let pg_epoch = NaiveDate::from_ymd_opt(2000, 1, 1)
+                            .expect("2000-01-01 is a valid date");
+                        let days = (naive_date - pg_epoch).num_days();
+                        let days_i32 = i32::try_from(days)?;
+                        out.put_i32(days_i32);
+                        return Ok(IsNull::No);
+                    }
                     try_forward!(NaiveDateTime, dt.as_chrono_datetime());
                     "naive date/time"
                 }
@@ -554,6 +909,31 @@ mod to_sql {
                     "UTC date/time"
                 }
                 Self::Duration(dr) => {
+                    // Emit PostgreSQL's INTERVAL binary layout when
+                    // the destination column is INTERVAL:
+                    //   i64 microseconds, i32 days, i32 months
+                    // We pack the entire duration into `microseconds`
+                    // and leave days/months at zero so the round-trip
+                    // through FromSql (which multiplies months by
+                    // 30*86400*10^6) is exact. BIGINT remains the
+                    // default CREATE TABLE type for Duration (see
+                    // `postgres_data_type`); this branch keeps a
+                    // pre-existing INTERVAL column usable.
+                    if matches!(*ty, Type::INTERVAL) {
+                        out.put_i64(dr.microseconds());
+                        out.put_i32(0);
+                        out.put_i32(0);
+                        return Ok(IsNull::No);
+                    }
+                    // PostgreSQL TIME binary layout is i64 microseconds
+                    // since midnight. The input connector already maps
+                    // TIME columns to pw.Duration, so the natural
+                    // round-trip would fail without this branch —
+                    // rust-postgres' i64 ToSql does not accept Type::TIME.
+                    if matches!(*ty, Type::TIME) {
+                        out.put_i64(dr.microseconds());
+                        return Ok(IsNull::No);
+                    }
                     try_forward!(i64, dr.microseconds());
                     "duration"
                 }
@@ -587,7 +967,15 @@ impl Writer for PsqlWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         self.buffer.push(data);
         if let Some(max_batch_size) = self.max_batch_size {
-            if self.buffer.len() == max_batch_size {
+            // Defensive ``>=`` rather than ``==``: an upstream caller
+            // that passes ``max_batch_size = 0`` (or any value smaller
+            // than the buffer ever observes here) used to leave the
+            // buffer growing without bound because the equality check
+            // was never satisfied. Python rejects the zero case
+            // up-front, so this branch only fires for a buffer that
+            // happens to overshoot the configured size by a single
+            // ``write`` — the loop guarantees a flush in that case.
+            if self.buffer.len() >= max_batch_size {
                 self.flush(true)?;
             }
         }
@@ -598,45 +986,12 @@ impl Writer for PsqlWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let mut transaction = self.client.transaction()?;
-
-        for data in self.buffer.drain(..) {
-            // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
-            let diff = Value::Int(data.diff.try_into().unwrap());
-            let time = Value::Int(data.time.0.try_into().unwrap());
-            let mut params: Vec<_> = data
-                .values
-                .iter()
-                .map(|v| v as &(dyn ToSql + Sync))
-                .collect();
-            let params = if self.snapshot_mode {
-                if data.diff > 0 && self.legacy_mode {
-                    params.push(&time);
-                    params.push(&diff);
-                    params
-                } else if data.diff > 0 && !self.legacy_mode {
-                    params
-                } else {
-                    self.query.primary_key_fields(params)
-                }
-            } else {
-                params.push(&time);
-                params.push(&diff);
-                params
-            };
-
-            let query = self.query.build_query(data.diff);
-            transaction
-                .execute(&query, params.as_slice())
-                .map_err(|error| WriteError::PsqlQueryFailed {
-                    query: query.clone(),
-                    error,
-                })?;
-        }
-
-        transaction.commit()?;
-
-        Ok(())
+        execute_with_retries_if(
+            || self.flush_impl(),
+            is_transient_pg_write,
+            crate::retry::RetryConfig::default(),
+            MAX_PSQL_RETRIES,
+        )
     }
 
     fn name(&self) -> String {
@@ -649,20 +1004,239 @@ impl Writer for PsqlWriter {
 }
 
 impl PsqlWriter {
-    #[allow(clippy::too_many_arguments)]
+    /// Rebuild a fresh `PsqlClient` from the stored connection
+    /// parameters. Called from `flush_impl` between retry attempts
+    /// when the previous client was dropped because it observed a
+    /// transient error.
+    fn reconnect(&self) -> Result<PsqlClient, PostgresError> {
+        create_psql_client(
+            &self.connection_string,
+            self.ssl_mode,
+            self.ssl_cert_path.clone(),
+        )
+    }
+
+    /// Inner flush body. Returns the buffer to `self.buffer` on
+    /// failure so that the surrounding retry loop can re-attempt with
+    /// the same rows, and drops `self.client` on failure so the next
+    /// attempt reconnects from scratch rather than reusing a poisoned
+    /// session. `Vec::drain(..)` cannot be used here — its iterator
+    /// clears the remaining buffer on drop, which would silently drop
+    /// rows on a retriable mid-flush failure.
+    fn flush_impl(&mut self) -> Result<(), WriteError> {
+        let buffer = take(&mut self.buffer);
+
+        // Reconnect lazily — if a previous flush succeeded `client` is
+        // still populated and we reuse it; if a previous flush failed
+        // we dropped the client and connect now.
+        if self.client.is_none() {
+            match self.reconnect() {
+                Ok(client) => self.client = Some(client),
+                Err(e) => {
+                    self.buffer = buffer;
+                    return Err(e.into());
+                }
+            }
+        }
+        // ``unwrap`` is safe: the block above either populated
+        // ``self.client`` or returned. ``expect`` documents the
+        // invariant for future readers.
+        let client = self
+            .client
+            .as_mut()
+            .expect("client populated by reconnect above");
+
+        let result = (|| -> Result<(), WriteError> {
+            let mut transaction = client.transaction()?;
+            for data in &buffer {
+                // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
+                let diff = Value::Int(data.diff.try_into().unwrap());
+                let time = Value::Int(data.time.0.try_into().unwrap());
+                let mut params: Vec<_> = data
+                    .values
+                    .iter()
+                    .map(|v| v as &(dyn ToSql + Sync))
+                    .collect();
+                let params = if self.snapshot_mode {
+                    if data.diff > 0 && self.legacy_mode {
+                        params.push(&time);
+                        params.push(&diff);
+                        params
+                    } else if data.diff > 0 && !self.legacy_mode {
+                        params
+                    } else {
+                        self.query.primary_key_fields(params)
+                    }
+                } else {
+                    params.push(&time);
+                    params.push(&diff);
+                    params
+                };
+
+                let query = self.query.build_query(data.diff);
+                transaction
+                    .execute(&query, params.as_slice())
+                    .map_err(|error| PostgresError::PsqlQueryFailed {
+                        query: query.clone(),
+                        error,
+                    })?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            // Drop the poisoned client so the next retry reconnects
+            // from scratch; restore the buffer so retries (and the
+            // user, if all retries are exhausted) see the unflushed
+            // rows.
+            self.client = None;
+            self.buffer = buffer;
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub fn new(
-        mut client: PsqlClient,
+        connection_config: PsqlConnectionConfig,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
-        table_name: &str,
-        value_fields: &[ValueField],
-        key_field_names: Option<&[String]>,
+        table_ctx: &TableContext,
         init_mode: TableWriterInitMode,
         legacy_mode: bool,
     ) -> Result<PsqlWriter, WriteError> {
+        let mut client = connection_config.connect()?;
+        let TableContext {
+            schema_name,
+            table_name,
+            value_fields,
+            key_field_names,
+        } = table_ctx;
+        let value_fields = value_fields.as_slice();
+        let key_field_names = key_field_names.as_deref();
+        // Compose the fully qualified target as quote(schema).quote(table)
+        // so generated SQL targets the right schema and so identifiers
+        // PostgreSQL accepts only when quoted (hyphens, mixed case,
+        // reserved words) survive interpolation. The `quote_ident`
+        // callback handles column and primary-key names uniformly
+        // inside the shared template builders.
+        let quoted_table_name = format!(
+            "{}.{}",
+            quote_identifier(schema_name),
+            quote_identifier(table_name),
+        );
+        // When the user opts out of table creation (`init_mode=default`),
+        // the destination table may contain `GENERATED ALWAYS AS (...)
+        // STORED` columns or `GENERATED ALWAYS AS IDENTITY` columns
+        // that are not writable through a plain INSERT. Without this
+        // preflight, PostgreSQL rejects the generated INSERT at flush
+        // time and the worker panics with an opaque `db error`. Surface
+        // it as a clean Pathway-level error at pipeline start so the
+        // user knows which column to drop from the schema.
+        // A non-existent schema_name is a user-facing configuration
+        // error — without this check, every init_mode panics the
+        // worker with an opaque "db error" from libpq.
+        Self::validate_schema_exists(&mut client, schema_name)?;
+
+        // If the destination name already exists as a view, sequence,
+        // index, or other non-table relation, every downstream step
+        // (CREATE TABLE on init_mode=Replace/CreateIfNotExists, or
+        // INSERT on init_mode=Default) fails with an opaque driver
+        // error. Detect it up-front regardless of init_mode.
+        Self::validate_destination_is_table_or_absent(&mut client, schema_name, table_name)?;
+
+        // Preflights run whenever the table may already exist and
+        // not be overwritten: `Default` (we never touch it) and
+        // `CreateIfNotExists` (no-op CREATE when the table exists,
+        // falling through to INSERT against the user's schema).
+        // `Replace` drops + recreates the table, so the pre-existing
+        // shape is irrelevant there.
+        let validate_existing = matches!(
+            init_mode,
+            TableWriterInitMode::Default | TableWriterInitMode::CreateIfNotExists
+        );
+        if validate_existing {
+            // The next three checks all read from
+            // `information_schema.columns` for the same table. Do them
+            // in declared order so the first failing one surfaces the
+            // most specific message: (1) schema column doesn't exist,
+            // (2) schema column matches a GENERATED ALWAYS column,
+            // (3) destination carries an extra NOT NULL.
+            let appends_time_diff = !snapshot_mode || legacy_mode;
+            Self::validate_schema_columns_exist_in_destination(
+                &mut client,
+                schema_name,
+                table_name,
+                value_fields,
+                appends_time_diff,
+            )?;
+            // Reject destinations whose column type is incompatible
+            // with the Pathway declared type. Without this check the
+            // INSERT panics the worker with a bare "error serializing
+            // parameter N" from the driver at flush time.
+            Self::validate_destination_column_types(
+                &mut client,
+                schema_name,
+                table_name,
+                value_fields,
+            )?;
+            // Pathway emits i64 for the `time` metadata column
+            // (milliseconds since epoch, routinely > i32::MAX) and
+            // i16 for `diff`. A destination that pre-declares them
+            // with narrower types would silently accept small test
+            // values but overflow in production.
+            if appends_time_diff {
+                Self::validate_time_diff_column_widths(&mut client, schema_name, table_name)?;
+            }
+            Self::validate_no_always_generated_columns(
+                &mut client,
+                schema_name,
+                table_name,
+                value_fields,
+            )?;
+            // Reject destination columns declared NOT NULL without a
+            // DEFAULT that the writer's INSERT would silently omit.
+            // Stream-of-changes mode injects the `time`/`diff`
+            // metadata columns itself; snapshot / legacy modes don't.
+            Self::validate_no_extra_not_null_columns(
+                &mut client,
+                schema_name,
+                table_name,
+                value_fields,
+                appends_time_diff,
+            )?;
+            // Reject Optional[T] schema columns writing into NOT NULL
+            // destination columns — a single None row would otherwise
+            // panic the worker with a constraint-violation error that
+            // can land arbitrarily far into the job's lifetime.
+            Self::validate_nullability_matches_destination(
+                &mut client,
+                schema_name,
+                table_name,
+                value_fields,
+            )?;
+            // For snapshot mode, the generated INSERT ... ON CONFLICT
+            // (...) DO UPDATE statement requires a full UNIQUE or
+            // PRIMARY KEY constraint on the primary_key columns.
+            // `init_mode=replace` / `create_if_not_exists` paths create
+            // the table with PRIMARY KEY themselves, so this check is
+            // only needed when the user pre-created the table.
+            if snapshot_mode {
+                if let Some(keys) = key_field_names {
+                    Self::validate_matching_unique_constraint(
+                        &mut client,
+                        schema_name,
+                        table_name,
+                        keys,
+                    )?;
+                }
+            }
+        }
         let mut transaction = client.transaction()?;
         init_mode.initialize(
-            table_name,
+            &quoted_table_name,
             value_fields,
             key_field_names,
             !snapshot_mode || legacy_mode,
@@ -671,26 +1245,36 @@ impl PsqlWriter {
                 Ok(())
             },
             Self::postgres_data_type,
+            quote_identifier,
         )?;
         transaction.commit()?;
 
         let query = SqlQueryTemplate::new(
             snapshot_mode,
-            table_name,
+            &quoted_table_name,
             value_fields,
             key_field_names,
             legacy_mode,
             |index| format!("${}", index + 1),
             Self::on_insert_conflict_condition,
+            quote_identifier,
         )?;
 
+        let PsqlConnectionConfig {
+            connection_string,
+            ssl_mode,
+            ssl_cert_path,
+        } = connection_config;
         let writer = PsqlWriter {
-            client,
+            client: Some(client),
+            connection_string,
+            ssl_mode,
+            ssl_cert_path,
             max_batch_size,
             query,
             buffer: Vec::new(),
             snapshot_mode,
-            table_name: table_name.to_string(),
+            table_name: table_name.clone(),
             legacy_mode,
         };
 
@@ -752,6 +1336,380 @@ impl PsqlWriter {
                 key_field_names.iter().join(",")
             )
         }
+    }
+
+    /// Rejects any `value_fields` entry whose destination column is
+    /// `GENERATED ALWAYS AS (expr) STORED` or `GENERATED ALWAYS AS IDENTITY` —
+    /// both forms are non-writable through a plain INSERT and would
+    /// otherwise surface as a raw `db error` panic from the engine
+    /// worker mid-flush. The `information_schema.columns` view exposes
+    /// these shapes via the `is_generated` and `identity_generation`
+    /// columns respectively.
+    fn validate_no_always_generated_columns(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+        value_fields: &[ValueField],
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT column_name
+             FROM information_schema.columns
+             WHERE table_schema = $1 AND table_name = $2
+               AND (is_generated = 'ALWAYS' OR identity_generation = 'ALWAYS')",
+            &[&schema_name, &table_name],
+        )?;
+        let non_writable: HashSet<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        let offending: Vec<String> = value_fields
+            .iter()
+            .map(|f| f.name.clone())
+            .filter(|name| non_writable.contains(name))
+            .collect();
+        if !offending.is_empty() {
+            return Err(PostgresError::GeneratedColumnInSchema {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
+                columns: offending,
+            });
+        }
+        Ok(())
+    }
+
+    /// Verifies that the requested `schema_name` exists in the
+    /// database. Without this check the CREATE TABLE / INSERT steps
+    /// panic with an opaque driver error. `pg_namespace` is readable
+    /// by every role.
+    fn validate_schema_exists(
+        client: &mut PsqlClient,
+        schema_name: &str,
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT 1 FROM pg_namespace WHERE nspname = $1",
+            &[&schema_name],
+        )?;
+        if rows.is_empty() {
+            return Err(PostgresError::SchemaDoesNotExist {
+                schema: schema_name.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Rejects a destination name that already exists as something
+    /// other than an ordinary or partitioned table — views,
+    /// materialized views, sequences, indices, composite types, and
+    /// so on. All of these make both the `CREATE TABLE`-based init
+    /// modes and the `INSERT` of `init_mode=Default` fail with an
+    /// opaque driver panic; surfacing the shape up-front lets the
+    /// user pick a different `table_name` or drop the offending
+    /// object.
+    fn validate_destination_is_table_or_absent(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT c.relkind
+             FROM pg_class c
+             JOIN pg_namespace n ON c.relnamespace = n.oid
+             WHERE n.nspname = $1 AND c.relname = $2",
+            &[&schema_name, &table_name],
+        )?;
+        let Some(row) = rows.first() else {
+            return Ok(());
+        };
+        let relkind: i8 = row.get::<_, i8>(0);
+        let kind: Option<&'static str> = match relkind.cast_unsigned() as char {
+            'r' | 'p' => None, // ordinary / partitioned table
+            'v' => Some("view"),
+            'm' => Some("materialized view"),
+            'i' | 'I' => Some("index"),
+            'S' => Some("sequence"),
+            'c' => Some("composite type"),
+            'f' => Some("foreign table"),
+            't' => Some("TOAST table"),
+            _ => Some("non-table relation"),
+        };
+        if let Some(kind) = kind {
+            return Err(PostgresError::DestinationIsNotATable {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
+                kind,
+            });
+        }
+        Ok(())
+    }
+
+    /// Rejects a user schema that references columns missing from the
+    /// destination table, and — in stream-of-changes / legacy modes —
+    /// also requires the `time` / `diff` metadata columns the writer
+    /// is about to INSERT into. Without this check the writer's
+    /// generated `INSERT` embeds unknown column names and `PostgreSQL`
+    /// rejects it at flush time with an opaque worker panic.
+    fn validate_schema_columns_exist_in_destination(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+        value_fields: &[ValueField],
+        appends_time_diff: bool,
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2",
+            &[&schema_name, &table_name],
+        )?;
+        // If the table doesn't exist at all, skip — the downstream
+        // `INSERT` will surface the missing-table error as before,
+        // and other preflights (e.g. the snapshot-mode PK check)
+        // already short-circuit for non-existent tables.
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let actual: HashSet<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        let mut required: Vec<String> = value_fields.iter().map(|f| f.name.clone()).collect();
+        if appends_time_diff {
+            required.push("time".to_string());
+            required.push("diff".to_string());
+        }
+        let missing: Vec<String> = required
+            .into_iter()
+            .filter(|name| !actual.contains(name))
+            .collect();
+        if !missing.is_empty() {
+            return Err(PostgresError::WriterMissingDestinationColumns {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
+                columns: missing,
+            });
+        }
+        Ok(())
+    }
+
+    /// Rejects a destination whose `time` metadata column is too
+    /// narrow to hold a Pathway timestamp (ms since epoch, i64) or
+    /// whose `diff` metadata column is too narrow to hold an i16.
+    ///
+    /// Without this check, small test values (debug time = 0) pass
+    /// while production-time values overflow at flush with an opaque
+    /// driver panic.
+    fn validate_time_diff_column_widths(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT column_name, udt_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2 \
+               AND column_name IN ('time', 'diff')",
+            &[&schema_name, &table_name],
+        )?;
+        for row in rows {
+            let col: String = row.get(0);
+            let udt: String = row.get(1);
+            let (expected, acceptable): (&'static str, &[&str]) = match col.as_str() {
+                // Pathway timestamps are 64-bit milliseconds since
+                // epoch — anything narrower than int8 overflows.
+                "time" => ("BIGINT", &["int8"][..]),
+                // Pathway diff is +1 / -1 — int2 / int4 / int8 all fit.
+                "diff" => ("SMALLINT or BIGINT", &["int2", "int4", "int8"][..]),
+                _ => continue,
+            };
+            if !acceptable.iter().any(|s| *s == udt) {
+                return Err(PostgresError::MetadataColumnTooNarrow {
+                    schema: schema_name.to_string(),
+                    table: table_name.to_string(),
+                    column: col,
+                    actual_udt: udt,
+                    expected,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Rejects a schema column declared ``Optional[T]`` that maps to
+    /// a destination column marked ``NOT NULL``. Without this check,
+    /// the very first None row surfaces as a worker panic with an
+    /// opaque ``violates not-null constraint`` message at flush time —
+    /// potentially long after pipeline start when small test fixtures
+    /// happen not to contain nulls.
+    fn validate_nullability_matches_destination(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+        value_fields: &[ValueField],
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2 \
+               AND is_nullable = 'NO'",
+            &[&schema_name, &table_name],
+        )?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let not_null_cols: HashSet<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        let offending: Vec<String> = value_fields
+            .iter()
+            .filter(|f| f.type_.is_optional())
+            .map(|f| f.name.clone())
+            .filter(|name| not_null_cols.contains(name))
+            .collect();
+        if !offending.is_empty() {
+            return Err(PostgresError::OptionalSchemaVsNotNullDestination {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
+                columns: offending,
+            });
+        }
+        Ok(())
+    }
+
+    /// Rejects a destination whose column type cannot accept values
+    /// of the declared Pathway type. Mirrors the reader's
+    /// `validate_table_schema` type check; uses the shared
+    /// `is_pathway_type_compatible_with_pg_udt` predicate.
+    fn validate_destination_column_types(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+        value_fields: &[ValueField],
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT column_name, udt_name FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = $2",
+            &[&schema_name, &table_name],
+        )?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let actual_udt_by_name: HashMap<String, String> = rows
+            .iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
+            .collect();
+        for field in value_fields {
+            let Some(actual_udt) = actual_udt_by_name.get(&field.name) else {
+                // Handled by validate_schema_columns_exist_in_destination.
+                continue;
+            };
+            if !is_pathway_type_compatible_with_pg_udt(
+                &field.type_,
+                actual_udt,
+                CompatDirection::Write,
+            ) {
+                return Err(PostgresError::WriterColumnTypeMismatch {
+                    schema: schema_name.to_string(),
+                    table: table_name.to_string(),
+                    column: field.name.clone(),
+                    declared: format!("{}", field.type_),
+                    actual_udt: actual_udt.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Rejects a destination table that carries a NOT NULL column
+    /// without a DEFAULT that the writer's INSERT would silently omit.
+    /// `PostgreSQL` would reject every row at flush time with a NOT
+    /// NULL constraint violation that surfaces only as a worker
+    /// panic with an opaque `db error`. We also skip identity
+    /// columns (both ALWAYS and BY DEFAULT) and generated columns —
+    /// `PostgreSQL` fills those on its own.
+    ///
+    /// The stream-of-changes / legacy paths append `time` / `diff`
+    /// metadata columns to every INSERT themselves; the caller flags
+    /// that via `appends_time_diff` so those two names are not
+    /// counted as offending.
+    fn validate_no_extra_not_null_columns(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+        value_fields: &[ValueField],
+        appends_time_diff: bool,
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT column_name
+             FROM information_schema.columns
+             WHERE table_schema = $1 AND table_name = $2
+               AND is_nullable = 'NO'
+               AND column_default IS NULL
+               AND is_generated = 'NEVER'
+               AND identity_generation IS NULL",
+            &[&schema_name, &table_name],
+        )?;
+        let schema_cols: HashSet<String> = value_fields.iter().map(|f| f.name.clone()).collect();
+        let offending: Vec<String> = rows
+            .iter()
+            .map(|r| r.get::<_, String>(0))
+            .filter(|name| {
+                !(schema_cols.contains(name)
+                    || appends_time_diff && matches!(name.as_str(), "time" | "diff"))
+            })
+            .collect();
+        if !offending.is_empty() {
+            return Err(PostgresError::ExtraNotNullColumns {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
+                columns: offending,
+            });
+        }
+        Ok(())
+    }
+
+    /// Rejects a `primary_key` that doesn't match any UNIQUE or
+    /// `PRIMARY KEY` constraint on the destination table. Snapshot-mode
+    /// `INSERT ... ON CONFLICT (...)` statements require such a
+    /// constraint — without it, `PostgreSQL` rejects the UPSERT at
+    /// flush time with an opaque driver message. This runs only in
+    /// `init_mode=Default`; the Replace / `CreateIfNotExists` paths
+    /// emit the `PRIMARY KEY` themselves.
+    ///
+    /// We compare column *sets* (order-independent) because
+    /// `PostgreSQL`'s `ON CONFLICT` clause matches a constraint
+    /// regardless of column order. If the table doesn't exist at
+    /// all, skip the check — the downstream `INSERT` will surface the
+    /// missing-table error as before.
+    fn validate_matching_unique_constraint(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+        primary_key: &[String],
+    ) -> Result<(), PostgresError> {
+        let table_exists_rows = client.query(
+            "SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = $2",
+            &[&schema_name, &table_name],
+        )?;
+        if table_exists_rows.is_empty() {
+            return Ok(());
+        }
+        let rows = client.query(
+            "SELECT tc.constraint_name, kcu.column_name
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+               ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema   = kcu.table_schema
+              AND tc.table_name     = kcu.table_name
+             WHERE tc.table_schema = $1 AND tc.table_name = $2
+               AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')",
+            &[&schema_name, &table_name],
+        )?;
+        let expected: HashSet<String> = primary_key.iter().cloned().collect();
+        let mut by_constraint: HashMap<String, HashSet<String>> = HashMap::new();
+        for row in rows {
+            let cname: String = row.get(0);
+            let col: String = row.get(1);
+            by_constraint.entry(cname).or_default().insert(col);
+        }
+        let matches = by_constraint.values().any(|cols| *cols == expected);
+        if !matches {
+            return Err(PostgresError::NoMatchingUniqueConstraint {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
+                primary_key: primary_key.to_vec(),
+            });
+        }
+        Ok(())
     }
 
     fn postgres_data_type(type_: &Type, is_nested: bool) -> Result<String, WriteError> {
@@ -915,6 +1873,16 @@ mod from_sql {
     impl<'a> FromSql<'a> for Value {
         #[allow(clippy::too_many_lines)]
         fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+            // PostgreSQL ``DOMAIN`` types share the wire format of the
+            // wrapped base type. rust-postgres usually reports the
+            // base type to ``from_sql`` directly, but this defensive
+            // unwrap covers any future protocol change or library
+            // upgrade where the domain wrapper would otherwise reach
+            // every ``accepts`` check (each of which compares the
+            // exact ``Type``) and silently drop the row.
+            if let Kind::Domain(base) = ty.kind() {
+                return Self::from_sql(base, raw);
+            }
             // bool
             if <bool as FromSql>::accepts(ty) {
                 return Ok(Value::Bool(bool::from_sql(ty, raw)?));
@@ -971,6 +1939,20 @@ mod from_sql {
                 let sign = buf.get_u16();
                 let _dscale = buf.get_i16();
 
+                // Special values are encoded with ndigits=0 and a
+                // distinctive `sign` byte; map them to their IEEE-754
+                // counterparts rather than falling through the digit
+                // loop (which would silently return 0.0).
+                let special = match sign {
+                    0xC000 => Some(f64::NAN),
+                    0xD000 => Some(f64::INFINITY),
+                    0xF000 => Some(f64::NEG_INFINITY),
+                    _ => None,
+                };
+                if let Some(v) = special {
+                    return Ok(Value::Float(OrderedFloat(v)));
+                }
+
                 let mut value: f64 = 0.0;
                 for i in 0..i32::from(ndigits) {
                     let digit = f64::from(buf.get_i16());
@@ -1016,6 +1998,15 @@ mod from_sql {
                 return Ok(Value::String(s.into()));
             }
 
+            if *ty == Type::MACADDR8 {
+                // 8 raw bytes → "xx:xx:xx:xx:xx:xx:xx:xx" (EUI-64)
+                let s = format!(
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]
+                );
+                return Ok(Value::String(s.into()));
+            }
+
             // uuid
             if *ty == Type::UUID {
                 let mut bytes = [0u8; 16];
@@ -1027,6 +2018,22 @@ mod from_sql {
             // text
             if <String as FromSql>::accepts(ty) {
                 return Ok(Value::String(String::from_sql(ty, raw)?.into()));
+            }
+
+            // Enums: PostgreSQL wire format is the raw UTF-8 label bytes.
+            // rust-postgres' `String::accepts` rejects enum types
+            // because their kind is `Kind::Enum`, not `Kind::Simple`.
+            // Without this branch, reading a row whose schema column
+            // is declared as `str` over an ENUM column silently
+            // dropped the row — the conversion error bubbled up as a
+            // per-row `ConversionError` which most sinks discard.
+            if let Kind::Enum(_) = ty.kind() {
+                return Ok(Value::String(
+                    std::str::from_utf8(raw)
+                        .map_err(|e| Box::new(e) as Box<dyn Error + Sync + Send>)?
+                        .to_string()
+                        .into(),
+                ));
             }
 
             // bytes
@@ -1127,6 +2134,38 @@ pub enum ReplicationError {
     #[error("Publication '{name}' does not exist")]
     PublicationNotFound { name: String },
 
+    #[error(
+        "Publication '{publication}' does not cover {schema}.{table}; \
+         add it with: ALTER PUBLICATION {publication} ADD TABLE {schema}.{table}"
+    )]
+    PublicationDoesNotCoverTable {
+        publication: String,
+        schema: String,
+        table: String,
+    },
+
+    #[error(
+        "Publication '{publication}' does not forward {missing:?} events \
+         required by a non-append-only reader; fix it with: \
+         ALTER PUBLICATION {publication} SET (publish = 'insert, update, delete, truncate')"
+    )]
+    PublicationMissingEventTypes {
+        publication: String,
+        missing: Vec<&'static str>,
+    },
+
+    #[error(
+        "Table {schema}.{table} has REPLICA IDENTITY NOTHING; a \
+         non-append-only streaming reader requires UPDATE / DELETE \
+         events to carry the primary-key columns, so PostgreSQL would \
+         forward incomplete rows (or reject the modifications \
+         outright). Restore it with: \
+         ALTER TABLE {schema}.{table} REPLICA IDENTITY DEFAULT \
+         (or USING INDEX / FULL if you need the full row). \
+         If the table is truly append-only, pass is_append_only=True."
+    )]
+    ReplicaIdentityNothing { schema: String, table: String },
+
     #[error(transparent)]
     Query(#[from] postgres::Error),
 
@@ -1145,6 +2184,30 @@ pub enum ReplicationError {
         missing_fields: Vec<String>,
     },
 
+    #[error(
+        "Schema '{schema}' does not exist in the PostgreSQL database; \
+         create it (CREATE SCHEMA \"{schema}\") or fix the schema_name parameter"
+    )]
+    ReaderSchemaDoesNotExist { schema: String },
+
+    #[error(
+        "Table {schema}.{table} does not exist in the PostgreSQL database; \
+         create it or fix the table_name parameter"
+    )]
+    ReaderTableDoesNotExist { schema: String, table: String },
+
+    #[error(
+        "Column {schema}.{table}.{column} has PostgreSQL type '{actual_udt}' \
+         which is not compatible with the declared Pathway type '{declared}'"
+    )]
+    ColumnTypeMismatch {
+        schema: String,
+        table: String,
+        column: String,
+        declared: String,
+        actual_udt: String,
+    },
+
     #[error("
         Primary key mismatch for a non-append-only table {schema}.{table}: expected columns {expected:?}, got {actual:?}
     ")]
@@ -1154,38 +2217,6 @@ pub enum ReplicationError {
         expected: Vec<String>,
         actual: Vec<String>,
     },
-}
-
-/// Holds all table-specific context that is passed around instead of individual parameters.
-#[derive(Clone)]
-pub struct TableContext {
-    pub schema_name: String,
-    pub table_name: String,
-    pub value_fields: Vec<ValueField>,
-    pub key_field_names: Option<Vec<String>>,
-    pub is_append_only: bool,
-}
-
-impl TableContext {
-    pub fn new(
-        schema_name: &str,
-        table_name: &str,
-        value_fields: &[ValueField],
-        key_field_names: Option<&[String]>,
-        is_append_only: bool,
-    ) -> Self {
-        Self {
-            schema_name: schema_name.to_string(),
-            table_name: table_name.to_string(),
-            value_fields: value_fields.to_vec(),
-            key_field_names: key_field_names.map(<[String]>::to_vec),
-            is_append_only,
-        }
-    }
-
-    pub fn key_field_names_deref(&self) -> Option<&[String]> {
-        self.key_field_names.as_deref()
-    }
 }
 
 fn emit_offset(total_entries_read: &mut usize) -> (OffsetKey, OffsetValue) {
@@ -1201,6 +2232,7 @@ pub struct WalReader {
     stream: LogicalReplicationStream,
     cancel_token: CancellationToken,
     table_ctx: TableContext,
+    is_append_only: bool,
     effective_snapshot_name: String,
 }
 
@@ -1215,7 +2247,11 @@ const SLOT_NAME_PREFIX: &str = "pw_repl_";
 const SLOT_NAME_TAG_LEN: usize = 8;
 
 impl WalReader {
-    fn new(settings: ReplicationSettings, table_ctx: TableContext) -> Result<Self, ReadError> {
+    fn new(
+        settings: ReplicationSettings,
+        table_ctx: TableContext,
+        is_append_only: bool,
+    ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
 
         let generated_slot_name =
@@ -1258,6 +2294,7 @@ impl WalReader {
             stream,
             cancel_token,
             table_ctx,
+            is_append_only,
             effective_snapshot_name,
         })
     }
@@ -1277,11 +2314,39 @@ impl WalReader {
             .take(SLOT_NAME_TAG_LEN)
             .collect::<String>();
 
-        let mut base = format!("{schema_name}_{table_name}");
+        // PostgreSQL rejects replication slot names that contain
+        // anything other than lower-case ASCII letters, digits, and
+        // underscores (per the docs and the libpq error message:
+        // ``replication slot names may only contain lower case
+        // letters, numbers, and the underscore character``). Without
+        // this sanitization a perfectly valid quoted table name like
+        // ``"MyTable"`` or ``"my-table"`` — both accepted on every
+        // other code path because identifiers are quoted — would
+        // crash slot creation at pipeline start with that opaque
+        // server-side message. We lowercase ASCII letters and replace
+        // every other byte with ``_``; the trailing 8-char UUID tag
+        // still guarantees uniqueness across collisions caused by
+        // sanitization.
+        let sanitize = |s: &str| {
+            s.chars()
+                .map(|c| match c {
+                    'a'..='z' | '0'..='9' | '_' => c,
+                    'A'..='Z' => c.to_ascii_lowercase(),
+                    _ => '_',
+                })
+                .collect::<String>()
+        };
+        let mut base = format!("{}_{}", sanitize(schema_name), sanitize(table_name));
 
         let reserved = SLOT_NAME_PREFIX.len() + 1 + SLOT_NAME_TAG_LEN;
         let max_base_len = MAX_SLOT_NAME_LEN - reserved;
 
+        // ``base`` is now ASCII-only (every char is a single byte),
+        // so ``truncate`` is safe — it cannot split a UTF-8
+        // codepoint. Without the sanitization above, a multi-byte
+        // table_name (``テーブル``) would panic ``String::truncate``
+        // on the char-boundary check whenever the byte length
+        // overflowed ``max_base_len``.
         if base.len() > max_base_len {
             base.truncate(max_base_len);
         }
@@ -1832,7 +2897,21 @@ impl WalReader {
 
                 let parts: Vec<&str> = time_part_no_tz.split(':').collect();
                 if parts.len() == 3 {
-                    let hours: i64 = parts[0]
+                    // PostgreSQL's default ``intervalstyle = 'postgres'``
+                    // output attaches a leading ``-`` to the *hours*
+                    // field alone when the whole time-of-day component
+                    // is negative — e.g. ``-1.5 hours`` is printed as
+                    // ``-01:30:00``, not ``-01:-30:-00``. A naive parse
+                    // (hours = -1, minutes = 30, seconds = 0) would
+                    // wrongly yield -30 minutes; propagate the sign
+                    // across all three fields instead.
+                    let is_negative = parts[0].trim_start().starts_with('-');
+                    let hours_abs_str = if is_negative {
+                        parts[0].trim_start().trim_start_matches('-')
+                    } else {
+                        parts[0]
+                    };
+                    let hours: i64 = hours_abs_str
                         .parse()
                         .map_err(|e| format!("Cannot parse hours in '{s}': {e}"))?;
                     let minutes: i64 = parts[1]
@@ -1854,8 +2933,9 @@ impl WalReader {
                             .map_err(|e| format!("Cannot parse seconds in '{s}': {e}"))?;
                         (secs, 0)
                     };
-                    total_nanos += (hours * 3_600 + minutes * 60 + secs) * 1_000_000_000
-                        + nanos
+                    let sign: i64 = if is_negative { -1 } else { 1 };
+                    total_nanos += sign
+                        * ((hours * 3_600 + minutes * 60 + secs) * 1_000_000_000 + nanos)
                         + offset_nanos;
                     remaining = &remaining[time_part.len()..];
                     continue;
@@ -1969,6 +3049,7 @@ impl WalReader {
 
     fn parse_incoming_event(
         table_ctx: &TableContext,
+        is_append_only: bool,
         event: ChangeEvent,
         total_entries_read: &mut usize,
     ) -> Result<Vec<PgEventAfterParsing>, ReplicationError> {
@@ -1978,7 +3059,7 @@ impl WalReader {
             DataEventType::Insert
         };
 
-        if table_ctx.is_append_only
+        if is_append_only
             && matches!(
                 event.event_type,
                 EventType::Truncate(_) | EventType::Update { .. } | EventType::Delete { .. }
@@ -2071,6 +3152,7 @@ impl WalReader {
         total_entries_read: &mut usize,
     ) -> Result<Vec<PgEventAfterParsing>, ReadError> {
         let table_ctx = &self.table_ctx;
+        let is_append_only = self.is_append_only;
         self.runtime.block_on(async {
             loop {
                 match self.stream.next_event_with_retry(&self.cancel_token).await {
@@ -2078,8 +3160,12 @@ impl WalReader {
                         self.stream
                             .shared_lsn_feedback
                             .update_applied_lsn(event.lsn.value());
-                        let parsed_events =
-                            Self::parse_incoming_event(table_ctx, event, total_entries_read)?;
+                        let parsed_events = Self::parse_incoming_event(
+                            table_ctx,
+                            is_append_only,
+                            event,
+                            total_entries_read,
+                        )?;
                         if !parsed_events.is_empty() {
                             return Ok(parsed_events);
                         }
@@ -2090,7 +3176,9 @@ impl WalReader {
                             ReadResult::Finished,
                         ))]);
                     }
-                    Err(e) => return Err(ReadError::PostgresReplication(e.into())),
+                    Err(e) => {
+                        return Err(PostgresError::Replication(ReplicationError::from(e)).into())
+                    }
                 }
             }
         })
@@ -2114,25 +3202,248 @@ pub struct PsqlReader {
     total_entries_read: usize,
 }
 
+/// `PostgreSQL` built-in scalar types that neither the reader's
+/// ``FromSql`` nor the writer's ``ToSql`` has a dedicated branch for.
+/// These would otherwise pass the permissive "custom or array" fallback
+/// of ``is_pathway_type_compatible_with_pg_udt`` (because the
+/// ``udt_name`` is not in the known-supported list), then fail
+/// silently at runtime: the reader drops the row with a logged
+/// warning and the writer panics the worker with
+/// ``error serializing parameter N``. Listing them here turns the
+/// failure into a clean preflight ``ColumnTypeMismatch``.
+///
+/// Extend this list conservatively — a genuinely user-defined type
+/// (enum, domain, composite) also surfaces with an unfamiliar
+/// ``udt_name``, so we must *not* reject every unknown name.
+const KNOWN_UNSUPPORTED_PG_UDTS: &[&str] = &[
+    // currency & bit strings
+    "money",
+    "bit",
+    "varbit",
+    // full-text search
+    "tsvector",
+    "tsquery",
+    // XML
+    "xml",
+    // geometric
+    "point",
+    "line",
+    "lseg",
+    "box",
+    "path",
+    "polygon",
+    "circle",
+    // range / multirange
+    "int4range",
+    "int8range",
+    "numrange",
+    "tsrange",
+    "tstzrange",
+    "daterange",
+    "int4multirange",
+    "int8multirange",
+    "nummultirange",
+    "tsmultirange",
+    "tstzmultirange",
+    "datemultirange",
+    // miscellaneous built-ins without a Pathway mapping
+    "jsonpath",
+    "pg_lsn",
+    "txid_snapshot",
+    "xid",
+    "xid8",
+    "cid",
+    "tid",
+    "aclitem",
+    "refcursor",
+    // object identifier aliases
+    "regproc",
+    "regprocedure",
+    "regoper",
+    "regoperator",
+    "regclass",
+    "regcollation",
+    "regtype",
+    "regrole",
+    "regnamespace",
+    "regconfig",
+    "regdictionary",
+];
+
+/// Direction of the data flow. Some Pathway↔Postgres type pairings
+/// are legal only on one side — e.g. the reader has a dedicated
+/// NUMERIC→f64 branch but the writer has no f64→NUMERIC serializer,
+/// so the *same* ``(pw.Float, numeric)`` pair must be accepted when
+/// reading and rejected when writing.
+#[derive(Clone, Copy, Debug)]
+pub enum CompatDirection {
+    Read,
+    Write,
+}
+
+/// Tests whether the `PostgreSQL` column with `udt_name = actual_udt`
+/// can legitimately be parsed into the Pathway `declared` type.
+/// Used by both the reader preflight (to reject a Pathway schema
+/// that lies about column types) and the writer preflight (to
+/// reject an `INSERT` whose serialization would fail at flush
+/// because the destination column is of an incompatible type).
+///
+/// Mirror of the read-side mapping described in `360.postgres.rst`.
+/// This is a scalar-only check — container types (ARRAY, custom
+/// DOMAIN / ENUM / extensions like `pgvector`) fall through to
+/// `permissive = true` because the runtime `ToSql` / `FromSql`
+/// impls validate them and enumerating every element shape here
+/// would be brittle.
+fn is_pathway_type_compatible_with_pg_udt(
+    declared: &Type,
+    actual_udt: &str,
+    direction: CompatDirection,
+) -> bool {
+    // Explicitly reject known-unsupported built-ins. Without this
+    // early return, the permissive fallback below would let them
+    // pass preflight because their udt_name is not in the
+    // known-supported list, and the runtime parser would then drop
+    // rows silently (reader) or panic the worker (writer).
+    if KNOWN_UNSUPPORTED_PG_UDTS.contains(&actual_udt) {
+        return false;
+    }
+    // When the destination is a PostgreSQL array (``_int4`` →
+    // ``int4[]``), validate that the *leaf* element types line up.
+    // Without this, a ``list[str]`` against a ``BIGINT[]`` passes
+    // preflight and fails at flush with a bare "cannot convert
+    // value of type 'string' to Postgres type int8" per element.
+    // PG keeps a single ``_T`` udt regardless of nesting depth, so
+    // peel off every List/Array/homogeneous-Tuple layer on the
+    // declared side and compare the leaf to ``T``.
+    if let Some(elem_udt) = actual_udt.strip_prefix('_') {
+        let mut leaf = declared.unoptionalize().clone();
+        let mut is_container = false;
+        loop {
+            let next = match &leaf {
+                Type::List(inner) | Type::Array(_, inner) => {
+                    is_container = true;
+                    inner.as_ref().clone()
+                }
+                Type::Tuple(fields)
+                    if !fields.is_empty() && fields.iter().all(|f| f == &fields[0]) =>
+                {
+                    is_container = true;
+                    fields[0].clone()
+                }
+                _ => break,
+            };
+            leaf = next.unoptionalize().clone();
+        }
+        if is_container {
+            // Rely on the scalar matcher (below, after the
+            // custom/array gate) to decide whether ``leaf`` is
+            // serializable into ``elem_udt``.
+            return is_pathway_type_compatible_with_pg_udt(&leaf, elem_udt, direction);
+        }
+        // Declared is a scalar against an array column: fall through
+        // to the scalar match, which rejects any scalar pathway type
+        // against an underscore-prefixed UDT via the default arm.
+    }
+    // Arrays (both built-in like `_int4` and pgvector's `vector`/`halfvec`)
+    // and any non-standard udt_name (custom domains / enums) are
+    // permitted unconditionally — the runtime parser validates them.
+    let looks_like_custom_or_array = actual_udt.starts_with('_')
+        || matches!(actual_udt, "vector" | "halfvec")
+        || !matches!(
+            actual_udt,
+            "bool"
+                | "int2"
+                | "int4"
+                | "int8"
+                | "oid"
+                | "float4"
+                | "float8"
+                | "numeric"
+                | "text"
+                | "varchar"
+                | "bpchar"
+                | "name"
+                | "uuid"
+                | "inet"
+                | "cidr"
+                | "macaddr"
+                | "macaddr8"
+                | "bytea"
+                | "json"
+                | "jsonb"
+                | "timestamp"
+                | "timestamptz"
+                | "date"
+                | "time"
+                | "timetz"
+                | "interval"
+        );
+    if looks_like_custom_or_array {
+        return true;
+    }
+    let is_read = matches!(direction, CompatDirection::Read);
+    match declared.unoptionalize() {
+        Type::Bool => actual_udt == "bool",
+        // `oid` reads cleanly into an i64 (we widen 32-bit OID → 64-bit
+        // signed), but no ``try_forward`` arm on the write side
+        // accepts ``Type::OID`` for ``i64``/``i32``/``i16``/``i8``
+        // (rust-postgres routes OID exclusively through ``u32``).
+        // Allow it on read only.
+        Type::Int => {
+            let base = matches!(actual_udt, "int2" | "int4" | "int8");
+            base || (is_read && actual_udt == "oid")
+        }
+        // Reader decodes NUMERIC into f64 via our own digit-array
+        // parser; rust-postgres' ``<f64 as ToSql>::accepts`` rejects
+        // NUMERIC, and we have no f64→NUMERIC serializer, so writing
+        // silently corrupted messages. Reject the write preflight.
+        Type::Float => {
+            let base = matches!(actual_udt, "float4" | "float8");
+            base || (is_read && actual_udt == "numeric")
+        }
+        Type::String => matches!(
+            actual_udt,
+            "text"
+                | "varchar"
+                | "bpchar"
+                | "name"
+                | "uuid"
+                | "inet"
+                | "cidr"
+                | "macaddr"
+                | "macaddr8"
+        ),
+        Type::Pointer => actual_udt == "text",
+        Type::Bytes | Type::PyObjectWrapper => actual_udt == "bytea",
+        Type::Json => matches!(actual_udt, "json" | "jsonb"),
+        Type::DateTimeNaive => matches!(actual_udt, "timestamp" | "date"),
+        Type::DateTimeUtc => actual_udt == "timestamptz",
+        // ``time`` / ``timetz`` both reach the reader via a dedicated
+        // binary branch. The writer only encodes INTERVAL and TIME —
+        // TIMETZ would need a session-offset parameter we don't carry
+        // on ``Value::Duration``, so reject it on writes.
+        Type::Duration => {
+            let base = matches!(actual_udt, "int2" | "int4" | "int8" | "interval" | "time");
+            base || (is_read && matches!(actual_udt, "oid" | "timetz"))
+        }
+        Type::List(_) | Type::Tuple(_) | Type::Array(_, _) => false,
+        // `unoptionalize()` strips the outer Optional; Pathway
+        // doesn't allow nested Optional, so the Optional arm is
+        // never reached in practice but must be covered
+        // exhaustively.
+        Type::Any | Type::Future(_) | Type::Optional(_) => true,
+    }
+}
+
 impl PsqlReader {
+    #[allow(clippy::too_many_lines)]
     pub fn new(
         mut client: PsqlClient,
         replication_settings: Option<ReplicationSettings>,
-        schema_name: &str,
-        table_name: &str,
-        value_fields: &[ValueField],
-        key_field_names: Option<&[String]>,
+        table_ctx: TableContext,
         is_append_only: bool,
     ) -> Result<Self, ReadError> {
-        let table_ctx = TableContext::new(
-            schema_name,
-            table_name,
-            value_fields,
-            key_field_names,
-            is_append_only,
-        );
-
-        Self::validate_table_schema(&mut client, &table_ctx)?;
+        Self::validate_table_schema(&mut client, &table_ctx, is_append_only)?;
 
         let wal_reader = if let Some(replication_settings) = replication_settings {
             let rows = client
@@ -2147,7 +3458,120 @@ impl PsqlReader {
                 }
                 .into());
             }
-            Some(WalReader::new(replication_settings, table_ctx.clone())?)
+            // Ensure the publication actually forwards events for the
+            // target table. Without this check a publication that
+            // exists but was created for a different table lets
+            // `PsqlReader::new` succeed, the snapshot SELECT runs
+            // normally, and the streaming loop then sits idle forever
+            // because pgoutput has nothing to forward for this table.
+            // `pg_publication_tables` is a catalog view that expands
+            // both explicit `FOR TABLE` and `FOR ALL TABLES`
+            // publications, so a single membership query covers both.
+            let coverage_rows = client
+                .query(
+                    "SELECT 1 FROM pg_publication_tables \
+                     WHERE pubname = $1 AND schemaname = $2 AND tablename = $3",
+                    &[
+                        &replication_settings.publication_name,
+                        &table_ctx.schema_name,
+                        &table_ctx.table_name,
+                    ],
+                )
+                .map_err(ReplicationError::Query)?;
+            if coverage_rows.is_empty() {
+                return Err(ReplicationError::PublicationDoesNotCoverTable {
+                    publication: replication_settings.publication_name.clone(),
+                    schema: table_ctx.schema_name.clone(),
+                    table: table_ctx.table_name.clone(),
+                }
+                .into());
+            }
+            // Publication's `publish` option filters event types
+            // *inside* PostgreSQL, so a subset like `publish='insert'`
+            // silently drops UPDATE/DELETE/TRUNCATE before they reach
+            // the reader. For a non-append-only reader this is data
+            // drift without any signal; for an append-only reader we
+            // only need INSERT events forwarded (unexpected UPDATE/DELETEs
+            // are caught later by the `AppendOnlyNotRespected` check
+            // if the publication does forward them). Require
+            // `pubinsert` unconditionally; the other three only when
+            // `is_append_only = false`.
+            let publish_rows = client
+                .query(
+                    "SELECT pubinsert, pubupdate, pubdelete, pubtruncate \
+                     FROM pg_publication WHERE pubname = $1",
+                    &[&replication_settings.publication_name],
+                )
+                .map_err(ReplicationError::Query)?;
+            // pg_publication existence was verified above — a missing
+            // row here would indicate a concurrent DROP, which we
+            // surface the same way.
+            let publish_row =
+                publish_rows
+                    .first()
+                    .ok_or_else(|| ReplicationError::PublicationNotFound {
+                        name: replication_settings.publication_name.clone(),
+                    })?;
+            let pubinsert: bool = publish_row.get(0);
+            let pubupdate: bool = publish_row.get(1);
+            let pubdelete: bool = publish_row.get(2);
+            let pubtruncate: bool = publish_row.get(3);
+            let mut missing: Vec<&'static str> = Vec::new();
+            if !pubinsert {
+                missing.push("insert");
+            }
+            if !is_append_only {
+                if !pubupdate {
+                    missing.push("update");
+                }
+                if !pubdelete {
+                    missing.push("delete");
+                }
+                if !pubtruncate {
+                    missing.push("truncate");
+                }
+            }
+            if !missing.is_empty() {
+                return Err(ReplicationError::PublicationMissingEventTypes {
+                    publication: replication_settings.publication_name.clone(),
+                    missing,
+                }
+                .into());
+            }
+            // ``REPLICA IDENTITY NOTHING`` strips the primary-key
+            // columns from WAL UPDATE/DELETE events, so a
+            // non-append-only Pathway reader can never match the
+            // retraction to the right snapshot row. PostgreSQL
+            // itself also rejects UPDATE/DELETE on such a table
+            // when it's part of a publication that forwards those
+            // event types — but the error only surfaces at INSERT
+            // time, not at pipeline start. Catch it up front.
+            if !is_append_only {
+                let rid_rows = client
+                    .query(
+                        "SELECT c.relreplident \
+                         FROM pg_class c \
+                         JOIN pg_namespace n ON c.relnamespace = n.oid \
+                         WHERE n.nspname = $1 AND c.relname = $2",
+                        &[&table_ctx.schema_name, &table_ctx.table_name],
+                    )
+                    .map_err(ReplicationError::Query)?;
+                if let Some(row) = rid_rows.first() {
+                    let relreplident: i8 = row.get(0);
+                    if relreplident.cast_unsigned() as char == 'n' {
+                        return Err(ReplicationError::ReplicaIdentityNothing {
+                            schema: table_ctx.schema_name.clone(),
+                            table: table_ctx.table_name.clone(),
+                        }
+                        .into());
+                    }
+                }
+            }
+            Some(WalReader::new(
+                replication_settings,
+                table_ctx.clone(),
+                is_append_only,
+            )?)
         } else {
             None
         };
@@ -2166,9 +3590,23 @@ impl PsqlReader {
     fn validate_table_schema(
         client: &mut PsqlClient,
         table_ctx: &TableContext,
+        is_append_only: bool,
     ) -> Result<(), ReplicationError> {
+        // Schema existence first — a missing schema_name otherwise
+        // surfaces as a misleading "Fields not found" (the columns
+        // query returns an empty set regardless of whether the table
+        // exists or the schema does).
+        let schema_rows = client.query(
+            "SELECT 1 FROM pg_namespace WHERE nspname = $1",
+            &[&table_ctx.schema_name],
+        )?;
+        if schema_rows.is_empty() {
+            return Err(ReplicationError::ReaderSchemaDoesNotExist {
+                schema: table_ctx.schema_name.clone(),
+            });
+        }
         let columns_query = "
-            SELECT column_name
+            SELECT column_name, udt_name
             FROM information_schema.columns
             WHERE table_schema = $1 AND table_name = $2
         ";
@@ -2176,14 +3614,25 @@ impl PsqlReader {
             columns_query,
             &[&table_ctx.schema_name, &table_ctx.table_name],
         )?;
-        let actual_columns: HashSet<String> =
-            column_rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        if column_rows.is_empty() {
+            // Schema exists (checked above), so no columns means the
+            // table itself doesn't exist. Surface that directly
+            // rather than the misleading "Fields not found".
+            return Err(ReplicationError::ReaderTableDoesNotExist {
+                schema: table_ctx.schema_name.clone(),
+                table: table_ctx.table_name.clone(),
+            });
+        }
+        let actual_udt_by_name: HashMap<String, String> = column_rows
+            .iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
+            .collect();
 
         let missing: Vec<String> = table_ctx
             .value_fields
             .iter()
             .map(|f| f.name.clone())
-            .filter(|name| !actual_columns.contains(name))
+            .filter(|name| !actual_udt_by_name.contains_key(name))
             .collect();
         if !missing.is_empty() {
             return Err(ReplicationError::MissingValueFields {
@@ -2193,7 +3642,31 @@ impl PsqlReader {
             });
         }
 
-        if !table_ctx.is_append_only {
+        // Upfront type compatibility check. The reader's runtime
+        // `FromSql` only tests whether it *can* produce some Value for
+        // the column, not whether that Value's type matches what the
+        // user declared — so a pw.Schema that lies about the column
+        // type used to silently deliver wrong-typed rows downstream
+        // (surfacing only when a later operator type-checked and
+        // panicked). Catch it here with a clear message.
+        for field in &table_ctx.value_fields {
+            let actual_udt = &actual_udt_by_name[&field.name];
+            if !is_pathway_type_compatible_with_pg_udt(
+                &field.type_,
+                actual_udt,
+                CompatDirection::Read,
+            ) {
+                return Err(ReplicationError::ColumnTypeMismatch {
+                    schema: table_ctx.schema_name.clone(),
+                    table: table_ctx.table_name.clone(),
+                    column: field.name.clone(),
+                    declared: format!("{}", field.type_),
+                    actual_udt: actual_udt.clone(),
+                });
+            }
+        }
+
+        if !is_append_only {
             let pk_query = "
                 SELECT kcu.column_name
                 FROM information_schema.table_constraints tc
@@ -2276,7 +3749,7 @@ impl PsqlReader {
                 &[],
             ) {
                 error!("The specified snapshot is no longer available");
-                return Err(ReadError::Postgres(e));
+                return Err(e.into());
             }
         }
         let prepared_records =
@@ -2526,12 +3999,6 @@ impl PsqlReader {
         }
     }
 
-    /// Escapes a `PostgreSQL` identifier by wrapping it in double quotes
-    /// and doubling any internal double-quote characters.
-    fn quote_identifier(name: &str) -> String {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    }
-
     fn select_prepared_records(
         client: &mut PsqlClient,
         table_ctx: &TableContext,
@@ -2542,10 +4009,10 @@ impl PsqlReader {
             table_ctx
                 .value_fields
                 .iter()
-                .map(|vf| Self::quote_identifier(&vf.name))
+                .map(|vf| quote_identifier(&vf.name))
                 .join(","),
-            Self::quote_identifier(&table_ctx.schema_name),
-            Self::quote_identifier(&table_ctx.table_name),
+            quote_identifier(&table_ctx.schema_name),
+            quote_identifier(&table_ctx.table_name),
         );
         let snapshot = client.query(&select_all_query, &[])?;
 

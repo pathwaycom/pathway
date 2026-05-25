@@ -99,7 +99,7 @@ pub use super::mssql::{MssqlError, MssqlReader};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{
-    PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
+    PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
 pub use super::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
 pub use super::sqlite::{SqliteError, SqliteReader, SqliteWriter};
@@ -311,10 +311,7 @@ pub enum ReadError {
     Delta(#[from] DeltaError),
 
     #[error(transparent)]
-    Postgres(#[from] postgres::Error),
-
-    #[error(transparent)]
-    PostgresReplication(#[from] PostgresReplicationError),
+    Postgres(#[from] PostgresError),
 
     #[error(transparent)]
     Parquet(#[from] ParquetError),
@@ -393,6 +390,22 @@ impl From<AwsKinesisError> for ReadError {
 impl From<mongodb::error::Error> for ReadError {
     fn from(e: mongodb::error::Error) -> Self {
         ReadError::MongoDb(MongoDbError::Driver(e))
+    }
+}
+
+// Allow `?` on raw `postgres::Error` and `PostgresReplicationError` in
+// functions returning `Result<_, ReadError>`. Both route through the
+// unified `PostgresError` so `ReadError` carries a single
+// `Postgres(_)` variant.
+impl From<postgres::Error> for ReadError {
+    fn from(e: postgres::Error) -> Self {
+        ReadError::Postgres(PostgresError::Postgres(e))
+    }
+}
+
+impl From<PostgresReplicationError> for ReadError {
+    fn from(e: PostgresReplicationError) -> Self {
+        ReadError::Postgres(PostgresError::Replication(e))
     }
 }
 
@@ -658,6 +671,23 @@ where
     }
 }
 
+/// Stringifies an error together with its entire `source()` chain.
+/// Rust-postgres' `postgres::Error` Display collapses serialization
+/// failures into "error serializing parameter N" and hides the
+/// wrapped conversion error (like our `ArraySerializationError`) —
+/// follow the chain so the offending root cause (`jagged array`,
+/// `DimensionsOverflow`, etc.) is visible to the user.
+pub(crate) fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = err.source();
+    while let Some(source) = current {
+        use std::fmt::Write;
+        let _ = write!(out, ": {source}");
+        current = source.source();
+    }
+    out
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WriteError {
@@ -670,8 +700,8 @@ pub enum WriteError {
     #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
     S3(S3CommandName, S3Error),
 
-    #[error("failed to perform write in postgres: {0}")]
-    Postgres(#[from] postgres::Error),
+    #[error(transparent)]
+    Postgres(#[from] PostgresError),
 
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
@@ -707,9 +737,6 @@ pub enum WriteError {
     Iceberg(#[from] IcebergError),
 
     #[error(transparent)]
-    Ssl(#[from] SslError),
-
-    #[error(transparent)]
     QuestDB(#[from] QuestDBError),
 
     #[error("the 'at' QuestDB column is not of the time type: {0}")]
@@ -726,12 +753,6 @@ pub enum WriteError {
 
     #[error("unsupported type: {0:?}")]
     UnsupportedType(Type),
-
-    #[error("query {query:?} failed: {error}")]
-    PsqlQueryFailed {
-        query: String,
-        error: postgres::Error,
-    },
 
     #[error("elasticsearch client error: {0:?}")]
     Elasticsearch(elasticsearch::Error),
@@ -796,6 +817,22 @@ pub enum WriteError {
 impl From<mongodb::error::Error> for WriteError {
     fn from(e: mongodb::error::Error) -> Self {
         WriteError::MongoDB(MongoDbError::Driver(e))
+    }
+}
+
+// Allow `?` on raw `postgres::Error` and `SslError` in functions
+// returning `Result<_, WriteError>`. Both route through the unified
+// `PostgresError` so `WriteError` carries a single `Postgres(_)`
+// variant.
+impl From<postgres::Error> for WriteError {
+    fn from(e: postgres::Error) -> Self {
+        WriteError::Postgres(PostgresError::Postgres(e))
+    }
+}
+
+impl From<SslError> for WriteError {
+    fn from(e: SslError) -> Self {
+        WriteError::Postgres(PostgresError::Ssl(e))
     }
 }
 
@@ -1401,6 +1438,17 @@ pub enum TableWriterInitMode {
 }
 
 impl TableWriterInitMode {
+    /// Runs the selected init mode against the destination table.
+    ///
+    /// `table_name` is interpolated verbatim into the generated DDL —
+    /// the caller must pass the exact fragment that should appear after
+    /// `CREATE TABLE IF NOT EXISTS` / `DROP TABLE IF EXISTS` (e.g.
+    /// already double-quoted for `PostgreSQL`, bracket-qualified for SQL
+    /// Server). `quote_ident` is applied to every column name and
+    /// primary-key column, so user schemas whose columns clash with
+    /// reserved words or require quoting work identically across
+    /// writers.
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         self,
         table_name: &str,
@@ -1409,6 +1457,7 @@ impl TableWriterInitMode {
         include_special_fields: bool,
         mut execute_query: impl FnMut(&str) -> Result<(), WriteError>,
         to_db_type: impl FnMut(&Type, bool) -> Result<String, WriteError>,
+        quote_ident: impl Fn(&str) -> String,
     ) -> Result<(), WriteError> {
         match self {
             TableWriterInitMode::Default => return Ok(()),
@@ -1423,6 +1472,7 @@ impl TableWriterInitMode {
                     include_special_fields,
                     &mut execute_query,
                     to_db_type,
+                    quote_ident,
                 )?;
             }
         }
@@ -1430,6 +1480,7 @@ impl TableWriterInitMode {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_table_if_not_exists(
         table_name: &str,
         schema: &[ValueField],
@@ -1437,11 +1488,13 @@ impl TableWriterInitMode {
         include_special_fields: bool,
         mut execute_query: impl FnMut(&str) -> Result<(), WriteError>,
         mut to_db_type: impl FnMut(&Type, bool) -> Result<String, WriteError>,
+        quote_ident: impl Fn(&str) -> String,
     ) -> Result<(), WriteError> {
         let columns: Vec<String> = schema
             .iter()
             .map(|item| {
-                to_db_type(&item.type_, false).map(|dtype_str| format!("{} {dtype_str}", item.name))
+                to_db_type(&item.type_, false)
+                    .map(|dtype_str| format!("{} {dtype_str}", quote_ident(&item.name)))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1449,7 +1502,10 @@ impl TableWriterInitMode {
             .as_ref()
             .filter(|keys| !keys.is_empty())
             .map_or(String::new(), |keys| {
-                format!(", PRIMARY KEY ({})", keys.join(", "))
+                format!(
+                    ", PRIMARY KEY ({})",
+                    keys.iter().map(|k| quote_ident(k)).join(", ")
+                )
             });
 
         let maybe_special_fields = if include_special_fields {
@@ -1941,6 +1997,41 @@ impl Writer for QuestDBWriter {
     }
 }
 
+/// Bundle of the four parameters that uniquely identify the table a
+/// SQL connector is reading from or writing to, shared by the
+/// `PostgreSQL`, `SQL Server`, and `SQLite` connectors so that
+/// `Reader::new` / `Writer::new` constructors take one struct instead
+/// of four positional arguments. `schema_name` is ignored by
+/// connectors that don't have a schema concept (`SQLite`) — those
+/// callers pass `String::new()`.
+#[derive(Clone)]
+pub struct TableContext {
+    pub schema_name: String,
+    pub table_name: String,
+    pub value_fields: Vec<ValueField>,
+    pub key_field_names: Option<Vec<String>>,
+}
+
+impl TableContext {
+    pub fn new(
+        schema_name: &str,
+        table_name: &str,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+    ) -> Self {
+        Self {
+            schema_name: schema_name.to_string(),
+            table_name: table_name.to_string(),
+            value_fields: value_fields.to_vec(),
+            key_field_names: key_field_names.map(<[String]>::to_vec),
+        }
+    }
+
+    pub fn key_field_names_deref(&self) -> Option<&[String]> {
+        self.key_field_names.as_deref()
+    }
+}
+
 pub enum SqlQueryTemplate {
     StreamOfChanges(String),
     Snapshot {
@@ -1951,6 +2042,19 @@ pub enum SqlQueryTemplate {
 }
 
 impl SqlQueryTemplate {
+    /// Builds the INSERT/DELETE templates for a SQL sink.
+    ///
+    /// `table_name` is interpolated verbatim — the caller is responsible
+    /// for producing the exact fragment that must appear between `INSERT
+    /// INTO` and the column list (e.g. `"my-table"` for `PostgreSQL` or
+    /// `[dbo].[MyTable]` for SQL Server), because some callers compose
+    /// schema-qualified names up-front and re-quoting would corrupt
+    /// them. `quote_ident` is applied to every other identifier — each
+    /// `value_field.name` in the column list and the `key_field_names`
+    /// in `ON CONFLICT` / `WHERE` clauses — so that user-supplied column
+    /// names containing reserved words or characters that require
+    /// quoting survive round-tripping.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         snapshot_mode: bool,
         table_name: &str,
@@ -1959,11 +2063,25 @@ impl SqlQueryTemplate {
         include_special_columns_in_snapshot_mode: bool,
         mut wildcard_by_index: impl FnMut(usize) -> String,
         mut on_insert_conflict_condition: impl FnMut(&str, &[String], &[ValueField], bool) -> String,
+        quote_ident: impl Fn(&str) -> String,
     ) -> Result<Self, WriteError> {
-        let field_list = value_fields.iter().map(|f| &f.name).join(",");
+        // Pre-quote user identifiers so every downstream interpolation
+        // sees the safe form. `time` / `diff` metadata columns are never
+        // user-supplied, so they stay as plain literals.
+        let quoted_value_fields: Vec<ValueField> = value_fields
+            .iter()
+            .map(|f| ValueField {
+                name: quote_ident(&f.name),
+                ..f.clone()
+            })
+            .collect();
+        let quoted_key_field_names: Option<Vec<String>> =
+            key_field_names.map(|keys| keys.iter().map(|k| quote_ident(k)).collect());
+        let field_list = quoted_value_fields.iter().map(|f| &f.name).join(",");
         if snapshot_mode {
-            let key_field_names = key_field_names.ok_or(WriteError::EmptyKeyFieldsForSnapshot)?;
-            if key_field_names.is_empty() {
+            let quoted_key_field_names =
+                quoted_key_field_names.ok_or(WriteError::EmptyKeyFieldsForSnapshot)?;
+            if quoted_key_field_names.is_empty() {
                 return Err(WriteError::EmptyKeyFieldsForSnapshot);
             }
             let insertion = if include_special_columns_in_snapshot_mode {
@@ -1974,8 +2092,8 @@ impl SqlQueryTemplate {
                     "INSERT INTO {table_name} ({field_list},time,diff) VALUES ({placeholders}) {}",
                     on_insert_conflict_condition(
                         table_name,
-                        key_field_names,
-                        value_fields,
+                        &quoted_key_field_names,
+                        &quoted_value_fields,
                         include_special_columns_in_snapshot_mode
                     ),
                 )
@@ -1987,27 +2105,43 @@ impl SqlQueryTemplate {
                     "INSERT INTO {table_name} ({field_list}) VALUES ({placeholders}) {}",
                     on_insert_conflict_condition(
                         table_name,
-                        key_field_names,
-                        value_fields,
+                        &quoted_key_field_names,
+                        &quoted_value_fields,
                         include_special_columns_in_snapshot_mode
                     ),
                 )
             };
 
-            let primary_key_indices = Self::primary_key_indices(value_fields, key_field_names)?;
-            // DELETE tokens must follow `primary_key_indices` order rather
-            // than the user-supplied `key_field_names` order, because
-            // `primary_key_fields` (the function that selects the bound
-            // parameters for DELETE) permutes the parameter vector into
-            // the sorted-positional order that `primary_key_indices`
-            // encodes. If the two disagreed, the DELETE would compare
-            // each column against the wrong value on retractions,
-            // silently failing to remove the row.
+            let primary_key_indices = Self::primary_key_indices(
+                value_fields,
+                key_field_names.expect("key_field_names was Some"),
+            )?;
+            // DELETE tokens must follow `primary_key_indices` order
+            // rather than the user-supplied `key_field_names` order,
+            // because `primary_key_fields` (the function that selects
+            // the bound parameters for DELETE) permutes the parameter
+            // vector into the sorted-positional order that
+            // `primary_key_indices` encodes. If the two disagreed, the
+            // DELETE would compare each column against the wrong value
+            // on retractions, silently failing to remove the row.
+            //
+            // Use the quoted column names so the WHERE clause survives
+            // identifiers that PostgreSQL only accepts when quoted
+            // (reserved words, hyphens, mixed case, ...). Without this,
+            // a snapshot writer with a column named e.g. ``user`` would
+            // emit ``DELETE ... WHERE user=$1``, which PG parses as
+            // the reserved keyword and rejects.
+            let quoted_value_field_names: Vec<String> =
+                quoted_value_fields.iter().map(|f| f.name.clone()).collect();
             let tokens: Vec<_> = primary_key_indices
                 .iter()
                 .enumerate()
-                .map(|(i, pkey_idx)| {
-                    format!("{}={}", value_fields[*pkey_idx].name, wildcard_by_index(i))
+                .map(|(i, pkey_index)| {
+                    format!(
+                        "{}={}",
+                        quoted_value_field_names[*pkey_index],
+                        wildcard_by_index(i),
+                    )
                 })
                 .collect();
             let deletion = format!("DELETE FROM {table_name} WHERE {}", tokens.join(" AND "));
@@ -2084,6 +2218,14 @@ pub struct MysqlWriter {
     query_template: SqlQueryTemplate,
 }
 
+/// Escapes a `MySQL` identifier with backticks and doubles any internal
+/// backticks. Used everywhere the `MySQL` writer interpolates a
+/// user-supplied table or column name into generated SQL so reserved
+/// words and characters requiring quoting survive round-tripping.
+fn mysql_quote_identifier(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
 impl MysqlWriter {
     pub fn new(
         pool: MysqlConnectionPool,
@@ -2094,10 +2236,15 @@ impl MysqlWriter {
         key_field_names: Option<&[String]>,
         mode: TableWriterInitMode,
     ) -> Result<MysqlWriter, WriteError> {
+        // Interpolating `table_name` raw would reject reserved words and
+        // characters requiring backticks; pre-quote once so the shared
+        // template builders see the safe form, mirroring how the
+        // Postgres writer handles it.
+        let quoted_table_name = mysql_quote_identifier(table_name);
         let mut connection = pool.get_conn()?;
         let mut transaction = connection.start_transaction(MysqlTxOpts::default())?;
         mode.initialize(
-            table_name,
+            &quoted_table_name,
             value_fields,
             key_field_names,
             !snapshot_mode,
@@ -2106,6 +2253,7 @@ impl MysqlWriter {
                 Ok(())
             },
             Self::mysql_data_type,
+            mysql_quote_identifier,
         )?;
         transaction.commit()?;
 
@@ -2117,12 +2265,13 @@ impl MysqlWriter {
             table_name: table_name.to_string(),
             query_template: SqlQueryTemplate::new(
                 snapshot_mode,
-                table_name,
+                &quoted_table_name,
                 value_fields,
                 key_field_names,
                 false,
                 |_| "?".to_string(),
                 Self::on_insert_conflict_condition,
+                mysql_quote_identifier,
             )?,
             buffer: Vec::new(),
         };

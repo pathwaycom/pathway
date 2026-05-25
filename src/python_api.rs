@@ -5,7 +5,8 @@
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::postgres::{
-    create_psql_client, ReplicationSettings as PsqlInnerReplicationSettings, SslMode,
+    create_psql_client, PsqlConnectionConfig, ReplicationSettings as PsqlInnerReplicationSettings,
+    SslMode,
 };
 use crate::engine::graph::{
     ErrorLogHandle, ExportedTable, JoinExactlyOnce, OperatorProperties, SubscribeCallbacks,
@@ -115,8 +116,8 @@ use crate::connectors::data_storage::{
     MqttWriter, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
     PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableWriterInitMode, WriteError, Writer,
-    MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
+    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::mssql::MssqlWriter;
@@ -6152,11 +6153,15 @@ impl DataStorage {
         let table_name = self.table_name.clone().ok_or_else(|| {
             PyValueError::new_err("For Sqlite connector, table_name should be specified")
         })?;
-        let writer = SqliteWriter::new(
-            connection,
-            table_name,
+        let table_ctx = TableContext::new(
+            "",
+            &table_name,
             &data_format.value_fields_vec(py),
             data_format.key_field_names.as_deref(),
+        );
+        let writer = SqliteWriter::new(
+            connection,
+            table_ctx,
             self.snapshot_maintenance_on_output,
             self.table_writer_init_mode,
             self.max_batch_size,
@@ -6547,16 +6552,15 @@ impl DataStorage {
             .iter()
             .all(|column| column.0.append_only);
 
-        let reader = PsqlReader::new(
-            client,
-            settings,
+        let table_ctx = TableContext::new(
             self.schema_name()?,
             self.table_name()?,
             &data_format.value_fields_vec(py),
             data_format.key_field_names.as_deref(),
-            is_append_only,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Postgres reader: {e}")))?;
+        );
+        let reader = PsqlReader::new(client, settings, table_ctx, is_append_only).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to create Postgres reader: {e}"))
+        })?;
 
         Ok((Box::new(reader), 1))
     }
@@ -6684,28 +6688,36 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
     ) -> PyResult<Box<dyn Writer>> {
-        let connection_string = self.connection_string()?;
         let tls = self.tls_settings.clone().unwrap_or_default();
-        let storage = match create_psql_client(connection_string, tls.mode, tls.root_cert_path) {
-            Ok(client) => PsqlWriter::new(
-                client,
-                self.max_batch_size,
-                self.snapshot_maintenance_on_output,
-                self.table_name()?,
-                &data_format.value_fields_vec(py),
-                data_format.key_field_names.as_deref(),
-                self.table_writer_init_mode,
-                self.legacy_mode,
-            )
-            .map_err(|e| {
-                PyValueError::new_err(format!("Unable to initialize PostgreSQL table: {e}"))
-            })?,
-            Err(e) => {
-                return Err(PyIOError::new_err(format!(
-                    "Failed to establish PostgreSQL connection: {e}"
-                )))
-            }
+        let connection_config = PsqlConnectionConfig {
+            connection_string: self.connection_string()?.to_owned(),
+            ssl_mode: tls.mode,
+            ssl_cert_path: tls.root_cert_path,
         };
+        // Probe the connection up-front so a connection failure (bad
+        // credentials, missing certs, server down) surfaces as IOError
+        // — distinct from a configuration / schema-validation problem
+        // which surfaces as ValueError below.
+        drop(connection_config.connect().map_err(|e| {
+            PyIOError::new_err(format!("Failed to establish PostgreSQL connection: {e}"))
+        })?);
+        let table_ctx = TableContext::new(
+            self.schema_name()?,
+            self.table_name()?,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+        );
+        let storage = PsqlWriter::new(
+            connection_config,
+            self.max_batch_size,
+            self.snapshot_maintenance_on_output,
+            &table_ctx,
+            self.table_writer_init_mode,
+            self.legacy_mode,
+        )
+        .map_err(|e| {
+            PyValueError::new_err(format!("Unable to initialize PostgreSQL writer: {e}"))
+        })?;
         Ok(Box::new(storage))
     }
 
@@ -7053,14 +7065,17 @@ impl DataStorage {
         let connection_string = self.connection_string()?;
         let config = tiberius::Config::from_ado_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
-        let writer = MssqlWriter::new(
-            config,
-            self.max_batch_size,
-            self.snapshot_maintenance_on_output,
+        let table_ctx = TableContext::new(
             self.schema_name()?,
             self.table_name()?,
             &data_format.value_fields_vec(py),
             data_format.key_field_names.as_deref(),
+        );
+        let writer = MssqlWriter::new(
+            config,
+            self.max_batch_size,
+            self.snapshot_maintenance_on_output,
+            &table_ctx,
             self.table_writer_init_mode,
         )
         .map_err(|e| PyValueError::new_err(format!("Failed to initialize MSSQL writer: {e}")))?;

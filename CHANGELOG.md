@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.postgres.write` now accepts a `schema_name` parameter for writing to tables in non-default PostgreSQL schemas.
+- `pw.io.postgres.write` now supports pre-existing `INET`, `CIDR`, `MACADDR`, and `MACADDR8` columns from a `str` Pathway column, matching the reader round-trip.
+- `pw.io.postgres.read` and `pw.io.postgres.write` now run extensive preflight validation that surfaces misconfigurations (PostgreSQL types that are not yet supported, array element type mismatches, nullability mismatches, `REPLICA IDENTITY NOTHING` on non-append-only streaming tables, etc.) as clear pipeline-start errors instead of silent row drops or opaque worker panics.
+
+### Changed
+- `pw.io.postgres.write` now retries transient PostgreSQL errors automatically — SQLSTATE class 08 (connection exceptions), class 57 (admin / crash shutdown, `cannot_connect_now`), `serialization_failure` (40001), `deadlock_detected` (40P01), and any closed connection are retried up to three times with exponential backoff before the writer surfaces the error. Permanent failures (syntax errors, missing tables, constraint violations) still propagate on the first attempt.
+- `pw.io.postgres.read` (streaming mode) no longer requires `user`, `password`, or `host` in `postgres_settings`. Missing components are omitted from the connection string and resolved by PostgreSQL's standard client defaults (OS user, `~/.pgpass`, UNIX socket), matching how static mode has always behaved. This unblocks deployments authenticated via `trust`, `peer`, `cert`, or other passwordless `pg_hba.conf` modes.
+- `pw.io.postgres` connections now tag themselves in PostgreSQL as `application_name=pathway[:<name>]` (where `<name>` comes from the connector's `name` parameter), so operators can identify Pathway sessions in `pg_stat_activity`, `pg_stat_replication`, and server logs. The value is sanitized to printable ASCII and truncated to 63 bytes to match PostgreSQL's `NAMEDATALEN`. A user-supplied `application_name` in `postgres_settings` is left untouched.
+- `pw.io.postgres` connections now default to TCP keepalives tuned for roughly five-minute dead-peer detection (`keepalives_idle=300`, `keepalives_interval=30`, `keepalives_count=3`, plus `tcp_user_timeout=300000`), so a SIGKILL'd Pathway process releases its temporary replication slot in minutes rather than the OS-inherited ~2 hour timeline. Each value is only applied when the user has not already set it in `postgres_settings`.
+
+### Fixed
+- `pw.io.postgres.read` streaming mode now correctly parses negative time components of `INTERVAL` values in PostgreSQL's default text format.
+
 ## [0.31.0] - 2026-05-25
 
 ### Added

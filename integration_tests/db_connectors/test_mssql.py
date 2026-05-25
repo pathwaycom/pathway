@@ -19,6 +19,8 @@ from utils import (
     MSSQL_DB_PORT,
     MSSQL_DB_USER,
     SimpleObject,
+    check_write_quotes_reserved_word_column_name,
+    check_write_quotes_table_name_with_special_characters,
 )
 
 import pathway as pw
@@ -1540,3 +1542,38 @@ def test_mssql_cdc_expired_lsn(tmp_path, mssql):
         "persisted CDC position is outside the SQL Server retention window"
         in error_text
     ), f"Expected CdcLsnOutOfRetention error, got:\n{error_text}"
+
+
+def _mssql_quote_ident(name: str) -> str:
+    """Escape a SQL Server identifier with brackets."""
+    return "[" + name.replace("]", "]]") + "]"
+
+
+def _mssql_write(table, *, table_name, init_mode):
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode=init_mode,
+    )
+    pw.run()
+
+
+def test_mssql_write_table_name_with_special_characters(mssql):
+    """Shared regression for identifier quoting in SQL writers.
+    Unverified in this harness — see
+    ``check_write_quotes_table_name_with_special_characters`` in
+    ``utils.py`` and the Postgres counterpart in ``test_postgres.py``."""
+    check_write_quotes_table_name_with_special_characters(
+        write=_mssql_write, db_context=mssql, quote_ident=_mssql_quote_ident
+    )
+
+
+def test_mssql_write_column_name_is_reserved_word(mssql):
+    """Shared regression for identifier quoting in SQL writers.
+    Unverified in this harness — see
+    ``check_write_quotes_reserved_word_column_name`` in ``utils.py``
+    and the Postgres counterpart in ``test_postgres.py``."""
+    check_write_quotes_reserved_word_column_name(
+        write=_mssql_write, db_context=mssql, quote_ident=_mssql_quote_ident
+    )
