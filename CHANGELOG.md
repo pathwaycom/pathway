@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.31.0] - 2026-05-25
+
 ### Added
 - `pw.io.sqlite.write` connector, which writes a Pathway table into a SQLite database file. Supports two modes: `stream_of_changes` (default) appends each event alongside `time`/`diff` metadata columns, while `snapshot` maintains the current state of the table via `INSERT ... ON CONFLICT DO UPDATE` on insertions and `DELETE` on retractions, keyed on the `primary_key` parameter. Values are encoded using the same storage-class mapping that `pw.io.sqlite.read` accepts, so `write` / `read` round-trips every supported Pathway type losslessly. `init_mode` controls whether the destination table is left as-is, auto-created, or replaced on start-up.
 - `pw.io.deltalake.read` now accepts Delta `decimal(p, s)` columns. The Pathway type declared in the schema chooses the projection: `float` converts each value through f64 (lossy in general — both because f64 is binary and because its mantissa carries only ~15–17 significant decimal digits) and emits a one-time warning at startup naming each affected column; `str` formats the unscaled integer with the column's scale and passes the resulting decimal text through unchanged, lossless for the full Delta precision range (up to 38 digits).
