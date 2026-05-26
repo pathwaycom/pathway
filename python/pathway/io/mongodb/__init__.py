@@ -48,6 +48,24 @@ def read(
     document's fields to table columns according to the ``schema`` parameter. Field
     names in the documents must match the column names in the schema exactly.
 
+    Most BSON scalar types map to a Pathway type with the same name (``Boolean``
+    → ``bool``, ``Int32``/``Int64`` → ``int``, ``Double`` → ``float``,
+    ``String`` → ``str``, ``Binary`` → ``bytes``, ``DateTime`` → ``pw.DateTimeNaive``
+    or ``pw.DateTimeUtc``, etc.). The following BSON-extended types are also
+    supported when the schema declares the column as ``str`` (or ``int`` for
+    ``Timestamp``):
+
+    * ``ObjectId`` → ``str`` — the 24-character lowercase hex form.
+    * ``Decimal128`` → ``str`` — the canonical decimal string (no precision loss).
+    * ``RegularExpression`` → ``str`` — formatted as ``"/<pattern>/<options>"``.
+    * ``Timestamp`` → ``int`` — the seconds-since-epoch ``time`` component; the
+      ``increment`` companion is dropped.
+
+    Writes do not produce these BSON-extended types — they emit ``String`` /
+    ``Int64``, so a write+read round-trip preserves the textual/integer value
+    but not the original BSON type tag. See the conversion table in the
+    ``pw.io.mongodb`` reference for the full list of supported mappings.
+
     **Note:** Specifying a primary key in the schema is not supported. The connector
     uses MongoDB's ``_id`` field as the Pathway row key, ensuring that document
     identity is preserved consistently across the initial snapshot and subsequent
@@ -59,11 +77,17 @@ def read(
     In ``"streaming"`` mode (the default), the connector first emits the full
     collection as an initial snapshot, then subscribes to MongoDB's change stream to
     receive incremental inserts, replacements, updates, and deletions in real time.
-    The change stream is backed by the oplog, so the collection must be part of a
+    In ``"static"`` mode, the connector reads the collection once and terminates
+    without continuing to watch for live changes.
+
+    **Replica set is required in both modes.** Even in ``"static"`` mode, the
+    connector briefly opens a change stream to capture the oplog position before and
+    after the initial dump, so that any writes that race with the dump are applied
+    before the pipeline terminates. Because change streams are backed by the oplog,
+    the collection must be part of a
     `replica set <https://www.mongodb.com/docs/manual/replication/>`_ or a sharded
     cluster — a standalone MongoDB instance without replica set configuration does
-    not support change streams. In ``"static"`` mode, the connector reads the
-    collection once and terminates without subscribing to the change stream.
+    not support this.
 
     When persistence is enabled, the connector saves the oplog position — specifically,
     the change stream resume token of the last processed event — as its offset. On
@@ -72,6 +96,21 @@ def read(
     rather than the full collection again. The ``name`` parameter is required when
     using persistence, so that the engine can match the connector to its saved state
     across restarts.
+
+    **Stream-terminating events.** MongoDB change streams end permanently after a
+    ``drop`` (collection drop), ``rename``, ``dropDatabase``, or ``invalidate``
+    event — the saved resume token cannot be extended past them. When the connector
+    encounters such an event it raises an error asking the user to delete the
+    persistence directory and restart, so that events on a future recreated
+    collection are not silently lost.
+
+    **Parallelism.** This connector runs on a single worker thread, even when the
+    Pathway program is launched with ``pathway spawn -n N`` (multiple threads) or
+    ``pathway spawn --addresses ...`` (multiple processes). MongoDB change streams
+    deliver events in oplog order from a single cursor, so partitioning the input
+    across workers would either drop ordering guarantees or duplicate events.
+    Downstream Pathway operators still parallelize across all workers; only the
+    initial read from MongoDB is serialized.
 
     Args:
         connection_string: The connection string for the MongoDB deployment. See the
@@ -303,13 +342,20 @@ def write(
     the Pathway table, and ``diff = -1`` indicates that the row was removed. Row
     updates are represented as two events within the same transactional minibatch:
     first the old version of the row with ``diff = -1``, followed by the new version
-    with ``diff = 1``. This format is used by default.
+    with ``diff = 1``. This format is used by default. Because ``time`` and ``diff``
+    are reserved field names in this format, the input table must not contain columns
+    with these names; otherwise a ``ValueError`` is raised at construction time.
 
     The ``snapshot`` format maintains the current state of the Pathway table in the
     output. The table's primary key is stored in the ``_id`` field. When a change
     occurs, no additional metadata fields are added; instead, the engine locates the
     corresponding row by ``_id`` and applies the update directly. As a result, the
     output table always reflects the latest state of the Pathway table.
+
+    **Reserved column name**: in both formats, the input table must not contain a
+    column named ``_id`` — MongoDB uses ``_id`` as the primary key for every
+    document. A ``ValueError`` is raised at construction time if this column is
+    present.
 
     If the specified database or table doesn't exist, it will be created during the
     first write.
@@ -475,25 +521,28 @@ for the details.
     ...     output_table_type="snapshot",
     ... )
 
-    The resulting output will be as follows:
+    The resulting output will look like the following — note that in ``snapshot`` mode
+    the ``_id`` field holds the stringified Pathway row key (a ``^``-prefixed hex
+    string), *not* a MongoDB ``ObjectId``. This is what makes it possible to locate
+    and update the same row on subsequent writes rather than inserting a duplicate.
 
     .. code-block:: rst
 
         [
             {
-                _id: ObjectId('67180150d94db90697c07853'),
+                _id: '^YYY4HABTRW7T8VX2Q429ZYV70W',
                 age: Long('9'),
                 owner: 'Bob',
                 pet: 'cat',
             },
             {
-                _id: ObjectId('67180150d94db90697c07854'),
+                _id: '^Z3QWT294JQSHPSR8KTPG9ECE4W',
                 age: Long('8'),
                 owner: 'Alice',
                 pet: 'cat',
             },
             {
-                _id: ObjectId('67180150d94db90697c07855'),
+                _id: '^X1MXHYYG4YM0DB900V28XN5T4W',
                 age: Long('10'),
                 owner: 'Alice',
                 pet: 'dog',
@@ -501,6 +550,21 @@ for the details.
         ]
     """
     is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
+    column_names = set(table.schema.column_names())
+    if "_id" in column_names:
+        raise ValueError(
+            "Column name '_id' is reserved: MongoDB uses '_id' as the primary key "
+            "for every document, so pw.io.mongodb.write cannot accept a column with "
+            "this name. Rename the column before writing."
+        )
+    if not is_snapshot_mode:
+        reserved = {"diff", "time"} & column_names
+        if reserved:
+            raise ValueError(
+                f"Column name(s) {sorted(reserved)!r} collide with the reserved "
+                f"fields written by pw.io.mongodb.write in 'stream_of_changes' mode. "
+                f"Rename the column(s) or use output_table_type='snapshot'."
+            )
     data_storage = api.DataStorage(
         storage_type="mongodb",
         connection_string=connection_string,

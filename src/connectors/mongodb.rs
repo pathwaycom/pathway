@@ -29,9 +29,6 @@ use crate::persistence::frontier::OffsetAntichain;
 
 #[derive(Debug)]
 enum BufferedMongoEvent {
-    Insert {
-        value: BsonDocument,
-    },
     Upsert {
         key: BsonDocument,
         value: BsonDocument,
@@ -76,6 +73,27 @@ pub enum MongoDbError {
     /// unavailable.  Streaming and persistence both require a replica set.
     #[error("replication is not configured; MongoDB change streams require a replica set")]
     ReplicationNotConfigured,
+
+    /// The change stream delivered a DDL event that permanently terminates the
+    /// stream: the collection was dropped, renamed, the database was dropped,
+    /// or the server explicitly invalidated the cursor.  The persisted resume
+    /// token is no longer meaningful — events that arrive on a future
+    /// (re)created collection with the same name are not visible through this
+    /// token.  To recover, delete the persistence directory and restart to
+    /// trigger a full collection rescan.
+    #[error(
+        "MongoDB change stream terminated: a {0} event was emitted on the watched \
+         namespace, which permanently ends the underlying cursor (this happens on \
+         collection drop, collection rename, database drop, and server-issued \
+         invalidate). The saved resume token cannot be extended past this point — \
+         starting a new change stream from it would only re-emit the terminating \
+         event, so any further inserts/updates on a recreated collection with the \
+         same name would be silently lost. Pathway therefore stops the pipeline \
+         instead of continuing with stale state. To recover, delete the persistence \
+         directory and restart the pipeline; this triggers a full rescan of \
+         whatever collection now lives at the same namespace."
+    )]
+    StreamTerminated(String),
 }
 
 const MONGODB_SET_PARAMETER: &str = "$set";
@@ -102,12 +120,46 @@ fn classify_mongo_error(e: mongodb::error::Error) -> MongoDbError {
     MongoDbError::Driver(e)
 }
 
+/// Buffer strategy depends on the output mode:
+///
+/// - In `stream_of_changes` mode every minibatch event is preserved — updates
+///   emit both the `-1` retraction of the old row and the `+1` insertion of the
+///   new row, so we must not deduplicate by key.
+/// - In `snapshot` mode we only want the *net* effect per key within a batch,
+///   so we collapse by key and let the last +1 win over earlier deletes.
+enum WriteBuffer {
+    StreamOfChanges(Vec<BsonDocument>),
+    Snapshot(HashMap<Key, BufferedMongoEvent>),
+}
+
+impl WriteBuffer {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::StreamOfChanges(v) => v.is_empty(),
+            Self::Snapshot(m) => m.is_empty(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::StreamOfChanges(v) => v.len(),
+            Self::Snapshot(m) => m.len(),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::StreamOfChanges(v) => v.clear(),
+            Self::Snapshot(m) => m.clear(),
+        }
+    }
+}
+
 pub struct MongoWriter {
     namespace: MongoNamespace,
     client: MongoClient,
     collection: MongoCollection<BsonDocument>,
-    buffer: HashMap<Key, BufferedMongoEvent>,
-    snapshot_mode: bool,
+    buffer: WriteBuffer,
     max_batch_size: Option<usize>,
 }
 
@@ -119,35 +171,32 @@ impl MongoWriter {
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
     ) -> Self {
+        let buffer = if snapshot_mode {
+            WriteBuffer::Snapshot(HashMap::new())
+        } else {
+            WriteBuffer::StreamOfChanges(Vec::new())
+        };
         Self {
             namespace,
             client,
             collection,
+            buffer,
             max_batch_size,
-            snapshot_mode,
-            buffer: HashMap::new(),
         }
     }
 
-    fn flush_stream_of_changes(&mut self) -> Result<(), WriteError> {
-        let prepared_buffer: Vec<_> = self
-            .buffer
-            .values_mut()
-            .map(|entry| match entry {
-                BufferedMongoEvent::Insert { value } => value,
-                other => unreachable!(
-                    "Unexpected type of buffered entry for a stream of changes mode: {other:?}"
-                ),
-            })
-            .collect();
+    fn flush_stream_of_changes(&mut self, docs: &mut [BsonDocument]) -> Result<(), WriteError> {
+        let prepared_buffer: Vec<_> = docs.iter_mut().collect();
         let command = self.collection.insert_many(prepared_buffer);
         let _ = command.run()?;
         Ok(())
     }
 
-    fn flush_snapshot(&mut self) -> Result<(), WriteError> {
-        let prepared_buffer: Vec<_> = self
-            .buffer
+    fn flush_snapshot(
+        &mut self,
+        entries: &mut HashMap<Key, BufferedMongoEvent>,
+    ) -> Result<(), WriteError> {
+        let prepared_buffer: Vec<_> = entries
             .values_mut()
             .map(|entry| match entry {
                 BufferedMongoEvent::Upsert { key, value } => {
@@ -169,9 +218,6 @@ impl MongoWriter {
                         .filter(take(key))
                         .build(),
                 ),
-                other @ BufferedMongoEvent::Insert { .. } => {
-                    unreachable!("Unexpected type of buffered entry for a snapshot mode: {other:?}")
-                }
             })
             .collect();
 
@@ -184,32 +230,30 @@ impl MongoWriter {
 impl Writer for MongoWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         for payload in data.payloads {
-            if self.snapshot_mode {
-                let mut key = BsonDocument::new();
-                let _ = key.insert(
-                    MONGODB_PRIMARY_KEY_NAME,
-                    serialize_value_to_bson(&Value::Pointer(data.key))?,
-                );
-                if data.diff == 1 {
-                    self.buffer.insert(
-                        data.key,
+            match &mut self.buffer {
+                WriteBuffer::Snapshot(map) => {
+                    // Last-event-wins per key within a minibatch. Overriding on
+                    // both `+1` and `-1` gives the correct net effect for any
+                    // sequence: `+1,-1` collapses to Delete, `-1,+1` collapses
+                    // to Upsert, `-1,+1,-1` collapses to Delete, and so on.
+                    let mut key = BsonDocument::new();
+                    let _ = key.insert(
+                        MONGODB_PRIMARY_KEY_NAME,
+                        serialize_value_to_bson(&Value::Pointer(data.key))?,
+                    );
+                    let event = if data.diff == 1 {
                         BufferedMongoEvent::Upsert {
                             key,
                             value: payload.into_bson_document()?,
-                        },
-                    );
-                } else {
-                    self.buffer
-                        .entry(data.key)
-                        .or_insert(BufferedMongoEvent::Delete { key });
+                        }
+                    } else {
+                        BufferedMongoEvent::Delete { key }
+                    };
+                    map.insert(data.key, event);
                 }
-            } else {
-                self.buffer.insert(
-                    data.key,
-                    BufferedMongoEvent::Insert {
-                        value: payload.into_bson_document()?,
-                    },
-                );
+                WriteBuffer::StreamOfChanges(docs) => {
+                    docs.push(payload.into_bson_document()?);
+                }
             }
         }
         if let Some(max_batch_size) = self.max_batch_size {
@@ -225,10 +269,15 @@ impl Writer for MongoWriter {
             return Ok(());
         }
 
-        let result = if self.snapshot_mode {
-            self.flush_snapshot()
-        } else {
-            self.flush_stream_of_changes()
+        let result = match &mut self.buffer {
+            WriteBuffer::StreamOfChanges(docs) => {
+                let mut docs = take(docs);
+                self.flush_stream_of_changes(&mut docs)
+            }
+            WriteBuffer::Snapshot(map) => {
+                let mut map = take(map);
+                self.flush_snapshot(&mut map)
+            }
         };
         self.buffer.clear();
 
@@ -303,10 +352,33 @@ impl MongoReader {
     }
 
     fn capture_start_token(&self) -> Result<ResumeToken, ReadError> {
-        let stream = self.collection().watch().run()?;
-        stream
-            .resume_token()
-            .ok_or(MongoDbError::ReplicationNotConfigured.into())
+        const MAX_TOKEN_FETCH_ATTEMPTS: usize = 5;
+        // Open a fresh change stream just to read the current oplog position.
+        // We use `start_at_operation_time(now)` so the cursor is anchored to
+        // a definite point in time even if the initial aggregate response
+        // happens to omit `postBatchResumeToken`.  We then drive `next_if_any`
+        // up to a few times: each call ends with the driver having processed
+        // either an event or an empty getMore response, and in both cases the
+        // `postBatchResumeToken` carried by that response is cached as the
+        // stream's current resume token.  Any event the cursor returns is
+        // safe to discard — `dump_collection` reads the post-event state and
+        // `catchup_replay` starts strictly after the returned token.
+        let mut stream = self
+            .collection()
+            .watch()
+            .max_await_time(Duration::from_millis(200))
+            .run()?;
+
+        if let Some(token) = stream.resume_token() {
+            return Ok(token);
+        }
+        for _ in 0..MAX_TOKEN_FETCH_ATTEMPTS {
+            let _ = stream.next_if_any()?;
+            if let Some(token) = stream.resume_token() {
+                return Ok(token);
+            }
+        }
+        Err(MongoDbError::ReplicationNotConfigured.into())
     }
 
     fn doc_id_string(doc: &BsonDocument) -> String {
@@ -363,7 +435,7 @@ impl MongoReader {
     fn apply_event_to_snapshot(
         snapshot: &mut Vec<MongoSnapshotEntry>,
         event: &ChangeStreamEvent<BsonDocument>,
-    ) {
+    ) -> Result<(), ReadError> {
         let id = event
             .document_key
             .as_ref()
@@ -377,13 +449,28 @@ impl MongoReader {
                         document: doc.clone(),
                     });
                 }
+                Ok(())
             }
             OperationType::Delete => {
                 snapshot.push(MongoSnapshotEntry::Delete { key: id });
+                Ok(())
             }
-            // DDL-level events (drop, rename, ...). Log and skip for now.
+            // Stream-terminating DDL events: the saved resume token cannot be
+            // meaningfully extended past these, so any further events — including
+            // events on a future recreated collection with the same name — would
+            // be silently lost.  Surface this as an error so the user gets an
+            // actionable message instead of empty output.
+            terminating @ (OperationType::Drop
+            | OperationType::Rename
+            | OperationType::DropDatabase
+            | OperationType::Invalidate) => {
+                Err(MongoDbError::StreamTerminated(format!("{terminating:?}")).into())
+            }
+            // Any other future event type we don't know about: ignore with a
+            // warning to stay forward-compatible with the driver.
             other => {
                 warn!("Unhandled operation type in snapshot: {other:?}");
+                Ok(())
             }
         }
     }
@@ -393,6 +480,7 @@ impl MongoReader {
         snapshot: &mut Vec<MongoSnapshotEntry>,
         start_token: ResumeToken,
     ) -> Result<ResumeToken, ReadError> {
+        const MAX_CONSECUTIVE_EMPTIES: usize = 4;
         // Capture "end mark" — the resume token of the current oplog tip.
         // We open a second stream just for this, then close it immediately.
         let end_token = self.capture_start_token()?;
@@ -400,29 +488,42 @@ impl MongoReader {
             return Ok(end_token);
         }
 
+        // Use a large batch_size so a single getMore can carry many historical
+        // events.  The driver still splits into multiple batches if needed;
+        // the loop below polls `next_if_any` until the stream's resume token
+        // has advanced past `end_token`.  `max_await_time` is kept short so
+        // that the empty-tail case (no events between runs) returns quickly.
         let mut stream = self
             .collection()
             .watch()
             .start_after(start_token)
             .full_document(FullDocumentType::UpdateLookup)
             .max_await_time(Duration::from_millis(500))
+            .batch_size(10_000_u32)
             .run()?;
 
         let mut last_token: Option<ResumeToken> = None;
 
-        // Use next_if_any() instead of next() because next() on a MongoDB sync
-        // change stream never returns None — it keeps issuing getMore commands
-        // indefinitely (the driver's stream_poll_next loops on BatchValue::Empty).
-        // next_if_any() returns None as soon as the current batch is exhausted,
-        // which is what we want: the historical events are in the initial aggregate
-        // batch when startAfter is used with a high-watermark token, so draining
-        // that batch is sufficient to collect all events up to end_token.
+        // Drive the stream until its resume token has advanced past `end_token`.
+        //
+        // `next_if_any` returns `None` for either `BatchValue::Empty` (the
+        // server returned a getMore with no documents within `max_await_time`,
+        // typically meaning we've drained the historical backlog and are now
+        // tailing the live oplog tip) or `BatchValue::Exhausted` (cursor closed).
+        // For both we re-check `resume_token`: MongoDB advances it on every
+        // getMore, including empty ones, so once it has crossed `end_token` we
+        // know all events up to that mark have been observed and it's safe to
+        // stop.  Otherwise we keep polling, with a small sleep between empty
+        // attempts and a hard cap on consecutive empties so a stuck server
+        // can't hang the connector.
+        let mut empties = 0usize;
         loop {
             match stream.next_if_any() {
                 Ok(Some(event)) => {
+                    empties = 0;
                     let current_token = event.id.clone();
 
-                    Self::apply_event_to_snapshot(snapshot, &event);
+                    Self::apply_event_to_snapshot(snapshot, &event)?;
                     last_token = Some(current_token.clone());
 
                     // Stop once we've reached (or passed) the end mark.
@@ -430,8 +531,26 @@ impl MongoReader {
                         break;
                     }
                 }
-                // Batch exhausted — no more buffered events available right now.
-                Ok(None) => break,
+                Ok(None) => {
+                    // `resume_token` reflects the latest oplog position the
+                    // stream has observed, even on empty getMore responses.
+                    if let Some(rt) = stream.resume_token() {
+                        if Self::token_order_key(&rt) >= Self::token_order_key(&end_token) {
+                            last_token = Some(rt);
+                            break;
+                        }
+                    }
+                    empties += 1;
+                    if empties >= MAX_CONSECUTIVE_EMPTIES {
+                        // The server is taking too long to advance.  Return
+                        // whatever progress we made; the live change stream
+                        // (in streaming mode) will keep filling the gap, and
+                        // a subsequent persistence resume in static mode will
+                        // continue from the last applied event.
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
                 Err(e) => return Err(ReadError::MongoDb(classify_mongo_error(e))),
             }
         }
@@ -465,30 +584,20 @@ impl MongoReader {
 
     fn initialize(&mut self) -> Result<(), ReadError> {
         if let Some(token_bytes) = self.saved_resume_token.take() {
-            // Resuming from a persisted oplog position.
-            // Find the current oplog tip, then replay every change-stream event
-            // that arrived between the saved token and that tip. The entries are
-            // placed directly into the snapshot queue as plain Data items — no
-            // NewSource/FinishedSource wrapping. Live reading then continues from
-            // the captured tip so there are no gaps and no duplicate delivery.
+            // Resuming from a persisted oplog position.  Find the current oplog tip,
+            // then replay every change-stream event that arrived between the saved
+            // token and that tip.  All replayed entries share the single `end_token`
+            // offset, so they must be delivered as an atomic transactional block —
+            // otherwise a mid-batch commit would persist `end_token` before the
+            // remaining in-memory entries are processed, and a crash at that point
+            // would drop them (the main change stream resumes strictly after
+            // `end_token`).  Wrapping in NewSource/FinishedSource tells the engine
+            // not to commit until the whole block is consumed.
             let saved_token = mongodb::bson::from_slice::<ResumeToken>(&token_bytes)
                 .map_err(|_| MongoDbError::CorruptResumeToken)?;
             let mut entries = Vec::new();
             let end_token = self.catchup_replay(&mut entries, saved_token)?;
-            let end_token_bytes = Self::token_bytes(&end_token);
-
-            let mut snapshot = Vec::with_capacity(entries.len());
-            for entry in entries {
-                snapshot.push(ReadResult::Data(
-                    entry.into_context(),
-                    (
-                        OffsetKey::MongoDb,
-                        OffsetValue::MongoDbOplogToken(end_token_bytes.clone()),
-                    ),
-                ));
-            }
-            snapshot.reverse();
-            self.snapshot = snapshot;
+            self.snapshot = Self::build_snapshot_block(entries, &end_token);
             self.is_initialized = true;
 
             if self.mode.is_polling_enabled() {
@@ -552,7 +661,7 @@ impl Reader for MongoReader {
                             OffsetValue::MongoDbOplogToken(token_bytes),
                         );
                         let mut entries = Vec::new();
-                        Self::apply_event_to_snapshot(&mut entries, &event);
+                        Self::apply_event_to_snapshot(&mut entries, &event)?;
                         for entry in entries {
                             self.snapshot
                                 .push(ReadResult::Data(entry.into_context(), offset.clone()));

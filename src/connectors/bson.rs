@@ -88,6 +88,11 @@ impl BsonParser {
             Type::Int => match bson {
                 Bson::Int32(i) => Ok(Value::Int(i64::from(*i))),
                 Bson::Int64(i) => Ok(Value::Int(*i)),
+                // BSON `Timestamp` is a (time, increment) pair used by the
+                // server's replication subsystem; only the seconds-since-epoch
+                // `time` component is exposed here.  The 32-bit `increment` is
+                // dropped because it has no meaning at the user-data level.
+                Bson::Timestamp(ts) => Ok(Value::Int(i64::from(ts.time))),
                 _ => Err(err("expected integer")),
             },
 
@@ -100,6 +105,21 @@ impl BsonParser {
 
             Type::String => match bson {
                 Bson::String(s) => Ok(Value::String(s.as_str().into())),
+                // `ObjectId` -> 24-character lowercase hex (the canonical
+                // textual form used by mongosh, MongoDB Extended JSON, and
+                // most external tooling).
+                Bson::ObjectId(oid) => Ok(Value::String(oid.to_hex().as_str().into())),
+                // `Decimal128` -> canonical decimal string (lossless; mapping
+                // to `f64` would drop precision and is intentionally not
+                // offered).
+                Bson::Decimal128(d) => Ok(Value::String(d.to_string().as_str().into())),
+                // `RegularExpression` -> Perl-style `/pattern/flags` literal.
+                // Combining pattern and options into a single string keeps the
+                // schema simple at the cost of needing a re-parse if the user
+                // wants the parts separately.
+                Bson::RegularExpression(re) => Ok(Value::String(
+                    format!("/{}/{}", re.pattern, re.options).into(),
+                )),
                 _ => Err(err("expected string")),
             },
 
@@ -350,6 +370,15 @@ impl BsonParser {
                 .map(|b| Self::bson_to_any_value(b, field_name))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|v| Value::Tuple(v.into())),
+            // Match the same defaults as the typed paths above: ObjectId,
+            // Decimal128, and Regex flatten to canonical text; Timestamp keeps
+            // only the `time` component as an integer.
+            Bson::ObjectId(oid) => Ok(Value::String(oid.to_hex().as_str().into())),
+            Bson::Decimal128(d) => Ok(Value::String(d.to_string().as_str().into())),
+            Bson::RegularExpression(re) => Ok(Value::String(
+                format!("/{}/{}", re.pattern, re.options).into(),
+            )),
+            Bson::Timestamp(ts) => Ok(Value::Int(i64::from(ts.time))),
             _ => Err(err("unsupported BSON type")),
         }
     }
