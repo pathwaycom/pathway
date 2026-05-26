@@ -109,7 +109,7 @@ use crate::connectors::data_lake::buffering::{
 };
 use crate::connectors::data_lake::delta::DeltaOptimizerRule;
 use crate::connectors::data_lake::iceberg::{IcebergBatchWriter, IcebergTableParams};
-use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
+use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode, PathwayStorageFactory};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader,
     KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader,
@@ -5595,6 +5595,7 @@ impl IcebergCatalogSettings {
             self.warehouse.as_ref(),
         );
         let catalog = ::iceberg_catalog_rest::RestCatalogBuilder::default()
+            .with_storage_factory(Arc::new(PathwayStorageFactory))
             .load("rest", props)
             .await
             .map_err(|e| {
@@ -5645,6 +5646,7 @@ impl IcebergCatalogSettings {
             );
         }
         let catalog = ::iceberg_catalog_glue::GlueCatalogBuilder::default()
+            .with_storage_factory(Arc::new(PathwayStorageFactory))
             .load("glue", props)
             .await
             .map_err(|e| {

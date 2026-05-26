@@ -113,12 +113,21 @@ def read(
     **kwargs,
 ) -> Table:
     """
-    Reads a table from Apache Iceberg. If ran in a streaming mode, the connector tracks
-    new row additions and old row deletions and reflects them in the table read.
+    Reads a table from Apache Iceberg. In ``"streaming"`` mode the connector polls
+    the catalog for new snapshots and reflects the diff between the previous and
+    new snapshot's **data files** in the Pathway table: files added to the new
+    plan become row additions, files removed from it become row deletions. Note
+    that this is a file-level diff — Iceberg V2 row-level delete files (positional
+    or equality deletes added alongside the same data files) are not separately
+    tracked.
 
     Note that the connector requires primary key fields to be specified in the schema.
     You can specify the fields to be used in the primary key with ``pw.column_definition``
     function.
+
+    Side effect: if the namespace passed in ``namespace`` doesn't exist in the
+    catalog at construction time, the connector creates it. The table itself
+    must already exist — a missing table surfaces as a catalog error.
 
     Args:
         catalog: Settings for Iceberg catalog connection.
@@ -233,10 +242,7 @@ def write(
     the table name.
 
     If the namespace or the table doesn't exist, they will be created by the connector.
-    The schema of the new table is inferred from the ``table``'s schema. The output table
-    must include two additional integer columns: ``time``, representing the computation
-    minibatch, and ``diff``, indicating the type of change (``1`` for row addition and
-    ``-1`` for row deletion).
+    The schema of the new table is inferred from the ``table``'s schema.
 
     Args:
         table: Table to be written.

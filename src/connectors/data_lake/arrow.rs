@@ -4,10 +4,13 @@ use std::sync::Arc;
 use deltalake::arrow::array::Array as ArrowArray;
 use deltalake::arrow::array::{
     BinaryArray as ArrowBinaryArray, BooleanArray as ArrowBooleanArray, BooleanBufferBuilder,
-    Decimal128Array as ArrowDecimal128Array, Float64Array as ArrowFloat64Array,
+    Date32Array as ArrowDate32Array, Decimal128Array as ArrowDecimal128Array,
+    FixedSizeBinaryArray as ArrowFixedSizeBinaryArray, Float32Array as ArrowFloat32Array,
+    Float64Array as ArrowFloat64Array, Int32Array as ArrowInt32Array,
     Int64Array as ArrowInt64Array, LargeBinaryArray as ArrowLargeBinaryArray,
     LargeListArray as ArrowLargeListArray, ListArray as ArrowListArray,
     StringArray as ArrowStringArray, StructArray as ArrowStructArray,
+    Time64MicrosecondArray as ArrowTime64MicrosecondArray,
     TimestampMicrosecondArray as ArrowTimestampMsArray,
     TimestampNanosecondArray as ArrowTimestampNsArray,
 };
@@ -17,11 +20,13 @@ use deltalake::arrow::datatypes::{
     TimeUnit as ArrowTimeUnit,
 };
 use ndarray::ArrayD;
+use uuid::Uuid;
 
 use super::{LakeWriterSettings, MaintenanceMode};
 use crate::connectors::data_format::{
     NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME, NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
 };
+use crate::connectors::data_lake::iceberg::IcebergError;
 use crate::connectors::data_lake::LakeBatchWriter;
 use crate::connectors::WriteError;
 use crate::engine::time::DateTime as EngineDateTime;
@@ -50,12 +55,47 @@ pub fn array_for_type(
             })?;
             Ok(Arc::new(ArrowInt64Array::from(v)))
         }
+        // Pathway `int` is i64; an existing destination column declared as Iceberg
+        // `int` (32-bit) opts into a narrowing write. Out-of-range values fail the
+        // batch — silent truncation would corrupt downstream queries.
+        ArrowDataType::Int32 => {
+            let v = array_of_simple_type::<i32>(values, |v| match v {
+                Value::Int(i) => i32::try_from(*i).map_err(|_| {
+                    WriteError::from(IcebergError::IntegerNarrowingOverflow {
+                        value: *i,
+                        target: ArrowDataType::Int32,
+                    })
+                }),
+                Value::Duration(d) => i32::try_from(d.microseconds()).map_err(|_| {
+                    WriteError::from(IcebergError::IntegerNarrowingOverflow {
+                        value: d.microseconds(),
+                        target: ArrowDataType::Int32,
+                    })
+                }),
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            Ok(Arc::new(ArrowInt32Array::from(v)))
+        }
         ArrowDataType::Float64 => {
             let v = array_of_simple_type::<f64>(values, |v| match v {
                 Value::Float(f) => Ok((*f).into()),
                 _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
             })?;
             Ok(Arc::new(ArrowFloat64Array::from(v)))
+        }
+        // Existing destination column declared as Iceberg `float` (32-bit). The
+        // f64 → f32 cast is always defined and never traps on out-of-range; values
+        // exceeding f32 range materialize as ±∞, matching IEEE 754 semantics.
+        ArrowDataType::Float32 => {
+            let v = array_of_simple_type::<f32>(values, |v| match v {
+                Value::Float(f) =>
+                {
+                    #[allow(clippy::cast_possible_truncation)]
+                    Ok(f64::from(*f) as f32)
+                }
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            Ok(Arc::new(ArrowFloat32Array::from(v)))
         }
         ArrowDataType::Utf8 => {
             let v = array_of_simple_type::<String>(values, |v| match v {
@@ -91,6 +131,44 @@ pub fn array_for_type(
                 _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
             })?;
             Ok(Arc::new(ArrowTimestampMsArray::from(v)))
+        }
+        // Iceberg `date` is a calendar day with no time-of-day. Pathway has no
+        // date-only type, so writes go from `DateTimeNaive` and silently
+        // truncate the time-of-day component. Matches the convention
+        // `pw.io.postgres.write` uses for PostgreSQL DATE columns: the
+        // documentation calls out the truncation so users producing
+        // mid-day timestamps know they lose the wall-clock portion.
+        ArrowDataType::Date32 => {
+            let epoch =
+                chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("1970-01-01 is a valid date");
+            let v = array_of_simple_type::<i32>(values, |v| match v {
+                Value::DateTimeNaive(dt) => {
+                    let date = dt.as_chrono_datetime().date();
+                    let days = date.signed_duration_since(epoch).num_days();
+                    i32::try_from(days).map_err(|_| {
+                        WriteError::from(IcebergError::DateOutOfRange {
+                            value: format!("{date}"),
+                        })
+                    })
+                }
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            Ok(Arc::new(ArrowDate32Array::from(v)))
+        }
+        // Iceberg `time` (microsecond precision, no date, no timezone) maps to
+        // Arrow `Time64(Microsecond)`. Pathway has no time-of-day type, so we
+        // mirror the Postgres connector's TIME ↔ Duration convention: the
+        // Pathway `Duration` value is interpreted as microseconds since
+        // midnight. Values outside [0, 24h) are written verbatim — Iceberg
+        // doesn't enforce the range either, and rejecting at write time would
+        // surprise pipelines that produce, say, "duration since some epoch"
+        // and store it in a `time` column.
+        ArrowDataType::Time64(ArrowTimeUnit::Microsecond) => {
+            let v = array_of_simple_type::<i64>(values, |v| match v {
+                Value::Duration(d) => Ok(d.microseconds()),
+                _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
+            })?;
+            Ok(Arc::new(ArrowTime64MicrosecondArray::from(v)))
         }
         ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, Some(tz)) => {
             let v = array_of_simple_type::<i64>(values, |v| match v {
@@ -137,9 +215,80 @@ pub fn array_for_type(
             let array = ArrowDecimal128Array::from(v).with_precision_and_scale(precision, scale)?;
             Ok(Arc::new(array))
         }
+        // Iceberg `fixed(N)` and `uuid` both materialize as Arrow FixedSizeBinary.
+        // The Pathway value type chosen by the user disambiguates the encoding:
+        //   * `str` at width 16 → parse canonical UUID hex, emit 16 bytes (UUID).
+        //   * `bytes` → length-checked passthrough (fixed(N)).
+        // Anything else is a schema mismatch.
+        ArrowDataType::FixedSizeBinary(width) => {
+            let width_i32 = *width;
+            let width_usize = usize::try_from(width_i32).map_err(|_| {
+                WriteError::from(IcebergError::FixedSizeBinaryNegativeWidth { width: width_i32 })
+            })?;
+            let mut buf: Vec<Option<[u8; 16]>> = Vec::new();
+            let mut variable_buf: Vec<Option<Vec<u8>>> = Vec::new();
+            let use_uuid_path = width_i32 == 16;
+            // We collect into an Option-wrapped Vec because `try_from_sparse_iter_with_size`
+            // needs to know about nulls per-row; building a separate path for Vec<u8>
+            // (variable width) keeps the UUID branch on a fixed-size buffer.
+            for v in values {
+                match v {
+                    Value::None => {
+                        if use_uuid_path {
+                            buf.push(None);
+                        } else {
+                            variable_buf.push(None);
+                        }
+                    }
+                    Value::String(s) if use_uuid_path => {
+                        let parsed = Uuid::parse_str(s).map_err(|_| {
+                            WriteError::from(IcebergError::UuidParseError {
+                                value: s.to_string(),
+                            })
+                        })?;
+                        buf.push(Some(parsed.into_bytes()));
+                    }
+                    Value::Bytes(b) => {
+                        if b.len() != width_usize {
+                            return Err(IcebergError::FixedSizeBinaryLengthMismatch {
+                                value_len: b.len(),
+                                expected: width_usize,
+                            }
+                            .into());
+                        }
+                        if use_uuid_path {
+                            // Even with width 16, accept raw bytes as a length-correct payload.
+                            let mut arr = [0u8; 16];
+                            arr.copy_from_slice(&b[..]);
+                            buf.push(Some(arr));
+                        } else {
+                            variable_buf.push(Some(b.to_vec()));
+                        }
+                    }
+                    _ => {
+                        return Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone()));
+                    }
+                }
+            }
+            let array = if use_uuid_path {
+                ArrowFixedSizeBinaryArray::try_from_sparse_iter_with_size(buf.into_iter(), 16)
+                    .map_err(WriteError::from)?
+            } else {
+                ArrowFixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    variable_buf
+                        .into_iter()
+                        .map(|opt| opt.map(Vec::into_boxed_slice)),
+                    width_i32,
+                )
+                .map_err(WriteError::from)?
+            };
+            Ok(Arc::new(array))
+        }
         ArrowDataType::List(nested_type) => array_of_lists(values, nested_type, false),
         ArrowDataType::LargeList(nested_type) => array_of_lists(values, nested_type, true),
-        ArrowDataType::Struct(nested_struct) => array_of_structs(values, nested_struct.as_ref()),
+        ArrowDataType::Struct(nested_struct) => {
+            array_of_structs(values, nested_struct.as_ref(), type_)
+        }
         _ => panic!("provided type {type_} is unknown to the engine"),
     }
 }
@@ -251,6 +400,7 @@ fn array_of_simple_type<ElementType>(
 fn array_of_structs(
     values: &[Value],
     nested_types: &[Arc<ArrowField>],
+    struct_type: &ArrowDataType,
 ) -> Result<Arc<dyn ArrowArray>, WriteError> {
     // Step 1. Decompose struct into separate columns
     let mut struct_columns: Vec<Vec<Value>> = vec![Vec::new(); nested_types.len()];
@@ -277,7 +427,12 @@ fn array_of_structs(
                     struct_columns[index].push(field.clone());
                 }
             }
-            _ => panic!("Pathway type {value} is not serializable as an arrow tuple"),
+            _ => {
+                return Err(WriteError::TypeMismatchWithSchema(
+                    value.clone(),
+                    struct_type.clone(),
+                ))
+            }
         }
     }
 
@@ -495,7 +650,13 @@ pub fn construct_schema(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_decimal_string;
+    use deltalake::arrow::array::{Array, FixedSizeBinaryArray, Float32Array, Int32Array};
+    use deltalake::arrow::datatypes::DataType as ArrowDataType;
+
+    use super::{array_for_type, parse_decimal_string};
+    use crate::connectors::data_lake::iceberg::IcebergError;
+    use crate::connectors::WriteError;
+    use crate::engine::Value;
 
     #[test]
     fn decimal_string_happy_path() {
@@ -577,5 +738,193 @@ mod tests {
         assert!(parse_decimal_string("100", 8, -2)
             .unwrap_err()
             .contains("negative scale"));
+    }
+
+    // The Iceberg writer uses Arrow Int32 only when the existing destination
+    // column is a 32-bit `int`. Pathway `int` is i64, so the value-level
+    // conversion has to refuse silent truncation.
+    #[test]
+    fn int32_narrowing_in_range_succeeds() {
+        let values = vec![
+            Value::Int(0),
+            Value::Int(i64::from(i32::MIN)),
+            Value::Int(i64::from(i32::MAX)),
+            Value::None,
+        ];
+        let arr = array_for_type(&ArrowDataType::Int32, &values).unwrap();
+        let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(int_arr.value(0), 0);
+        assert_eq!(int_arr.value(1), i32::MIN);
+        assert_eq!(int_arr.value(2), i32::MAX);
+        assert!(int_arr.is_null(3));
+    }
+
+    #[test]
+    fn int32_narrowing_out_of_range_errors() {
+        let values = vec![Value::Int(i64::from(i32::MAX) + 1)];
+        let err = array_for_type(&ArrowDataType::Int32, &values).unwrap_err();
+        match err {
+            WriteError::Iceberg(IcebergError::IntegerNarrowingOverflow { value, target }) => {
+                assert_eq!(value, i64::from(i32::MAX) + 1);
+                assert_eq!(target, ArrowDataType::Int32);
+            }
+            other => panic!("expected IntegerNarrowingOverflow, got {other:?}"),
+        }
+    }
+
+    // f64 → f32 cast is always defined and can produce ±∞ for values outside f32
+    // range — the writer doesn't reject those because IEEE 754 requires exactly
+    // this behavior, and reading the column back will reproduce the infinity.
+    #[test]
+    fn float32_narrowing_lossy_but_no_panic() {
+        let values = vec![
+            Value::from(0.0_f64),
+            Value::from(1.5_f64),
+            Value::from(f64::MAX),
+            Value::None,
+        ];
+        let arr = array_for_type(&ArrowDataType::Float32, &values).unwrap();
+        let float_arr = arr.as_any().downcast_ref::<Float32Array>().unwrap();
+        // Compare bits to dodge clippy::float_cmp; the values are exactly
+        // representable in f32, so there's no precision wiggle to worry about.
+        assert_eq!(float_arr.value(0).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(float_arr.value(1).to_bits(), 1.5_f32.to_bits());
+        assert!(float_arr.value(2).is_infinite());
+        assert!(float_arr.is_null(3));
+    }
+
+    // FixedSizeBinary(16) is the shape Iceberg's `uuid` arrives as. The Pathway
+    // value type tells the writer how to interpret it: `str` → parse canonical
+    // UUID, `bytes` → length-checked passthrough.
+    #[test]
+    fn fixed_size_binary_uuid_from_string() {
+        let values = vec![
+            Value::String("550e8400-e29b-41d4-a716-446655440000".into()),
+            Value::None,
+        ];
+        let arr = array_for_type(&ArrowDataType::FixedSizeBinary(16), &values).unwrap();
+        let bin = arr.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
+        let expected: [u8; 16] = [
+            0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+            0x00, 0x00,
+        ];
+        assert_eq!(bin.value(0), &expected);
+        assert!(bin.is_null(1));
+    }
+
+    #[test]
+    fn fixed_size_binary_uuid_invalid_string_errors() {
+        let values = vec![Value::String("not-a-uuid".into())];
+        let err = array_for_type(&ArrowDataType::FixedSizeBinary(16), &values).unwrap_err();
+        match err {
+            WriteError::Iceberg(IcebergError::UuidParseError { value }) => {
+                assert_eq!(value, "not-a-uuid");
+            }
+            other => panic!("expected UuidParseError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fixed_size_binary_bytes_passthrough() {
+        let values = vec![
+            Value::Bytes((vec![1u8, 2, 3, 4, 5, 6, 7, 8]).into()),
+            Value::None,
+        ];
+        let arr = array_for_type(&ArrowDataType::FixedSizeBinary(8), &values).unwrap();
+        let bin = arr.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
+        assert_eq!(bin.value(0), &[1u8, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(bin.is_null(1));
+    }
+
+    #[test]
+    fn fixed_size_binary_length_mismatch_errors() {
+        let values = vec![Value::Bytes((vec![1u8, 2, 3]).into())];
+        let err = array_for_type(&ArrowDataType::FixedSizeBinary(8), &values).unwrap_err();
+        match err {
+            WriteError::Iceberg(IcebergError::FixedSizeBinaryLengthMismatch {
+                value_len,
+                expected,
+            }) => {
+                assert_eq!(value_len, 3);
+                assert_eq!(expected, 8);
+            }
+            other => panic!("expected FixedSizeBinaryLengthMismatch, got {other:?}"),
+        }
+    }
+
+    // For width 16 with a Pathway `bytes` value (i.e. user is treating the
+    // column as fixed(16), not uuid), accept length-correct bytes verbatim.
+    #[test]
+    fn fixed_size_binary_16_with_raw_bytes_passes_through() {
+        let raw: Vec<u8> = (0u8..16).collect();
+        let values = vec![Value::Bytes(raw.clone().into())];
+        let arr = array_for_type(&ArrowDataType::FixedSizeBinary(16), &values).unwrap();
+        let bin = arr.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
+        assert_eq!(bin.value(0), raw.as_slice());
+    }
+
+    // The writer rejects values that aren't str/bytes/None for FixedSizeBinary,
+    // surfacing a clear schema-mismatch error rather than silently coercing.
+    #[test]
+    fn fixed_size_binary_wrong_pathway_type_errors() {
+        let values = vec![Value::Int(42)];
+        let err = array_for_type(&ArrowDataType::FixedSizeBinary(8), &values).unwrap_err();
+        match err {
+            WriteError::TypeMismatchWithSchema(value, target) => {
+                assert!(matches!(value, Value::Int(42)));
+                assert_eq!(target, ArrowDataType::FixedSizeBinary(8));
+            }
+            other => panic!("expected TypeMismatchWithSchema, got {other:?}"),
+        }
+    }
+
+    // Verify the existing wide-int path still emits Int64 — guards against an
+    // accidental swap with the new Int32 narrowing arm.
+    #[test]
+    fn int64_path_emits_int64() {
+        use deltalake::arrow::array::Int64Array;
+        let values = vec![Value::Int(42), Value::None];
+        let arr = array_for_type(&ArrowDataType::Int64, &values).unwrap();
+        let int_arr = arr.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(int_arr.value(0), 42);
+        assert!(int_arr.is_null(1));
+    }
+
+    // Iceberg `time` ↔ Pathway `Duration` (microseconds since midnight). Same
+    // convention as the Postgres TIME mapping.
+    #[test]
+    fn time64_us_from_duration() {
+        use deltalake::arrow::array::Time64MicrosecondArray;
+        use deltalake::arrow::datatypes::TimeUnit;
+
+        use crate::engine::Duration as EngineDuration;
+        // 12:34:56.789012 since midnight, in microseconds.
+        let micros: i64 = ((12 * 3600 + 34 * 60 + 56) * 1_000_000) + 789_012;
+        let values = vec![
+            Value::Duration(EngineDuration::new_with_unit(micros, "us").unwrap()),
+            Value::None,
+        ];
+        let arr = array_for_type(&ArrowDataType::Time64(TimeUnit::Microsecond), &values).unwrap();
+        let time_arr = arr
+            .as_any()
+            .downcast_ref::<Time64MicrosecondArray>()
+            .unwrap();
+        assert_eq!(time_arr.value(0), micros);
+        assert!(time_arr.is_null(1));
+    }
+
+    #[test]
+    fn time64_us_rejects_non_duration() {
+        use deltalake::arrow::datatypes::TimeUnit;
+        let values = vec![Value::Int(42)];
+        let err =
+            array_for_type(&ArrowDataType::Time64(TimeUnit::Microsecond), &values).unwrap_err();
+        match err {
+            WriteError::TypeMismatchWithSchema(value, target) => {
+                assert!(matches!(value, Value::Int(42)));
+                assert_eq!(target, ArrowDataType::Time64(TimeUnit::Microsecond));
+            }
+            other => panic!("expected TypeMismatchWithSchema, got {other:?}"),
+        }
     }
 }

@@ -28,7 +28,6 @@ use deltalake::arrow::error::ArrowError;
 use deltalake::datafusion::common::DataFusionError;
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::parquet::errors::ParquetError;
-use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
 use mongodb::bson::Document as BsonDocument;
@@ -91,7 +90,7 @@ use rdkafka::TopicPartitionList;
 use serde::{Deserialize, Serialize};
 
 pub use super::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
-pub use super::data_lake::iceberg::IcebergReader;
+pub use super::data_lake::iceberg::{IcebergError, IcebergReader};
 pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
@@ -817,6 +816,22 @@ pub enum WriteError {
 impl From<mongodb::error::Error> for WriteError {
     fn from(e: mongodb::error::Error) -> Self {
         WriteError::MongoDB(MongoDbError::Driver(e))
+    }
+}
+
+// Allow `?` on `iceberg::Error` in functions returning `Result<_, WriteError>`.
+// Routes through `IcebergError::Library` so the full chain is `WriteError::Iceberg`.
+impl From<iceberg::Error> for WriteError {
+    fn from(e: iceberg::Error) -> Self {
+        WriteError::Iceberg(IcebergError::Library(e))
+    }
+}
+
+// Allow `?` on `iceberg::Error` in functions returning `Result<_, ReadError>`.
+// Routes through `IcebergError::Library` so the full chain is `ReadError::Iceberg`.
+impl From<iceberg::Error> for ReadError {
+    fn from(e: iceberg::Error) -> Self {
+        ReadError::Iceberg(IcebergError::Library(e))
     }
 }
 

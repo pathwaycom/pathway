@@ -21,6 +21,7 @@ mockall = "0.13.1"
 arc-swap = "1.7.1"
 arcstr = { version = "1.2.0", default-features = false, features = ["serde", "std"] }
 async-nats = "0.41.0"
+async-trait = "0.1.89"
 aws-config = "1.8.1"
 aws-sdk-dynamodb = "1.82.0"
 aws-sdk-kinesis = "1.89.0"
@@ -50,9 +51,10 @@ half = "2.6.0"
 hex = "0.4.3"
 hyper = { version = "0.14", features = ["server"] }
 hyperloglogplus = "0.4.1"
-iceberg = "0.8.0"
-iceberg-catalog-glue = "0.8.0"
-iceberg-catalog-rest = "0.8.0"
+iceberg = "0.9.0"
+iceberg-catalog-glue = "0.9.0"
+iceberg-catalog-rest = "0.9.0"
+iceberg-storage-opendal = "0.9.0"
 id-arena = "2.2.1"
 indexmap = "2.9.0"
 itertools = "0.14.0"
@@ -110,6 +112,7 @@ timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tonic = { version = "0.13.1", features = ["tls-native-roots"] }
+typetag = "0.2.21"
 usearch = "2.15.3"
 uuid = { version = "1.17.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }

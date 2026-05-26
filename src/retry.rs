@@ -90,3 +90,44 @@ pub fn execute_with_retries<T, E: std::fmt::Debug>(
 ) -> Result<T, E> {
     execute_with_retries_if(func, |_| true, retry_config, max_retries)
 }
+
+/// Async sibling of [`execute_with_retries_if`].  Use this when the work
+/// runs inside an existing async context (so `tokio::time::sleep` is
+/// available and `std::thread::sleep` would stall the runtime) and the
+/// closure needs to `.await`.  Relies on `AsyncFnMut` (stable since
+/// Rust 1.85) so the closure can borrow across iterations.
+pub async fn execute_with_retries_if_async<T, E, F, P>(
+    mut func: F,
+    mut should_retry: P,
+    mut retry_config: RetryConfig,
+    max_retries: usize,
+) -> Result<T, E>
+where
+    E: std::fmt::Debug,
+    F: AsyncFnMut() -> Result<T, E>,
+    P: FnMut(&E) -> bool,
+{
+    let mut exec_result = func().await;
+    for _ in 0..max_retries {
+        match exec_result {
+            Ok(_) => return exec_result,
+            Err(ref e) if !should_retry(e) => return exec_result,
+            Err(_) => {}
+        }
+        retry_config.sleep_after_error_async().await;
+        exec_result = func().await;
+    }
+    if let Err(ref e) = exec_result {
+        error!("Operation failed after {max_retries} retries: {e:?}");
+    }
+    exec_result
+}
+
+/// Async sibling of [`execute_with_retries`] — retries on any error.
+pub async fn execute_with_retries_async<T, E: std::fmt::Debug>(
+    func: impl AsyncFnMut() -> Result<T, E>,
+    retry_config: RetryConfig,
+    max_retries: usize,
+) -> Result<T, E> {
+    execute_with_retries_if_async(func, |_| true, retry_config, max_retries).await
+}

@@ -46,6 +46,7 @@ impl Writer for LakeWriter {
             let (batch, payload_type) = self.buffer.build_update_record_batch()?;
             self.batch_writer.write_batch(batch, payload_type)?;
             self.buffer.on_changes_written();
+            self.last_commit_at = Instant::now();
         }
         Ok(())
     }
