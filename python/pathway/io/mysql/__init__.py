@@ -152,13 +152,39 @@ for MySQL database.
     manually in advance.
     """
 
+    is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
+
+    # Stream-of-changes mode appends ``time BIGINT NOT NULL, diff SMALLINT
+    # NOT NULL`` metadata columns to the generated CREATE TABLE / INSERT. A
+    # user column with one of those names (case-insensitive -- MySQL column
+    # names are not case-sensitive) would otherwise be emitted twice and
+    # the engine worker would fail mid-run with an opaque "Duplicate column
+    # name" error. Snapshot mode does not append these columns, so the
+    # check only applies in stream mode.
+    if not is_snapshot_mode:
+        offending = sorted(
+            {
+                column_name
+                for column_name in table.schema.column_names()
+                if column_name.lower() in ("time", "diff")
+            }
+        )
+        if offending:
+            raise ValueError(
+                f"Pathway schema column(s) {offending} collide with "
+                "the 'time' and 'diff' metadata columns appended in "
+                "stream_of_changes mode. Rename the column(s) in your "
+                "schema or switch to output_table_type='snapshot' "
+                "which does not append these metadata columns."
+            )
+
     data_storage = api.DataStorage(
         storage_type="mysql",
         connection_string=connection_string,
         max_batch_size=max_batch_size,
         table_name=table_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
-        snapshot_maintenance_on_output=output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE,
+        snapshot_maintenance_on_output=is_snapshot_mode,
     )
 
     key_field_names = None

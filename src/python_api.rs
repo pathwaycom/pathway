@@ -113,14 +113,15 @@ use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode, PathwaySto
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader,
     KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader,
-    MqttWriter, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
-    PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
+    MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader,
+    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
     ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
     Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::mssql::MssqlWriter;
+use crate::connectors::mysql::MysqlWriter;
 use crate::connectors::nats;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
@@ -5308,7 +5309,7 @@ impl DataStorage {
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
         unique_name: Option<UniqueName>,
-        max_batch_size: Option<usize>,
+        max_batch_size: Option<i64>,
         object_pattern: String,
         mock_events: Option<HashMap<(UniqueName, usize), Vec<SnapshotEvent>>>,
         table_name: Option<String>,
@@ -5336,8 +5337,27 @@ impl DataStorage {
         psql_replication: Option<PsqlReplicationSettings>,
         schema_name: Option<String>,
         with_metadata: bool,
-    ) -> Self {
-        DataStorage {
+    ) -> PyResult<Self> {
+        // ``max_batch_size`` is the buffer threshold at which the
+        // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
+        // SQLite, …) flush a transaction. Validate it once here — the
+        // single point every connector funnels through — so the rule
+        // applies uniformly and any future connector inherits it.
+        // ``0`` would never reach the threshold and silently disable
+        // size-based batching, and a negative value is meaningless, so
+        // both are rejected up front instead of surfacing later as odd
+        // batching behavior or an opaque integer-conversion error.
+        let max_batch_size = match max_batch_size {
+            Some(value) if value <= 0 => {
+                return Err(PyValueError::new_err(
+                    "max_batch_size must be a positive integer (pass None to \
+                     disable size-based batching)",
+                ));
+            }
+            Some(value) => Some(usize::try_from(value).expect("positive i64 fits usize")),
+            None => None,
+        };
+        Ok(DataStorage {
             storage_type,
             path,
             rdkafka_settings,
@@ -5380,7 +5400,7 @@ impl DataStorage {
             psql_replication,
             schema_name,
             with_metadata,
-        }
+        })
     }
 
     #[pyo3(signature = ())]

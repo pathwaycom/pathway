@@ -29,6 +29,7 @@ pub mod metadata;
 pub mod mongodb;
 pub mod monitoring;
 pub mod mssql;
+pub mod mysql;
 pub mod nats;
 pub mod offset;
 pub mod posix_like;

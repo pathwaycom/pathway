@@ -1,6 +1,7 @@
 import datetime
 import json
 import re
+import time
 
 import pandas as pd
 import pytest
@@ -407,6 +408,91 @@ def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
             primary_key=malfomed_primary_key,
         )
         pw.run()
+
+
+@xfail_if_mysql_failed_to_start
+def test_mysql_permanent_error_fails_fast(mysql):
+    # A permanent failure -- here, writing to a table that does not exist
+    # with init_mode="default" -- must surface promptly instead of being
+    # retried with exponential backoff. Retrying a non-transient error
+    # (missing table, bad SQL, a type or constraint violation) only adds
+    # several seconds of pointless backoff before the inevitable failure.
+    # This matches the Postgres and MSSQL writers, which retry transient
+    # errors only.
+    table_name = mysql.random_table_name()  # deliberately never created
+
+    class InputSchema(pw.Schema):
+        k: int
+
+    table = pw.debug.table_from_rows(InputSchema, [(1,)])
+    pw.io.mysql.write(
+        table,
+        MYSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+    )
+
+    start = time.monotonic()
+    with pytest.raises(pw.engine.EngineError, match="doesn't exist"):
+        pw.run()
+    elapsed = time.monotonic() - start
+    # Three retries with exponential backoff add at least ~3.6s of pure
+    # sleep; failing fast returns in well under a second. The 3.0s budget
+    # sits comfortably between the two regimes.
+    assert elapsed < 3.0, (
+        f"permanent error surfaced after {elapsed:.2f}s; a non-transient "
+        "failure must not be retried with backoff"
+    )
+
+
+@pytest.mark.parametrize("colliding_column", ["time", "diff", "TIME"])
+def test_mysql_rejects_metadata_column_collision_in_stream_mode(colliding_column):
+    # In stream_of_changes mode the writer appends ``time`` and ``diff``
+    # metadata columns to the target table. A user schema column with one
+    # of those names -- case-insensitively, since MySQL column names are
+    # not case-sensitive -- would otherwise be emitted twice in the
+    # generated DDL/INSERT and fail mid-run with an opaque MySQL
+    # "Duplicate column name" error. Reject it up front with an actionable
+    # message, the same way the Postgres connector does. No MySQL instance
+    # is required: the check runs while the sink is being registered.
+    schema = pw.schema_builder(
+        {
+            "key": pw.column_definition(dtype=int),
+            colliding_column: pw.column_definition(dtype=int),
+        }
+    )
+    table = pw.debug.table_from_rows(schema, [(1, 2)])
+
+    with pytest.raises(ValueError, match="collide with"):
+        pw.io.mysql.write(
+            table,
+            MYSQL_CONNECTION_STRING,
+            table_name="irrelevant",
+        )
+
+
+@pytest.mark.parametrize("metadata_column", ["time", "diff"])
+def test_mysql_allows_metadata_column_name_in_snapshot_mode(metadata_column):
+    # Snapshot mode does not append the ``time`` / ``diff`` metadata
+    # columns, so a user column with one of those names is perfectly valid
+    # there and must not be rejected by the stream-mode collision check.
+    schema = pw.schema_builder(
+        {
+            "key": pw.column_definition(dtype=int, primary_key=True),
+            metadata_column: pw.column_definition(dtype=int),
+        }
+    )
+    table = pw.debug.table_from_rows(schema, [(1, 2)])
+
+    # Registering the sink must not raise; we do not call ``pw.run()`` so
+    # no MySQL instance is required.
+    pw.io.mysql.write(
+        table,
+        MYSQL_CONNECTION_STRING,
+        table_name="irrelevant",
+        output_table_type="snapshot",
+        primary_key=[table.key],
+    )
 
 
 @xfail_if_mysql_failed_to_start

@@ -785,18 +785,6 @@ def write(
                 "which does not append these metadata columns."
             )
 
-    # ``max_batch_size`` is the buffer threshold at which the writer
-    # triggers a flush. Pass 0 and the buffer would grow without bound
-    # because the threshold can never be reached, so ``pw.run()`` would
-    # never commit a single row. Reject explicitly with an actionable
-    # message; 0 has no obvious "batch" semantics, so we don't try to
-    # map it to "no batching" silently.
-    if max_batch_size is not None and max_batch_size <= 0:
-        raise ValueError(
-            "max_batch_size must be a positive integer (pass None to "
-            "disable size-based batching)"
-        )
-
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
@@ -1023,15 +1011,6 @@ def write_snapshot(
             "in your schema or migrate to `pw.io.postgres.write` "
             "with output_table_type='snapshot' (no metadata "
             "columns appended)."
-        )
-
-    # Same rationale as the sibling check in ``write`` above: a
-    # ``max_batch_size`` of 0 (or negative) silently breaks the
-    # writer's buffer-flush trigger and leaves rows piling up forever.
-    if max_batch_size is not None and max_batch_size <= 0:
-        raise ValueError(
-            "max_batch_size must be a positive integer (pass None to "
-            "disable size-based batching)"
         )
 
     postgres_settings = _augment_postgres_settings(postgres_settings, name)

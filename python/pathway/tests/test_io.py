@@ -4741,3 +4741,17 @@ def test_rabbitmq_read_requires_timestamp_with_timestamp_start_from():
             stream_name="test",
             start_from="timestamp",
         )
+
+
+@pytest.mark.parametrize("bad_max_batch_size", [0, -1, -100])
+def test_output_rejects_nonpositive_max_batch_size(bad_max_batch_size):
+    # ``max_batch_size`` is the buffer threshold at which the size-based
+    # output writers flush a transaction. It is validated once, centrally,
+    # in the ``DataStorage`` constructor that every output connector builds,
+    # so the rule applies uniformly to all of them: ``0`` would never reach
+    # the threshold (size-based batching would silently never happen) and a
+    # negative value is meaningless, so both are rejected up front instead
+    # of surfacing later as unbounded buffering or an opaque integer
+    # conversion error.
+    with pytest.raises(ValueError, match="max_batch_size must be a positive integer"):
+        api.DataStorage(storage_type="postgres", max_batch_size=bad_max_batch_size)

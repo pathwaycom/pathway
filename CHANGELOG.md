@@ -26,6 +26,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.mssql.read` accepts SQL Server `NUMERIC(N, 0)` columns into a Pathway `int` schema and integer-family columns (`TINYINT` / `SMALLINT` / `INT` / `BIGINT`) into a Pathway `float` schema, matching the `int → float` tolerance of `pw.io.sqlite.read`.
 - `pw.io.mssql.read` and `pw.io.mssql.write` now correctly handle identifiers containing `]`.
 - `pw.io.kafka.read` now emits a `DeprecationWarning` (instead of a `SyntaxWarning`) when `topic` is passed as a list, and warns when an explicitly configured `auto.offset.reset` is overridden because `start_from_timestamp_ms` is set. It also logs a warning (previously an easy-to-miss info message) when `start_from_timestamp_ms` lands at or past the end of a partition, since no already-written data will be read from it.
+- `pw.io.mysql.write` now retries only transient MySQL errors — connection drops, deadlocks, lock-wait timeouts, "too many connections", and "server is shutting down" — with exponential backoff, and lets permanent failures (missing tables, syntax errors, constraint violations) propagate on the first attempt. Previously every error was retried up to three times, delaying permanent failures by several seconds before they surfaced.
 
 ### Fixed
 - `pw.io.iceberg.read` in `mode="static"` no longer hangs on an Iceberg table that has no current snapshot (e.g. a table Pathway just created but never wrote data to). The reader treated the absence of a snapshot as "wait for one to appear" — which never returned in static mode — and now correctly reports zero rows and exits.
@@ -38,6 +39,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.kafka.read` with `mode="static"` and a `start_from_timestamp_ms` past the end of the topic now returns immediately, instead of stalling until the static-read polling budget is exhausted.
 - `pw.io.kafka.SchemaRegistrySettings` and `pw.io.kafka.SchemaRegistryHeader` now validate their fields on construction (the `urls` list shape and non-emptiness, string-typed credentials, mutually exclusive authentication methods, and the `timeout` type and positivity), instead of failing later with an opaque error.
 - `pw.io.mongodb.read` persistence: on restart, the replayed change-stream events are now delivered atomically, preventing an edge case where a crash partway through the replay could skip events that had been read from MongoDB but not yet processed downstream.
+- Passing a non-positive `max_batch_size` to any output connector that accepts it now raises a clear error (`max_batch_size must be a positive integer`). Previously the value was handled inconsistently: `0` was silently accepted and disabled size-based batching entirely, while a negative value surfaced an opaque `OverflowError`.
+- `pw.io.mysql.write` now rejects, at construction, a schema column named `time` or `diff` (case-insensitive) in `stream_of_changes` mode, where it would collide with the `time`/`diff` metadata columns the connector appends. Previously the conflict surfaced mid-run as an opaque MySQL "Duplicate column name" error. Rename the column or switch to `output_table_type="snapshot"`, which does not append these columns.
 
 ## [0.31.0] - 2026-05-25
 

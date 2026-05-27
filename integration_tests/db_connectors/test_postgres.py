@@ -3431,35 +3431,6 @@ def test_psql_write_snapshot_allows_reserved_column_name(postgres):
         ]
 
 
-@pytest.mark.parametrize("bad_value", [0, -1, -100])
-def test_psql_write_rejects_non_positive_max_batch_size(postgres, bad_value):
-    """``pw.io.postgres.write``'s ``max_batch_size`` historically went
-    straight to the Rust ``Writer::write`` loop, whose flush trigger
-    is ``self.buffer.len() == max_batch_size`` — an equality check.
-    Pass ``max_batch_size=0`` and the comparison is *never* satisfied
-    (the buffer length is ≥ 1 by the time we check), so the buffer
-    grows without bound and ``pw.run()`` hangs forever without
-    committing a single row.  Negative values are equally nonsensical.
-
-    This regression pins that the Python layer rejects the input
-    synchronously at ``pw.io.postgres.write()`` call time, before any
-    Pathway graph is built or any database query is issued."""
-
-    class S(pw.Schema):
-        k: int
-        v: str
-
-    t = pw.debug.table_from_rows(S, [(1, "a")])
-    with pytest.raises(ValueError, match=r"max_batch_size must be a positive integer"):
-        pw.io.postgres.write(
-            t,
-            postgres_settings=POSTGRES_SETTINGS,
-            table_name="ignored_because_we_error_first",
-            init_mode="create_if_not_exists",
-            max_batch_size=bad_value,
-        )
-
-
 def test_psql_write_snapshot_rejects_duplicate_primary_key_columns(postgres):
     """``pw.io.postgres.write`` with ``primary_key=[t.k, t.k]`` silently
     accepts the duplicated column reference today. With

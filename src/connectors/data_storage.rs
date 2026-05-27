@@ -31,10 +31,6 @@ use deltalake::parquet::errors::ParquetError;
 use itertools::Itertools;
 use log::{error, info, warn};
 use mongodb::bson::Document as BsonDocument;
-use mysql::{
-    prelude::Queryable, Error as MysqlError, Params as MysqlParams, Pool as MysqlConnectionPool,
-    PooledConn as MysqlConnection, TxOpts as MysqlTxOpts, Value as MysqlValue,
-};
 use questdb::ingress::{
     Buffer as QuestDBBuffer, Sender as QuestDBSender, Timestamp as QuestDBTimestamp,
     TimestampMicros as QuestDBTimestampMicros, TimestampNanos as QuestDBTimestampNanos,
@@ -62,7 +58,7 @@ use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
 use crate::engine::time::DateTime;
-use crate::engine::{DateTimeNaive, Duration as EngineDuration, Key, Type, Value};
+use crate::engine::{Key, Type, Value};
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
@@ -71,7 +67,6 @@ use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::PythonSubject;
 use crate::python_api::ValueField;
-use crate::retry::{execute_with_retries, RetryConfig};
 
 use async_nats::client::FlushError as NatsFlushError;
 use async_nats::client::PublishError as NatsPublishError;
@@ -95,6 +90,7 @@ pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
 pub use super::mssql::{MssqlError, MssqlReader};
+pub use super::mysql::MysqlError;
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{
@@ -2218,264 +2214,5 @@ impl SqlQueryTemplate {
             Self::Snapshot { deletion, .. } if diff < 0 => deletion.clone(),
             Self::Snapshot { .. } => unreachable!(),
         }
-    }
-}
-
-const MAX_MYSQL_RETRIES: usize = 3;
-
-pub struct MysqlWriter {
-    pool: MysqlConnectionPool,
-    current_connection: MysqlConnection,
-    max_batch_size: Option<usize>,
-    buffer: Vec<FormatterContext>,
-    snapshot_mode: bool,
-    table_name: String,
-    query_template: SqlQueryTemplate,
-}
-
-/// Escapes a `MySQL` identifier with backticks and doubles any internal
-/// backticks. Used everywhere the `MySQL` writer interpolates a
-/// user-supplied table or column name into generated SQL so reserved
-/// words and characters requiring quoting survive round-tripping.
-fn mysql_quote_identifier(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
-}
-
-impl MysqlWriter {
-    pub fn new(
-        pool: MysqlConnectionPool,
-        max_batch_size: Option<usize>,
-        snapshot_mode: bool,
-        table_name: &str,
-        value_fields: &[ValueField],
-        key_field_names: Option<&[String]>,
-        mode: TableWriterInitMode,
-    ) -> Result<MysqlWriter, WriteError> {
-        // Interpolating `table_name` raw would reject reserved words and
-        // characters requiring backticks; pre-quote once so the shared
-        // template builders see the safe form, mirroring how the
-        // Postgres writer handles it.
-        let quoted_table_name = mysql_quote_identifier(table_name);
-        let mut connection = pool.get_conn()?;
-        let mut transaction = connection.start_transaction(MysqlTxOpts::default())?;
-        mode.initialize(
-            &quoted_table_name,
-            value_fields,
-            key_field_names,
-            !snapshot_mode,
-            |query| {
-                transaction.query_drop(query)?;
-                Ok(())
-            },
-            Self::mysql_data_type,
-            mysql_quote_identifier,
-        )?;
-        transaction.commit()?;
-
-        let writer = MysqlWriter {
-            current_connection: pool.get_conn()?,
-            pool,
-            max_batch_size,
-            snapshot_mode,
-            table_name: table_name.to_string(),
-            query_template: SqlQueryTemplate::new(
-                snapshot_mode,
-                &quoted_table_name,
-                value_fields,
-                key_field_names,
-                false,
-                |_| "?".to_string(),
-                Self::on_insert_conflict_condition,
-                mysql_quote_identifier,
-            )?,
-            buffer: Vec::new(),
-        };
-
-        Ok(writer)
-    }
-
-    // Generates a statement that is used in "on conflict" part of the query
-    fn on_insert_conflict_condition(
-        _table_name: &str,
-        _key_field_names: &[String],
-        value_fields: &[ValueField],
-        _legacy_mode: bool,
-    ) -> String {
-        let update_pairs = value_fields
-            .iter()
-            .map(|field| format!("{name}=new.{name}", name = field.name))
-            .collect::<Vec<_>>();
-
-        format!("AS new ON DUPLICATE KEY UPDATE {}", update_pairs.join(", "))
-    }
-
-    fn mysql_data_type(type_: &Type, is_nested: bool) -> Result<String, WriteError> {
-        let not_null_suffix = if is_nested { "" } else { " NOT NULL" };
-        Ok(match type_ {
-            Type::Bool => format!("BOOLEAN{not_null_suffix}"),
-            Type::Int => format!("BIGINT{not_null_suffix}"),
-            Type::Float => format!("DOUBLE{not_null_suffix}"),
-            Type::Pointer | Type::String => format!("TEXT{not_null_suffix}"),
-            Type::Bytes | Type::PyObjectWrapper => format!("BLOB{not_null_suffix}"),
-            Type::Json => format!("JSON{not_null_suffix}"),
-            Type::Duration => format!("TIME(6){not_null_suffix}"),
-            Type::DateTimeNaive | Type::DateTimeUtc => format!("DATETIME(6){not_null_suffix}"),
-            Type::Optional(wrapped) => {
-                if let Type::Any = **wrapped {
-                    return Err(WriteError::UnsupportedType(type_.clone()));
-                }
-                let wrapped = Self::mysql_data_type(wrapped, true)?;
-                return Ok(wrapped);
-            }
-            Type::Any | Type::Tuple(_) | Type::List(_) | Type::Array(_, _) | Type::Future(_) => {
-                return Err(WriteError::UnsupportedType(type_.clone()))
-            }
-        })
-    }
-
-    fn to_mysql_date(dt: DateTimeNaive) -> MysqlValue {
-        MysqlValue::Date(
-            dt.year().try_into().expect("years must fit u16"),
-            dt.month().try_into().expect("months must fit u8"),
-            dt.day().try_into().expect("days must fit u8"),
-            dt.hour().try_into().expect("hours must fit u8"),
-            dt.minute().try_into().expect("minutes must fit u8"),
-            dt.second().try_into().expect("seconds must fit u8"),
-            dt.microsecond()
-                .try_into()
-                .expect("microseconds must fit u32"),
-        )
-    }
-
-    fn to_mysql_value(value: &Value) -> Result<MysqlValue, WriteError> {
-        match value {
-            Value::None => Ok(MysqlValue::NULL),
-            Value::Bool(b) => Ok(MysqlValue::from(b)),
-            Value::Int(i) => Ok(MysqlValue::Int(*i)),
-            Value::Float(f) => Ok(MysqlValue::Double((*f).into())),
-            Value::Pointer(p) => Ok(MysqlValue::Bytes(p.to_string().into())),
-            Value::String(s) => Ok(MysqlValue::Bytes(s.to_string().into())),
-            Value::Bytes(b) => Ok(MysqlValue::Bytes(b.to_vec())),
-            Value::DateTimeNaive(dt) => Ok(Self::to_mysql_date(*dt)),
-            Value::DateTimeUtc(dt) => {
-                Ok(Self::to_mysql_date(dt.to_naive_in_timezone("UTC").unwrap()))
-            }
-            Value::Duration(d) => {
-                let is_negative = d < &EngineDuration::new(0);
-                let mut total_microseconds = d.microseconds();
-                if is_negative {
-                    total_microseconds *= -1;
-                }
-                let microseconds: u32 = (total_microseconds % 1_000_000)
-                    .try_into()
-                    .expect("microsecond part must fit u32");
-
-                let total_seconds = total_microseconds / 1_000_000;
-                let seconds: u8 = (total_seconds % 60)
-                    .try_into()
-                    .expect("second part must fit u8");
-
-                let total_minutes = total_seconds / 60;
-                let minutes: u8 = (total_minutes % 60)
-                    .try_into()
-                    .expect("minute part must fit u8");
-
-                let total_hours = total_minutes / 60;
-                let hours: u8 = (total_hours % 24)
-                    .try_into()
-                    .expect("hour part must fit u8");
-
-                let total_days = total_hours / 24;
-                let days: u32 = total_days.try_into().expect("day part must fit u32");
-                Ok(MysqlValue::Time(
-                    is_negative,
-                    days,
-                    hours,
-                    minutes,
-                    seconds,
-                    microseconds,
-                ))
-            }
-            Value::Json(j) => Ok(MysqlValue::Bytes(j.to_string().into())),
-            Value::PyObjectWrapper(_) => Ok(MysqlValue::Bytes(
-                bincode::serialize(value).map_err(|e| *e)?,
-            )),
-            Value::IntArray(_)
-            | Value::FloatArray(_)
-            | Value::Tuple(_)
-            | Value::Error
-            | Value::Pending => Err(FormatterError::ValueNonSerializable(value.kind(), "MySQL"))?,
-        }
-    }
-
-    fn flush_with_current_connection(&mut self) -> Result<(), WriteError> {
-        let mut transaction = self
-            .current_connection
-            .start_transaction(MysqlTxOpts::default())?;
-        for data in &self.buffer {
-            let mut params: Vec<_> = data
-                .values
-                .iter()
-                .map(Self::to_mysql_value)
-                .collect::<Result<_, _>>()?;
-            let params = if self.snapshot_mode {
-                if data.diff > 0 {
-                    params
-                } else {
-                    self.query_template.primary_key_fields(params)
-                }
-            } else {
-                params.push(MysqlValue::Int(data.time.0.try_into().unwrap()));
-                params.push(MysqlValue::Int(data.diff.try_into().unwrap()));
-                params
-            };
-            transaction.exec_drop(
-                self.query_template.build_query(data.diff),
-                MysqlParams::Positional(params),
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-}
-
-impl Writer for MysqlWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.push(data);
-        if let Some(max_batch_size) = self.max_batch_size {
-            if self.buffer.len() == max_batch_size {
-                self.flush(true)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        if self.buffer.is_empty() {
-            return Ok(());
-        }
-
-        execute_with_retries(
-            || {
-                let cc_save_result = self.flush_with_current_connection();
-                if cc_save_result.is_err() {
-                    self.current_connection = self.pool.get_conn()?;
-                }
-                cc_save_result
-            },
-            RetryConfig::default(),
-            MAX_MYSQL_RETRIES,
-        )?;
-        self.buffer.clear();
-
-        Ok(())
-    }
-
-    fn name(&self) -> String {
-        format!("MySQL({})", self.table_name)
-    }
-
-    fn single_threaded(&self) -> bool {
-        self.snapshot_mode
     }
 }
