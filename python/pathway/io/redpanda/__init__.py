@@ -101,6 +101,7 @@ def read(
     >>> import os
     >>> rdkafka_settings = {
     ...    "bootstrap.servers": "localhost:9092",
+    ...    "group.id": "kafka-tests",
     ...    "security.protocol": "sasl_ssl",
     ...    "sasl.mechanism": "SCRAM-SHA-256",
     ...    "sasl.username": os.environ["KAFKA_USERNAME"],

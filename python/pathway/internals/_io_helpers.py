@@ -207,6 +207,18 @@ class SchemaRegistryHeader:
     key: str
     value: str
 
+    def __post_init__(self):
+        if not isinstance(self.key, str):
+            raise TypeError(
+                f"SchemaRegistryHeader.key must be a str, got "
+                f"{type(self.key).__name__}."
+            )
+        if not isinstance(self.value, str):
+            raise TypeError(
+                f"SchemaRegistryHeader.value must be a str, got "
+                f"{type(self.value).__name__}."
+            )
+
 
 @dataclasses.dataclass(frozen=True)
 class SchemaRegistrySettings:
@@ -235,6 +247,66 @@ class SchemaRegistrySettings:
     headers: list[SchemaRegistryHeader] | None = None
     proxy: str | None = None
     timeout: datetime.timedelta | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.urls, (list, tuple)):
+            raise TypeError(
+                f"SchemaRegistrySettings.urls must be a list of strings, "
+                f"got {type(self.urls).__name__}. Wrap a single URL in a "
+                f"list: urls=['http://...']."
+            )
+        if not self.urls:
+            raise ValueError(
+                "SchemaRegistrySettings requires at least one entry in 'urls'; "
+                "got an empty list."
+            )
+        for i, url in enumerate(self.urls):
+            if not isinstance(url, str) or not url:
+                raise ValueError(
+                    f"SchemaRegistrySettings.urls[{i}] must be a non-empty "
+                    f"string; got {url!r}."
+                )
+        for field_name in ("token_authorization", "username", "password", "proxy"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, str):
+                raise TypeError(
+                    f"SchemaRegistrySettings.{field_name} must be a str, "
+                    f"got {type(value).__name__}."
+                )
+        if self.password is not None and self.username is None:
+            raise ValueError(
+                "SchemaRegistrySettings: 'password' was provided without "
+                "'username'. Both are needed for username/password "
+                "authentication."
+            )
+        if self.token_authorization is not None and (
+            self.username is not None or self.password is not None
+        ):
+            raise ValueError(
+                "SchemaRegistrySettings: 'token_authorization' is mutually "
+                "exclusive with 'username'/'password'. Pick one "
+                "authentication method."
+            )
+        if self.headers is not None:
+            for i, header in enumerate(self.headers):
+                if not isinstance(header, SchemaRegistryHeader):
+                    raise TypeError(
+                        f"SchemaRegistrySettings.headers[{i}] must be a "
+                        f"SchemaRegistryHeader instance, got "
+                        f"{type(header).__name__}. Use "
+                        f"pw.io.kafka.SchemaRegistryHeader(key=..., value=...)."
+                    )
+        if self.timeout is not None:
+            if not isinstance(self.timeout, datetime.timedelta):
+                raise TypeError(
+                    f"SchemaRegistrySettings.timeout must be a "
+                    f"datetime.timedelta, got {type(self.timeout).__name__}."
+                )
+            if self.timeout <= datetime.timedelta(0):
+                raise ValueError(
+                    f"SchemaRegistrySettings: 'timeout' must be a positive "
+                    f"duration; got {self.timeout!r}."
+                )
 
     @property
     def to_engine(self):

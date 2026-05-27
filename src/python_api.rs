@@ -6032,7 +6032,7 @@ impl DataStorage {
                 }
                 KafkaOffset::End => {
                     let partition_idx: usize = element.partition().try_into().unwrap();
-                    info!("Partition {partition_idx} doesn't have messages with timestamp greater than {start_from_timestamp_ms}. All new messages will be read.");
+                    warn!("Partition {partition_idx} has no message with a timestamp >= {start_from_timestamp_ms}: the requested start is at or past the end of the partition (offset {}), so none of its already-written data will be read. In static mode this partition yields no rows; in streaming mode only messages produced after the start will be read.", watermarks[partition_idx].high);
                     KafkaOffset::Offset(watermarks[partition_idx].high)
                 }
                 offset => offset,
@@ -6064,7 +6064,7 @@ impl DataStorage {
             .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
 
         let total_partitions = Self::total_partitions_for_topic(&consumer, topic)?;
-        let watermarks = Self::kafka_partition_watermarks(&consumer, topic, total_partitions)?;
+        let mut watermarks = Self::kafka_partition_watermarks(&consumer, topic, total_partitions)?;
 
         let mut seek_positions = HashMap::new();
         if let Some(start_from_timestamp_ms) = self.start_from_timestamp_ms {
@@ -6079,6 +6079,25 @@ impl DataStorage {
                 start_from_timestamp_ms,
                 &watermarks,
             )?;
+            // The lazy seek only fires once the consumer actually receives a
+            // message. For a seek target at (or past) the partition's high
+            // watermark there's nothing to receive, so no commit ever happens
+            // and `static_read_has_finished` would loop until the polling
+            // budget runs out. Pre-advance the watermark's low bound to
+            // reflect the seek: the range below the seek is logically
+            // already consumed, and an empty resulting range marks the
+            // partition as "no messages" so static mode exits promptly.
+            for (&partition, offset) in &seek_positions {
+                if let KafkaOffset::Offset(offset_value) = offset {
+                    let partition_idx: usize = partition
+                        .try_into()
+                        .expect("kafka partition can't be negative");
+                    if partition_idx < watermarks.len() {
+                        let watermark = &mut watermarks[partition_idx];
+                        watermark.low = watermark.low.max(*offset_value);
+                    }
+                }
+            }
         }
         let reader = KafkaReader::new(
             consumer,

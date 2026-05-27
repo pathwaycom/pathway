@@ -78,7 +78,7 @@ def read(
         schema_registry_settings: settings for connecting to the Confluent Schema Registry,
             if this type of registry is used.
         debug_data: Static data replacing original one when debug mode is active.
-        autocommit_duration_ms:the maximum time between two commits. Every
+        autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
         json_field_paths: If the format is JSON, this field allows to map field names
@@ -97,8 +97,9 @@ def read(
             correspond to the Kafka message that produced this row. Finally, the top level of
             this column's JSON will contain a ``headers`` array. Each element will be a pair
             consisting of a string (the header name) and an optional base64-encoded string
-            (the header value). The header value is present only if the header body is
-            non-empty; otherwise it is ``null``.
+            (the header value). The header value is ``null`` only when the header body is
+            absent (the Kafka protocol distinguishes a missing body from an empty one); a
+            present-but-empty body is encoded as an empty string.
         start_from_timestamp_ms: If defined, the read starts from entries with the given
             timestamp in the past, specified in milliseconds.
         parallel_readers: number of copies of the reader to work in parallel. In case
@@ -133,6 +134,7 @@ def read(
     >>> import os
     >>> rdkafka_settings = {
     ...     "bootstrap.servers": "localhost:9092",
+    ...     "group.id": "kafka-tests",
     ...     "security.protocol": "sasl_ssl",
     ...     "sasl.mechanism": "PLAIN",
     ...     "sasl.username": os.environ["KAFKA_USERNAME"],
@@ -245,18 +247,121 @@ def read(
     """
     # The data_storage is common to all kafka connectors
 
-    if not topic:
-        topic_names = kwargs.get("topic_names")
+    if not rdkafka_settings.get("bootstrap.servers"):
+        raise ValueError(
+            "rdkafka_settings must contain a non-empty 'bootstrap.servers' "
+            "entry so the consumer can locate a broker; got "
+            f"{rdkafka_settings.get('bootstrap.servers')!r}."
+        )
+    if not rdkafka_settings.get("group.id"):
+        raise ValueError(
+            "rdkafka_settings must contain a non-empty 'group.id' entry: "
+            "Pathway's Kafka reader uses 'subscribe' (not 'assign'), which "
+            "librdkafka refuses to perform without a configured consumer "
+            f"group id; got {rdkafka_settings.get('group.id')!r}."
+        )
+
+    if max_backlog_size is not None and max_backlog_size <= 0:
+        raise ValueError(
+            f"'max_backlog_size' must be positive; got {max_backlog_size}. "
+            f"A non-positive value would prevent any entry from being "
+            f"processed and the reader would never make progress."
+        )
+    if parallel_readers is not None and parallel_readers <= 0:
+        raise ValueError(
+            f"'parallel_readers' must be positive; got {parallel_readers}."
+        )
+    if start_from_timestamp_ms is not None and start_from_timestamp_ms < 0:
+        raise ValueError(
+            f"'start_from_timestamp_ms' must be non-negative; got "
+            f"{start_from_timestamp_ms}. The value is a Unix timestamp in "
+            f"milliseconds — negative values are pre-epoch and not "
+            f"meaningful for Kafka."
+        )
+    if autocommit_duration_ms is not None and autocommit_duration_ms <= 0:
+        raise ValueError(
+            f"'autocommit_duration_ms' must be positive; got "
+            f"{autocommit_duration_ms}. It is the maximum time between "
+            f"two commits and zero/negative values would prevent commits "
+            f"from happening."
+        )
+
+    # When 'start_from_timestamp_ms' is set, the engine seeks lazily after
+    # the consumer is positioned at the partition's earliest offset, so any
+    # user-supplied 'auto.offset.reset' value that doesn't already mean
+    # "start at the beginning" is silently rewritten on the Rust side.
+    # Surface that rewrite explicitly so somebody who picked 'latest' on
+    # purpose doesn't see Pathway read from the beginning instead. The
+    # librdkafka aliases 'earliest', 'beginning' and 'smallest' all mean
+    # "start at the beginning" and therefore don't trigger the override.
+    _START_FROM_BEGINNING_ALIASES = {"earliest", "beginning", "smallest"}
+    user_offset_reset = rdkafka_settings.get("auto.offset.reset")
+    if (
+        start_from_timestamp_ms is not None
+        and user_offset_reset is not None
+        and user_offset_reset not in _START_FROM_BEGINNING_ALIASES
+    ):
+        warnings.warn(
+            "'auto.offset.reset' is overridden to 'earliest' whenever "
+            "'start_from_timestamp_ms' is set, so the seek can fall back "
+            f"to the start of the partition. Your value "
+            f"{user_offset_reset!r} is being ignored.",
+            stacklevel=_stacklevel + 4,
+        )
+
+    # Distinguish "missing topic" from "explicitly empty topic" — the former
+    # is a user typo (rename to 'topic='), the latter is an invalid value
+    # that Kafka itself would reject with a less actionable error.
+    if topic is None:
+        if "topic_name" in kwargs:
+            raise TypeError(
+                "Got unexpected keyword argument 'topic_name'. "
+                "pw.io.kafka.read uses 'topic' (the corresponding parameter "
+                "in pw.io.kafka.write is 'topic_name'). Please rename "
+                "'topic_name=' to 'topic='."
+            )
+        topic_names = kwargs.pop("topic_names", None)
         if not topic_names:
             raise ValueError("Missing topic name specification")
-        topic = topic_names[0]
+        if isinstance(topic_names, str):
+            warnings.warn(
+                "'topic_names' is deprecated; please use 'topic' instead.",
+                DeprecationWarning,
+                stacklevel=_stacklevel + 4,
+            )
+            topic = topic_names
+        elif isinstance(topic_names, (list, tuple)):
+            warnings.warn(
+                "'topic_names' is deprecated; please use 'topic' instead. "
+                "Only the first element of the provided list is used as "
+                "the topic name.",
+                DeprecationWarning,
+                stacklevel=_stacklevel + 4,
+            )
+            topic = topic_names[0]
+        else:
+            raise TypeError(
+                f"'topic_names' must be a str or a list of str; got "
+                f"{type(topic_names).__name__}"
+            )
     if isinstance(topic, list):
+        if not topic:
+            raise ValueError(
+                "'topic' must be a non-empty string; got an empty list. "
+                "Kafka does not allow empty topic names."
+            )
         warnings.warn(
             "'topic' should be a str, not list. First element will be used.",
-            SyntaxWarning,
+            DeprecationWarning,
             stacklevel=_stacklevel + 4,
         )
         topic = topic[0]
+
+    if not isinstance(topic, str) or not topic:
+        raise ValueError(
+            f"'topic' must be a non-empty string; got {topic!r}. "
+            "Kafka does not allow empty topic names."
+        )
 
     check_deprecated_kwargs(kwargs, ["topic_names"], stacklevel=_stacklevel + 4)
 
@@ -271,7 +376,7 @@ def read(
 
     # TODO: support case when the key is scalar and the value is json
     schema, data_format = construct_schema_and_data_format(
-        "binary" if format == "raw" else format,
+        format,
         with_metadata=with_metadata,
         autogenerate_key=autogenerate_key,
         schema=schema,
@@ -329,7 +434,8 @@ def simple_read(
     If the "raw" format is chosen, the key and the payload are read from the topic as raw
     bytes and used in the table "as is". If you choose the "plaintext" option, however,
     they are parsed from the UTF-8 into the plaintext entries. In both cases, the
-    table consists of a primary key and a single column "data", denoting the payload read.
+    resulting table has two columns: ``key`` (the Kafka message key) and ``data``
+    (the Kafka message payload).
 
     If "json" is chosen, the connector first parses the payload of the message
     according to the JSON format and then creates the columns corresponding to the
@@ -365,10 +471,11 @@ def simple_read(
     Returns:
         Table: The table read.
 
-    When using the format "raw", the connector will produce a single-column table:
-    all the data is saved into a column named ``data``.
+    When using the format "raw" or "plaintext", the connector will produce a two-column
+    table: the message key is saved in a column named ``key`` and the message payload
+    in a column named ``data``.
 
-    For other formats, the argument value_column is required and defines the columns.
+    For the "json" format, a ``schema`` is required and its columns define the table.
 
     Example:
 
@@ -379,6 +486,34 @@ def simple_read(
     >>> import pathway as pw
     >>> t = pw.io.kafka.simple_read("localhost:9092", "test-topic")
     """
+
+    forbidden_kwargs = ("rdkafka_settings", "_stacklevel")
+    for forbidden in forbidden_kwargs:
+        if forbidden in kwargs:
+            raise TypeError(
+                f"'simple_read' does not accept {forbidden!r}. "
+                "If you need to customize the rdkafka settings (auth, TLS, "
+                "consumer group, etc.) use 'pw.io.kafka.read' directly; "
+                "'simple_read' is a thin wrapper that builds these settings "
+                "itself."
+            )
+
+    if read_only_new and kwargs.get("mode") == "static":
+        raise ValueError(
+            "'read_only_new=True' together with mode='static' is "
+            "self-contradictory: 'read_only_new' starts the consumer at the "
+            "end of the partition, so the static reader has nothing to "
+            "consume. Pick one — drop 'read_only_new=True' or use "
+            "'mode=\"streaming\"' (the default)."
+        )
+    if read_only_new and kwargs.get("start_from_timestamp_ms") is not None:
+        raise ValueError(
+            "'read_only_new=True' and 'start_from_timestamp_ms' both control "
+            "the starting position and conflict. Pick one — drop "
+            "'read_only_new=True' if you want to start from the timestamp, "
+            "or drop 'start_from_timestamp_ms' if you want to start from "
+            "the end."
+        )
 
     rdkafka_settings = {
         "bootstrap.servers": server,
@@ -513,7 +648,7 @@ def write(
 
     All the updates of table ``t`` will be sent to the Kafka instance.
 
-    Another thing to be demonstated is the usage of 'raw' format in the output. Please
+    Another thing to be demonstrated is the usage of 'raw' format in the output. Please
     note that the same rules will be applicable for the 'plaintext' with the only difference
     being the requirement for the columns to have the ``string`` type.
 
@@ -533,7 +668,7 @@ def write(
     ...         pass
     >>> t2 = pw.io.python.read(T2GenerationSubject(), schema=T2Schema)
 
-    Since is more than one column, you need to specify which one you want to use in the
+    Since there is more than one column, you need to specify which one you want to use in the
     output, when using the 'raw' format. If this is the column ``foo``, you may output this
     table as follows:
 
@@ -572,6 +707,18 @@ def write(
     ...     headers=[t2.baz],
     ... )
     """
+    if not rdkafka_settings.get("bootstrap.servers"):
+        raise ValueError(
+            "rdkafka_settings must contain a non-empty 'bootstrap.servers' "
+            "entry so the producer can locate a broker; got "
+            f"{rdkafka_settings.get('bootstrap.servers')!r}."
+        )
+    if isinstance(topic_name, str) and not topic_name:
+        raise ValueError(
+            "'topic_name' must be a non-empty string; got an empty string. "
+            "Kafka does not allow empty topic names."
+        )
+
     output_format = MessageQueueOutputFormat.construct(
         table,
         format=format,
@@ -583,7 +730,8 @@ def write(
         schema_registry_settings=schema_registry_settings,
         subject=subject,
     )
-    table = output_format.table
+    output_table = output_format.table
+    remapped_sort_by = _remap_sort_by(sort_by, table, output_table)
 
     data_storage = api.DataStorage(
         storage_type="kafka",
@@ -594,15 +742,43 @@ def write(
         header_fields=[item for item in output_format.header_fields.items()],
     )
 
-    table.to(
+    output_table.to(
         datasink.GenericDataSink(
             data_storage,
             output_format.data_format,
             datasink_name="kafka",
             unique_name=name,
-            sort_by=sort_by,
+            sort_by=remapped_sort_by,
         )
     )
+
+
+def _remap_sort_by(
+    sort_by: Iterable[ColumnReference] | None,
+    original_table: Table,
+    output_table: Table,
+) -> list[ColumnReference] | None:
+    if sort_by is None:
+        return None
+    remapped: list[ColumnReference] = []
+    for column in sort_by:
+        if column._table is output_table:
+            remapped.append(column)
+            continue
+        if column._table is not original_table:
+            raise ValueError(
+                f"The sort_by column {column} doesn't belong to the table "
+                "passed to pw.io.kafka.write."
+            )
+        if column.name not in output_table._columns:
+            raise ValueError(
+                f"The sort_by column {column.name!r} is not part of the "
+                "data being written. For 'raw' or 'plaintext' format, only "
+                "the 'value', 'key', 'topic_name' and 'headers' columns "
+                "are forwarded."
+            )
+        remapped.append(output_table[column.name])
+    return remapped
 
 
 __all__ = [

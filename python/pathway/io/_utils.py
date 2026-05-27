@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import warnings
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Iterable
@@ -253,12 +254,13 @@ def construct_schema_and_data_format(
             "schema",
             "csv_settings",
             "json_field_paths",
+            "schema_registry_settings",
         ]
         for param in unexpected_params:
             if param in kwargs and kwargs[param] is not None:
-                raise ValueError(f"Unexpected argument for plaintext format: {param}")
+                raise ValueError(f"Unexpected argument for {format!r} format: {param}")
 
-        parse_utf8 = format not in ("binary", "only_metadata")
+        parse_utf8 = format not in ("binary", "only_metadata", "raw")
         schema = construct_raw_data_schema_by_flags(
             with_native_record_key=with_native_record_key,
             parse_utf8=parse_utf8,
@@ -284,6 +286,21 @@ def construct_schema_and_data_format(
         )
 
     schema = assert_schema_not_none(schema, data_format_type)
+    if METADATA_COLUMN_NAME in schema.column_names():
+        if with_metadata:
+            raise ValueError(
+                f"The schema already declares a {METADATA_COLUMN_NAME!r} column, "
+                f"which conflicts with 'with_metadata=True'. Either remove "
+                f"{METADATA_COLUMN_NAME!r} from the schema or set "
+                "'with_metadata=False'."
+            )
+        raise ValueError(
+            f"{METADATA_COLUMN_NAME!r} is a reserved column name used by "
+            "Pathway's connector metadata. Declaring it in the schema would "
+            "be silently shadowed by the connector. Rename your column to "
+            "something else, or set 'with_metadata=True' to receive the "
+            "auto-generated metadata in this column."
+        )
     if with_metadata:
         schema |= MetadataSchema
 
@@ -302,6 +319,34 @@ def construct_schema_and_data_format(
     elif data_format_type == "jsonlines":
         if csv_settings is not None:
             raise ValueError("Unexpected argument for json format: csv_settings")
+        if autogenerate_key:
+            raise ValueError(
+                f"'autogenerate_key' is only meaningful for 'raw' or "
+                f"'plaintext' formats and would have no effect with "
+                f"{format!r}. Drop it or pick a compatible format."
+            )
+        if json_field_paths is not None:
+            schema_columns = set(schema.column_names())
+            for field_name, path in json_field_paths.items():
+                if field_name == METADATA_COLUMN_NAME:
+                    raise ValueError(
+                        f"'json_field_paths' cannot be used for "
+                        f"{METADATA_COLUMN_NAME!r}: the connector populates "
+                        f"this column itself when 'with_metadata=True', so "
+                        f"any JSON path would be silently ignored."
+                    )
+                if field_name not in schema_columns:
+                    raise ValueError(
+                        f"'json_field_paths' references field {field_name!r} "
+                        f"which is not in the schema. Known fields: "
+                        f"{sorted(schema_columns)}."
+                    )
+                if path != "" and not path.startswith("/"):
+                    raise ValueError(
+                        f"Invalid JSON Pointer for field {field_name!r}: "
+                        f"{path!r}. JSON Pointers (RFC 6901) must be empty "
+                        f"or start with '/' (e.g. '/foo/bar')."
+                    )
         return schema, api.DataFormat(
             **api_schema,
             format_type=data_format_type,
@@ -315,13 +360,15 @@ def construct_schema_and_data_format(
 
 
 def check_raw_and_plaintext_only_kwargs_for_message_queues(f):
+    default_format = inspect.signature(f).parameters["format"].default
+
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
-        data_format = kwargs.get("format")
+        data_format = kwargs.get("format", default_format)
         if data_format not in ("raw", "plaintext"):
             if "value" in kwargs and kwargs["value"] is not None:
                 raise ValueError(
-                    f"Unsupported argument for {data_format} format: 'value'"
+                    f"Unsupported argument for {data_format!r} format: 'value'"
                 )
 
         return f(*args, **kwargs)
@@ -354,6 +401,39 @@ class MessageQueueOutputFormat:
         allowed_key_types: tuple[dt.DType, ...] | None = (dt.BYTES, dt.STR, dt.ANY),
         allowed_value_types: tuple[dt.DType, ...] | None = (dt.BYTES, dt.STR, dt.ANY),
     ) -> MessageQueueOutputFormat:
+        if delimiter != "," and format != "dsv":
+            raise ValueError(
+                f"'delimiter' is only meaningful for the 'dsv' format, but "
+                f"{format!r} was specified. Drop the 'delimiter' argument "
+                f"or use format='dsv'."
+            )
+        if subject is not None and schema_registry_settings is None:
+            raise ValueError(
+                "'subject' was provided without 'schema_registry_settings'. "
+                "The 'subject' parameter only has an effect when a schema "
+                "registry is configured; either pass 'schema_registry_settings' "
+                "or remove 'subject'."
+            )
+        if schema_registry_settings is not None and subject is None:
+            raise ValueError(
+                "'schema_registry_settings' was provided without 'subject'. "
+                "When a schema registry is configured, 'subject' must also be "
+                "set so the formatter knows which subject to encode under."
+            )
+        if subject is not None and not subject:
+            raise ValueError(
+                "'subject' must be a non-empty string; got an empty string. "
+                "Schema Registry subjects identify a named schema version, "
+                "and an empty subject is never a valid registry entry."
+            )
+        if schema_registry_settings is not None and format != "json":
+            raise ValueError(
+                f"'schema_registry_settings' is only meaningful for the 'json' "
+                f"format, but {format!r} was specified. The Confluent Schema "
+                "Registry currently encodes JSON payloads only; remove "
+                "'schema_registry_settings' or use format='json'."
+            )
+
         key_field_index = None
         header_fields: dict[str, int] = {}
         extracted_field_indices: dict[str, int] = {}
@@ -384,7 +464,22 @@ class MessageQueueOutputFormat:
                 key, columns_to_extract, extracted_field_indices
             )
         if headers is not None:
+            reserved_header_names = {"pathway_time", "pathway_diff"}
             for header in headers:
+                if header.name in reserved_header_names:
+                    raise ValueError(
+                        f"{header.name!r} is reserved for the Pathway-injected "
+                        "headers (pathway_time / pathway_diff) and cannot be "
+                        "used as a user header name. Alias the column to "
+                        "another name with `table.select(<new_name>=...)`."
+                    )
+                if header.name in header_fields:
+                    raise ValueError(
+                        f"Duplicate header name {header.name!r}: two columns "
+                        "produce a header with the same name. Alias one of "
+                        "them to a different name (e.g. via `table.select(...)`) "
+                        "to keep both as separate Kafka headers."
+                    )
                 header_fields[header.name] = cls.add_column_reference_to_extract(
                     header, columns_to_extract, extracted_field_indices
                 )
@@ -395,6 +490,18 @@ class MessageQueueOutputFormat:
                 raise ValueError(
                     f"'value' and format='{format}' cannot be set at the same time"
                 )
+            if format == "json":
+                reserved = {"time", "diff"}
+                conflicting = reserved.intersection(table._columns.keys())
+                if conflicting:
+                    raise ValueError(
+                        f"The table has columns {sorted(conflicting)} which "
+                        f"clash with the reserved JSON fields written by the "
+                        f"connector ('time', 'diff'). Rename or drop the "
+                        f"conflicting column(s) before writing in 'json' "
+                        f"format, otherwise the output JSON would contain "
+                        f"duplicate keys."
+                    )
             for column_name in table._columns:
                 cls.add_column_reference_to_extract(
                     table[column_name], columns_to_extract, extracted_field_indices
@@ -470,7 +577,30 @@ class MessageQueueOutputFormat:
 
         index_in_new_table = field_indices.get(column_name)
         if index_in_new_table is not None:
-            # This column will already be selected, no need to do anything
+            existing = selection_list[index_in_new_table]
+            # If a *different* column reference shares the same output name we
+            # would silently drop the new value because `table.select(...)`
+            # collapses entries by name. Detect this and fail loudly so the
+            # user can alias one of them to a unique name.
+            #
+            # Note: a `pw.this.X` reference has ``_column is None`` because it
+            # is resolved later at expression time. We treat such references
+            # as compatible with any earlier same-named column — they refer to
+            # the same column in the target table by definition.
+            if (
+                existing._column is not None
+                and column_reference._column is not None
+                and existing._column is not column_reference._column
+            ):
+                raise ValueError(
+                    f"Two different columns share the output name "
+                    f"{column_name!r}. This typically happens when, e.g., a "
+                    f"header is aliased to the same name as the 'topic_name' "
+                    f"or 'key' column, or when two separate selects produce "
+                    f"the same output name. Alias one of them to a different "
+                    f"name (e.g. via `table.select(<new_name>=...)`)."
+                )
+            # Same column referenced more than once is fine — reuse the slot.
             return index_in_new_table
 
         index_in_new_table = len(selection_list)

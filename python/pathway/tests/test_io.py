@@ -59,7 +59,7 @@ from pathway.third_party.airbyte_serverless.sources import (
 MESSAGE_QUEUE_WRITE_KWARGS = {
     "kafka": {
         "topic_name": "test",
-        "rdkafka_settings": {},
+        "rdkafka_settings": {"bootstrap.servers": "kafka:9092"},
     },
     "nats": {
         "uri": "nats://nats:4222",
@@ -2774,25 +2774,30 @@ def test_server_fail_on_incorrect_host():
         pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
 
-def test_kafka_incorrect_host(tmp_path: pathlib.Path):
-    table = pw.io.kafka.read(
-        rdkafka_settings={"bootstrap.servers": "kafka:9092"},
-        topic="test_0",
-        format="raw",
-        autocommit_duration_ms=100,
-    )
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
-
+def test_kafka_read_without_group_id_raises_clear_error():
+    # Pathway's Kafka reader uses 'subscribe', which librdkafka refuses to perform
+    # without a configured 'group.id'. The connector surfaces this as a clear
+    # ValueError at construction time, instead of an opaque
+    # "Subscription error: Local: Unknown group" OSError at run time.
     with pytest.raises(
-        OSError,
-        match="Subscription error: Local: Unknown group",
+        ValueError,
+        match="group.id",
     ):
-        pw.run()
+        pw.io.kafka.read(
+            rdkafka_settings={"bootstrap.servers": "kafka:9092"},
+            topic="test_0",
+            format="raw",
+            autocommit_duration_ms=100,
+        )
 
 
 def test_kafka_incorrect_rdkafka_param(tmp_path: pathlib.Path):
     table = pw.io.kafka.read(
-        rdkafka_settings={"bootstrap_servers": "kafka:9092"},  # "_" instead of "."
+        rdkafka_settings={
+            "bootstrap.servers": "kafka:9092",
+            "group.id": "test_group",
+            "bootstrap_servers": "kafka:9092",  # "_" instead of "." — invalid property
+        },
         topic="test_0",
         format="raw",
         autocommit_duration_ms=100,
@@ -3152,7 +3157,7 @@ def test_raw_kafka_raises_no_value_specified_for_key():
         pw.io.kafka.write(
             table,
             topic_name="test",
-            rdkafka_settings={},
+            rdkafka_settings={"bootstrap.servers": "kafka:9092"},
             format="raw",
             key=table.data,
         )
@@ -4136,7 +4141,10 @@ def test_synchronization_groups_respect_atomicity(tmp_path, plan):
 
 
 def test_kafka_append_only():
-    table = pw.io.kafka.read(rdkafka_settings={}, topic="topic")
+    table = pw.io.kafka.read(
+        rdkafka_settings={"bootstrap.servers": "kafka:9092", "group.id": "test_group"},
+        topic="topic",
+    )
     assert table.is_append_only
 
     table = pw.io.kafka.simple_read("server", "topic")
