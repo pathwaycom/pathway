@@ -630,10 +630,10 @@ class MySQLContext:
         self.cursor.execute(query, (table_name, self.connection.database))
         rows = self.cursor.fetchall()
 
-        schema_props = {}
+        schema_props: dict[str, ColumnProperties] = {}
         for column_name, type_name, is_nullable in rows:
-            schema_props[column_name] = ColumnProperties(
-                type_name.lower(), is_nullable.upper() == "YES"
+            schema_props[str(column_name)] = ColumnProperties(
+                str(type_name).lower(), str(is_nullable).upper() == "YES"
             )
         return schema_props
 
@@ -709,7 +709,7 @@ class MssqlContext:
 
         self.connection = pymssql.connect(
             server=MSSQL_DB_HOST,
-            port=MSSQL_DB_PORT,
+            port=str(MSSQL_DB_PORT),
             user=MSSQL_DB_USER,
             password=MSSQL_DB_PASSWORD,
             database=MSSQL_DB_NAME,
@@ -825,7 +825,7 @@ class MssqlContext:
         while time.time() < deadline:
             self.execute_sql(query)
             row = self.cursor.fetchone()
-            count = row[0] if row is not None else 0
+            count = int(str(row[0])) if row is not None and row[0] is not None else 0
             if count >= target_count:
                 return
             last_count = count
@@ -1097,8 +1097,8 @@ class MssqlContext:
     ) -> list[dict[str, Union[str, int, bool, float]]]:
         select_query = f"SELECT {','.join(column_names)} FROM {table_name};"
         self.execute_sql(select_query)
-        rows = self.cursor.fetchall()
-        result = []
+        rows: list[Any] = self.cursor.fetchall()
+        result: list[dict[str, Union[str, int, bool, float]]] = []
         for row in rows:
             row_map = dict(zip(column_names, row))
             result.append(row_map)
@@ -1119,10 +1119,10 @@ class MssqlContext:
         self.execute_sql(query, (table_name,))
         rows = self.cursor.fetchall()
 
-        schema_props = {}
+        schema_props: dict[str, ColumnProperties] = {}
         for column_name, type_name, is_nullable in rows:
-            schema_props[column_name] = ColumnProperties(
-                type_name.lower(), is_nullable.upper() == "YES"
+            schema_props[str(column_name)] = ColumnProperties(
+                str(type_name).lower(), str(is_nullable).upper() == "YES"
             )
         return schema_props
 

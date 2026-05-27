@@ -82,9 +82,32 @@ def mysql():
     return MySQLContext()
 
 
+_MSSQL_CAPTURE_JOB_CONFIGURED = False
+
+
 @pytest.fixture
 def mssql():
+    global _MSSQL_CAPTURE_JOB_CONFIGURED
     ctx = MssqlContext()
+    if not _MSSQL_CAPTURE_JOB_CONFIGURED:
+        # Make the CDC capture job run back-to-back instead of sleeping
+        # the default 5 s between scans.  Under heavy xdist parallelism
+        # the capture agent falls many seconds behind, which causes
+        # `wait_for_capture_count` to time out in flaky CDC tests.
+        # Idempotent — sp_cdc_change_job updates msdb.dbo.cdc_jobs once
+        # per server, so it's fine to call from every fixture
+        # initialization that wins the race.
+        try:
+            ctx.execute_sql(
+                "EXEC sys.sp_cdc_change_job @job_type=N'capture', @pollinginterval=0",
+                drain_status_rows=True,
+            )
+        except Exception:
+            # The proc requires elevated permissions; if it fails, fall
+            # back to the default pollinginterval and tolerate the
+            # additional latency.
+            pass
+        _MSSQL_CAPTURE_JOB_CONFIGURED = True
     try:
         yield ctx
     finally:

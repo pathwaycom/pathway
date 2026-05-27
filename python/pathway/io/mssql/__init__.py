@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Literal
 
-from pathway.internals import api, datasink, datasource
+from pathway.internals import api, datasink, datasource, dtype as dt
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
@@ -15,9 +15,22 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     SNAPSHOT_OUTPUT_TABLE_TYPE,
+    get_column_index,
     init_mode_from_str,
     read_schema,
 )
+
+
+def _validate_identifier(arg_name: str, value: str) -> None:
+    """Reject empty / NUL-containing identifiers up-front so users see a
+    clear `ValueError` at call time instead of an opaque SQL Server parse
+    error (`[]` is not a legal bracket-quoted identifier; embedded NUL
+    bytes corrupt the TDS stream).
+    """
+    if value == "":
+        raise ValueError(f"{arg_name} must not be empty")
+    if "\0" in value:
+        raise ValueError(f"{arg_name} must not contain NUL characters")
 
 
 @check_arg_types
@@ -28,7 +41,7 @@ def read(
     schema: type[Schema],
     *,
     mode: Literal["static", "streaming"] = "streaming",
-    schema_name: str | None = "dbo",
+    schema_name: str = "dbo",
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     max_backlog_size: int | None = None,
@@ -198,13 +211,29 @@ def read(
     """
     _check_entitlements("mssql")
 
+    _validate_identifier("table_name", table_name)
+    _validate_identifier("schema_name", schema_name)
+
     schema, api_schema = read_schema(schema)
 
-    if not schema.primary_key_columns():
+    primary_key_columns = schema.primary_key_columns()
+    if not primary_key_columns:
         raise ValueError(
             "pw.io.mssql.read requires at least one primary key column in the schema. "
             "Mark the column(s) that form the table's primary key with "
             "pw.column_definition(primary_key=True)."
+        )
+
+    pk_dtypes = schema._dtypes()
+    nullable_pks = [
+        name for name in primary_key_columns if isinstance(pk_dtypes[name], dt.Optional)
+    ]
+    if nullable_pks:
+        raise ValueError(
+            f"pw.io.mssql.read primary_key column(s) {nullable_pks} are declared "
+            "nullable; primary-key columns must be non-nullable so the connector "
+            "can derive a unique row identity. NULL values would collide on the "
+            "same Pathway key and CDC tracking would silently merge unrelated rows."
         )
 
     cdc_enabled = mode == "streaming"
@@ -249,7 +278,7 @@ def write(
     connection_string: str,
     table_name: str,
     *,
-    schema_name: str | None = "dbo",
+    schema_name: str = "dbo",
     max_batch_size: int | None = None,
     init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
@@ -338,6 +367,59 @@ def write(
     You can run this pipeline with ``pw.run()``.
     """
 
+    _validate_identifier("table_name", table_name)
+    _validate_identifier("schema_name", schema_name)
+
+    is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
+    if not is_snapshot_mode and primary_key is not None:
+        raise ValueError(
+            "primary_key can only be specified for the snapshot table type"
+        )
+
+    value_fields = _format_output_value_fields(table)
+
+    # SQL Server's default collation matches identifiers case-insensitively
+    # (`id` and `ID` resolve to the same column), so any pair of schema
+    # columns that differ only in case would make CREATE TABLE fail with a
+    # raw "duplicate column name" driver error at pipeline-startup.  Surface
+    # the collision here with a Pathway-authored message instead.
+    case_groups: dict[str, list[str]] = {}
+    for field in value_fields:
+        case_groups.setdefault(field.name.lower(), []).append(field.name)
+    case_collisions = [
+        sorted(names) for names in case_groups.values() if len(names) > 1
+    ]
+    if case_collisions:
+        raise ValueError(
+            f"pw.Schema has column names that differ only in case "
+            f"({case_collisions}). SQL Server's default collation is "
+            "case-insensitive, so CREATE TABLE would reject them as "
+            "duplicates. Rename these columns in the Pathway table so "
+            "every column name is unique case-insensitively."
+        )
+
+    if not is_snapshot_mode:
+        # Stream-of-changes mode appends `[time]` / `[diff]` metadata columns
+        # to the destination table.  If the user's own schema already has a
+        # column with one of those names, the generated CREATE TABLE would
+        # declare it twice and SQL Server would reject it with an opaque
+        # "duplicate column name" error at startup.  Comparison is
+        # case-insensitive — SQL Server's default collation treats `Time` and
+        # `time` as the same identifier.
+        reserved_metadata_columns = {"time", "diff"}
+        collisions = sorted(
+            field.name
+            for field in value_fields
+            if field.name.lower() in reserved_metadata_columns
+        )
+        if collisions:
+            raise ValueError(
+                f"Column(s) {collisions} collide with the 'time' and 'diff' "
+                "metadata columns appended in stream_of_changes mode. Rename "
+                "these columns in the Pathway table, or use "
+                'output_table_type="snapshot".'
+            )
+
     data_storage = api.DataStorage(
         storage_type="mssql",
         connection_string=connection_string,
@@ -345,23 +427,52 @@ def write(
         table_name=table_name,
         schema_name=schema_name,
         table_writer_init_mode=init_mode_from_str(init_mode),
-        snapshot_maintenance_on_output=output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE,
+        snapshot_maintenance_on_output=is_snapshot_mode,
     )
 
     key_field_names = None
     if primary_key is not None:
+        # Duplicate entries in `primary_key` produce a nonsensical
+        # `PRIMARY KEY ([x], [x])` SQL clause that SQL Server rejects, and
+        # the shared `SqlQueryTemplate` reorders DELETE bindings using the
+        # duplicated index so retractions silently bind wrong values.
+        # Reject with a clear message.
+        names_seen: set[str] = set()
+        duplicates: list[str] = []
+        for pkey in primary_key:
+            if pkey.name in names_seen and pkey.name not in duplicates:
+                duplicates.append(pkey.name)
+            names_seen.add(pkey.name)
+        if duplicates:
+            raise ValueError(
+                f"primary_key contains duplicate column(s) {sorted(duplicates)}. "
+                "Each column may appear at most once."
+            )
         key_field_names = []
-        for pkey_field in primary_key:
-            key_field_names.append(pkey_field.name)
+        for pkey in primary_key:
+            # Raises ValueError when `pkey` belongs to a different table or
+            # does not name a column of `table`, so users get a clear
+            # message at write() time instead of an opaque runtime error.
+            get_column_index(table, pkey)
+            # Reject nullable primary-key columns.  SQL Server refuses to
+            # build a PRIMARY KEY on a nullable column, and even if the
+            # destination table is hand-crafted to allow NULLs, the MERGE
+            # statement uses `target.k = source.k` which is UNKNOWN (not
+            # TRUE) when both sides are NULL — so retractions never match.
+            if isinstance(pkey._column.dtype, dt.Optional):
+                raise ValueError(
+                    f"primary_key column {pkey.name!r} is declared nullable "
+                    f"({pkey._column.dtype}); primary-key columns must be "
+                    "non-nullable in snapshot mode."
+                )
+            key_field_names.append(pkey.name)
     data_format = api.DataFormat(
         format_type="identity",
         key_field_names=key_field_names,
-        value_fields=_format_output_value_fields(table),
+        value_fields=value_fields,
     )
 
-    datasink_type = (
-        "snapshot" if output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE else "sink"
-    )
+    datasink_type = "snapshot" if is_snapshot_mode else "sink"
     table.to(
         datasink.GenericDataSink(
             data_storage,

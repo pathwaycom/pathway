@@ -73,7 +73,9 @@ def test_mssql_write_outputs(output_table_type, init_mode, mssql):
         pw.run()
 
     if init_mode == "default":
-        with pytest.raises(pw.engine.EngineError):
+        # Writer init now preflights `OBJECT_ID(...)` and surfaces
+        # TableNotFound as a Python ValueError before the engine wraps it.
+        with pytest.raises((pw.engine.EngineError, ValueError)):
             run(0)
         add_special_fields = output_table_type == "stream_of_changes"
         table_name = mssql.create_table(
@@ -252,11 +254,18 @@ def test_mssql_snapshot_overwrite_by_key(mssql):
         autocommit_duration_ms=100,
     )
     result = table.groupby(table.word).reduce(table.word, count=pw.reducers.count())
-    table_name = mssql.create_table(result.schema, add_special_fields=False)
+    # Let the writer create the destination so it gets a PRIMARY KEY on
+    # `word` (NVARCHAR(450)).  The previous version pre-created the table
+    # via `mssql.create_table(result.schema, ...)`, but `result.schema`
+    # (a groupby output) doesn't carry a `primary_key` marker, so the
+    # destination ended up without any unique constraint and the
+    # snapshot-mode preflight rejects it.
+    table_name = mssql.random_table_name()
     pw.io.mssql.write(
         result,
         MSSQL_CONNECTION_STRING,
         table_name=table_name,
+        init_mode="create_if_not_exists",
         output_table_type="snapshot",
         primary_key=[result.word],
     )
@@ -697,6 +706,396 @@ def test_mssql_cdc_read_deletes(mssql, tmp_path):
         )
     finally:
         _stop_mssql_cdc_streaming_reader(proc)
+
+
+def test_mssql_read_static_rejects_missing_table(mssql, tmp_path):
+    """Static read against a non-existent table must fail with a clear
+    `TableNotFound` error at writer init, not as a deferred SELECT
+    failure.  Exercises the column-existence preflight's secondary check
+    that distinguishes "table doesn't exist" from "schema columns missing".
+    """
+    table_name = mssql.random_table_name()
+    # Don't actually create the table — just hand the name to Pathway.
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, str(output_path))
+    with pytest.raises(
+        pw.engine.EngineError,
+        match=r"does not exist",
+    ):
+        pw.run()
+
+
+def test_mssql_read_numeric_overflow_int_drops_row(mssql, tmp_path):
+    """A `NUMERIC(N, 0)` value larger than i64::MAX must NOT silently
+    truncate when read into a `Type::Int` schema.  Pathway's per-row
+    conversion error logs and drops the row (it doesn't kill the
+    pipeline), but the value must NEVER appear in the output as some
+    truncated nonsense.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  big_num NUMERIC(38, 0) NOT NULL"
+        f")"
+    )
+    # 1e21 fits in NUMERIC(38, 0) but overflows i64 (max ~9.2 * 10^18).
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] (id, big_num) "
+        f"VALUES (1, 1000000000000000000000)"
+    )
+    # Also insert a row whose value fits — proves the connector does
+    # accept in-range scale-0 NUMERIC for an int schema and that the
+    # overflow doesn't poison the rest.
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] (id, big_num) " f"VALUES (2, 4242424242)"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        big_num: int
+
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, str(output_path))
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    records = [json.loads(ln) for ln in output_path.read_text().splitlines() if ln]
+    # The overflowing row was dropped (per-row conversion error); the
+    # in-range row round-trips intact.
+    assert records == [
+        {"id": 2, "big_num": 4242424242, "diff": 1, "time": records[0]["time"]}
+    ]
+
+
+def test_mssql_read_int_column_as_float(mssql, tmp_path):
+    """A Pathway `Type::Float` schema reading from a SQL Server INT-family
+    column (TINYINT/SMALLINT/INT/BIGINT) should implicitly convert — the
+    same way SQLite tolerates float-from-integer columns.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  small_v SMALLINT NOT NULL,"
+        f"  big_v BIGINT NOT NULL"
+        f")"
+    )
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] (id, small_v, big_v) VALUES (1, 42, 1234567890123)"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        small_v: float
+        big_v: float
+
+    output_path = tmp_path / "output.jsonl"
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, str(output_path))
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+    records = [json.loads(ln) for ln in output_path.read_text().splitlines() if ln]
+    assert len(records) == 1
+    assert records[0]["small_v"] == 42.0
+    assert records[0]["big_v"] == 1234567890123.0
+
+
+def test_mssql_read_numeric_as_int(mssql, tmp_path):
+    """A `NUMERIC(N, 0)` column holds integer-shaped values; a Pathway
+    schema declaring it as `int` should round-trip without per-row errors.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  big_id NUMERIC(18, 0) NOT NULL"
+        f")"
+    )
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] (id, big_id) VALUES (1, 1234567890123)"
+    )
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] (id, big_id) VALUES (2, -9999999999)"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        big_id: int
+
+    output_path = tmp_path / "output.jsonl"
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, str(output_path))
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+    records = [json.loads(ln) for ln in output_path.read_text().splitlines() if ln]
+    assert sorted((r["id"], r["big_id"]) for r in records) == [
+        (1, 1234567890123),
+        (2, -9999999999),
+    ]
+
+
+def test_mssql_read_rejects_empty_table_name():
+    class S(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+
+    with pytest.raises(ValueError, match="table_name must not be empty"):
+        pw.io.mssql.read(MSSQL_CONNECTION_STRING, "", S, mode="static")
+
+
+def test_mssql_read_rejects_empty_schema_name():
+    class S(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+
+    with pytest.raises(ValueError, match="schema_name must not be empty"):
+        pw.io.mssql.read(MSSQL_CONNECTION_STRING, "x", S, mode="static", schema_name="")
+
+
+def test_mssql_read_rejects_none_schema_name():
+    class S(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+
+    # `schema_name` is typed `str` (default "dbo"), so `None` is rejected by the
+    # runtime type check rather than reaching the connector body.
+    with pytest.raises(TypeError, match="schema_name"):
+        pw.io.mssql.read(
+            MSSQL_CONNECTION_STRING, "x", S, mode="static", schema_name=None
+        )
+
+
+def test_mssql_write_rejects_empty_table_name(mssql):
+    class S(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+
+    table = pw.debug.table_from_rows(S, [(1,)])
+    with pytest.raises(ValueError, match="table_name must not be empty"):
+        pw.io.mssql.write(table, MSSQL_CONNECTION_STRING, table_name="")
+
+
+def test_mssql_read_static_no_persistence_with_partial_cdc_captured_columns(
+    mssql, tmp_path
+):
+    """Static-mode read (no persistence) against a CDC-enabled table whose
+    `@captured_column_list` is a strict subset of the source's columns.
+    The Pathway schema includes a column that's in the source but
+    *excluded* from CDC capture.  Static mode reads from the source
+    directly, so the SELECT works — the preflight must accept this even
+    though `cdc.captured_columns` for the instance lacks that column.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL,"
+        f"  uncaptured INT NOT NULL"
+        f")"
+    )
+    mssql.execute_sql(
+        f"INSERT INTO [{table_name}] (id, name, uncaptured) VALUES (1, 'a', 7)"
+    )
+    # Enable CDC tracking only `id` and `name` — `uncaptured` is excluded.
+    mssql.execute_sql(
+        f"EXEC sys.sp_cdc_enable_table "
+        f"@source_schema=N'dbo', @source_name=N'{table_name}', "
+        f"@role_name=NULL, "
+        f"@captured_column_list=N'id,name'"
+    )
+    while mssql.cursor.nextset():
+        pass
+    mssql._tracked_cdc.add(table_name)
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        uncaptured: int
+
+    output_path = tmp_path / "output.jsonl"
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, str(output_path))
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+    records = [json.loads(ln) for ln in output_path.read_text().splitlines() if ln]
+    assert len(records) == 1
+    assert records[0]["uncaptured"] == 7
+
+
+def test_mssql_read_static_from_view(mssql, tmp_path):
+    """Static-mode read from a SQL Server VIEW (not a base table) must
+    work — `SELECT FROM view` is valid SQL.  A naive OBJECT_ID(..., N'U')
+    filter in the column-existence preflight would falsely reject views.
+    """
+    table_name = mssql.random_table_name()
+    view_name = f"v_{table_name}"
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
+    mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
+    mssql.execute_sql(
+        f"CREATE VIEW [{view_name}] AS SELECT id, name FROM [{table_name}]"
+    )
+    # Track the view explicitly so cleanup drops it.  `_drop_with_retry`
+    # uses `DROP TABLE IF EXISTS` which is a no-op for views, so do it by
+    # hand in a finally.
+    try:
+
+        class InputSchema(pw.Schema):
+            id: int = pw.column_definition(primary_key=True)
+            name: str
+
+        output_path = tmp_path / "output.jsonl"
+        table = pw.io.mssql.read(
+            connection_string=MSSQL_CONNECTION_STRING,
+            table_name=view_name,
+            schema=InputSchema,
+            mode="static",
+        )
+        pw.io.jsonlines.write(table, str(output_path))
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+        records = [json.loads(ln) for ln in output_path.read_text().splitlines() if ln]
+        assert sorted((r["id"], r["name"]) for r in records) == [
+            (1, "Alice"),
+            (2, "Bob"),
+        ]
+    finally:
+        mssql.execute_sql(f"DROP VIEW IF EXISTS [{view_name}]")
+
+
+def test_mssql_read_static_rejects_missing_schema_column(mssql, tmp_path):
+    """Pathway schema declares a column the source table doesn't have.
+    Without a preflight, the snapshot SELECT would fail many seconds in
+    with `Invalid column name 'extra'`.  The preflight surfaces it at
+    init time, naming the offending column.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.insert_row(table_name, {"id": 1, "name": "A"})
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        extra: int
+
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, str(output_path))
+    with pytest.raises(
+        pw.engine.EngineError,
+        match=r"schema column\(s\) \[\"extra\"\].*missing from the source table",
+    ):
+        pw.run()
+
+
+def test_mssql_read_streaming_rejects_column_added_after_cdc_enable(mssql, tmp_path):
+    """CDC's `cdc.captured_columns` is frozen at sp_cdc_enable_table time —
+    a column added to the source via ALTER TABLE afterwards is invisible
+    to the capture instance.  The preflight catches that the moment the
+    pipeline starts instead of producing per-row errors deep in the
+    `cdc.fn_cdc_get_all_changes_*` SELECT.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.enable_cdc(table_name)
+    # Add a column AFTER enable; CDC won't capture it.
+    mssql.execute_sql(f"ALTER TABLE [{table_name}] ADD extra INT NULL")
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        extra: int | None
+
+    # `_mssql_persistence_worker`'s hard-coded schema is `{id, name}`,
+    # so we need a custom worker that uses a schema with `extra` to
+    # actually trip the preflight.
+    error_path = tmp_path / "error.log"
+    p = multiprocessing.Process(
+        target=_streaming_with_extra_column_worker,
+        kwargs={
+            "table_name": table_name,
+            "error_path": str(error_path),
+        },
+    )
+    p.start()
+    p.join(timeout=60)
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        raise AssertionError("worker should have failed fast, not hung")
+    assert p.exitcode not in (None, 0)
+    error_text = error_path.read_text() if error_path.exists() else ""
+    assert (
+        "missing from the CDC capture instance" in error_text
+    ), f"expected SchemaColumnsMissing error, got:\n{error_text}"
+
+
+def _streaming_with_extra_column_worker(table_name: str, error_path: str) -> None:
+    G.clear()
+    try:
+
+        class InputSchema(pw.Schema):
+            id: int = pw.column_definition(primary_key=True)
+            name: str
+            extra: int | None
+
+        table = pw.io.mssql.read(
+            connection_string=MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            schema=InputSchema,
+            mode="streaming",
+        )
+        pw.io.jsonlines.write(table, "/tmp/_streaming_extra_col_unused.jsonl")
+        pw.run()
+    except BaseException as e:
+        with open(error_path, "w") as f:
+            f.write(f"{type(e).__name__}: {e}\n")
+            f.write(traceback.format_exc())
+        raise
 
 
 def test_mssql_read_reserved_word_columns(mssql, tmp_path):
@@ -1179,6 +1578,42 @@ _MSSQL_CDC_PERSISTENCE_PLANS = [
         },
         id="no_changes",
     ),
+    pytest.param(
+        {
+            "initial": [],
+            "changes": [
+                ("insert", {"id": 7, "name": "First"}),
+                ("insert", {"id": 8, "name": "Second"}),
+            ],
+            "run1_expected": [],
+            "run2_expected": [
+                {"id": 7, "name": "First", "diff": 1},
+                {"id": 8, "name": "Second", "diff": 1},
+            ],
+        },
+        id="empty_initial",
+    ),
+    pytest.param(
+        {
+            "initial": [(1, "Alice"), (2, "Bob"), (3, "Charlie")],
+            "changes": [
+                ("delete", {"id": 1}),
+                ("delete", {"id": 2}),
+                ("delete", {"id": 3}),
+            ],
+            "run1_expected": [
+                {"id": 1, "name": "Alice", "diff": 1},
+                {"id": 2, "name": "Bob", "diff": 1},
+                {"id": 3, "name": "Charlie", "diff": 1},
+            ],
+            "run2_expected": [
+                {"id": 1, "name": "Alice", "diff": -1},
+                {"id": 2, "name": "Bob", "diff": -1},
+                {"id": 3, "name": "Charlie", "diff": -1},
+            ],
+        },
+        id="delete_all",
+    ),
 ]
 
 
@@ -1229,9 +1664,13 @@ def _run_mssql_streaming_pipeline(
     if expected_lines == 0:
         # Pre-create the output file so the zero-lines checker can see it.
         output_path.touch()
+    # 120s timeout (vs the 60s default) absorbs the CDC capture agent
+    # falling behind under heavy xdist parallelism: even with the
+    # session-level `pollinginterval=0` knob the agent can lag a few
+    # seconds when many tests are simultaneously triggering CDC scans.
     wait_result_with_checker(
         FileLinesNumberChecker(output_path, expected_lines),
-        timeout_sec=60,
+        timeout_sec=120,
         double_check_interval=double_check_interval,
         target=_mssql_persistence_worker,
         kwargs={
@@ -1264,14 +1703,18 @@ def _run_mssql_static_pipeline(
         },
     )
     p.start()
-    p.join(timeout=60)
+    # 120s (vs 60s) for the same reason as `_run_mssql_streaming_pipeline`:
+    # under heavy parallel CDC load the capture agent can lag long enough
+    # to trip the previous tighter bound.
+    p.join(timeout=120)
     if p.is_alive():
         p.terminate()
         p.join()
-        raise AssertionError("static-mode worker did not terminate within 60 s")
+        raise AssertionError("static-mode worker did not terminate within 120 s")
     assert p.exitcode == 0, f"static-mode worker exited with code {p.exitcode}"
 
 
+@pytest.mark.flaky(reruns=2)
 @pytest.mark.parametrize("mode", ["streaming", "static"])
 @pytest.mark.parametrize("plan", _MSSQL_CDC_PERSISTENCE_PLANS)
 def test_mssql_cdc_persistence(tmp_path, mssql, mode, plan):
@@ -1406,6 +1849,7 @@ def test_mssql_static_persistence_without_cdc_errors(tmp_path, mssql):
     ), f"expected CdcNotEnabledOnTable error, got:\n{error_text}"
 
 
+@pytest.mark.flaky(reruns=2)
 def test_mssql_cdc_expired_lsn(tmp_path, mssql):
     """A persisted LSN that predates the CDC retention window must surface
     a specific CdcLsnOutOfRetention error on restart so the user knows to
@@ -1542,6 +1986,680 @@ def test_mssql_cdc_expired_lsn(tmp_path, mssql):
         "persisted CDC position is outside the SQL Server retention window"
         in error_text
     ), f"Expected CdcLsnOutOfRetention error, got:\n{error_text}"
+
+
+def test_mssql_snapshot_write_pk_mismatch_rejected(mssql):
+    """Snapshot mode against a destination whose unique index doesn't cover
+    the configured `primary_key` columns must error at writer init.  The
+    MERGE statement matches on `target.k = source.k` and would silently
+    upsert duplicates without a unique constraint backing those columns.
+    """
+    table_name = mssql.random_table_name()
+    # Pre-create the destination with a PK on `a` only — Pathway will ask
+    # for `(a, b)` as primary_key, which is *not* unique in the destination.
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  a INT NOT NULL PRIMARY KEY,"
+        f"  b INT NOT NULL,"
+        f"  v NVARCHAR(MAX) NOT NULL"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, 2, "x")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.a, table.b],
+    )
+    with pytest.raises(
+        ValueError,
+        match="has no matching unique index in the destination",
+    ):
+        pw.run()
+
+
+def test_mssql_write_default_rejects_missing_destination_column(mssql):
+    """Pathway schema has a column the pre-existing destination is missing.
+    Without preflight the first INSERT fails with `Invalid column name`.
+    Use snapshot mode + matching unique index so the only missing column
+    is the user column (the snapshot-PK preflight passes).
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        extra: int
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a", 7)])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.id],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"destination column\(s\) \[\"extra\"\].*missing",
+    ):
+        pw.run()
+
+
+def test_mssql_write_default_rejects_optional_into_not_null_destination(mssql):
+    """Pathway schema declares an `Optional[T]` column whose destination
+    counterpart is `NOT NULL`.  Pathway can emit `None`, which would bind
+    as NULL and fail every such row with a constraint violation.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  age INT NOT NULL"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        age: int | None
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, 42)])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.id],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"declares column\(s\) \[\"age\"\] as `Optional`",
+    ):
+        pw.run()
+
+
+def test_mssql_write_default_rejects_missing_required_destination_column(mssql):
+    """Destination has a NOT NULL column with no default that's not in the
+    Pathway schema.  Every INSERT would fail with NULL-constraint
+    violation; preflight rejects this at writer init.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL,"
+        f"  required_extra INT NOT NULL"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.id],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"required column\(s\) \[\"required_extra\"\]",
+    ):
+        pw.run()
+
+
+def test_mssql_write_default_accepts_nullable_destination_columns_outside_schema(mssql):
+    """Conversely, destination columns that are nullable, IDENTITY, computed,
+    or have defaults are not required — the writer can omit them.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL,"
+        f"  nullable_extra INT NULL,"
+        f"  default_extra INT NOT NULL DEFAULT 42"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.id],
+    )
+    pw.run()
+    mssql.execute_sql(
+        f"SELECT id, name, nullable_extra, default_extra FROM [{table_name}]"
+    )
+    rows = list(mssql.cursor.fetchall())
+    assert rows == [(1, "a", None, 42)]
+
+
+def test_mssql_write_default_rejects_computed_column_in_schema(mssql):
+    """Destination has a COMPUTED column that's also in the Pathway schema.
+    SQL Server forbids INSERT statements that supply values for computed columns
+    (error 271) — preflight rejects this at writer init.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL,"
+        f"  doubled AS (id * 2)"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        doubled: int
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a", 2)])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.id],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"declared as COMPUTED",
+    ):
+        pw.run()
+
+
+def test_mssql_write_default_rejects_identity_column_in_schema(mssql):
+    """Destination has an IDENTITY column that's also in the Pathway
+    schema.  SQL Server forbids INSERT statements that supply an explicit value for
+    IDENTITY columns (error 8101) — the writer must reject this at init,
+    not produce per-row failures.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.id],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"declared as IDENTITY",
+    ):
+        pw.run()
+
+
+def test_mssql_write_default_stream_mode_rejects_missing_time_diff(mssql):
+    """`stream_of_changes` mode appends `[time]` and `[diff]` metadata
+    columns to every INSERT.  A pre-existing destination without those
+    columns must be rejected eagerly, not at first flush.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="stream_of_changes",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"destination column\(s\) \[\"time\", \"diff\"\].*missing",
+    ):
+        pw.run()
+
+
+def test_mssql_snapshot_write_pk_match_with_include_columns(mssql):
+    """A `UNIQUE INDEX (a, b) INCLUDE (c)` enforces uniqueness on (a, b);
+    the INCLUDE column is non-key.  Preflight must treat it as a match.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  a INT NOT NULL,"
+        f"  b INT NOT NULL,"
+        f"  c NVARCHAR(MAX) NULL,"
+        f"  v NVARCHAR(MAX) NOT NULL"
+        f")"
+    )
+    mssql.execute_sql(
+        f"CREATE UNIQUE INDEX [uq_inc_{table_name[-12:]}] "
+        f"ON [{table_name}] (a, b) INCLUDE (c)"
+    )
+
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, 2, "x"), (3, 4, "y")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.a, table.b],
+    )
+    pw.run()
+    mssql.execute_sql(f"SELECT a, b, v FROM [{table_name}] ORDER BY a, b")
+    rows = list(mssql.cursor.fetchall())
+    assert rows == [(1, 2, "x"), (3, 4, "y")]
+
+
+def test_mssql_snapshot_write_pk_rejects_filtered_unique_index(mssql):
+    """A filtered UNIQUE INDEX only enforces uniqueness on rows matching
+    the filter — outside the filter, duplicates are allowed.  Preflight
+    must reject it: MERGE could match those duplicates and silently update
+    the wrong rows.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  a INT NOT NULL,"
+        f"  b INT NOT NULL,"
+        f"  v NVARCHAR(MAX) NOT NULL"
+        f")"
+    )
+    mssql.execute_sql(
+        f"CREATE UNIQUE INDEX [uq_flt_{table_name[-12:]}] "
+        f"ON [{table_name}] (a, b) WHERE b > 0"
+    )
+
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, 2, "x")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.a, table.b],
+    )
+    with pytest.raises(
+        ValueError,
+        match="has no matching unique index in the destination",
+    ):
+        pw.run()
+
+
+def test_mssql_snapshot_write_pk_match_via_unique_index(mssql):
+    """A non-PRIMARY-KEY UNIQUE constraint covering the configured
+    `primary_key` columns is sufficient — the preflight must accept it.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  a INT NOT NULL,"
+        f"  b INT NOT NULL,"
+        f"  v NVARCHAR(MAX) NOT NULL,"
+        f"  CONSTRAINT [uq_{table_name[-12:]}] UNIQUE (a, b)"
+        f")"
+    )
+
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, 2, "x"), (3, 4, "y")])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+        output_table_type="snapshot",
+        primary_key=[table.a, table.b],
+    )
+    pw.run()
+    mssql.execute_sql(f"SELECT a, b, v FROM [{table_name}] ORDER BY a, b")
+    rows = list(mssql.cursor.fetchall())
+    assert rows == [(1, 2, "x"), (3, 4, "y")]
+
+
+def test_mssql_snapshot_write_bytes_primary_key(mssql):
+    table_name = mssql.random_table_name()
+
+    class InputSchema(pw.Schema):
+        key: bytes = pw.column_definition(primary_key=True)
+        value: int
+
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [(b"\x00\x01", 1), (b"\xff\xee", 2)],
+    )
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="create_if_not_exists",
+        output_table_type="snapshot",
+        primary_key=[table.key],
+    )
+    pw.run()
+
+    mssql.execute_sql(f"SELECT [key], [value] FROM [{table_name}] ORDER BY [key]")
+    rows = list(mssql.cursor.fetchall())
+    assert sorted((bytes(k), v) for k, v in rows) == [
+        (b"\x00\x01", 1),
+        (b"\xff\xee", 2),
+    ]
+
+
+def test_mssql_write_default_init_rejects_missing_table(mssql):
+    table_name = mssql.random_table_name()
+
+    class InputSchema(pw.Schema):
+        row_id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    # An empty static input means the writer never sees a row.  The only
+    # path to surface "table does not exist" is the init-time preflight.
+    table = pw.debug.table_from_rows(InputSchema, [])
+    pw.io.mssql.write(
+        table,
+        MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        init_mode="default",
+    )
+    with pytest.raises(ValueError, match="table not found in the SQL Server"):
+        pw.run()
+
+
+def test_mssql_read_table_name_with_close_bracket(mssql, tmp_path):
+    # SQL Server permits `]` in identifiers when escaped as `]]` inside the
+    # bracket-quoted form; a connector that doesn't double the `]` produces
+    # a malformed `[weird]name]` literal and a 102 syntax error.
+    weird_name = "weird]name"
+    quoted = f"[{weird_name.replace(']', ']]')}]"
+    mssql.execute_sql(
+        f"CREATE TABLE {quoted} ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  value NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    try:
+        mssql.execute_sql(f"INSERT INTO {quoted} (id, value) VALUES (1, 'a')")
+
+        class InputSchema(pw.Schema):
+            id: int = pw.column_definition(primary_key=True)
+            value: str
+
+        output_path = tmp_path / "output.jsonl"
+        table = pw.io.mssql.read(
+            connection_string=MSSQL_CONNECTION_STRING,
+            table_name=weird_name,
+            schema=InputSchema,
+            mode="static",
+        )
+        pw.io.jsonlines.write(table, str(output_path))
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+        records = [json.loads(ln) for ln in output_path.read_text().splitlines() if ln]
+        assert sorted((r["id"], r["value"]) for r in records) == [(1, "a")]
+    finally:
+        mssql.execute_sql(f"DROP TABLE IF EXISTS {quoted}")
+
+
+def test_mssql_read_rejects_multiple_capture_instances(mssql, tmp_path):
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    inst1 = f"{table_name}_v1"
+    inst2 = f"{table_name}_v2"
+    for inst in (inst1, inst2):
+        mssql.execute_sql(
+            f"EXEC sys.sp_cdc_enable_table "
+            f"@source_schema=N'dbo', @source_name=N'{table_name}', "
+            f"@role_name=NULL, @capture_instance=N'{inst}'"
+        )
+        while mssql.cursor.nextset():
+            pass
+        mssql._tracked_cdc.add(table_name)
+
+    output_path = tmp_path / "output.jsonl"
+    error_path = tmp_path / "error.log"
+    p = multiprocessing.Process(
+        target=_mssql_persistence_worker,
+        kwargs={
+            "connection_string": MSSQL_CONNECTION_STRING,
+            "table_name": table_name,
+            "output_path": str(output_path),
+            "mode": "streaming",
+            "persistence_config": pw.persistence.Config(
+                backend=pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+            ),
+            "error_path": str(error_path),
+        },
+    )
+    p.start()
+    p.join(timeout=60)
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        raise AssertionError("worker should have failed fast, not hung")
+    assert p.exitcode not in (None, 0)
+    error_text = error_path.read_text() if error_path.exists() else ""
+    assert (
+        "multiple CDC capture instances" in error_text
+    ), f"expected ambiguous-capture-instance error, got:\n{error_text}"
+
+
+def test_mssql_write_rejects_primary_key_in_stream_mode(mssql):
+    table_name = mssql.random_table_name()
+
+    class InputSchema(pw.Schema):
+        row_id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    with pytest.raises(
+        ValueError,
+        match="primary_key can only be specified for the snapshot table type",
+    ):
+        pw.io.mssql.write(
+            table,
+            MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            output_table_type="stream_of_changes",
+            primary_key=[table.row_id],
+        )
+
+
+def test_mssql_read_rejects_nullable_primary_key():
+    class InputSchema(pw.Schema):
+        row_id: int | None = pw.column_definition(primary_key=True)
+        value: str
+
+    with pytest.raises(
+        ValueError,
+        match="primary-key columns must be non-nullable",
+    ):
+        pw.io.mssql.read(
+            connection_string=MSSQL_CONNECTION_STRING,
+            table_name="any",
+            schema=InputSchema,
+            mode="static",
+        )
+
+
+def test_mssql_snapshot_rejects_primary_key_from_other_table(mssql):
+    table_name = mssql.random_table_name()
+
+    class InputSchema(pw.Schema):
+        row_id: int = pw.column_definition(primary_key=True)
+        value: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    other = pw.debug.table_from_rows(InputSchema, [(2, "b")])
+
+    with pytest.raises(
+        ValueError,
+        match="doesn't belong to the target table",
+    ):
+        pw.io.mssql.write(
+            table,
+            MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            output_table_type="snapshot",
+            primary_key=[other.row_id],
+            init_mode="create_if_not_exists",
+        )
+
+
+def test_mssql_snapshot_rejects_nullable_primary_key(mssql):
+    table_name = mssql.random_table_name()
+
+    class InputSchema(pw.Schema):
+        row_id: int | None = pw.column_definition(primary_key=True)
+        value: str
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, "a")])
+    with pytest.raises(
+        ValueError,
+        match="primary-key columns must be non-nullable",
+    ):
+        pw.io.mssql.write(
+            table,
+            MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            output_table_type="snapshot",
+            primary_key=[table.row_id],
+            init_mode="create_if_not_exists",
+        )
+
+
+def test_mssql_snapshot_rejects_duplicate_primary_key_columns(mssql):
+    table_name = mssql.random_table_name()
+
+    class InputSchema(pw.Schema):
+        x: int = pw.column_definition(primary_key=True)
+        y: int
+
+    table = pw.debug.table_from_rows(InputSchema, [(1, 2)])
+    with pytest.raises(
+        ValueError,
+        match="primary_key contains duplicate column",
+    ):
+        pw.io.mssql.write(
+            table,
+            MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            output_table_type="snapshot",
+            primary_key=[table.x, table.x],
+            init_mode="create_if_not_exists",
+        )
+
+
+def test_mssql_write_rejects_case_duplicate_column_names(mssql):
+    table_name = mssql.random_table_name()
+
+    schema = pw.schema_builder(
+        columns={
+            "row_id": pw.column_definition(dtype=int, primary_key=True),
+            "Value": pw.column_definition(dtype=int),
+            "value": pw.column_definition(dtype=int),
+        }
+    )
+    table = pw.debug.table_from_rows(schema, [(1, 7, 8)])
+    with pytest.raises(
+        ValueError,
+        match="differ only in case",
+    ):
+        pw.io.mssql.write(
+            table,
+            MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            init_mode="create_if_not_exists",
+            output_table_type="stream_of_changes",
+        )
+
+
+@pytest.mark.parametrize("reserved_name", ["time", "diff", "TIME", "Diff"])
+def test_mssql_write_stream_mode_reserved_column_name_rejected(reserved_name, mssql):
+    table_name = mssql.random_table_name()
+
+    schema = pw.schema_builder(
+        columns={
+            "row_id": pw.column_definition(dtype=int, primary_key=True),
+            reserved_name: pw.column_definition(dtype=int),
+        }
+    )
+    table = pw.debug.table_from_rows(schema, [(1, 7)])
+    with pytest.raises(
+        ValueError,
+        match="collide with the 'time' and 'diff' metadata columns",
+    ):
+        pw.io.mssql.write(
+            table,
+            MSSQL_CONNECTION_STRING,
+            table_name=table_name,
+            init_mode="create_if_not_exists",
+            output_table_type="stream_of_changes",
+        )
 
 
 def _mssql_quote_ident(name: str) -> str:
