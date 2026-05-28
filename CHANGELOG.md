@@ -41,6 +41,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.mongodb.read` persistence: on restart, the replayed change-stream events are now delivered atomically, preventing an edge case where a crash partway through the replay could skip events that had been read from MongoDB but not yet processed downstream.
 - Passing a non-positive `max_batch_size` to any output connector that accepts it now raises a clear error (`max_batch_size must be a positive integer`). Previously the value was handled inconsistently: `0` was silently accepted and disabled size-based batching entirely, while a negative value surfaced an opaque `OverflowError`.
 - `pw.io.mysql.write` now rejects, at construction, a schema column named `time` or `diff` (case-insensitive) in `stream_of_changes` mode, where it would collide with the `time`/`diff` metadata columns the connector appends. Previously the conflict surfaced mid-run as an opaque MySQL "Duplicate column name" error. Rename the column or switch to `output_table_type="snapshot"`, which does not append these columns.
+- `pw.io.questdb.write` now validates its designated-timestamp arguments when the connector is created and raises a clear `ValueError`, instead of deferring to an opaque error from the engine at run time. This covers `designated_timestamp_policy="use_column"` passed without a `designated_timestamp` column, and a `designated_timestamp` column whose type is neither `DateTimeNaive` nor `DateTimeUtc`.
 
 ## [0.31.0] - 2026-05-25
 

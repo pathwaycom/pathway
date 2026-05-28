@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, Literal
 
-from pathway.internals import api, datasink
+from pathway.internals import api, datasink, dtype as dt
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
@@ -144,6 +144,17 @@ def write(
             )
         designated_timestamp_policy = "use_column"
         designated_timestamp_index = get_column_index(table, designated_timestamp)
+        timestamp_dtype = table.schema.columns()[designated_timestamp.name].dtype
+        if timestamp_dtype not in (dt.DATE_TIME_NAIVE, dt.DATE_TIME_UTC):
+            raise ValueError(
+                f"the designated_timestamp column {designated_timestamp.name!r} must have "
+                f"type DateTimeNaive or DateTimeUtc, but it has type {timestamp_dtype}"
+            )
+    elif designated_timestamp_policy == "use_column":
+        raise ValueError(
+            'designated_timestamp_policy="use_column" requires the '
+            "designated_timestamp parameter to be set"
+        )
     elif designated_timestamp_policy is None:
         designated_timestamp_policy = "use_now"
 

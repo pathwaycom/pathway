@@ -12,6 +12,118 @@ from pathway.tests.utils import ExceptionAwareThread, wait_result_with_checker
 QUESTDB_CONNECTION_STRING = f"http::addr={QUEST_DB_HOST}:{QUEST_DB_LINE_PORT};"
 
 
+def test_questdb_use_column_requires_designated_timestamp():
+    """``designated_timestamp_policy="use_column"`` requires the
+    ``designated_timestamp`` parameter to be provided, as the docstring states.
+
+    The error must be raised eagerly when ``write`` is called and must name the
+    ``designated_timestamp`` parameter the user controls -- not an internal
+    engine field -- so the user knows what to fix.
+    """
+    table = pw.debug.table_from_markdown(
+        """
+         | data
+        1 | Hello
+        """
+    )
+    with pytest.raises(ValueError, match="designated_timestamp"):
+        pw.io.questdb.write(
+            table,
+            connection_string=QUESTDB_CONNECTION_STRING,
+            table_name="irrelevant",
+            designated_timestamp_policy="use_column",
+        )
+
+
+def test_questdb_designated_timestamp_must_be_datetime():
+    """The ``designated_timestamp`` column must have ``DateTimeNaive`` or
+    ``DateTimeUtc`` type, as the docstring states.
+
+    Passing a column of any other type must be rejected eagerly when ``write``
+    is called, with a message that names the ``designated_timestamp`` parameter
+    the user controls.
+    """
+    table = pw.debug.table_from_markdown(
+        """
+         | data | ts
+        1 | Hello | 5
+        """
+    )
+    with pytest.raises(ValueError, match="designated_timestamp"):
+        pw.io.questdb.write(
+            table,
+            connection_string=QUESTDB_CONNECTION_STRING,
+            table_name="irrelevant",
+            designated_timestamp=table.ts,
+        )
+
+
+@pytest.mark.flaky(reruns=5)  # No way to check that DB is ready to accept queries
+def test_questdb_serializes_complex_types_per_documentation(questdb):
+    """The complex Pathway types are stored as the documentation describes:
+    ``bytes`` as base64 strings, ``Duration`` as nanosecond longs, ``JSON`` as
+    serialized JSON strings, and ``tuple``/``np.ndarray`` as JSON strings (a
+    JSON array for tuples, and a ``{"shape": ..., "elements": ...}`` object for
+    arrays).
+    """
+    import base64
+
+    import numpy as np
+
+    table_name = questdb.random_table_name()
+    seed = pw.debug.table_from_markdown(
+        """
+           | k
+         1 | 1
+        """
+    )
+
+    @pw.udf
+    def f_bytes(k: int) -> bytes:
+        return bytes([0, 1, 2])
+
+    @pw.udf
+    def f_dur(k: int) -> pw.Duration:
+        return pw.Duration(seconds=1)
+
+    @pw.udf
+    def f_json(k: int) -> pw.Json:
+        return pw.Json({"k": "v"})
+
+    @pw.udf
+    def f_tuple(k: int) -> tuple[int, ...]:
+        return (1, 2, 3)
+
+    @pw.udf
+    def f_arr(k: int) -> np.ndarray:
+        return np.array([[1.0, 2.0], [3.0, 4.0]])
+
+    table = seed.select(
+        bts=f_bytes(pw.this.k),
+        dur=f_dur(pw.this.k),
+        j=f_json(pw.this.k),
+        tup=f_tuple(pw.this.k),
+        arr=f_arr(pw.this.k),
+    )
+    pw.io.questdb.write(
+        table,
+        connection_string=QUESTDB_CONNECTION_STRING,
+        table_name=table_name,
+    )
+
+    checker = EntryCountChecker(1, questdb, table_name=table_name, column_names=["bts"])
+    wait_result_with_checker(checker, 15)
+
+    rows = questdb.get_table_contents(table_name, ["bts", "dur", "j", "tup", "arr"])
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["bts"] == base64.b64encode(bytes([0, 1, 2])).decode()
+    assert row["dur"] == 1_000_000_000
+    assert json.loads(row["j"]) == {"k": "v"}
+    assert json.loads(row["tup"]) == [1, 2, 3]
+    assert json.loads(row["arr"]) == {"shape": [2, 2], "elements": [1.0, 2.0, 3.0, 4.0]}
+
+
 @pytest.mark.parametrize(
     "designated_timestamp_policy", ["use_now", "use_pathway_time", "use_column"]
 )
