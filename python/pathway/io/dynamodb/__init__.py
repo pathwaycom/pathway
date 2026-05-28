@@ -59,13 +59,16 @@ def write(
         table_name: The name of the destination table in DynamoDB.
         partition_key: The column to use as the
             `partition key <https://aws.amazon.com/blogs/database/choosing-the-right-dynamodb-partition-key/>`_
-            in the destination table. Note that only scalar types, specifically ``Boolean``,
-            ``String`` and ``Number``, can be used as index fields in DynamoDB. Therefore,
-            the field you select in the Pathway table must serialize to one of these types.
-            You can verify this using the conversion table provided in the connector documentation.
-        sort_key: An optional sort key for the destination table. Note that only scalar types can be used as the
-            index fields in DynamoDB. Similarly to the partition key, you can only use
-            fields that serialize into a scalar DynamoDB type.
+            in the destination table. Note that only the scalar types ``String``, ``Number``
+            and ``Binary`` can be used as index fields in DynamoDB. Therefore, the field you
+            select in the Pathway table must serialize to one of these types. You can verify
+            this using the conversion table provided in the connector documentation. In
+            particular, ``bool`` columns serialize to the DynamoDB ``Boolean`` type, which is
+            not a valid key type, so they cannot be used as a partition or sort key.
+        sort_key: An optional sort key for the destination table. Note that only the scalar
+            types ``String``, ``Number`` and ``Binary`` can be used as the index fields in
+            DynamoDB. Similarly to the partition key, you can only use fields that serialize
+            into one of these scalar DynamoDB types.
         init_mode: The table initialization mode, one of the three described above.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.

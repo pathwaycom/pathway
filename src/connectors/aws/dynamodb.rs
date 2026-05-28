@@ -47,12 +47,17 @@ pub enum Error {
     BatchWrite(#[from] SdkError<BatchWriteItemError, AwsHttpResponse>),
 }
 
+// The primary key of a pending row: the partition key value plus the optional
+// sort key value. Used to deduplicate operations within a single batch, since
+// DynamoDB rejects a `BatchWriteItem` that targets the same key more than once.
+type PrimaryKey = (Value, Option<Value>);
+
 pub struct DynamoDBWriter {
     runtime: TokioRuntime,
     client: Client,
     table_name: String,
     value_fields: Vec<ValueField>,
-    write_requests: Vec<WriteRequest>,
+    write_requests: HashMap<PrimaryKey, WriteRequest>,
     partition_key_index: usize,
     sort_key_index: Option<usize>,
 }
@@ -72,7 +77,7 @@ impl DynamoDBWriter {
             client,
             table_name,
             value_fields,
-            write_requests: Vec::new(),
+            write_requests: HashMap::new(),
             partition_key_index,
             sort_key_index,
         };
@@ -100,12 +105,19 @@ impl DynamoDBWriter {
     }
 
     fn rust_type_to_dynamodb_index_type(ty: &Type) -> Result<ScalarAttributeType, WriteError> {
+        // A DynamoDB key attribute can only be one of three scalar types: String
+        // (`S`), Number (`N`) or Binary (`B`). There is no Boolean key type, so a
+        // `bool` column (which serializes to `AttributeValue::Bool`) cannot be a
+        // key and must be rejected here rather than declared as some other scalar
+        // type — otherwise the table would be created with a key type that every
+        // write then mismatches. The arms below must stay in sync with the scalar
+        // outputs of `value_to_attribute`.
         match ty {
-            Type::Bool => Ok(ScalarAttributeType::B),
             Type::Int | Type::Float | Type::Duration => Ok(ScalarAttributeType::N),
-            Type::String | Type::Pointer | Type::DateTimeNaive | Type::DateTimeUtc => {
+            Type::String | Type::Pointer | Type::DateTimeNaive | Type::DateTimeUtc | Type::Json => {
                 Ok(ScalarAttributeType::S)
             }
+            Type::Bytes | Type::PyObjectWrapper => Ok(ScalarAttributeType::B),
             _ => Err(WriteError::NotIndexType(ty.clone())),
         }
     }
@@ -291,17 +303,39 @@ impl DynamoDBWriter {
             )
             .build())
     }
+
+    fn primary_key(&self, data: &FormatterContext) -> PrimaryKey {
+        let partition_key = data.values[self.partition_key_index].clone();
+        let sort_key = self.sort_key_index.map(|index| data.values[index].clone());
+        (partition_key, sort_key)
+    }
 }
 
 impl Writer for DynamoDBWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let request = match data.diff {
-            1 => self.create_upsert_request(&data)?,
-            -1 => self.create_delete_request(&data)?,
+        let primary_key = self.primary_key(&data);
+        match data.diff {
+            1 => {
+                // An insertion always wins over a deletion of the same key within
+                // a batch. DynamoDB rejects a `BatchWriteItem` that targets the
+                // same key with both a put and a delete, and snapshot semantics
+                // keep the freshly-inserted row, so we overwrite any pending
+                // deletion for this key.
+                let request = self.create_upsert_request(&data)?;
+                self.write_requests.insert(primary_key, request);
+            }
+            -1 => {
+                // Record the deletion only if no insertion for this key is already
+                // pending in the current batch (the insertion takes precedence,
+                // regardless of the order the two events arrive in).
+                if !self.write_requests.contains_key(&primary_key) {
+                    let request = self.create_delete_request(&data)?;
+                    self.write_requests.insert(primary_key, request);
+                }
+            }
             _ => unreachable!("diff can only be 1 or -1"),
-        };
-        self.write_requests.push(request);
-        if self.write_requests.len() == MAX_BATCH_WRITE_SIZE {
+        }
+        if self.write_requests.len() >= MAX_BATCH_WRITE_SIZE {
             self.flush(false)?;
         }
         Ok(())
@@ -311,8 +345,9 @@ impl Writer for DynamoDBWriter {
         if self.write_requests.is_empty() {
             return Ok(());
         }
+        let requests: Vec<WriteRequest> = take(&mut self.write_requests).into_values().collect();
         let mut request_items = HashMap::with_capacity(1);
-        request_items.insert(self.table_name.clone(), take(&mut self.write_requests));
+        request_items.insert(self.table_name.clone(), requests);
 
         self.runtime.block_on(async {
             let mut retry = RetryConfig::default();

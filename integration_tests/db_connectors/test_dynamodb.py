@@ -261,3 +261,112 @@ def test_key_delete(dynamodb, tmp_path):
 
     run_one_iteration([{"key": 1, "value": "one"}, {"key": 2, "value": "two"}])
     run_one_iteration([{"key": 2, "value": "two"}])
+
+
+def test_dynamodb_bytes_partition_key(dynamodb):
+    # A ``bytes`` column serializes to the DynamoDB ``Binary`` scalar type, which
+    # is one of the three valid key attribute types (alongside ``String`` and
+    # ``Number``). The connector must therefore accept a ``bytes`` column as a
+    # partition key and round-trip its value unchanged.
+    table_name = dynamodb.generate_table_name()
+
+    class InputSchema(pw.Schema):
+        key: bytes = pw.column_definition(primary_key=True)
+        value: str
+
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [(b"\x00\x01", "first"), (b"\x02\x03", "second")],
+    )
+    pw.io.dynamodb.write(table, table_name, table.key, init_mode="create_if_not_exists")
+    pw.run()
+
+    table_contents = dynamodb.get_table_contents(table_name)
+    table_contents.sort(key=lambda item: bytes(item["key"]))
+    assert table_contents == [
+        {"key": Binary(b"\x00\x01"), "value": "first"},
+        {"key": Binary(b"\x02\x03"), "value": "second"},
+    ]
+
+
+def test_dynamodb_json_partition_key(dynamodb):
+    # A ``JSON`` column serializes to the DynamoDB ``String`` scalar type, so it
+    # must be usable as a partition key. The stored key is the compact JSON text
+    # produced by the serializer.
+    table_name = dynamodb.generate_table_name()
+
+    class InputSchema(pw.Schema):
+        key: pw.Json = pw.column_definition(primary_key=True)
+        value: str
+
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [
+            (pw.Json.parse('"alpha"'), "first"),
+            (pw.Json.parse('{"n": 1}'), "second"),
+        ],
+    )
+    pw.io.dynamodb.write(table, table_name, table.key, init_mode="create_if_not_exists")
+    pw.run()
+
+    table_contents = dynamodb.get_table_contents(table_name)
+    stored = {item["key"]: item["value"] for item in table_contents}
+    assert stored == {'"alpha"': "first", '{"n":1}': "second"}
+
+
+def test_dynamodb_boolean_column_cannot_be_partition_key(dynamodb):
+    # DynamoDB key attributes can only be of scalar type ``String``, ``Number``
+    # or ``Binary`` -- there is no ``Boolean`` key type. A ``bool`` column
+    # therefore cannot serve as a partition key, and the connector must reject it
+    # up front with a clear error, rather than creating a table whose every
+    # subsequent write fails with an opaque "Invalid attribute value type"
+    # validation error from DynamoDB.
+    table_name = dynamodb.generate_table_name()
+    table = pw.debug.table_from_markdown(
+        """
+            flag  | value
+            True  | yes
+            False | no
+        """
+    )
+    pw.io.dynamodb.write(
+        table, table_name, table.flag, init_mode="create_if_not_exists"
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Failed to create DynamoDB writer: "
+            "the type bool can't be used in the index"
+        ),
+    ):
+        pw.run()
+
+
+def test_dynamodb_update_within_single_minibatch(dynamodb):
+    # When a row's value changes, snapshot semantics retract the old row and
+    # insert the new one under the same primary key. Both events can land in the
+    # same DynamoDB ``BatchWriteItem`` request, which rejects a batch that
+    # contains both a put and a delete for the same key ("Provided list of item
+    # keys contains duplicates"). The connector must reconcile the two within the
+    # batch -- the insertion wins -- so the update is applied instead of failing.
+    table_name = dynamodb.generate_table_name()
+
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+
+    # (key, value, __time__, __diff__): at time 4 the row keyed 1 is updated from
+    # "a" to "b", emitting a retraction and an insertion in the same minibatch.
+    rows = [
+        (1, "a", 2, 1),
+        (1, "a", 4, -1),
+        (1, "b", 4, 1),
+    ]
+    table = pw.debug.table_from_rows(InputSchema, rows, is_stream=True)
+    pw.io.dynamodb.write(table, table_name, table.key, init_mode="create_if_not_exists")
+    pw.run()
+
+    table_contents = dynamodb.get_table_contents(table_name)
+    for row in table_contents:
+        row["key"] = int(row["key"])
+    assert table_contents == [{"key": 1, "value": "b"}]
