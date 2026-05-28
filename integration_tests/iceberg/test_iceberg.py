@@ -13,6 +13,7 @@ import pytest
 from dateutil import tz
 from pyiceberg.catalog import load_catalog
 from pyiceberg.catalog.glue import GlueCatalog
+from pyiceberg.exceptions import ServerError
 from pyiceberg.schema import Schema as PyIcebergSchema
 from pyiceberg.types import (
     DateType,
@@ -592,12 +593,29 @@ def _local_catalog():
     )
 
 
+def _retry_catalog_op(op, *, attempts: int = 5, base_delay: float = 0.2):
+    """Run a local-catalog mutation, retrying transient server errors with
+    exponential backoff. The `tabulario/iceberg-rest` backend (a SQLite-backed
+    JDBC catalog) intermittently answers ``500 ServerError``
+    (`UncheckedSQLException: Unknown failure`) when many parallel test workers
+    create namespaces/tables at once. These are not schema problems — the same
+    request succeeds on retry — so we only swallow `ServerError` and let every
+    other exception (e.g. a genuinely invalid schema) propagate immediately."""
+    for attempt in range(attempts):
+        try:
+            return op()
+        except ServerError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(base_delay * (2**attempt))
+
+
 def _create_table_with_schema(namespace: str, table_name: str, schema: PyIcebergSchema):
     """Pre-create an Iceberg table on the local catalog with a specific schema,
     so Pathway will hit the existing-table reconciliation path on write."""
     catalog = _local_catalog()
-    catalog.create_namespace(namespace)
-    catalog.create_table(f"{namespace}.{table_name}", schema)
+    _retry_catalog_op(lambda: catalog.create_namespace(namespace))
+    _retry_catalog_op(lambda: catalog.create_table(f"{namespace}.{table_name}", schema))
 
 
 def _input_value_field_id_offset() -> int:
