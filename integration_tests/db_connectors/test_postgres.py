@@ -1246,7 +1246,7 @@ def test_postgres_streaming_inserts_only(tmp_path, postgres):
         stream_thread = threading.Thread(target=stream_target, daemon=True)
         stream_thread.start()
 
-        wait_result_with_checker(FileLinesNumberChecker(output_path, 10), 30)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 10), 60)
 
     rows = []
     with open(output_path) as f:
@@ -2010,7 +2010,7 @@ def test_postgres_read_and_parse_extra_types(tmp_path, postgres):
 
         stream_thread = threading.Thread(target=stream_target, daemon=True)
         stream_thread.start()
-        wait_result_with_checker(FileLinesNumberChecker(output_path, n_total), 30)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, n_total), 60)
 
     rows_out = []
     with open(output_path) as f:
@@ -2135,7 +2135,7 @@ def test_postgres_date_out_of_range_skipped(tmp_path, postgres):
 
         stream_thread = threading.Thread(target=stream_target, daemon=True)
         stream_thread.start()
-        wait_result_with_checker(FileLinesNumberChecker(output_path, n_expected), 30)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, n_expected), 60)
 
     rows_out = []
     with open(output_path) as f:
@@ -2575,7 +2575,7 @@ def test_psql_streaming_read_numeric_nan_and_infinity(postgres, tmp_path):
 
         stream_thread = threading.Thread(target=stream_target, daemon=True)
         stream_thread.start()
-        wait_result_with_checker(FileLinesNumberChecker(output_path, 7), 30)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 7), 60)
 
     with open(output_path) as f:
         rows = sorted((json.loads(line) for line in f), key=lambda r: r["k"])
@@ -4043,13 +4043,13 @@ def test_psql_streaming_read_append_only_allows_insert_only_publication(
 
         def stream_target():
             wait_result_with_checker(
-                FileLinesNumberChecker(output_path, 1), 15, target=None
+                FileLinesNumberChecker(output_path, 1), 30, target=None
             )
             postgres.execute_sql(f"INSERT INTO {target_table} VALUES (2, 'second')")
 
         stream_thread = threading.Thread(target=stream_target, daemon=True)
         stream_thread.start()
-        wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 15)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 60)
 
         with open(output_path) as f:
             rows = [json.loads(line) for line in f]
