@@ -945,6 +945,7 @@ class DataStorage:
         psql_replication: PsqlReplicationSettings | None = None,
         schema_name: str | None = None,
         with_metadata: bool = False,
+        mysql_server_id: int | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

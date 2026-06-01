@@ -81,6 +81,7 @@ MYSQL_DB_PORT = 3306
 MYSQL_DB_NAME = "testdb"
 MYSQL_DB_USER = "testuser"
 MYSQL_DB_PASSWORD = "testpass"
+MYSQL_DB_ROOT_PASSWORD = "rootpass"
 MYSQL_CONNECTION_STRING = (
     f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
     + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
@@ -100,20 +101,35 @@ MSSQL_CONNECTION_STRING = (
 )
 
 
-def is_mysql_reachable():
-    try:
-        mysql.connector.connect(
-            host=MYSQL_DB_HOST,
-            port=MYSQL_DB_PORT,
-            database=MYSQL_DB_NAME,
-            user=MYSQL_DB_USER,
-            password=MYSQL_DB_PASSWORD,
-            autocommit=True,
-        )
-    except mysql.connector.errors.InterfaceError:
-        return False
+def _connect_to_mysql(timeout_sec: float = 120.0):
+    """Open a MySQL connection, waiting for the server to become reachable.
 
-    return True
+    The official ``mysql`` Docker image briefly runs a socket-only temporary
+    server (``--skip-networking``) while it creates the user and database during
+    initialization. A TCP client can therefore be refused — or hit a transient
+    "access denied" because the user does not exist yet — for a short window
+    even after the container's healthcheck has flipped. Rather than gate the
+    whole suite behind a one-shot reachability probe, wait for the real server
+    with bounded backoff (the other connectors rely on docker-compose's
+    ``service_healthy`` for the same guarantee).
+    """
+    deadline = time.monotonic() + timeout_sec
+    delay = 0.5
+    while True:
+        try:
+            return mysql.connector.connect(
+                host=MYSQL_DB_HOST,
+                port=MYSQL_DB_PORT,
+                database=MYSQL_DB_NAME,
+                user=MYSQL_DB_USER,
+                password=MYSQL_DB_PASSWORD,
+                autocommit=True,
+            )
+        except mysql.connector.Error:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.5, 2.0)
 
 
 @dataclass(frozen=True)
@@ -610,14 +626,7 @@ class DynamoDBContext:
 
 class MySQLContext:
     def __init__(self):
-        self.connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
-            port=MYSQL_DB_PORT,
-            database=MYSQL_DB_NAME,
-            user=MYSQL_DB_USER,
-            password=MYSQL_DB_PASSWORD,
-            autocommit=True,
-        )
+        self.connection = _connect_to_mysql()
         self.cursor = self.connection.cursor()
 
     def get_table_schema(self, table_name: str) -> dict[str, ColumnProperties]:
@@ -701,6 +710,70 @@ class MySQLContext:
 
     def random_table_name(self) -> str:
         return f"mysql_{uuid.uuid4().hex}"
+
+    def grant_replication_privileges(self) -> None:
+        """Grant the privileges the binary-log reader needs to ``testuser``.
+
+        ``COM_BINLOG_DUMP`` requires ``REPLICATION SLAVE`` and
+        ``SHOW MASTER STATUS`` / ``SHOW BINARY LOGS`` require
+        ``REPLICATION CLIENT`` — both are server-global privileges that the
+        ``MYSQL_USER`` created by the container does not get by default. Grant
+        them through a fresh root connection (idempotent, so it is safe to call
+        from every streaming test).
+        """
+        root_connection = mysql.connector.connect(
+            host=MYSQL_DB_HOST,
+            port=MYSQL_DB_PORT,
+            user="root",
+            password=MYSQL_DB_ROOT_PASSWORD,
+            autocommit=True,
+        )
+        try:
+            cursor = root_connection.cursor()
+            cursor.execute(
+                f"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* "
+                f"TO '{MYSQL_DB_USER}'@'%'"
+            )
+            cursor.execute("FLUSH PRIVILEGES")
+        finally:
+            root_connection.close()
+
+    def execute_as_root(self, query: str) -> list:
+        """Run a statement through a fresh root connection and return any rows.
+
+        Used for binary-log administration (``FLUSH``/``PURGE BINARY LOGS``,
+        ``SHOW BINARY LOGS``) that requires privileges ``testuser`` does not
+        hold. Non-result statements simply return an empty list.
+        """
+        root_connection = mysql.connector.connect(
+            host=MYSQL_DB_HOST,
+            port=MYSQL_DB_PORT,
+            user="root",
+            password=MYSQL_DB_ROOT_PASSWORD,
+            autocommit=True,
+        )
+        try:
+            cursor = root_connection.cursor()
+            cursor.execute(query)
+            try:
+                return cursor.fetchall()
+            except mysql.connector.Error:
+                return []
+        finally:
+            root_connection.close()
+
+    def binlog_available(self) -> bool:
+        """Whether the server is configured for row-based binary logging, the
+        prerequisite for the streaming (CDC) reader."""
+        try:
+            self.cursor.execute("SELECT @@GLOBAL.log_bin, @@GLOBAL.binlog_format")
+            row = self.cursor.fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        log_bin, binlog_format = row
+        return int(log_bin) == 1 and str(binlog_format).upper() == "ROW"
 
 
 class MssqlContext:

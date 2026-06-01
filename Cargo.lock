@@ -5613,6 +5613,7 @@ checksum = "fbb9f371618ce723f095c61fbcdc36e8936956d2b62832f9c7648689b338e052"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.9.1",
+ "bitvec",
  "btoi",
  "byteorder",
  "bytes",
@@ -5630,6 +5631,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

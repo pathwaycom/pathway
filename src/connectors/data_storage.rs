@@ -90,7 +90,7 @@ pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
 pub use super::mongodb::{MongoReader, MongoWriter};
 pub use super::mssql::{MssqlError, MssqlReader};
-pub use super::mysql::MysqlError;
+pub use super::mysql::{MysqlError, MysqlReader, MysqlReaderError};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{
@@ -336,6 +336,9 @@ pub enum ReadError {
     Mssql(#[from] MssqlError),
 
     #[error(transparent)]
+    Mysql(#[from] MysqlReaderError),
+
+    #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
     #[error("persistence is not supported for storage '{0:?}'")]
@@ -454,6 +457,7 @@ pub enum StorageType {
     Postgres,
     MongoDb,
     Rabbitmq,
+    Mysql,
 }
 
 impl StorageType {
@@ -480,6 +484,7 @@ impl StorageType {
             StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::MongoDb => MongoReader::merge_two_frontiers(lhs, rhs),
             StorageType::Rabbitmq => RabbitmqReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Mysql => MysqlReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -609,6 +614,22 @@ pub trait Reader {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
                     (OffsetValue::MssqlCdcLsn(a), OffsetValue::MssqlCdcLsn(b)) if b > a => {
+                        result.advance_offset(offset_key.clone(), other_value.clone());
+                    }
+                    (
+                        OffsetValue::MysqlBinlogPos {
+                            filename: lhs_file,
+                            position: lhs_pos,
+                        },
+                        OffsetValue::MysqlBinlogPos {
+                            filename: rhs_file,
+                            position: rhs_pos,
+                        },
+                    ) if super::mysql::binlog_coords_cmp(
+                        rhs_file, *rhs_pos, lhs_file, *lhs_pos,
+                    )
+                    .is_gt() =>
+                    {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
                     (_, _) => {

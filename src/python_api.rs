@@ -44,7 +44,7 @@ use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
 use mongodb::Namespace as MongoNamespace;
-use mysql::Pool as MysqlConnectionPool;
+use mysql::{Opts as MysqlOpts, Pool as MysqlConnectionPool};
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
@@ -121,7 +121,7 @@ use crate::connectors::data_storage::{
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::mssql::MssqlWriter;
-use crate::connectors::mysql::MysqlWriter;
+use crate::connectors::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::nats;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
@@ -4729,6 +4729,7 @@ pub struct DataStorage {
     psql_replication: Option<PsqlReplicationSettings>,
     schema_name: Option<String>,
     with_metadata: bool,
+    mysql_server_id: Option<i64>,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5291,6 +5292,7 @@ impl DataStorage {
         psql_replication = None,
         schema_name = None,
         with_metadata = false,
+        mysql_server_id = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5337,6 +5339,7 @@ impl DataStorage {
         psql_replication: Option<PsqlReplicationSettings>,
         schema_name: Option<String>,
         with_metadata: bool,
+        mysql_server_id: Option<i64>,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -5400,6 +5403,7 @@ impl DataStorage {
             psql_replication,
             schema_name,
             with_metadata,
+            mysql_server_id,
         })
     }
 
@@ -6239,6 +6243,43 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn construct_mysql_reader(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        scope: &Scope,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["mysql"])?;
+        }
+        let connection_string = self.connection_string()?;
+        let opts = MysqlOpts::from_url(connection_string)
+            .map_err(|e| PyValueError::new_err(format!("Invalid MySQL connection string: {e}")))?;
+        let table_name = self.table_name.clone().ok_or_else(|| {
+            PyValueError::new_err("For MySQL connector, table_name should be specified")
+        })?;
+        // A binlog dump registers the connection as a replica identified by a
+        // server id; it must be unique among everything replicating from the
+        // source. Default to a random value when the user did not pick one, and
+        // never use 0 (which MySQL treats as "no server id").
+        let server_id = match self.mysql_server_id {
+            Some(value) => u32::try_from(value).map_err(|_| {
+                PyValueError::new_err("server_id must fit in an unsigned 32-bit integer")
+            })?,
+            None => rand::random::<u32>() | 1,
+        };
+        let reader = MysqlReader::new(
+            opts,
+            table_name,
+            data_format.value_fields_type_map(py).into_iter().collect(),
+            data_format.key_field_names.clone(),
+            self.mode,
+            server_id,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create MySQL reader: {e}")))?;
+        Ok((Box::new(reader), 1))
+    }
+
     fn object_downloader(&self) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
             Ok(ObjectDownloader::S3(Box::new(self.s3_bucket()?)))
@@ -6645,6 +6686,7 @@ impl DataStorage {
             "kinesis" => self.construct_kinesis_reader(scope, properties),
             "postgres" => self.construct_postgres_reader(py, data_format, scope, properties),
             "mongodb" => self.construct_mongodb_reader(scope),
+            "mysql" => self.construct_mysql_reader(py, data_format, scope),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),

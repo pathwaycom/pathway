@@ -34,6 +34,7 @@ pub enum OffsetKey {
     MongoDb,
     Rabbitmq(RabbitmqStreamType),
     Mssql,
+    Mysql,
 }
 
 impl HashInto for OffsetKey {
@@ -50,7 +51,7 @@ impl HashInto for OffsetKey {
                 hasher.update(stream_name.as_bytes());
             }
             OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
-            OffsetKey::Empty | OffsetKey::MongoDb | OffsetKey::Mssql => {}
+            OffsetKey::Empty | OffsetKey::MongoDb | OffsetKey::Mssql | OffsetKey::Mysql => {}
         }
     }
 }
@@ -103,6 +104,17 @@ pub enum OffsetValue {
     /// byte-wise comparison is a valid ordering — the same strategy used for
     /// [`Self::MongoDbOplogToken`].
     MssqlCdcLsn(Vec<u8>),
+    /// A position within `MySQL`'s binary log: the binary-log file name plus the
+    /// byte offset within that file. `MySQL` rotates binary-log files with a
+    /// monotonically increasing numeric suffix (e.g. `mysql-bin.000001`).
+    /// Frontier comparison orders these by parsing that suffix as a number (see
+    /// `binlog_coords_cmp`), so ordering stays correct even once the suffix
+    /// widens past six digits — a plain lexicographic compare would wrongly sort
+    /// `mysql-bin.1000000` before `mysql-bin.999999`.
+    MysqlBinlogPos {
+        filename: String,
+        position: u64,
+    },
 }
 
 impl OffsetValue {
@@ -187,6 +199,10 @@ impl HashInto for OffsetValue {
             }
             OffsetValue::MongoDbOplogToken(bytes) | OffsetValue::MssqlCdcLsn(bytes) => {
                 hasher.update(bytes);
+            }
+            OffsetValue::MysqlBinlogPos { filename, position } => {
+                hasher.update(filename.as_bytes());
+                position.hash_into(hasher);
             }
             OffsetValue::Empty => {}
         }
