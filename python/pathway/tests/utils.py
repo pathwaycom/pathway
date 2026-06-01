@@ -835,7 +835,8 @@ def get_minio_settings():
         bucket_name="minio-integrationtest",
         access_key=os.environ["MINIO_S3_ACCESS_KEY"],
         secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-        endpoint="minio-api.deploys.pathway.com",
+        endpoint=os.environ.get("MINIO_S3_ENDPOINT_URL", "http://minio:9000"),
+        region="us-east-1",
     )
 
 

@@ -17,7 +17,14 @@ from pathway.tests.utils import (
     write_csv,
 )
 
-from .base import AWS_S3_SETTINGS, MINIO_BUCKET_NAME, MINIO_S3_SETTINGS, S3_BUCKET_NAME
+from .base import (
+    AWS_S3_SETTINGS,
+    MINIO_BUCKET_NAME,
+    MINIO_S3_ENDPOINT_URL,
+    MINIO_S3_SETTINGS,
+    S3_BUCKET_NAME,
+    retry_on_transient_s3_error,
+)
 
 
 def get_deltalake_connection_options(storage_type):
@@ -39,7 +46,12 @@ def get_deltalake_connection_options(storage_type):
                 "AWS_ACCESS_KEY_ID": os.environ["MINIO_S3_ACCESS_KEY"],
                 "AWS_SECRET_ACCESS_KEY": os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
                 "AWS_BUCKET_NAME": MINIO_BUCKET_NAME,
-                "AWS_ENDPOINT_URL": "https://minio-api.deploys.pathway.com",
+                "AWS_ENDPOINT_URL": MINIO_S3_ENDPOINT_URL,
+                "AWS_REGION": "us-east-1",
+                # The deltalake-rs object_store backend refuses ``http://``
+                # endpoints by default; without this it rejects the request
+                # with "URL scheme is not allowed" before sending anything.
+                "AWS_ALLOW_HTTP": "true",
             }
         )
     else:
@@ -51,11 +63,13 @@ def get_deltalake_connection_options(storage_type):
 
 
 def write_deltalake_with_auth(storage_type, s3_path, chunk, **kwargs):
-    write_deltalake(
-        s3_path,
-        chunk,
-        storage_options=get_deltalake_connection_options(storage_type),
-        **kwargs,
+    retry_on_transient_s3_error(
+        lambda: write_deltalake(
+            s3_path,
+            chunk,
+            storage_options=get_deltalake_connection_options(storage_type),
+            **kwargs,
+        )
     )
 
 
@@ -138,10 +152,12 @@ def test_output(credentials, min_commit_frequency, tmp_path, s3_path):
     )
     pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
-    delta_table = DeltaTable(
-        output_s3_path, storage_options=get_deltalake_connection_options(storage_type)
+    pd_table_from_delta = retry_on_transient_s3_error(
+        lambda: DeltaTable(
+            output_s3_path,
+            storage_options=get_deltalake_connection_options(storage_type),
+        ).to_pandas()
     )
-    pd_table_from_delta = delta_table.to_pandas()
     assert pd_table_from_delta.shape[0] == 2
 
 

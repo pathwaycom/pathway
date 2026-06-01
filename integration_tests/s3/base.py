@@ -1,13 +1,73 @@
 import json
 import os
+import time
 
 import boto3
+from botocore.exceptions import ClientError
 
 import pathway as pw
 from pathway.tests.utils import get_aws_s3_settings, get_minio_settings
 
+# HTTP statuses returned when the S3/MinIO backend (or the proxy in front of it)
+# is momentarily unavailable, as opposed to the request itself being wrong.
+_TRANSIENT_S3_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+
+# Substrings marking a transient connectivity failure in an exception message,
+# used when the error carries no structured HTTP status — e.g. the deltalake
+# bindings surface the underlying object-store failure as a plain string.
+_TRANSIENT_S3_MESSAGE_MARKERS = (
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "internal error",
+    "slowdown",
+    "could not connect to the endpoint",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "connection aborted",
+    "broken pipe",
+    "timed out",
+    "temporarily unavailable",
+)
+
+
+def _is_transient_s3_error(exc: BaseException) -> bool:
+    if isinstance(exc, ClientError):
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if status in _TRANSIENT_S3_HTTP_STATUSES:
+            return True
+    message = str(exc).lower()
+    return any(marker in message for marker in _TRANSIENT_S3_MESSAGE_MARKERS)
+
+
+def retry_on_transient_s3_error(op, *, attempts: int = 6, base_delay: float = 0.5):
+    """Run an S3/MinIO operation, retrying only transient backend failures with
+    exponential backoff.
+
+    The shared MinIO deployment these tests run against intermittently answers
+    ``502 Bad Gateway`` (and other 5xx / connectivity errors) when its proxy
+    briefly loses the backend — the very same request succeeds moments later.
+    These blips have nothing to do with what a test asserts, so we retry them.
+    Every other failure (a missing object, bad credentials, an
+    assertion-relevant 4xx) is not transient and is re-raised on the first
+    attempt instead of being masked by backoff."""
+    for attempt in range(attempts):
+        try:
+            return op()
+        except Exception as exc:
+            if attempt == attempts - 1 or not _is_transient_s3_error(exc):
+                raise
+            time.sleep(base_delay * (2**attempt))
+
+
 MINIO_BUCKET_NAME = "minio-integrationtest"
 S3_BUCKET_NAME = "aws-integrationtest"
+# Full URL of the MinIO endpoint, e.g. ``http://minio:9000``. The default points
+# at the ``minio`` service defined in ``docker-compose-integration.yml``; override
+# this env var to point the suite at a MinIO running elsewhere (local dev, CI
+# debugging, etc.).
+MINIO_S3_ENDPOINT_URL = os.environ.get("MINIO_S3_ENDPOINT_URL", "http://minio:9000")
 AWS_S3_SETTINGS = pw.io.s3.AwsS3Settings(
     access_key=os.environ["AWS_S3_ACCESS_KEY"],
     secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
@@ -18,7 +78,12 @@ MINIO_S3_SETTINGS = pw.io.minio.MinIOSettings(
     bucket_name=MINIO_BUCKET_NAME,
     access_key=os.environ["MINIO_S3_ACCESS_KEY"],
     secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-    endpoint="minio-api.deploys.pathway.com",
+    endpoint=MINIO_S3_ENDPOINT_URL,
+    # Without an explicit region the engine falls back to the endpoint string,
+    # whose ``http://`` slashes then corrupt the ``KEY/yyyyMMdd/REGION/s3/...``
+    # X-Amz-Credential layout and trigger an AuthorizationQueryParametersError
+    # from MinIO. Any non-empty token works; MinIO ignores the value otherwise.
+    region="us-east-1",
 )
 
 
@@ -28,10 +93,12 @@ def put_aws_object(path, contents):
         aws_access_key_id=os.environ["AWS_S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
     )
-    s3_client.put_object(
-        Bucket=S3_BUCKET_NAME,
-        Key=path,
-        Body=contents,
+    retry_on_transient_s3_error(
+        lambda: s3_client.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=path,
+            Body=contents,
+        )
     )
 
 
@@ -40,12 +107,14 @@ def put_minio_object(path, contents):
         "s3",
         aws_access_key_id=os.environ["MINIO_S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-        endpoint_url="https://minio-api.deploys.pathway.com",
+        endpoint_url=MINIO_S3_ENDPOINT_URL,
     )
-    s3_client.put_object(
-        Bucket=MINIO_BUCKET_NAME,
-        Key=path,
-        Body=contents,
+    retry_on_transient_s3_error(
+        lambda: s3_client.put_object(
+            Bucket=MINIO_BUCKET_NAME,
+            Key=path,
+            Body=contents,
+        )
     )
 
 
@@ -55,9 +124,11 @@ def delete_aws_object(path):
         aws_access_key_id=os.environ["AWS_S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
     )
-    s3_client.delete_objects(
-        Bucket=S3_BUCKET_NAME,
-        Delete={"Objects": [{"Key": path}]},
+    retry_on_transient_s3_error(
+        lambda: s3_client.delete_objects(
+            Bucket=S3_BUCKET_NAME,
+            Delete={"Objects": [{"Key": path}]},
+        )
     )
 
 
@@ -66,11 +137,13 @@ def delete_minio_object(path):
         "s3",
         aws_access_key_id=os.environ["MINIO_S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-        endpoint_url="https://minio-api.deploys.pathway.com",
+        endpoint_url=MINIO_S3_ENDPOINT_URL,
     )
-    s3_client.delete_object(
-        Bucket=MINIO_BUCKET_NAME,
-        Key=path,
+    retry_on_transient_s3_error(
+        lambda: s3_client.delete_object(
+            Bucket=MINIO_BUCKET_NAME,
+            Key=path,
+        )
     )
 
 
