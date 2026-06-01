@@ -39,6 +39,27 @@ def _summarize_template(docs: list[str]) -> str:
     return f"summarize,{','.join(docs)}"
 
 
+class QueryTransformMockChat(llms.BaseChat):
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        return False
+
+    async def __wrapped__(self, messages: list[dict] | pw.Json, model: str) -> str:
+        content = messages[0]["content"].as_str()
+        if content.startswith("rewrite:"):
+            return content.removeprefix("rewrite:")
+        return model + "," + content
+
+
+@pw.udf
+def _query_transformer_prompt(query: str) -> str:
+    return "rewrite:bar"
+
+
+@pw.udf
+def _query_aware_prompt_template(context: str, query: str) -> str:
+    return f"{query}|{context}"
+
+
 def test_base_rag():
     schema = pw.schema_from_types(data=bytes, _metadata=dict)
     input = pw.debug.table_from_rows(
@@ -130,6 +151,61 @@ def test_rag_app_set_udf_prompt():
     assert isinstance(rag_app.prompt_udf, pw.UDF)
 
     assert _unwrap_udf(rag_app.prompt_udf)(query=" ", context=" ")
+
+
+def test_rag_app_set_query_transformer_prompt():
+    def query_transformer_prompt(query: str) -> str:
+        return f"rewrite:{query}"
+
+    rag_app = create_rag_app(query_transformer_prompt=query_transformer_prompt)
+
+    assert isinstance(rag_app.query_transformer_prompt_udf, pw.UDF)
+
+    assert _unwrap_udf(rag_app.query_transformer_prompt_udf)("foo") == "rewrite:foo"
+
+
+def test_base_rag_uses_transformed_query_for_retrieval():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQuestionAnswerer(
+        QueryTransformMockChat(),
+        vector_server,
+        prompt_template=_query_aware_prompt_template,
+        query_transformer_prompt=_query_transformer_prompt,
+        summarize_template=_summarize_template,
+        search_topk=1,
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", False),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+
+    casted_table = answer_output.select(
+        result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"])
+    )
+
+    assert_table_equality(
+        casted_table,
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt3.5,foo|bar
+            """
+        ),
+    )
 
 
 @pytest.mark.parametrize(

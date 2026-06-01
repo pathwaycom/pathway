@@ -146,6 +146,21 @@ def _get_context_processor_udf(
         )
 
 
+def _get_query_transformer_prompt_udf(
+    query_transformer_prompt: Callable[[str], str] | pw.UDF | None,
+) -> pw.UDF | None:
+    if query_transformer_prompt is None:
+        return None
+    if isinstance(query_transformer_prompt, pw.UDF):
+        return query_transformer_prompt
+    if callable(query_transformer_prompt):
+        return pw.udf(query_transformer_prompt)
+    raise ValueError(
+        "Query transformer prompt must be type of one of the following: "
+        "Callable[[str], str] | ~pw.UDF | None"
+    )
+
+
 def _query_chat(
     chat: BaseChat,
     t: Table,
@@ -456,6 +471,11 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             Either string template, callable or a pw.udf function is expected.
             Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
+        query_transformer_prompt: Prompt for transforming the user query before
+            retrieval. If set, it must be a callable or UDF that accepts the user
+            query and returns a prompt for ``llm``. The transformed LLM response
+            is used only for retrieval; the answer prompt still receives the
+            original user query. Defaults to ``None``.
         context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
@@ -516,6 +536,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         *,
         default_llm_name: str | None = None,
         prompt_template: str | Callable[[str, str], str] | pw.UDF = prompts.prompt_qa,
+        query_transformer_prompt: Callable[[str], str] | pw.UDF | None = None,
         context_processor: (
             BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
         ) = SimpleContextProcessor(),
@@ -535,6 +556,9 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self._init_schemas(default_llm_name)
 
         self.prompt_udf = _get_RAG_prompt_udf(prompt_template)
+        self.query_transformer_prompt_udf = _get_query_transformer_prompt_udf(
+            query_transformer_prompt
+        )
 
         if isinstance(context_processor, BaseContextProcessor):
             self.docs_to_context_transformer = context_processor.as_udf()
@@ -638,11 +662,28 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
 
-        pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
-            pw_ai_queries.select(
+        pw_ai_results = pw_ai_queries
+        if self.query_transformer_prompt_udf is not None:
+            pw_ai_results += pw_ai_results.select(
+                query_transformer_prompt=self.query_transformer_prompt_udf(
+                    pw.this.prompt
+                )
+            )
+            pw_ai_results += pw_ai_results.select(
+                search_query=self.llm(
+                    llms.prompt_chat_single_qa(pw.this.query_transformer_prompt),
+                    model=pw.this.model,
+                )
+            )
+            pw_ai_results = pw_ai_results.await_futures()
+        else:
+            pw_ai_results += pw_ai_results.select(search_query=pw.this.prompt)
+
+        pw_ai_results += self.indexer.retrieve_query(
+            pw_ai_results.select(
                 metadata_filter=pw.this.filters,
                 filepath_globpattern=pw.cast(str | None, None),
-                query=pw.this.prompt,
+                query=pw.this.search_query,
                 k=self.search_topk,
             )
         ).select(
