@@ -15,7 +15,7 @@ use crate::engine::graph::{
 use crate::engine::license::{Error as LicenseError, License};
 use crate::engine::{
     Computer as EngineComputer, Expressions, PyObjectWrapper as InternalPyObjectWrapper,
-    ShardPolicy, TotalFrontier,
+    ShardPolicy, TotalFrontier, WindowProperties,
 };
 use crate::persistence::frontier::OffsetAntichain;
 
@@ -1017,6 +1017,33 @@ impl PyObjectWrapper {
 
     fn from_internal(py: Python<'_>, ob: &InternalPyObjectWrapper) -> Self {
         Self::create_with_serializer(ob.get_inner(py), ob.get_serializer(py))
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "Window")]
+struct PyWindow {
+    inner: WindowProperties,
+}
+
+#[pymethods]
+impl PyWindow {
+    #[new]
+    #[pyo3(signature = (*, hop, ratio, duration, origin))]
+    fn new(hop: Value, ratio: Option<Value>, duration: Option<Value>, origin: Value) -> Self {
+        Self {
+            inner: WindowProperties {
+                hop,
+                ratio,
+                duration,
+                origin,
+            },
+        }
+    }
+}
+
+impl<'py> FromPyObject<'py> for WindowProperties {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyWindow>>()?.inner.clone())
     }
 }
 
@@ -3469,6 +3496,23 @@ impl Scope {
             table.handle,
             key_column_path,
             instance_column_path,
+            table_properties.0,
+        )?;
+        Table::new(self_, new_table_handle)
+    }
+
+    #[pyo3(signature = (table, key_column_path, window, table_properties))]
+    pub fn assign_windows(
+        self_: &Bound<Self>,
+        table: PyRef<Table>,
+        key_column_path: ColumnPath,
+        window: WindowProperties,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_.borrow().graph.assign_windows(
+            table.handle,
+            key_column_path,
+            window,
             table_properties.0,
         )?;
         Table::new(self_, new_table_handle)
@@ -7819,6 +7863,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     deltalake::aws::register_handlers(None);
 
     m.add_class::<Pointer>()?;
+    m.add_class::<PyWindow>()?;
     m.add_class::<PyObjectWrapper>()?;
     m.add_class::<PyReducer>()?;
     m.add_class::<PyReducerData>()?;

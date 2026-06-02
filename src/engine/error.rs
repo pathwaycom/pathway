@@ -154,6 +154,9 @@ pub enum Error {
     #[error("exactly once join is not supported in iteration")]
     ExactlyOnceJoinNotSupportedInIteration,
 
+    #[error("incorrect type of window parameter")]
+    IncorrectWindowParameter,
+
     #[error(transparent)]
     License(#[from] LicenseError),
 }

@@ -566,6 +566,37 @@ class AddSingleNewColumnPathEvaluator(
         )
 
 
+class AssignWindowsPathEvaluator(
+    PathEvaluator, context_types=[clmn.AssignWindowsContext]
+):
+    context: clmn.AssignWindowsContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
+    ) -> Storage:
+        prefixed_input_storage = input_storages[self.context.orig_universe].with_prefix(
+            (0,)
+        )
+        column_paths = {
+            self.context.window_start_column: ColumnPath((1,)),
+            self.context.window_end_column: ColumnPath((2,)),
+        }
+        paths = {}
+        for column in output_columns:
+            if column in column_paths:
+                paths[column] = column_paths[column]
+            else:
+                assert isinstance(column, clmn.ColumnWithReference)
+                original_column = column.expression._column
+                paths[column] = prefixed_input_storage.get_path(original_column)
+        return prefixed_input_storage.with_updated_paths(
+            paths, universe=self.context.universe
+        )
+
+
 class PromiseSameUniversePathEvaluator(
     PathEvaluator,
     context_types=[

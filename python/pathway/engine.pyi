@@ -186,6 +186,13 @@ class EngineErrorWithTrace(Exception):
     "Marker class to indicate engine error with trace"
     args: tuple[Exception, Trace | None]
 
+@dataclasses.dataclass
+class Window:
+    hop: Value
+    ratio: int | None
+    duration: Value | None
+    origin: Value
+
 class OtherWorkerError(Exception):
     "Marker class to indicate engine error resulting from other worker failure"
 
@@ -724,6 +731,13 @@ class Scope:
         table: Table,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def assign_windows(
+        self,
+        table: Table,
+        key_column_path: ColumnPath,
+        window: Window,
         table_properties: TableProperties,
     ) -> Table: ...
     def probe_table(self, table: Table, operator_id: int): ...

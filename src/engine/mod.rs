@@ -21,6 +21,7 @@ pub use graph::{
     ConcatHandle, Context, DataRow, ErrorLogHandle, ExportedTable, ExportedTableCallback,
     ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle, JoinData, JoinType,
     LegacyTable, ReducerData, ScopedGraph, TableHandle, TableProperties, UniverseHandle,
+    WindowProperties,
 };
 
 pub mod http_server;

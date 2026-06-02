@@ -1433,6 +1433,30 @@ class SetSchemaContextEvaluator(
         return self.state.get_table(self.context.universe)
 
 
+class AssignWindowsEvaluator(
+    ExpressionEvaluator, context_type=clmn.AssignWindowsContext
+):
+    context: clmn.AssignWindowsContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.orig_universe)
+        key_column_path = input_storage.get_path(self.context.key_column)
+        properties = self._table_properties(output_storage)
+        window = self.context.window
+        engine_window = api.Window(
+            hop=window.hop,
+            ratio=window.ratio,
+            duration=window.duration,
+            origin=window.origin,
+        )
+        return self.scope.assign_windows(
+            self.state.get_table(input_storage._universe),
+            key_column_path,
+            engine_window,
+            properties,
+        )
+
+
 class FilterOutValueEvaluator(
     ExpressionEvaluator, context_type=clmn.FilterOutValueContext
 ):

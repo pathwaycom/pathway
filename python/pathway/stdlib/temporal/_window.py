@@ -9,8 +9,10 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import pathway.internals as pw
+import pathway.internals.column as clmn
 from pathway.internals import dtype as dt
 from pathway.internals.arg_handlers import arg_handler, windowby_handler
+from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import desugar
 from pathway.internals.joins import validate_join_condition
 from pathway.internals.runtime_type_check import check_arg_types
@@ -253,12 +255,7 @@ class _SessionWindow(Window):
 
 
 @dataclasses.dataclass
-class _SlidingWindow(Window):
-    hop: IntervalType
-    duration: IntervalType | None
-    ratio: int | None
-    origin: TimeEventType | None
-
+class _SlidingWindow(clmn.SlidingWindow, Window):
     def __init__(
         self,
         hop: IntervalType,
@@ -270,56 +267,6 @@ class _SlidingWindow(Window):
         self.duration = duration
         self.ratio = ratio
         self.origin = origin
-
-    def _window_assignment_function(
-        self, key_dtype: dt.DType
-    ) -> Callable[[Any, TimeEventType], list[tuple[Any, TimeEventType, TimeEventType]]]:
-        if self.origin is None:
-            origin = get_default_origin(key_dtype)
-        else:
-            origin = self.origin
-
-        def kth_stable_window(k):
-            """Numerically stable k-th window."""
-            start = k * self.hop + origin
-
-            if self.ratio is not None:
-                end = (k + self.ratio) * self.hop + origin
-            else:
-                end = k * self.hop + origin + self.duration
-
-            return (start, end)
-
-        def assign_windows(instance: Any, key: TimeEventType):
-            """Returns the list of all the windows the given key belongs to.
-
-            Each window is a tuple (window_start, window_end) describing the range
-            of the window (window_start inclusive, window_end exclusive).
-            """
-            # compute lower and upper bound for multipliers (first_k and last_k) of hop
-            # for which corresponding windows could contain key.
-            last_k = int((key - origin) // self.hop) + 1  # type: ignore[operator, arg-type]
-            if self.ratio is not None:
-                first_k = last_k - self.ratio - 1
-            else:
-                assert self.duration is not None
-                first_k = last_k - int(self.duration // self.hop) - 1  # type: ignore[operator, arg-type]
-            first_k -= 1  # safety to avoid off-by one
-
-            candidate_windows = [
-                kth_stable_window(k) for k in range(first_k, last_k + 1)
-            ]
-
-            # filtering below is needed to handle case when hop > duration
-            return [
-                (instance, start, end)
-                for (start, end) in candidate_windows
-                if start <= key
-                and key < end
-                and (self.origin is None or start >= self.origin)
-            ]
-
-        return assign_windows
 
     @check_arg_types
     def _apply(
@@ -338,28 +285,12 @@ class _SlidingWindow(Window):
             }
         )
 
-        key_dtype = eval_type(key)
-        assign_windows = self._window_assignment_function(key_dtype)
-
-        target = table.with_columns(
-            _pw_window=pw.udf(
-                assign_windows,
-                return_type=dt.List(
-                    dt.Tuple(
-                        eval_type(instance),  # type: ignore
-                        key_dtype,
-                        key_dtype,
-                    )
-                ),
-                deterministic=True,
-            )(instance, key),
-            _pw_key=key,
-        )
-        target = target.flatten(target._pw_window, origin_id="_pw_original_id")
-        target = target.with_columns(
-            _pw_instance=pw.this._pw_window.get(0),
-            _pw_window_start=pw.this._pw_window.get(1),
-            _pw_window_end=pw.this._pw_window.get(2),
+        target = _assign_sliding_windows(
+            table,
+            key=key,
+            instance=instance,
+            window=self,
+            with_original_id=True,
         )
 
         if behavior is not None:
@@ -412,7 +343,7 @@ class _SlidingWindow(Window):
             and behavior.keep_results
         )
 
-        target = target.groupby(
+        result = target.groupby(
             target._pw_window,
             target._pw_window_start,
             target._pw_window_end,
@@ -422,7 +353,7 @@ class _SlidingWindow(Window):
             _is_window=True,
         )
 
-        return target
+        return result
 
     @check_arg_types
     def _join(
@@ -450,42 +381,19 @@ class _SlidingWindow(Window):
         assert time_expression_dtype == eval_type(
             right_time_expression
         )  # checked in check_joint_types
-        _pw_window_dtype = dt.List(
-            dt.Tuple(
-                dt.NONE,
-                time_expression_dtype,
-                time_expression_dtype,
-            )
+
+        left_window = _assign_sliding_windows(
+            left,
+            left_time_expression,
+            None,
+            window=self,
         )
 
-        assign_windows = self._window_assignment_function(time_expression_dtype)
-
-        left_window = left.with_columns(
-            _pw_window=pw.udf(
-                assign_windows,
-                return_type=_pw_window_dtype,
-                deterministic=True,
-            )(None, left_time_expression)
-        )
-        left_window = left_window.flatten(left_window._pw_window)
-
-        left_window = left_window.with_columns(
-            _pw_window_start=pw.this._pw_window.get(1),
-            _pw_window_end=pw.this._pw_window.get(2),
-        )
-
-        right_window = right.with_columns(
-            _pw_window=pw.udf(
-                assign_windows,
-                return_type=_pw_window_dtype,
-                deterministic=True,
-            )(None, right_time_expression)
-        )
-        right_window = right_window.flatten(right_window._pw_window)
-
-        right_window = right_window.with_columns(
-            _pw_window_start=pw.this._pw_window.get(1),
-            _pw_window_end=pw.this._pw_window.get(2),
+        right_window = _assign_sliding_windows(
+            right,
+            right_time_expression,
+            None,
+            window=self,
         )
 
         for cond in on:
@@ -905,3 +813,61 @@ def windowby(
     1        | 1     | 16    | 2
     """
     return window._apply(self, time_expr, behavior, instance)
+
+
+def _assign_sliding_windows(
+    self: pw.Table,
+    key: pw.ColumnExpression,
+    instance: pw.ColumnExpression | None,
+    *,
+    window: clmn.SlidingWindow,
+    with_original_id: bool = False,
+) -> pw.Table:
+    # The window assignment performed in the engine reindexes the rows, so we have
+    # to capture the original row id beforehand for the windowed groupby to use it.
+    if with_original_id:
+        updated = self.with_columns(
+            _pw_key=key, _pw_instance=instance, _pw_original_id=self.id
+        )
+    else:
+        updated = self.with_columns(_pw_key=key, _pw_instance=instance)
+    result = _assign_sliding_windows_internal(updated, window=window)
+    if window.origin is not None:
+        result = result.filter(pw.this._pw_window_start >= window.origin)
+    result = result.with_columns(
+        _pw_window=pw.make_tuple(
+            pw.this._pw_instance, pw.this._pw_window_start, pw.this._pw_window_end
+        )
+    )
+    return result
+
+
+@desugar
+@contextualized_operator
+def _assign_sliding_windows_internal(
+    self: pw.Table,
+    *,
+    window: clmn.SlidingWindow,
+) -> pw.Table:
+    key_dtype = self.eval_type(self._pw_key)
+    if window.origin is None:
+        window = window.with_updated_origin(get_default_origin(key_dtype))
+    if key_dtype == dt.FLOAT:
+        window = window.cast_to_float()
+    context = clmn.AssignWindowsContext(
+        orig_universe=self._universe,
+        key_column=self._eval(self._pw_key),
+        key_dtype=key_dtype,
+        window=window,
+    )
+    columns = {
+        name: self._wrap_column_in_context(context, column, name)
+        for name, column in self._columns.items()
+    }
+    columns.update(
+        {
+            "_pw_window_start": context.window_start_column,
+            "_pw_window_end": context.window_end_column,
+        }
+    )
+    return pw.Table(_columns=columns, _context=context)

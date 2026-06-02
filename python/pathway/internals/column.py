@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import KW_ONLY, dataclass
@@ -9,6 +10,8 @@ from functools import cached_property
 from itertools import chain
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, ClassVar
+
+from typing_extensions import Self
 
 import pathway.internals as pw
 from pathway.engine import ExternalIndexFactory
@@ -25,6 +28,7 @@ if TYPE_CHECKING:
     from pathway.internals.expression import InternalColRef
     from pathway.internals.operator import OutputHandle
     from pathway.internals.table import Table
+    from pathway.stdlib.temporal.utils import IntervalType, TimeEventType
 
 
 @dataclass(frozen=True)
@@ -1136,6 +1140,60 @@ class SortingContext(Context):
 
     def id_column_type(self) -> dt.DType:
         return self.original_id_column_dtype
+
+
+@dataclass
+class SlidingWindow:
+    hop: IntervalType
+    duration: IntervalType | None
+    ratio: int | None
+    origin: TimeEventType | None
+
+    def cast_to_float(self) -> Self:
+        assert isinstance(self.hop, int | float)
+        assert isinstance(self.duration, int | float | None)
+        assert isinstance(self.origin, int | float | None)
+        return type(self)(
+            hop=float(self.hop),
+            duration=float(self.duration) if self.duration is not None else None,  # type: ignore[arg-type]
+            ratio=self.ratio,
+            origin=float(self.origin) if self.origin is not None else None,  # type: ignore[arg-type]
+        )
+
+    def with_updated_origin(self, origin: TimeEventType) -> SlidingWindow:
+        return dataclasses.replace(self, origin=origin)
+
+
+@dataclass(eq=False, frozen=True)
+class AssignWindowsContext(Context):
+    """Context of window assignment operation."""
+
+    orig_universe: Universe
+    key_column: ColumnWithExpression
+    key_dtype: dt.DType
+    window: SlidingWindow
+
+    def column_dependencies_internal(self) -> Iterable[Column]:
+        return [self.key_column]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return Universe()
+
+    @cached_property
+    def window_start_column(self) -> Column:
+        return MaterializedColumn(
+            self.universe, cp.ColumnProperties(dtype=self.key_dtype)
+        )
+
+    @cached_property
+    def window_end_column(self) -> Column:
+        return MaterializedColumn(
+            self.universe, cp.ColumnProperties(dtype=self.key_dtype)
+        )
+
+    def id_column_type(self) -> dt.DType:
+        return dt.ANY_POINTER
 
 
 @dataclass(eq=False, frozen=True)

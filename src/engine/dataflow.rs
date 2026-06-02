@@ -14,6 +14,7 @@ pub mod persist;
 pub mod shard;
 pub mod time;
 mod variable;
+mod windows;
 
 use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
 use crate::connectors::data_format::{Formatter, Parser};
@@ -117,6 +118,7 @@ use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use self::time::{Epsilon, MaybeEpsilon, OriginalOrRetraction};
 use self::variable::SafeVariable;
+use self::windows::assign_windows;
 use super::error::{register_custom_panic_hook, DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
@@ -140,7 +142,7 @@ use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
     Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinData, JoinType, Key,
     LegacyTable, Reducer, ReducerData, Result, ShardPolicy, TableHandle, TableProperties,
-    Timestamp, UniverseHandle, Value,
+    Timestamp, UniverseHandle, Value, WindowProperties,
 };
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
@@ -2336,6 +2338,22 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(self
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
+
+    fn assign_windows(
+        &mut self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        window_properties: WindowProperties,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        assign_windows(
+            self,
+            table_handle,
+            key_column_path,
+            window_properties,
+            table_properties,
+        )
     }
 
     fn update_rows_arrange(
@@ -5870,6 +5888,21 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         Err(Error::NotSupportedInIteration)
     }
 
+    fn assign_windows(
+        &self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        window_properties: WindowProperties,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().assign_windows(
+            table_handle,
+            key_column_path,
+            window_properties,
+            table_properties,
+        )
+    }
+
     fn reindex_table(
         &self,
         table_handle: TableHandle,
@@ -6549,6 +6582,21 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_handle,
             key_column_path,
             instance_column_path,
+            table_properties,
+        )
+    }
+
+    fn assign_windows(
+        &self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        window_properties: WindowProperties,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().assign_windows(
+            table_handle,
+            key_column_path,
+            window_properties,
             table_properties,
         )
     }

@@ -429,6 +429,14 @@ impl TableProperties {
     }
 }
 
+#[derive(Clone)]
+pub struct WindowProperties {
+    pub hop: Value,
+    pub ratio: Option<Value>,
+    pub duration: Option<Value>,
+    pub origin: Value,
+}
+
 pub struct OperatorProperties {
     pub id: usize,
     pub depends_on_error_log: bool,
@@ -829,6 +837,14 @@ pub trait Graph {
         table_handle: TableHandle,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn assign_windows(
+        &self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        window_properties: WindowProperties,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -1409,6 +1425,23 @@ impl Graph for ScopedGraph {
                 table_handle,
                 key_column_path,
                 instance_column_path,
+                table_properties,
+            )
+        })
+    }
+
+    fn assign_windows(
+        &self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        window_properties: WindowProperties,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.assign_windows(
+                table_handle,
+                key_column_path,
+                window_properties,
                 table_properties,
             )
         })

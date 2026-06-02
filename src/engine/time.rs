@@ -448,6 +448,22 @@ impl Add for Duration {
     }
 }
 
+impl Add<DateTimeNaive> for Duration {
+    type Output = DateTimeNaive;
+
+    fn add(self, rhs: DateTimeNaive) -> Self::Output {
+        rhs + self
+    }
+}
+
+impl Add<DateTimeUtc> for Duration {
+    type Output = DateTimeUtc;
+
+    fn add(self, rhs: DateTimeUtc) -> Self::Output {
+        rhs + self
+    }
+}
+
 impl Sub for Duration {
     type Output = Self;
 
