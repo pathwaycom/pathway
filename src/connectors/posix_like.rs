@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use crate::connectors::data_storage::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::data_storage::{CommitPossibility, ConnectorMode};
 use crate::connectors::data_tokenize::Tokenize;
-use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, StorageType,
 };

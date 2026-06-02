@@ -8,7 +8,7 @@ use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
-use crate::connectors::data_lake::iceberg::IcebergSnapshotId;
+use crate::connectors::data_storage::data_lake::iceberg::IcebergSnapshotId;
 use crate::engine::value::HashInto;
 use crate::persistence::cached_object_storage::CachedObjectVersion;
 

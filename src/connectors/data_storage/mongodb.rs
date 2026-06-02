@@ -16,7 +16,7 @@ use mongodb::{
     Namespace as MongoNamespace,
 };
 
-use crate::connectors::bson::serialize_value_to_bson;
+use crate::connectors::data_format::bson::serialize_value_to_bson;
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::{
     CommitPossibility, ConnectorMode, DataEventType, ReaderContext,

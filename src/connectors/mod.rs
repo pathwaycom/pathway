@@ -17,26 +17,14 @@ use std::time::{Duration, Instant, SystemTime};
 use timely::dataflow::operators::probe::Handle;
 
 pub mod adaptors;
-pub mod aws;
 pub mod backlog;
-pub mod bson;
 pub mod data_format;
-pub mod data_lake;
 pub mod data_storage;
 pub mod data_tokenize;
-pub mod elasticsearch;
 pub mod metadata;
-pub mod mongodb;
 pub mod monitoring;
-pub mod mssql;
-pub mod mysql;
-pub mod nats;
 pub mod offset;
 pub mod posix_like;
-pub mod postgres;
-pub mod rabbitmq;
-pub mod scanner;
-pub mod sqlite;
 pub mod synchronization;
 
 use crate::connectors::monitoring::ConnectorMonitor;

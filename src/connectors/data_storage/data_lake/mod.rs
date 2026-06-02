@@ -28,7 +28,7 @@ use once_cell::sync::Lazy;
 use uuid::Uuid;
 
 use crate::connectors::data_format::{NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME};
-use crate::connectors::data_lake::buffering::PayloadType;
+use crate::connectors::data_storage::data_lake::buffering::PayloadType;
 use crate::connectors::data_storage::ConversionError;
 use crate::connectors::data_storage::ValuesMap;
 use crate::connectors::{WriteError, SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};

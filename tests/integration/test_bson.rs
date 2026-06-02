@@ -8,7 +8,7 @@ use ndarray::{arr1, arr2, ArrayD, IxDyn};
 use ordered_float::OrderedFloat;
 use serde_json::json;
 
-use pathway_engine::connectors::bson::BsonParser;
+use pathway_engine::connectors::data_format::bson::BsonParser;
 use pathway_engine::connectors::data_format::{
     BsonFormatter, Formatter, InnerSchemaField, ParsedEventWithErrors, Parser,
 };

@@ -13,12 +13,12 @@ use tempfile::tempdir;
 use pathway_engine::connectors::data_format::{
     FieldSource, Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
 };
-use pathway_engine::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
-use pathway_engine::connectors::data_lake::buffering::{
+use pathway_engine::connectors::data_storage::data_lake::arrow::construct_schema as construct_arrow_schema;
+use pathway_engine::connectors::data_storage::data_lake::buffering::{
     AppendOnlyColumnBuffer, SnapshotColumnBuffer,
 };
-use pathway_engine::connectors::data_lake::delta::open_and_read_delta_table;
-use pathway_engine::connectors::data_lake::{
+use pathway_engine::connectors::data_storage::data_lake::delta::open_and_read_delta_table;
+use pathway_engine::connectors::data_storage::data_lake::{
     construct_column_order, construct_column_types_map, parquet_row_into_values_map,
     DeltaBatchWriter, MaintenanceMode,
 };

@@ -37,8 +37,8 @@ use super::{
 use crate::connectors::data_format::{
     NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME, NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
 };
-use crate::connectors::data_lake::buffering::PayloadType;
-use crate::connectors::data_lake::MetadataPerColumn;
+use crate::connectors::data_storage::data_lake::buffering::PayloadType;
+use crate::connectors::data_storage::data_lake::MetadataPerColumn;
 use crate::connectors::data_storage::{CommitPossibility, ConnectorMode};
 use crate::connectors::metadata::IcebergMetadata;
 use crate::connectors::{

@@ -52,13 +52,13 @@ use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{
     parse_bool_advanced, NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME,
 };
-use crate::connectors::data_lake::buffering::PayloadType;
-use crate::connectors::data_lake::ArrowDataType;
+use crate::connectors::data_storage::data_lake::buffering::PayloadType;
+use crate::connectors::data_storage::data_lake::ArrowDataType;
+use crate::connectors::data_storage::scanner::S3Scanner;
 use crate::connectors::data_storage::{
     CommitPossibility, ConnectorMode, ConversionError, ValuesMap,
 };
 use crate::connectors::metadata::ParquetMetadata;
-use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
     StorageType, WriteError, SPECIAL_FIELD_TIME,

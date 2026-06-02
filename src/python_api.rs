@@ -4,7 +4,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use crate::async_runtime::create_async_tokio_runtime;
-use crate::connectors::postgres::{
+use crate::connectors::data_storage::postgres::{
     create_psql_client, PsqlConnectionConfig, ReplicationSettings as PsqlInnerReplicationSettings,
     SslMode,
 };
@@ -95,21 +95,27 @@ use self::external_index_wrappers::{
 };
 use self::threads::PythonThreadState;
 
-use crate::connectors::aws::{DynamoDBWriter, KinesisReader, KinesisWriter};
-use crate::connectors::bson::BsonFormatter;
+use crate::connectors::data_format::bson::BsonFormatter;
 use crate::connectors::data_format::{
     BsonParser, DebeziumDBType, DebeziumMessageParser, DsvSettings, FieldSource, Formatter,
     IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
     KeyGenerationPolicy, NullFormatter, Parser, RegistryEncoderWrapper, SingleColumnFormatter,
     TransparentParser, METADATA_FIELD_NAME,
 };
-use crate::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
-use crate::connectors::data_lake::buffering::{
+use crate::connectors::data_storage::aws::{DynamoDBWriter, KinesisReader, KinesisWriter};
+use crate::connectors::data_storage::data_lake::arrow::construct_schema as construct_arrow_schema;
+use crate::connectors::data_storage::data_lake::buffering::{
     AppendOnlyColumnBuffer, ColumnBuffer, SnapshotColumnBuffer,
 };
-use crate::connectors::data_lake::delta::DeltaOptimizerRule;
-use crate::connectors::data_lake::iceberg::{IcebergBatchWriter, IcebergTableParams};
-use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode, PathwayStorageFactory};
+use crate::connectors::data_storage::data_lake::delta::DeltaOptimizerRule;
+use crate::connectors::data_storage::data_lake::iceberg::{IcebergBatchWriter, IcebergTableParams};
+use crate::connectors::data_storage::data_lake::{
+    DeltaBatchWriter, MaintenanceMode, PathwayStorageFactory,
+};
+use crate::connectors::data_storage::mssql::MssqlWriter;
+use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
+use crate::connectors::data_storage::nats;
+use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader,
     KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader,
@@ -120,11 +126,7 @@ use crate::connectors::data_storage::{
     Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
-use crate::connectors::mssql::MssqlWriter;
-use crate::connectors::mysql::{MysqlReader, MysqlWriter};
-use crate::connectors::nats;
 use crate::connectors::posix_like::PosixLikeReader;
-use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::synchronization::ConnectorGroupDescriptor;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
@@ -234,7 +236,7 @@ async fn build_rabbitmq_environment(
         .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
 }
 
-use crate::connectors::rabbitmq::probe_last_offset;
+use crate::connectors::data_storage::rabbitmq::probe_last_offset;
 
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 

@@ -8,9 +8,11 @@ use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
 use serde_json::json;
 
 use pathway_engine::connectors::data_format::{FieldSource, FormatterContext};
-use pathway_engine::connectors::data_lake::arrow::construct_schema as construct_arrow_schema;
-use pathway_engine::connectors::data_lake::buffering::{AppendOnlyColumnBuffer, PayloadType};
-use pathway_engine::connectors::data_lake::{
+use pathway_engine::connectors::data_storage::data_lake::arrow::construct_schema as construct_arrow_schema;
+use pathway_engine::connectors::data_storage::data_lake::buffering::{
+    AppendOnlyColumnBuffer, PayloadType,
+};
+use pathway_engine::connectors::data_storage::data_lake::{
     columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, MaintenanceMode,
 };
 use pathway_engine::connectors::data_storage::{LakeWriter, WriteError, Writer};

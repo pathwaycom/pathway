@@ -8,13 +8,13 @@ use mongodb::bson::{
 use ndarray::{ArrayViewD, Axis};
 use ordered_float::OrderedFloat;
 
-use crate::connectors::data_format::{
+use super::{
     ensure_all_fields_in_schema, Formatter, FormatterContext, FormatterError, InnerSchemaField,
-    ParsedEventWithErrors,
+    ParseError, ParseResult, ParsedEventWithErrors, Parser,
 };
 use crate::connectors::data_storage::{ConversionError, DataEventType};
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::{ParseError, ParseResult, Parser, ReaderContext, SessionType};
+use crate::connectors::{ReaderContext, SessionType};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::time::DateTime as DateTimeTrait;
 use crate::engine::value::parse_pathway_pointer;

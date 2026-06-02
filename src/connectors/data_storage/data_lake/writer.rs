@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use crate::connectors::data_format::FormatterContext;
-use crate::connectors::data_lake::buffering::ColumnBuffer;
-use crate::connectors::data_lake::LakeBatchWriter;
+use crate::connectors::data_storage::data_lake::buffering::ColumnBuffer;
+use crate::connectors::data_storage::data_lake::LakeBatchWriter;
 use crate::connectors::{WriteError, Writer};
 
 #[allow(clippy::module_name_repetitions)]

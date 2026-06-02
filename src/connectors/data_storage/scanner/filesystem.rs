@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use log::error;
 
+use crate::connectors::data_storage::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::metadata::FileLikeMetadata;
-use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::ReadError;
 use crate::persistence::cached_object_storage::CachedObjectStorage;
 

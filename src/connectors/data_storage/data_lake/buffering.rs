@@ -10,7 +10,7 @@ use super::{
     MaintenanceMode, SPECIAL_FIELD_ID,
 };
 use crate::connectors::data_format::FormatterContext;
-use crate::connectors::data_lake::arrow::array_for_type as arrow_array_for_type;
+use crate::connectors::data_storage::data_lake::arrow::array_for_type as arrow_array_for_type;
 use crate::connectors::WriteError;
 use crate::engine::{Key, Value};
 use crate::python_api::ValueField;

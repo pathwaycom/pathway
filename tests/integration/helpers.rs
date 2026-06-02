@@ -17,13 +17,13 @@ use pathway_engine::connectors::data_format::{
     ErrorRemovalLogic, FieldSource, FormattedDocument, KeyFieldsWithErrors, ParseResult,
     ParsedEvent, ParsedEventWithErrors, Parser, ValueFieldsWithErrors,
 };
+use pathway_engine::connectors::data_storage::scanner::FilesystemScanner;
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, DataEventType, ReadError, ReadMethod, ReadResult, Reader, ReaderBuilder,
     ReaderContext,
 };
 use pathway_engine::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
 use pathway_engine::connectors::posix_like::PosixLikeReader;
-use pathway_engine::connectors::scanner::FilesystemScanner;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
 use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Type, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;

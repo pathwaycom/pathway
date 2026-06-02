@@ -1,25 +1,42 @@
 // Copyright © 2026 Pathway
 
-use base64::Engine;
-use pyo3::exceptions::PyValueError;
-use pyo3::types::PyBytes;
+pub mod aws;
+pub mod data_lake;
+pub mod elasticsearch;
+pub mod file;
+pub mod kafka;
+pub mod mongodb;
+pub mod mqtt;
+pub mod mssql;
+pub mod mysql;
+pub mod nats;
+pub mod null;
+pub mod postgres;
+pub mod python;
+pub mod questdb;
+pub mod rabbitmq;
+pub mod scanner;
+pub mod sqlite;
+
+pub use file::FileWriter;
+pub use kafka::{KafkaReader, KafkaWriter, RdkafkaWatermark};
+pub use mqtt::{MqttReader, MqttWriter, MQTT_CLIENT_MAX_CHANNEL_SIZE, MQTT_MAX_MESSAGES_IN_QUEUE};
+pub use null::NullWriter;
+pub use python::{PythonReader, PythonReaderBuilder};
+pub use questdb::{QuestDBAtColumnPolicy, QuestDBWriter};
+
 use s3::error::S3Error;
 use std::any::type_name;
-use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Display};
 use std::io;
 use std::io::BufRead;
-use std::io::BufWriter;
-use std::io::Write;
-use std::mem::take;
 use std::str::Utf8Error;
-use std::sync::Arc;
-use std::time::Duration;
 
-use arcstr::ArcStr;
+use ::mongodb::bson::Document as BsonDocument;
+use ::questdb::Error as QuestDBError;
 use async_nats::jetstream::consumer::pull::MessagesErrorKind;
 use async_nats::jetstream::consumer::StreamErrorKind;
 use aws_sdk_dynamodb::error::BuildError as AwsBuildError;
@@ -29,43 +46,24 @@ use deltalake::datafusion::common::DataFusionError;
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::parquet::errors::ParquetError;
 use itertools::Itertools;
-use log::{error, info, warn};
-use mongodb::bson::Document as BsonDocument;
-use questdb::ingress::{
-    Buffer as QuestDBBuffer, Sender as QuestDBSender, Timestamp as QuestDBTimestamp,
-    TimestampMicros as QuestDBTimestampMicros, TimestampNanos as QuestDBTimestampNanos,
-};
-use questdb::Error as QuestDBError;
-use rumqttc::{
-    mqttbytes::QoS as MqttQoS, Client as MqttClient, ClientError as MqttClientError,
-    Connection as MqttConnection, ConnectionError as MqttConnectionError, Event as MqttEvent,
-    Incoming as MqttIncoming, Outgoing as MqttOutgoing, Packet as MqttPacket,
-};
+use log::error;
+use rumqttc::{ClientError as MqttClientError, ConnectionError as MqttConnectionError};
 
-use crate::connectors::aws::dynamodb::Error as AwsDynamoDBError;
-use crate::connectors::aws::kinesis::Error as AwsKinesisError;
-use crate::connectors::aws::kinesis::KinesisReader;
-use crate::connectors::data_format::{
-    create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
-    COMMIT_LITERAL,
-};
-use crate::connectors::data_lake::buffering::IncorrectSnapshotError;
-use crate::connectors::metadata::{KafkaMetadata, SourceMetadata};
+use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
+use crate::connectors::data_storage::aws::dynamodb::Error as AwsDynamoDBError;
+use crate::connectors::data_storage::aws::kinesis::Error as AwsKinesisError;
+use crate::connectors::data_storage::aws::kinesis::KinesisReader;
+use crate::connectors::data_storage::data_lake::buffering::IncorrectSnapshotError;
+use crate::connectors::data_storage::scanner::s3::S3CommandName;
+use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::posix_like::PosixLikeReader;
-use crate::connectors::scanner::s3::S3CommandName;
-use crate::connectors::{Offset, OffsetKey, OffsetValue, SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
-use crate::engine::error::limit_length;
+use crate::connectors::{Offset, OffsetValue};
 use crate::engine::error::DynResult;
-use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
-use crate::engine::time::DateTime;
 use crate::engine::{Key, Type, Value};
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{PersistentId, UniqueName};
-use crate::python_api::extract_value;
-use crate::python_api::threads::PythonThreadState;
-use crate::python_api::PythonSubject;
 use crate::python_api::ValueField;
 
 use async_nats::client::FlushError as NatsFlushError;
@@ -75,29 +73,23 @@ use async_nats::jetstream::context::PublishErrorKind as JetStreamPublishError;
 use bincode::ErrorKind as BincodeError;
 use glob::PatternError as GlobPatternError;
 use pyo3::prelude::*;
-use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
-use rdkafka::error::{KafkaError, RDKafkaErrorCode};
-use rdkafka::message::BorrowedMessage;
-use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedProducer};
-use rdkafka::topic_partition_list::Offset as KafkaOffset;
-use rdkafka::Message;
-use rdkafka::TopicPartitionList;
+use rdkafka::error::KafkaError;
 use serde::{Deserialize, Serialize};
 
-pub use super::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
-pub use super::data_lake::iceberg::{IcebergError, IcebergReader};
-pub use super::data_lake::LakeWriter;
-pub use super::elasticsearch::ElasticSearchWriter;
-pub use super::mongodb::{MongoReader, MongoWriter};
-pub use super::mssql::{MssqlError, MssqlReader};
-pub use super::mysql::{MysqlError, MysqlReader, MysqlReaderError};
-pub use super::nats::NatsReader;
-pub use super::nats::NatsWriter;
-pub use super::postgres::{
+pub use self::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
+pub use self::data_lake::iceberg::{IcebergError, IcebergReader};
+pub use self::data_lake::LakeWriter;
+pub use self::elasticsearch::ElasticSearchWriter;
+pub use self::mongodb::{MongoReader, MongoWriter};
+pub use self::mssql::{MssqlError, MssqlReader};
+pub use self::mysql::{MysqlError, MysqlReader, MysqlReaderError};
+pub use self::nats::NatsReader;
+pub use self::nats::NatsWriter;
+pub use self::postgres::{
     PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
-pub use super::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
-pub use super::sqlite::{SqliteError, SqliteReader, SqliteWriter};
+pub use self::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
+pub use self::sqlite::{SqliteError, SqliteReader, SqliteWriter};
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -282,7 +274,7 @@ pub enum ReadResult {
     Data(ReaderContext, Offset),
 }
 
-use crate::connectors::mongodb::MongoDbError;
+use crate::connectors::data_storage::mongodb::MongoDbError;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -385,8 +377,8 @@ impl From<AwsKinesisError> for ReadError {
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, ReadError>`.
 // Routes through `MongoDbError::Driver` so the full chain is `ReadError::MongoDb`.
-impl From<mongodb::error::Error> for ReadError {
-    fn from(e: mongodb::error::Error) -> Self {
+impl From<::mongodb::error::Error> for ReadError {
+    fn from(e: ::mongodb::error::Error) -> Self {
         ReadError::MongoDb(MongoDbError::Driver(e))
     }
 }
@@ -395,8 +387,8 @@ impl From<mongodb::error::Error> for ReadError {
 // functions returning `Result<_, ReadError>`. Both route through the
 // unified `PostgresError` so `ReadError` carries a single
 // `Postgres(_)` variant.
-impl From<postgres::Error> for ReadError {
-    fn from(e: postgres::Error) -> Self {
+impl From<::postgres::Error> for ReadError {
+    fn from(e: ::postgres::Error) -> Self {
         ReadError::Postgres(PostgresError::Postgres(e))
     }
 }
@@ -625,10 +617,8 @@ pub trait Reader {
                             filename: rhs_file,
                             position: rhs_pos,
                         },
-                    ) if super::mysql::binlog_coords_cmp(
-                        rhs_file, *rhs_pos, lhs_file, *lhs_pos,
-                    )
-                    .is_gt() =>
+                    ) if self::mysql::binlog_coords_cmp(rhs_file, *rhs_pos, lhs_file, *lhs_pos)
+                        .is_gt() =>
                     {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
@@ -771,7 +761,7 @@ pub enum WriteError {
     UnsupportedType(Type),
 
     #[error("elasticsearch client error: {0:?}")]
-    Elasticsearch(elasticsearch::Error),
+    Elasticsearch(::elasticsearch::Error),
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
@@ -830,8 +820,8 @@ pub enum WriteError {
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, WriteError>`.
 // Routes through `MongoDbError::Driver` so the full chain is `WriteError::MongoDB`.
-impl From<mongodb::error::Error> for WriteError {
-    fn from(e: mongodb::error::Error) -> Self {
+impl From<::mongodb::error::Error> for WriteError {
+    fn from(e: ::mongodb::error::Error) -> Self {
         WriteError::MongoDB(MongoDbError::Driver(e))
     }
 }
@@ -856,8 +846,8 @@ impl From<iceberg::Error> for ReadError {
 // returning `Result<_, WriteError>`. Both route through the unified
 // `PostgresError` so `WriteError` carries a single `Postgres(_)`
 // variant.
-impl From<postgres::Error> for WriteError {
-    fn from(e: postgres::Error) -> Self {
+impl From<::postgres::Error> for WriteError {
+    fn from(e: ::postgres::Error) -> Self {
         WriteError::Postgres(PostgresError::Postgres(e))
     }
 }
@@ -889,20 +879,6 @@ pub trait Writer: Send {
     }
 }
 
-pub struct FileWriter {
-    writer: BufWriter<std::fs::File>,
-    output_path: String,
-}
-
-impl FileWriter {
-    pub fn new(writer: BufWriter<std::fs::File>, output_path: String) -> FileWriter {
-        FileWriter {
-            writer,
-            output_path,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadMethod {
     ByLine,
@@ -921,306 +897,6 @@ impl ReadMethod {
     }
 }
 
-impl Writer for FileWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
-            self.writer.write_all(&payload.into_raw_bytes()?)?;
-            self.writer.write_all(b"\n")?;
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        self.writer.flush()?;
-        Ok(())
-    }
-
-    fn name(&self) -> String {
-        format!("FileSystem({})", self.output_path)
-    }
-}
-
-pub struct RdkafkaWatermark {
-    pub low: i64,
-    pub high: i64,
-}
-
-impl RdkafkaWatermark {
-    pub fn new(low: i64, high: i64) -> Self {
-        Self { low, high }
-    }
-
-    /// Checks if the offset is contained within a watermark.
-    /// The offset can't be lower than the lower bound of the
-    /// watermark, but it can pass beyond the upper bound, if
-    /// new data were written after the pipeline start.
-    pub fn contains_offset(&self, offset: i64) -> bool {
-        offset < self.high
-    }
-
-    /// The given watermark has messages if the next used offset is
-    /// greater than the beginning of the observed interval.
-    /// The beginning of an empty interval can still be non-zero
-    /// if topic compaction took place.
-    pub fn has_messages(&self) -> bool {
-        self.low < self.high
-    }
-
-    /// The `self.high` is the offset of the next message that will
-    /// be written into partition, therefore the partition has more
-    /// messages if the provided offset doesn't correspond to the last
-    /// message in the watermark.
-    pub fn has_messages_after_offset(&self, offset: i64) -> bool {
-        offset < self.high - 1
-    }
-}
-
-pub struct KafkaReader {
-    consumer: BaseConsumer<DefaultConsumerContext>,
-    topic: ArcStr,
-    positions_for_seek: HashMap<i32, KafkaOffset>,
-    watermarks: Vec<RdkafkaWatermark>,
-    deferred_read_result: Option<ReadResult>,
-    mode: ConnectorMode,
-}
-
-impl Reader for KafkaReader {
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(deferred_read_result) = take(&mut self.deferred_read_result) {
-            return Ok(deferred_read_result);
-        }
-
-        loop {
-            let kafka_message = match self.mode {
-                ConnectorMode::Streaming => self
-                    .consumer
-                    .poll(None)
-                    .expect("poll in streaming mode should never timeout")?,
-                ConnectorMode::Static => {
-                    if let Some(kafka_message) = self.next_message_in_static_mode()? {
-                        kafka_message
-                    } else {
-                        return Ok(ReadResult::Finished);
-                    }
-                }
-            };
-            let message_key = kafka_message.key().map(<[u8]>::to_vec);
-            let message_payload = kafka_message.payload().map(<[u8]>::to_vec);
-
-            if let Some(lazy_seek_offset) = self.positions_for_seek.get(&kafka_message.partition())
-            {
-                info!(
-                    "Performing Kafka topic seek for ({}, {}) to {:?}",
-                    kafka_message.topic(),
-                    kafka_message.partition(),
-                    lazy_seek_offset
-                );
-                // If there is a need for seek, perform it and remove the seek requirement.
-                if let Err(e) = self.consumer.seek(
-                    kafka_message.topic(),
-                    kafka_message.partition(),
-                    *lazy_seek_offset,
-                    None,
-                ) {
-                    error!(
-                        "Failed to seek topic and partition ({}, {}) to offset {:?}: {e}",
-                        kafka_message.topic(),
-                        kafka_message.partition(),
-                        lazy_seek_offset,
-                    );
-                } else {
-                    self.positions_for_seek.remove(&kafka_message.partition());
-                }
-                continue;
-            }
-
-            let offset = {
-                let offset_key = OffsetKey::Kafka(self.topic.clone(), kafka_message.partition());
-                let offset_value = OffsetValue::KafkaOffset(kafka_message.offset());
-                (offset_key, offset_value)
-            };
-            let metadata = KafkaMetadata::from_rdkafka_message(&kafka_message);
-            let message = ReaderContext::from_key_value(message_key, message_payload);
-            self.deferred_read_result = Some(ReadResult::Data(message, offset));
-
-            return Ok(ReadResult::NewSource(metadata.into()));
-        }
-    }
-
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        // "Lazy" seek implementation
-        for (offset_key, offset_value) in frontier {
-            let OffsetValue::KafkaOffset(position) = offset_value else {
-                warn!("Unexpected type of offset in Kafka frontier: {offset_value:?}");
-                continue;
-            };
-            if let OffsetKey::Kafka(topic, partition) = offset_key {
-                if self.topic != *topic {
-                    warn!(
-                        "Unexpected topic name. Expected: {}, Got: {topic}",
-                        self.topic
-                    );
-                    continue;
-                }
-
-                /*
-                    Note: we can't do seek straight away, because it works only for
-                    assigned partitions.
-
-                    We also don't do any kind of assignment here, because it needs
-                    to be done on behalf of rdkafka client, taking account of other
-                    members in its' consumer group.
-                */
-                self.positions_for_seek
-                    .insert(*partition, KafkaOffset::Offset(*position + 1));
-            } else {
-                error!("Unexpected offset in Kafka frontier: ({offset_key:?}, {offset_value:?})");
-            }
-        }
-
-        Ok(())
-    }
-
-    fn short_description(&self) -> Cow<'static, str> {
-        format!("Kafka({})", self.topic).into()
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::Kafka
-    }
-
-    fn max_allowed_consecutive_errors(&self) -> usize {
-        32
-    }
-}
-
-impl KafkaReader {
-    pub fn new(
-        consumer: BaseConsumer<DefaultConsumerContext>,
-        topic: String,
-        positions_for_seek: HashMap<i32, KafkaOffset>,
-        watermarks: Vec<RdkafkaWatermark>,
-        mode: ConnectorMode,
-    ) -> KafkaReader {
-        KafkaReader {
-            consumer,
-            topic: topic.into(),
-            positions_for_seek,
-            watermarks,
-            mode,
-            deferred_read_result: None,
-        }
-    }
-
-    fn poll_duration_for_static_mode() -> Duration {
-        Duration::from_millis(500)
-    }
-
-    /// Default timeout for different broker metadata requests
-    pub fn default_timeout() -> Duration {
-        Duration::from_secs(30)
-    }
-
-    fn polling_attempts_count_for_static_mode() -> usize {
-        60
-    }
-
-    fn message_matches_static_read_constraints(&self, message: &BorrowedMessage<'_>) -> bool {
-        let partition: usize = message
-            .partition()
-            .try_into()
-            .expect("kafka partition can't be negative");
-        if partition >= self.watermarks.len() {
-            // New partitions have been added after the boundaries for the
-            // chunk to be read have been computed. In this case, the message
-            // must be skipped.
-            return false;
-        }
-        self.watermarks[partition].contains_offset(message.offset())
-    }
-
-    fn static_read_has_finished(&self) -> Result<bool, ReadError> {
-        let total_partitions = self.watermarks.len();
-        let mut tpl = TopicPartitionList::with_capacity(total_partitions);
-        for partition_idx in 0..total_partitions {
-            tpl.add_partition(
-                self.topic.as_str(),
-                partition_idx
-                    .try_into()
-                    .expect("kafka partition must fit 32-bit signed integer"),
-            );
-        }
-        let committed_offsets = self
-            .consumer
-            .committed_offsets(tpl, Self::default_timeout())?;
-        for committed_offset in committed_offsets.elements() {
-            let partition: usize = committed_offset
-                .partition()
-                .try_into()
-                .expect("kafka partition can't be negative");
-            let offset = match committed_offset.offset() {
-                KafkaOffset::End => {
-                    // The exact offset is not reported, but it's greater than the
-                    // threshold.
-                    continue;
-                }
-                KafkaOffset::Invalid => {
-                    if self.watermarks[partition].has_messages() {
-                        return Ok(false);
-                    }
-                    // It is OK to have unassigned offsets for empty partitions.
-                    continue;
-                }
-                KafkaOffset::Offset(offset) => offset,
-                _ => {
-                    // There is no way to compare this offset to the desired border.
-                    return Ok(false);
-                }
-            };
-            if self.watermarks[partition].has_messages_after_offset(offset) {
-                // The committed offset is still smaller than the last offset to be read
-                // from this partition.
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-
-    fn next_message_in_static_mode(&self) -> Result<Option<BorrowedMessage<'_>>, ReadError> {
-        let mut result_message = None;
-        let mut is_finished = false;
-        let n_attempts = Self::polling_attempts_count_for_static_mode();
-        for _ in 0..n_attempts {
-            let maybe_kafka_message = self.consumer.poll(Self::poll_duration_for_static_mode());
-            if let Some(maybe_matching_message) = maybe_kafka_message {
-                let maybe_matching_message = maybe_matching_message?;
-                if self.message_matches_static_read_constraints(&maybe_matching_message) {
-                    result_message = Some(maybe_matching_message);
-                    break;
-                }
-
-                // The message goes beyond the specified border within the partition or belongs
-                // a partition that must not be read at all.
-                // Stop reading the further messages from this partition, since they will
-                // have greater offsets.
-                let mut tpl = TopicPartitionList::with_capacity(1);
-                tpl.add_partition(self.topic.as_str(), maybe_matching_message.partition());
-                self.consumer.pause(&tpl)?;
-            }
-
-            if self.static_read_has_finished()? {
-                is_finished = true;
-                break;
-            }
-        }
-        if !is_finished && result_message.is_none() {
-            warn!("There was no explicit finish detected from Kafka topic '{}', but no matching events were read after {n_attempts} attempts, with {:?} duration each.", self.topic, Self::poll_duration_for_static_mode());
-        }
-        Ok(result_message)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectorMode {
     Static,
@@ -1233,232 +909,6 @@ impl ConnectorMode {
             ConnectorMode::Static => false,
             ConnectorMode::Streaming => true,
         }
-    }
-}
-
-pub struct PythonReaderBuilder {
-    subject: Py<PythonSubject>,
-    schema: HashMap<String, Type>,
-}
-
-pub struct PythonReader {
-    subject: Py<PythonSubject>,
-    schema: HashMap<String, Type>,
-    total_entries_read: u64,
-    current_external_offset: Arc<[u8]>,
-    is_initialized: bool,
-    is_finished: bool,
-
-    #[allow(unused)]
-    python_thread_state: PythonThreadState,
-}
-
-impl PythonReaderBuilder {
-    pub fn new(subject: Py<PythonSubject>, schema: HashMap<String, Type>) -> Self {
-        Self { subject, schema }
-    }
-}
-
-impl ReaderBuilder for PythonReaderBuilder {
-    fn build(self: Box<Self>) -> Result<Box<dyn Reader>, ReadError> {
-        let python_thread_state = PythonThreadState::new();
-        let Self { subject, schema } = *self;
-
-        Ok(Box::new(PythonReader {
-            subject,
-            schema,
-            python_thread_state,
-            total_entries_read: 0,
-            is_initialized: false,
-            is_finished: false,
-            current_external_offset: vec![].into(),
-        }))
-    }
-
-    fn short_description(&self) -> Cow<'static, str> {
-        type_name::<Self>().into()
-    }
-
-    fn name(&self, unique_name: Option<&UniqueName>) -> String {
-        if let Some(unique_name) = unique_name {
-            unique_name.clone()
-        } else {
-            let desc = self.short_description();
-            desc.split("::").last().unwrap().replace("Builder", "")
-        }
-    }
-
-    fn is_internal(&self) -> bool {
-        self.subject.get().is_internal
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::Python
-    }
-}
-
-impl PythonReader {
-    fn conversion_error(
-        ob: &Bound<PyAny>,
-        name: String,
-        type_: Type,
-        err: &PyErr,
-    ) -> ConversionError {
-        let value_repr = limit_length(format!("{ob}"), STANDARD_OBJECT_LENGTH_LIMIT);
-        ConversionError::new(value_repr, name, type_, Some(err.to_string()))
-    }
-
-    fn current_offset(&self) -> Offset {
-        (
-            OffsetKey::Empty,
-            OffsetValue::PythonCursor {
-                total_entries_read: self.total_entries_read,
-                raw_external_offset: self.current_external_offset.clone(),
-            },
-        )
-    }
-}
-
-const PW_OFFSET_FIELD_NAME: &str = "_pw_offset";
-
-impl Reader for PythonReader {
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        Python::with_gil(|py| {
-            self.subject
-                .borrow(py)
-                .on_persisted_run
-                .call0(py)
-                .map_err(ReadError::Py)
-        })?;
-
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::PythonCursor {
-            total_entries_read,
-            raw_external_offset,
-        }) = offset_value
-        else {
-            if offset_value.is_some() {
-                warn!("Incorrect type of offset value in Python frontier: {offset_value:?}");
-            }
-            return Ok(());
-        };
-
-        self.total_entries_read = *total_entries_read;
-        if !raw_external_offset.is_empty() {
-            Python::with_gil(|py| {
-                let data: Vec<u8> = raw_external_offset.to_vec();
-                let py_external_offset = PyBytes::new(py, &data).unbind().into_any();
-                self.subject
-                    .borrow(py)
-                    .seek
-                    .call1(py, (py_external_offset.borrow(),))
-                    .map_err(ReadError::Py)
-            })?;
-            self.current_external_offset = raw_external_offset.clone();
-        }
-
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if !self.is_initialized {
-            Python::with_gil(|py| self.subject.borrow(py).start.call0(py))?;
-            self.is_initialized = true;
-        }
-        if self.is_finished {
-            return Ok(ReadResult::Finished);
-        }
-
-        Python::with_gil(|py| {
-            let (py_event, key, objects): (
-                PythonConnectorEventType,
-                Option<Value>,
-                HashMap<String, Py<PyAny>>,
-            ) = self
-                .subject
-                .borrow(py)
-                .read
-                .call0(py)?
-                .extract(py)
-                .map_err(ReadError::Py)?;
-
-            let event = match py_event {
-                PythonConnectorEventType::Insert => DataEventType::Insert,
-                PythonConnectorEventType::Delete => DataEventType::Delete,
-                PythonConnectorEventType::ExternalOffset => {
-                    let py_external_offset =
-                        objects.get(PW_OFFSET_FIELD_NAME).unwrap_or_else(|| {
-                            panic!(
-                                "In ExternalOffset event '{PW_OFFSET_FIELD_NAME}' must be present"
-                            )
-                        });
-                    self.current_external_offset = py_external_offset
-                        .extract::<Vec<u8>>(py)
-                        .expect("ExternalOffset must be bytes")
-                        .into();
-                    return Ok(ReadResult::Data(
-                        ReaderContext::Empty,
-                        self.current_offset(),
-                    ));
-                }
-            };
-
-            let key = key.map(|key| vec![key]);
-            let mut values = HashMap::with_capacity(objects.len());
-            for (name, ob) in objects {
-                let dtype = self.schema.get(&name).unwrap_or(&Type::Any); // Any for special values
-                let value = extract_value(ob.bind(py), dtype).map_err(|err| {
-                    Box::new(Self::conversion_error(
-                        ob.bind(py),
-                        name.clone(),
-                        dtype.clone(),
-                        &err,
-                    ))
-                });
-                values.insert(name, value);
-            }
-            let values: ValuesMap = values.into();
-
-            if event != DataEventType::Insert && !self.subject.borrow(py).deletions_enabled {
-                return Err(ReadError::Py(PyValueError::new_err(
-                    "Trying to modify a row in the Python connector but deletions_enabled is set to False.",
-                )));
-            }
-
-            if let Some(special_value) = values.get_special() {
-                match special_value {
-                    SpecialEvent::Finish => {
-                        self.is_finished = true;
-                        self.subject.borrow(py).end.call0(py)?;
-                        return Ok(ReadResult::Finished);
-                    }
-                    SpecialEvent::EnableAutocommits => {
-                        return Ok(ReadResult::FinishedSource {
-                            commit_possibility: CommitPossibility::Possible,
-                        })
-                    }
-                    SpecialEvent::DisableAutocommits => {
-                        return Ok(ReadResult::FinishedSource {
-                            commit_possibility: CommitPossibility::Forbidden,
-                        })
-                    }
-                    SpecialEvent::Commit => {}
-                }
-            }
-            // We use simple sequential offset because Python connector is single threaded, as
-            // by default.
-            //
-            // If it's changed, add worker_id to the offset.
-            self.total_entries_read += 1;
-            Ok(ReadResult::Data(
-                ReaderContext::from_diff(event, key, values),
-                self.current_offset(),
-            ))
-        })
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::Python
     }
 }
 
@@ -1560,472 +1010,6 @@ impl TableWriterInitMode {
     ) -> Result<(), WriteError> {
         let query = format!("DROP TABLE IF EXISTS {table_name}");
         execute_query(&query)
-    }
-}
-
-pub struct KafkaWriter {
-    producer: ThreadedProducer<DefaultProducerContext>,
-    topic: MessageQueueTopic,
-    header_fields: Vec<(String, usize)>,
-    key_field_index: Option<usize>,
-}
-
-impl KafkaWriter {
-    pub fn new(
-        producer: ThreadedProducer<DefaultProducerContext>,
-        topic: MessageQueueTopic,
-        header_fields: Vec<(String, usize)>,
-        key_field_index: Option<usize>,
-    ) -> KafkaWriter {
-        KafkaWriter {
-            producer,
-            topic,
-            header_fields,
-            key_field_index,
-        }
-    }
-}
-
-impl Drop for KafkaWriter {
-    fn drop(&mut self) {
-        self.producer.flush(None).expect("kafka commit should work");
-    }
-}
-
-impl Writer for KafkaWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let key_as_bytes = match self.key_field_index {
-            Some(index) => match &data.values[index] {
-                Value::Bytes(bytes) => bytes.to_vec(),
-                Value::String(string) => string.as_bytes().to_vec(),
-                _ => {
-                    return Err(WriteError::IncorrectKeyFieldType(
-                        data.values[index].clone(),
-                    ))
-                }
-            },
-            None => data.key.0.to_le_bytes().to_vec(),
-        };
-
-        let headers = data.construct_kafka_headers(&self.header_fields);
-        for payload in data.payloads {
-            let payload = payload.into_raw_bytes()?;
-            let effective_topic = self.topic.get_for_posting(&data.values)?;
-            let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&effective_topic)
-                .payload(&payload)
-                .headers(headers.clone())
-                .key(&key_as_bytes);
-            loop {
-                match self.producer.send(entry) {
-                    Ok(()) => break,
-                    Err((
-                        KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull),
-                        unsent_entry,
-                    )) => {
-                        self.producer.poll(Duration::from_millis(10));
-                        entry = unsent_entry;
-                    }
-                    Err((e, _unsent_entry)) => return Err(WriteError::Kafka(e)),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> String {
-        format!("Kafka({})", self.topic)
-    }
-
-    fn retriable(&self) -> bool {
-        true
-    }
-
-    fn single_threaded(&self) -> bool {
-        false
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct NullWriter;
-
-impl NullWriter {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Writer for NullWriter {
-    fn write(&mut self, _data: FormatterContext) -> Result<(), WriteError> {
-        Ok(())
-    }
-
-    fn single_threaded(&self) -> bool {
-        false
-    }
-}
-
-pub const MQTT_MAX_MESSAGES_IN_QUEUE: usize = 1024;
-pub const MQTT_CLIENT_MAX_CHANNEL_SIZE: usize = 1024 * 1024;
-
-pub struct MqttReader {
-    connection: MqttConnection,
-    total_entries_read: usize,
-}
-
-impl MqttReader {
-    pub fn new(connection: MqttConnection) -> Self {
-        Self {
-            connection,
-            total_entries_read: 0,
-        }
-    }
-}
-
-impl Reader for MqttReader {
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        loop {
-            let event = match self.connection.recv() {
-                Ok(event) => event?,
-                Err(e) => {
-                    warn!("Source channel has been closed: {e:?}");
-                    break;
-                }
-            };
-            match event {
-                MqttEvent::Incoming(MqttPacket::Publish(message)) => {
-                    self.total_entries_read += 1;
-                    let offset = (
-                        OffsetKey::Empty,
-                        OffsetValue::MqttReadEntriesCount(self.total_entries_read),
-                    );
-                    return Ok(ReadResult::Data(
-                        ReaderContext::from_raw_bytes(
-                            DataEventType::Insert,
-                            message.payload.to_vec(),
-                        ),
-                        offset,
-                    ));
-                }
-                other => {
-                    info!("Received metadata event from MQTT reader: {other:?}");
-                }
-            }
-        }
-
-        // The broker has closed the connection, no new messages are expected
-        Ok(ReadResult::Finished)
-    }
-
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        if let Some(offset) = offset_value {
-            if let OffsetValue::MqttReadEntriesCount(last_run_entries_read) = offset {
-                self.total_entries_read = *last_run_entries_read;
-            } else {
-                error!("Unexpected offset type for MQTT reader: {offset:?}");
-            }
-        }
-
-        Ok(())
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::Mqtt
-    }
-}
-
-pub struct MqttWriter {
-    client: MqttClient,
-    topic: MessageQueueTopic,
-    qos: MqttQoS,
-    retain: bool,
-    connection: MqttConnection,
-    packets_in_queue: usize,
-    packet_id_waits_for_confirmation: Vec<bool>,
-}
-
-impl MqttWriter {
-    pub fn new(
-        client: MqttClient,
-        connection: MqttConnection,
-        topic: MessageQueueTopic,
-        qos: MqttQoS,
-        retain: bool,
-    ) -> Self {
-        Self {
-            client,
-            topic,
-            qos,
-            retain,
-            connection,
-            packets_in_queue: 0,
-            packet_id_waits_for_confirmation: vec![false; u16::MAX as usize + 1],
-        }
-    }
-
-    fn on_packet_acked(&mut self, id: u16) {
-        let id = id as usize;
-        if self.packet_id_waits_for_confirmation[id] {
-            self.packet_id_waits_for_confirmation[id] = false;
-            self.packets_in_queue -= 1;
-        } else {
-            warn!("Unexpected message confirmation: id = {id}");
-        }
-    }
-
-    fn ensure_max_packets_in_queue(&mut self, max_in_queue: usize) -> Result<(), WriteError> {
-        while self.packets_in_queue > max_in_queue {
-            let packet = match self.connection.recv() {
-                Ok(Ok(event)) => event,
-                Ok(Err(event_error)) => {
-                    error!("Failed to communicate with MQTT broker: {event_error}");
-                    return Err(WriteError::MqttPoll(event_error));
-                }
-                Err(e) => {
-                    // Nobody can accept events or respond
-                    warn!("All clients have closed the requests channel: {e:?}");
-                    return Ok(());
-                }
-            };
-            match packet {
-                MqttEvent::Outgoing(MqttOutgoing::Publish(id)) => {
-                    if id == 0 {
-                        // ID = 0 implies that QoS is 0.
-                        // The message was sent with this outgoing packet,
-                        // and no acknowledgment is expected.
-                        self.packets_in_queue -= 1;
-                    } else {
-                        self.packet_id_waits_for_confirmation[id as usize] = true;
-                    }
-                }
-                MqttEvent::Incoming(MqttIncoming::PubAck(id)) => {
-                    // A `PubAck` message implies QoS = 1.
-                    // Communication works as follows:
-                    // 1. An outgoing `Publish` packet is sent from Pathway to the broker.
-                    // 2. When the broker receives the packet, it sends a `PubAck` message
-                    //    back to Pathway with the packet's identifier.
-                    //    If no `PubAck` is received within a certain time frame,
-                    //    the client retries sending the `Publish` packet.
-                    self.on_packet_acked(id.pkid);
-                }
-                MqttEvent::Incoming(MqttIncoming::PubComp(id)) => {
-                    // A `PubComp` message implies QoS = 2.
-                    // The communication sequence works as follows:
-                    // 1. An outgoing `Publish` packet is sent from Pathway to the broker.
-                    // 2. When the broker receives the packet, it sends a `PubRec` message
-                    //    back to Pathway with the packet's identifier.
-                    // 3. Client reads the identifier and sends a `PubRel` message to release the message.
-                    // 4. The broker completes the flow by sending a `PubComp` message to Pathway.
-                    // If any expected message is not received within a timeout,
-                    // the MQTT client retries sending the last message with the DUP flag set.
-                    self.on_packet_acked(id.pkid);
-                }
-                other => {
-                    info!("Auxiliary information packet, unused in submission tracking: {other:?}");
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Writer for MqttWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
-            self.packets_in_queue += 1;
-            let payload = payload.into_raw_bytes()?;
-            let effective_topic = self.topic.get_for_posting(&data.values)?;
-            self.client
-                .publish(effective_topic, self.qos, self.retain, payload)
-                .map_err(WriteError::MqttPublish)?;
-        }
-
-        // The message identifier is a 16-bit integer, hence we don't want
-        // to keep the big amounts of messages in-fly.
-        self.ensure_max_packets_in_queue(MQTT_MAX_MESSAGES_IN_QUEUE)
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        self.ensure_max_packets_in_queue(0)
-    }
-
-    fn name(&self) -> String {
-        format!("MQTT({})", self.topic)
-    }
-
-    fn retriable(&self) -> bool {
-        true
-    }
-
-    fn single_threaded(&self) -> bool {
-        false
-    }
-}
-
-#[allow(clippy::enum_variant_names)]
-pub enum QuestDBAtColumnPolicy {
-    UseNow,
-    UsePathwayTime,
-    UseColumn(usize),
-}
-
-pub struct QuestDBWriter {
-    sender: QuestDBSender,
-    table_name: String,
-    field_names: Vec<String>,
-    designated_timestamp_policy: QuestDBAtColumnPolicy,
-    buffer: QuestDBBuffer,
-    has_updates: bool,
-}
-
-impl QuestDBWriter {
-    pub fn new(
-        sender: QuestDBSender,
-        table_name: String,
-        field_names: Vec<String>,
-        designated_timestamp_policy: QuestDBAtColumnPolicy,
-    ) -> Result<Self, WriteError> {
-        let mut buffer = QuestDBBuffer::new();
-        buffer.table(table_name.as_str())?;
-        Ok(Self {
-            sender,
-            table_name,
-            field_names,
-            designated_timestamp_policy,
-            buffer,
-            has_updates: false,
-        })
-    }
-
-    fn put_value_into_buffer(
-        buffer: &mut QuestDBBuffer,
-        value: Value,
-        column_name: &str,
-    ) -> Result<(), WriteError> {
-        match value {
-            Value::None => buffer, // just don't specify the value
-            Value::Bool(b) => buffer.column_bool(column_name, b)?,
-            Value::Int(i) => buffer.column_i64(column_name, i)?,
-            Value::Float(f) => buffer.column_f64(column_name, *f)?,
-            Value::String(s) => buffer.column_str(column_name, s)?,
-            Value::DateTimeNaive(dt) => buffer.column_ts(
-                column_name,
-                QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
-            )?,
-            Value::DateTimeUtc(dt) => buffer.column_ts(
-                column_name,
-                QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(dt.timestamp())),
-            )?,
-            Value::Duration(d) => buffer.column_i64(column_name, d.nanoseconds())?,
-            Value::Json(j) => buffer.column_str(column_name, j.to_string())?,
-            Value::PyObjectWrapper(_) => {
-                buffer.column_str(column_name, create_bincoded_value(&value)?)?
-            }
-            Value::Pointer(p) => buffer.column_str(column_name, p.to_string())?,
-            Value::Bytes(b) => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(b);
-                buffer.column_str(column_name, encoded)?
-            }
-            Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
-                let json_value = serialize_value_to_json(&value)?;
-                buffer.column_str(column_name, json_value.to_string())?
-            }
-            Value::Pending | Value::Error => Err(FormatterError::ValueNonSerializable(
-                value.kind(),
-                "QuestDB",
-            ))?,
-        };
-        Ok(())
-    }
-}
-
-impl Writer for QuestDBWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let (at_timestamp, skip_column_id) =
-            if let QuestDBAtColumnPolicy::UseColumn(column_id) = self.designated_timestamp_policy {
-                let at_value = &data.values[column_id];
-                match at_value {
-                    Value::DateTimeNaive(dt) => (
-                        Some(QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(
-                            dt.timestamp(),
-                        ))),
-                        column_id,
-                    ),
-                    Value::DateTimeUtc(dt) => (
-                        Some(QuestDBTimestamp::Nanos(QuestDBTimestampNanos::new(
-                            dt.timestamp(),
-                        ))),
-                        column_id,
-                    ),
-                    _ => return Err(WriteError::QuestDBAtColumnNotTime(at_value.clone())),
-                }
-            } else {
-                (None, data.values.len())
-            };
-
-        for (column_id, (value, column_name)) in data
-            .values
-            .into_iter()
-            .zip(self.field_names.iter())
-            .enumerate()
-        {
-            if column_id == skip_column_id {
-                continue;
-            }
-            Self::put_value_into_buffer(&mut self.buffer, value, column_name.as_str())?;
-        }
-        self.buffer.column_i64(
-            SPECIAL_FIELD_DIFF,
-            data.diff
-                .try_into()
-                .expect("pathway diff can only be 1 or -1"),
-        )?;
-        let pathway_time_casted = QuestDBTimestampMicros::new(
-            data.time
-                .0
-                .checked_mul(1000) // Pathway minibatch time is milliseconds, hence multiplication by 1000 is needed
-                .expect("pathway time must fit 64bit signed integer")
-                .try_into()
-                .expect("pathway time must be nonnegative"),
-        );
-        match self.designated_timestamp_policy {
-            QuestDBAtColumnPolicy::UseNow => {
-                self.buffer
-                    .column_ts(SPECIAL_FIELD_TIME, pathway_time_casted)?;
-                self.buffer.at_now()?;
-            }
-            QuestDBAtColumnPolicy::UsePathwayTime => self.buffer.at(pathway_time_casted)?,
-            QuestDBAtColumnPolicy::UseColumn(_) => {
-                self.buffer
-                    .column_ts(SPECIAL_FIELD_TIME, pathway_time_casted)?;
-                self.buffer
-                    .at(at_timestamp.expect("at_timestamp must have defined upstream"))?;
-            }
-        }
-        self.has_updates = true;
-
-        Ok(())
-    }
-
-    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        if self.has_updates {
-            self.sender.flush(&mut self.buffer)?;
-            self.has_updates = false;
-            self.buffer.table(self.table_name.as_str())?;
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> String {
-        format!("QuestDB({})", self.table_name)
-    }
-
-    fn retriable(&self) -> bool {
-        true
-    }
-
-    fn single_threaded(&self) -> bool {
-        false
     }
 }
 

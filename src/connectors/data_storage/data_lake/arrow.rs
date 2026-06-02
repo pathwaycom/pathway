@@ -26,8 +26,8 @@ use super::{LakeWriterSettings, MaintenanceMode};
 use crate::connectors::data_format::{
     NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME, NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
 };
-use crate::connectors::data_lake::iceberg::IcebergError;
-use crate::connectors::data_lake::LakeBatchWriter;
+use crate::connectors::data_storage::data_lake::iceberg::IcebergError;
+use crate::connectors::data_storage::data_lake::LakeBatchWriter;
 use crate::connectors::WriteError;
 use crate::engine::time::DateTime as EngineDateTime;
 use crate::engine::value::Handle;
@@ -654,7 +654,7 @@ mod tests {
     use deltalake::arrow::datatypes::DataType as ArrowDataType;
 
     use super::{array_for_type, parse_decimal_string};
-    use crate::connectors::data_lake::iceberg::IcebergError;
+    use crate::connectors::data_storage::data_lake::iceberg::IcebergError;
     use crate::connectors::WriteError;
     use crate::engine::Value;
 
