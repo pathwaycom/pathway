@@ -19,7 +19,9 @@ from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
 from rstream import AMQPMessage, Producer
 from rstream.exceptions import (
+    ClientError,
     LeaderNotAvailable,
+    StreamAlreadyExists,
     StreamDoesNotExist,
     StreamNotAvailable,
 )
@@ -36,6 +38,39 @@ RABBITMQ_PASSWORD = "guest"
 RABBITMQ_STREAM_URI = (
     f"rabbitmq-stream://{RABBITMQ_USER}:{RABBITMQ_PASSWORD}"
     f"@{RABBITMQ_HOST}:{RABBITMQ_PORT}/"
+)
+
+# How long to keep retrying transient broker errors while bringing a stream up.
+# The CI healthcheck only waits for the stream port to accept TCP, but the
+# broker needs longer before it can complete the protocol handshake and elect a
+# stream leader — and when every connector stack (kafka, kinesis, nats, mqtt,
+# rabbitmq) plus the pathway engines share one host, that window stretches well
+# past the single-digit seconds it takes on an idle node. A failed setup here is
+# always transient, so the timeout is generous on purpose.
+RABBITMQ_READY_TIMEOUT = 90.0
+
+# Polling interval while waiting for a transient broker error to clear.
+RABBITMQ_RETRY_INTERVAL = 0.2
+
+# Broker errors that are transient during startup / under load and clear on
+# their own if we retry:
+#   * ConnectionError    — TCP port open but the connection was refused/reset;
+#   * TimeoutError       — TCP connected, but the protocol handshake or a
+#     request timed out (rstream's request timeout) before the broker answered;
+#   * ClientError        — generic rstream client error, e.g. the connection
+#     dropped mid-request;
+#   * StreamDoesNotExist — create's metadata not yet visible to the broker we
+#     queried;
+#   * StreamNotAvailable — stream known to the coordinator, but its underlying
+#     resources aren't up yet (response_code 6);
+#   * LeaderNotAvailable — leader election still in progress (leader_ref 65535).
+RABBITMQ_TRANSIENT_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    ClientError,
+    StreamDoesNotExist,
+    StreamNotAvailable,
+    LeaderNotAvailable,
 )
 
 
@@ -408,43 +443,75 @@ class RabbitmqTestContext:
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result()
 
-    async def _create_stream(self):
-        self._producer = Producer(
+    @staticmethod
+    def _new_producer() -> Producer:
+        return Producer(
             host=RABBITMQ_HOST,
             port=RABBITMQ_PORT,
             username=RABBITMQ_USER,
             password=RABBITMQ_PASSWORD,
         )
-        await self._producer.start()
-        try:
-            await self._producer.create_stream(self.stream_name)
-        except Exception:
-            pass  # stream may already exist
-        await self._wait_until_stream_ready(self.stream_name)
 
-    # create_stream returns before RabbitMQ has finished propagating the
-    # stream's metadata and electing a leader. During that window, querying
-    # the stream can yield any of:
-    #   * StreamDoesNotExist  — metadata not yet replicated to the broker
-    #     we're talking to (more likely on a multi-node cluster, but does
-    #     occur on a single node under load too);
-    #   * StreamNotAvailable  — metadata exists, but the stream's underlying
-    #     resources aren't ready (response_code 6, leader_ref=65535);
-    #   * LeaderNotAvailable  — leader election in progress.
-    # All three are transient. Retry until one of them clears or the
-    # timeout fires. Without this, the rabbitmq fixture errors at setup
-    # under heavy CI load.
-    async def _wait_until_stream_ready(self, name: str, timeout: float = 30.0):
-        client = await self._producer.default_client
-        deadline = time.monotonic() + timeout
+    async def _create_stream(self):
+        deadline = time.monotonic() + RABBITMQ_READY_TIMEOUT
+        self._producer = await self._connect_producer(deadline)
+        await self._ensure_stream(self.stream_name, deadline)
+
+    # The CI healthcheck only waits for the stream port to accept TCP. A TCP
+    # connection can therefore succeed while the broker still can't complete the
+    # stream protocol handshake — the connection then resets or the handshake
+    # request times out. Both are transient at startup, so retry with a fresh
+    # producer (a half-started one can't be reused) until the deadline.
+    async def _connect_producer(self, deadline: float) -> Producer:
         while True:
+            producer = self._new_producer()
             try:
-                await client.query_leader_and_replicas(name)
-                return
-            except (StreamDoesNotExist, StreamNotAvailable, LeaderNotAvailable):
+                await producer.start()
+                return producer
+            except RABBITMQ_TRANSIENT_ERRORS:
+                try:
+                    await producer.close()
+                except Exception:
+                    pass
                 if time.monotonic() >= deadline:
                     raise
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
+
+    # Create a stream and wait until it is fully usable. create_stream returns
+    # before RabbitMQ has propagated the stream's metadata and elected a leader,
+    # and under load the create request itself can be lost to a transient error.
+    # Retry the create (StreamAlreadyExists means it is already there), then wait
+    # for the leader. Without this, the rabbitmq fixture errors at setup under
+    # heavy CI load.
+    async def _ensure_stream(self, name: str, deadline: float):
+        while True:
+            try:
+                await self._producer.create_stream(name)
+            except StreamAlreadyExists:
+                pass  # already created by a previous attempt — fine
+            except RABBITMQ_TRANSIENT_ERRORS:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
+                continue
+            await self._wait_until_stream_ready(name, deadline)
+            return
+
+    # While waiting for the stream to become usable, querying it can yield any
+    # of the transient errors above (StreamDoesNotExist while metadata is still
+    # propagating, StreamNotAvailable while resources start, LeaderNotAvailable
+    # while a leader is elected) — or a connection-level error if the locator
+    # connection blips. Retry until the query succeeds or the deadline fires.
+    async def _wait_until_stream_ready(self, name: str, deadline: float):
+        while True:
+            try:
+                client = await self._producer.default_client
+                await client.query_leader_and_replicas(name)
+                return
+            except RABBITMQ_TRANSIENT_ERRORS:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
 
     async def _cleanup(self):
         # Close the producer first so any buffered messages are flushed
@@ -455,14 +522,16 @@ class RabbitmqTestContext:
             await self._producer.close()
         except Exception:
             pass
-        cleanup_producer = Producer(
-            host=RABBITMQ_HOST,
-            port=RABBITMQ_PORT,
-            username=RABBITMQ_USER,
-            password=RABBITMQ_PASSWORD,
-        )
+        # Reconnect with a fresh producer to delete the stream. Best-effort:
+        # leftover streams accumulate on the broker across the session and add
+        # to coordinator load, so retry the connection briefly rather than give
+        # up on the first transient blip. Keep the window short — teardown must
+        # not hang if the broker has actually gone away.
         try:
-            await cleanup_producer.start()
+            cleanup_producer = await self._connect_producer(time.monotonic() + 15.0)
+        except Exception:
+            return
+        try:
             await cleanup_producer.delete_stream(self.stream_name)
         except Exception:
             pass
@@ -476,11 +545,7 @@ class RabbitmqTestContext:
         self._run(self._create_stream_by_name(name))
 
     async def _create_stream_by_name(self, name: str):
-        try:
-            await self._producer.create_stream(name)
-        except Exception:
-            pass
-        await self._wait_until_stream_ready(name)
+        await self._ensure_stream(name, time.monotonic() + RABBITMQ_READY_TIMEOUT)
 
     def delete_stream(self, name: str) -> None:
         self._run(self._delete_stream_by_name(name))

@@ -1,6 +1,9 @@
+import fcntl
 import json
 import logging
+import os
 import random
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -86,6 +89,75 @@ MYSQL_CONNECTION_STRING = (
     f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
     + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
 )
+
+# ---------------------------------------------------------------------------
+# Cross-process reader/writer lock for the shared binary log.
+#
+# ``test_mysql_read_persistence_errors_when_binlog_purged`` runs
+# ``PURGE BINARY LOGS``, which is a *server-global* operation: it deletes
+# binary-log files for the whole instance, not just for one table. Any other
+# streaming (binlog-tailing) test that happens to be resuming from a position
+# inside a purged file then fails with ``ERROR 1236 (Could not find first log
+# file name in binary log index file)`` and its worker crashes.
+#
+# The tests are marked ``xdist_group("mysql")`` to serialize them onto one
+# worker, but that mark is only honored by ``--dist loadgroup`` — under the
+# ``worksteal``/``load`` schedulers used in practice it is a no-op, so the
+# tests really do run concurrently across workers. This readers/writer lock
+# enforces the required isolation regardless of the scheduler: every
+# binlog-tailing test holds it *shared* (they may all run at once), while the
+# purge test holds it *exclusive* (it then runs strictly alone). The lock lives
+# in a file shared by every xdist worker on the host.
+#
+# A gate file makes acquisition fair: a waiting writer takes the gate
+# exclusively, which parks new readers behind it so a steady stream of readers
+# cannot starve the purge test indefinitely.
+_BINLOG_RWLOCK_PATH = os.path.join(tempfile.gettempdir(), "pw_mysql_binlog.rwlock")
+_BINLOG_GATE_PATH = os.path.join(tempfile.gettempdir(), "pw_mysql_binlog.gate")
+
+
+@contextmanager
+def binlog_reader_access():
+    """Shared access for a test that tails the MySQL binary log.
+
+    Any number of readers may hold this simultaneously; it only blocks while
+    the destructive purge test holds :func:`binlog_purge_access`.
+    """
+    gate_fd = os.open(_BINLOG_GATE_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    lock_fd = os.open(_BINLOG_RWLOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    try:
+        # Pass through the gate (blocks only while a writer holds it), grab the
+        # shared lock, then release the gate so other readers can follow.
+        fcntl.flock(gate_fd, fcntl.LOCK_SH)
+        fcntl.flock(lock_fd, fcntl.LOCK_SH)
+        fcntl.flock(gate_fd, fcntl.LOCK_UN)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        os.close(gate_fd)
+
+
+@contextmanager
+def binlog_purge_access():
+    """Exclusive access for the test that purges the binary log.
+
+    Holding the gate exclusively parks new readers; acquiring the exclusive
+    lock then waits for all in-flight readers to finish, so the purge runs with
+    no binlog-tailing test active.
+    """
+    gate_fd = os.open(_BINLOG_GATE_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    lock_fd = os.open(_BINLOG_RWLOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    try:
+        fcntl.flock(gate_fd, fcntl.LOCK_EX)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        fcntl.flock(gate_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        os.close(gate_fd)
+
 
 MSSQL_DB_HOST = "mssql"
 MSSQL_DB_PORT = 1433
@@ -628,6 +700,21 @@ class MySQLContext:
     def __init__(self):
         self.connection = _connect_to_mysql()
         self.cursor = self.connection.cursor()
+
+    def close(self) -> None:
+        """Close the underlying connection.
+
+        Each ``MySQLContext`` holds one server connection for its whole
+        lifetime. Left to garbage collection, dozens of them linger across an
+        ``xdist`` run and crowd out the small per-writer pools, which is exactly
+        what manifests as a flaky ``ERROR 1040 (Too many connections)``. Closing
+        promptly — on fixture teardown and when a helper thread finishes — keeps
+        the live connection count bounded and deterministic.
+        """
+        try:
+            self.connection.close()
+        except Exception:
+            pass
 
     def get_table_schema(self, table_name: str) -> dict[str, ColumnProperties]:
         query = """

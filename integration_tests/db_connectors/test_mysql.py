@@ -14,6 +14,8 @@ from utils import (
     MYSQL_DB_NAME,
     MySQLContext,
     SimpleObject,
+    binlog_purge_access,
+    binlog_reader_access,
     check_write_quotes_reserved_word_column_name,
     check_write_quotes_table_name_with_special_characters,
 )
@@ -794,47 +796,56 @@ def test_mysql_read_streaming_reflects_inserts_updates_deletes(mysql):
         # A separate connection so this thread does not race with the main
         # thread's content checker.
         thread_mysql = MySQLContext()
-        # Wait for the snapshot (3 rows) to be mirrored into the output before
-        # changing the source.
+        try:
+            # Wait for the snapshot (3 rows) to be mirrored into the output
+            # before changing the source.
+            wait_result_with_checker(
+                _MysqlRowCountChecker(thread_mysql, output_table, 3),
+                60,
+                target=None,
+            )
+            thread_mysql.cursor.execute(
+                f"UPDATE {input_table} SET name='A', value=1.5 WHERE id=1"
+            )
+            thread_mysql.cursor.execute(f"DELETE FROM {input_table} WHERE id=2")
+            thread_mysql.insert_row(input_table, {"id": 4, "name": "d", "value": 4.0})
+        finally:
+            thread_mysql.close()
+
+    # Hold the binlog reader lock for the tailing phase so a concurrent
+    # PURGE BINARY LOGS (persistence-purge test) cannot delete this reader's
+    # log file out from under it (see ``binlog_reader_access`` in utils.py).
+    with binlog_reader_access():
+        mutate_thread = ExceptionAwareThread(target=mutate, daemon=True)
+        mutate_thread.start()
+
+        G.clear()
+        table = pw.io.mysql.read(
+            MYSQL_CONNECTION_STRING, input_table, InputSchema, mode="streaming"
+        )
+        # Snapshot output mode mirrors the current state, so updates and deletes
+        # are observable as the final table contents.
+        pw.io.mysql.write(
+            table,
+            MYSQL_CONNECTION_STRING,
+            table_name=output_table,
+            init_mode="create_if_not_exists",
+            output_table_type="snapshot",
+            primary_key=[table.id],
+        )
+
+        expected = [
+            {"id": 1, "name": "A", "value": 1.5},
+            {"id": 3, "name": "c", "value": 3.0},
+            {"id": 4, "name": "d", "value": 4.0},
+        ]
         wait_result_with_checker(
-            _MysqlRowCountChecker(thread_mysql, output_table, 3),
-            60,
-            target=None,
+            _MysqlContentChecker(
+                mysql, output_table, ["id", "name", "value"], expected
+            ),
+            120,
         )
-        thread_mysql.cursor.execute(
-            f"UPDATE {input_table} SET name='A', value=1.5 WHERE id=1"
-        )
-        thread_mysql.cursor.execute(f"DELETE FROM {input_table} WHERE id=2")
-        thread_mysql.insert_row(input_table, {"id": 4, "name": "d", "value": 4.0})
-
-    mutate_thread = ExceptionAwareThread(target=mutate, daemon=True)
-    mutate_thread.start()
-
-    G.clear()
-    table = pw.io.mysql.read(
-        MYSQL_CONNECTION_STRING, input_table, InputSchema, mode="streaming"
-    )
-    # Snapshot output mode mirrors the current state, so updates and deletes are
-    # observable as the final table contents.
-    pw.io.mysql.write(
-        table,
-        MYSQL_CONNECTION_STRING,
-        table_name=output_table,
-        init_mode="create_if_not_exists",
-        output_table_type="snapshot",
-        primary_key=[table.id],
-    )
-
-    expected = [
-        {"id": 1, "name": "A", "value": 1.5},
-        {"id": 3, "name": "c", "value": 3.0},
-        {"id": 4, "name": "d", "value": 4.0},
-    ]
-    wait_result_with_checker(
-        _MysqlContentChecker(mysql, output_table, ["id", "name", "value"], expected),
-        120,
-    )
-    mutate_thread.join()
+        mutate_thread.join()
 
 
 def test_mysql_read_streaming_delivers_entire_large_single_statement(mysql):
@@ -872,40 +883,47 @@ def test_mysql_read_streaming_delivers_entire_large_single_statement(mysql):
 
     def insert_large_statement():
         thread_mysql = MySQLContext()
-        # Wait until the snapshot (the sentinel) has been mirrored, i.e. the
-        # reader is now tailing the binlog from a position before this insert.
+        try:
+            # Wait until the snapshot (the sentinel) has been mirrored, i.e. the
+            # reader is now tailing the binlog from a position before this
+            # insert.
+            wait_result_with_checker(
+                _MysqlRowCountChecker(thread_mysql, output_table, 1),
+                60,
+                target=None,
+            )
+            values = ", ".join(f"({i}, 'row-{i}')" for i in range(1, n_rows + 1))
+            thread_mysql.cursor.execute(
+                f"INSERT INTO {input_table} (id, payload) VALUES {values}"
+            )
+        finally:
+            thread_mysql.close()
+
+    # See ``binlog_reader_access`` in utils.py: hold the shared binlog reader
+    # lock so a concurrent PURGE BINARY LOGS cannot delete this reader's log.
+    with binlog_reader_access():
+        insert_thread = ExceptionAwareThread(target=insert_large_statement, daemon=True)
+        insert_thread.start()
+
+        G.clear()
+        table = pw.io.mysql.read(
+            MYSQL_CONNECTION_STRING, input_table, InputSchema, mode="streaming"
+        )
+        pw.io.mysql.write(
+            table,
+            MYSQL_CONNECTION_STRING,
+            table_name=output_table,
+            init_mode="create_if_not_exists",
+            output_table_type="snapshot",
+            primary_key=[table.id],
+        )
+
+        # The sentinel plus every row of the single large statement must arrive.
         wait_result_with_checker(
-            _MysqlRowCountChecker(thread_mysql, output_table, 1),
-            60,
-            target=None,
+            _MysqlRowCountChecker(mysql, output_table, n_rows + 1),
+            180,
         )
-        values = ", ".join(f"({i}, 'row-{i}')" for i in range(1, n_rows + 1))
-        thread_mysql.cursor.execute(
-            f"INSERT INTO {input_table} (id, payload) VALUES {values}"
-        )
-
-    insert_thread = ExceptionAwareThread(target=insert_large_statement, daemon=True)
-    insert_thread.start()
-
-    G.clear()
-    table = pw.io.mysql.read(
-        MYSQL_CONNECTION_STRING, input_table, InputSchema, mode="streaming"
-    )
-    pw.io.mysql.write(
-        table,
-        MYSQL_CONNECTION_STRING,
-        table_name=output_table,
-        init_mode="create_if_not_exists",
-        output_table_type="snapshot",
-        primary_key=[table.id],
-    )
-
-    # The sentinel plus every row of the single large statement must arrive.
-    wait_result_with_checker(
-        _MysqlRowCountChecker(mysql, output_table, n_rows + 1),
-        180,
-    )
-    insert_thread.join()
+        insert_thread.join()
 
 
 def test_mysql_read_streaming_composite_key_and_reordered_schema(mysql):
@@ -948,20 +966,23 @@ def test_mysql_read_streaming_composite_key_and_reordered_schema(mysql):
 
     def mutate():
         thread_mysql = MySQLContext()
-        wait_result_with_checker(
-            _MysqlRowCountChecker(thread_mysql, output_table, 3), 60, target=None
-        )
-        thread_mysql.cursor.execute(
-            f"UPDATE {input_table} SET label='A', amount=1.5 "
-            f"WHERE region='us' AND id=1"
-        )
-        thread_mysql.cursor.execute(
-            f"DELETE FROM {input_table} WHERE region='us' AND id=2"
-        )
-        thread_mysql.insert_row(
-            input_table,
-            {"region": "eu", "id": 2, "label": "d", "amount": 4.0},
-        )
+        try:
+            wait_result_with_checker(
+                _MysqlRowCountChecker(thread_mysql, output_table, 3), 60, target=None
+            )
+            thread_mysql.cursor.execute(
+                f"UPDATE {input_table} SET label='A', amount=1.5 "
+                f"WHERE region='us' AND id=1"
+            )
+            thread_mysql.cursor.execute(
+                f"DELETE FROM {input_table} WHERE region='us' AND id=2"
+            )
+            thread_mysql.insert_row(
+                input_table,
+                {"region": "eu", "id": 2, "label": "d", "amount": 4.0},
+            )
+        finally:
+            thread_mysql.close()
 
     # Pre-create the snapshot output table: a str/TEXT column cannot be an
     # auto-created MySQL primary key without a length, so a VARCHAR key column
@@ -972,34 +993,37 @@ def test_mysql_read_streaming_composite_key_and_reordered_schema(mysql):
         f"PRIMARY KEY (region, id))"
     )
 
-    mutate_thread = ExceptionAwareThread(target=mutate, daemon=True)
-    mutate_thread.start()
+    # See ``binlog_reader_access`` in utils.py: hold the shared binlog reader
+    # lock so a concurrent PURGE BINARY LOGS cannot delete this reader's log.
+    with binlog_reader_access():
+        mutate_thread = ExceptionAwareThread(target=mutate, daemon=True)
+        mutate_thread.start()
 
-    G.clear()
-    table = pw.io.mysql.read(
-        MYSQL_CONNECTION_STRING, input_table, InputSchema, mode="streaming"
-    )
-    pw.io.mysql.write(
-        table,
-        MYSQL_CONNECTION_STRING,
-        table_name=output_table,
-        init_mode="default",
-        output_table_type="snapshot",
-        primary_key=[table.region, table.id],
-    )
+        G.clear()
+        table = pw.io.mysql.read(
+            MYSQL_CONNECTION_STRING, input_table, InputSchema, mode="streaming"
+        )
+        pw.io.mysql.write(
+            table,
+            MYSQL_CONNECTION_STRING,
+            table_name=output_table,
+            init_mode="default",
+            output_table_type="snapshot",
+            primary_key=[table.region, table.id],
+        )
 
-    expected = [
-        {"region": "us", "id": 1, "label": "A", "amount": 1.5},
-        {"region": "eu", "id": 1, "label": "c", "amount": 3.0},
-        {"region": "eu", "id": 2, "label": "d", "amount": 4.0},
-    ]
-    wait_result_with_checker(
-        _MysqlContentChecker(
-            mysql, output_table, ["region", "id", "label", "amount"], expected
-        ),
-        120,
-    )
-    mutate_thread.join()
+        expected = [
+            {"region": "us", "id": 1, "label": "A", "amount": 1.5},
+            {"region": "eu", "id": 1, "label": "c", "amount": 3.0},
+            {"region": "eu", "id": 2, "label": "d", "amount": 4.0},
+        ]
+        wait_result_with_checker(
+            _MysqlContentChecker(
+                mysql, output_table, ["region", "id", "label", "amount"], expected
+            ),
+            120,
+        )
+        mutate_thread.join()
 
 
 # ---------------------------------------------------------------------------
@@ -1118,52 +1142,57 @@ def test_mysql_read_streaming_persistence(tmp_path, mysql):
     for identity, name, value in [(1, "a", 1.0), (2, "b", 2.0)]:
         mysql.insert_row(input_table, {"id": identity, "name": name, "value": value})
 
-    # --- Run 1: the initial snapshot must appear ---
-    output_1 = tmp_path / "output_1.jsonl"
-    p1 = _start_mysql_streaming_worker(output_1, pstorage_path, input_table)
-    try:
-        _wait_and_terminate(FileLinesNumberChecker(output_1, 2), 90, p1)
-    finally:
-        if p1.poll() is None:
-            p1.terminate()
-            p1.wait()
-    run1 = _sort_persistence_rows(
-        [_extract_persistence_row(r) for r in read_jsonlines(output_1)]
-    )
-    assert run1 == _sort_persistence_rows(
-        [
-            {"id": 1, "name": "a", "value": 1.0, "diff": 1},
-            {"id": 2, "name": "b", "value": 2.0, "diff": 1},
-        ]
-    ), run1
+    # Hold the shared binlog reader lock across both runs: a concurrent
+    # PURGE BINARY LOGS (the persistence-purge test) would otherwise delete the
+    # log file Run 2 resumes from and turn this into a spurious failure (see
+    # ``binlog_reader_access`` in utils.py).
+    with binlog_reader_access():
+        # --- Run 1: the initial snapshot must appear ---
+        output_1 = tmp_path / "output_1.jsonl"
+        p1 = _start_mysql_streaming_worker(output_1, pstorage_path, input_table)
+        try:
+            _wait_and_terminate(FileLinesNumberChecker(output_1, 2), 90, p1)
+        finally:
+            if p1.poll() is None:
+                p1.terminate()
+                p1.wait()
+        run1 = _sort_persistence_rows(
+            [_extract_persistence_row(r) for r in read_jsonlines(output_1)]
+        )
+        assert run1 == _sort_persistence_rows(
+            [
+                {"id": 1, "name": "a", "value": 1.0, "diff": 1},
+                {"id": 2, "name": "b", "value": 2.0, "diff": 1},
+            ]
+        ), run1
 
-    # Apply changes after Run 1 has persisted its position.
-    mysql.cursor.execute(
-        f"INSERT INTO {input_table} (id, name, value) VALUES (3, 'c', 3.0)"
-    )
-    mysql.cursor.execute(f"UPDATE {input_table} SET value=9.0 WHERE id=1")
-    mysql.cursor.execute(f"DELETE FROM {input_table} WHERE id=2")
+        # Apply changes after Run 1 has persisted its position.
+        mysql.cursor.execute(
+            f"INSERT INTO {input_table} (id, name, value) VALUES (3, 'c', 3.0)"
+        )
+        mysql.cursor.execute(f"UPDATE {input_table} SET value=9.0 WHERE id=1")
+        mysql.cursor.execute(f"DELETE FROM {input_table} WHERE id=2")
 
-    # --- Run 2: only the delta since Run 1 must appear (no re-snapshot) ---
-    output_2 = tmp_path / "output_2.jsonl"
-    p2 = _start_mysql_streaming_worker(output_2, pstorage_path, input_table)
-    try:
-        _wait_and_terminate(FileLinesNumberChecker(output_2, 4), 90, p2)
-    finally:
-        if p2.poll() is None:
-            p2.terminate()
-            p2.wait()
-    run2 = _sort_persistence_rows(
-        [_extract_persistence_row(r) for r in read_jsonlines(output_2)]
-    )
-    assert run2 == _sort_persistence_rows(
-        [
-            {"id": 1, "name": "a", "value": 1.0, "diff": -1},  # update: old image
-            {"id": 1, "name": "a", "value": 9.0, "diff": 1},  # update: new image
-            {"id": 2, "name": "b", "value": 2.0, "diff": -1},  # delete
-            {"id": 3, "name": "c", "value": 3.0, "diff": 1},  # insert
-        ]
-    ), run2
+        # --- Run 2: only the delta since Run 1 must appear (no re-snapshot) ---
+        output_2 = tmp_path / "output_2.jsonl"
+        p2 = _start_mysql_streaming_worker(output_2, pstorage_path, input_table)
+        try:
+            _wait_and_terminate(FileLinesNumberChecker(output_2, 4), 90, p2)
+        finally:
+            if p2.poll() is None:
+                p2.terminate()
+                p2.wait()
+        run2 = _sort_persistence_rows(
+            [_extract_persistence_row(r) for r in read_jsonlines(output_2)]
+        )
+        assert run2 == _sort_persistence_rows(
+            [
+                {"id": 1, "name": "a", "value": 1.0, "diff": -1},  # update: old image
+                {"id": 1, "name": "a", "value": 9.0, "diff": 1},  # update: new image
+                {"id": 2, "name": "b", "value": 2.0, "diff": -1},  # delete
+                {"id": 3, "name": "c", "value": 3.0, "diff": 1},  # insert
+            ]
+        ), run2
 
 
 @pytest.mark.flaky(reruns=2)
@@ -1187,33 +1216,40 @@ def test_mysql_read_persistence_errors_when_binlog_purged(tmp_path, mysql):
     for identity, name, value in [(1, "a", 1.0), (2, "b", 2.0)]:
         mysql.insert_row(input_table, {"id": identity, "name": name, "value": value})
 
-    # --- Run 1: persist a binlog position ---
-    output_1 = tmp_path / "output_1.jsonl"
-    p1 = _start_mysql_streaming_worker(output_1, pstorage_path, input_table)
-    try:
-        _wait_and_terminate(FileLinesNumberChecker(output_1, 2), 90, p1)
-    finally:
-        if p1.poll() is None:
-            p1.terminate()
-            p1.wait()
+    # PURGE BINARY LOGS is server-global, so this test must run with no other
+    # binlog-tailing test active — otherwise it deletes their log files and
+    # crashes them. Take the binlog lock *exclusively*: it waits for in-flight
+    # readers to finish and blocks new ones for the duration (see
+    # ``binlog_purge_access`` in utils.py).
+    with binlog_purge_access():
+        # --- Run 1: persist a binlog position ---
+        output_1 = tmp_path / "output_1.jsonl"
+        p1 = _start_mysql_streaming_worker(output_1, pstorage_path, input_table)
+        try:
+            _wait_and_terminate(FileLinesNumberChecker(output_1, 2), 90, p1)
+        finally:
+            if p1.poll() is None:
+                p1.terminate()
+                p1.wait()
 
-    # Rotate to a fresh binary log, then purge everything older — including the
-    # file Run 1's saved position points into. (Requires elevated privileges.)
-    mysql.execute_as_root("FLUSH BINARY LOGS")
-    logs = mysql.execute_as_root("SHOW BINARY LOGS")
-    newest_log = logs[-1][0]
-    mysql.execute_as_root(f"PURGE BINARY LOGS TO '{newest_log}'")
+        # Rotate to a fresh binary log, then purge everything older — including
+        # the file Run 1's saved position points into. (Requires elevated
+        # privileges.)
+        mysql.execute_as_root("FLUSH BINARY LOGS")
+        logs = mysql.execute_as_root("SHOW BINARY LOGS")
+        newest_log = logs[-1][0]
+        mysql.execute_as_root(f"PURGE BINARY LOGS TO '{newest_log}'")
 
-    # --- Run 2: resume must fail loudly, not re-snapshot ---
-    output_2 = tmp_path / "output_2.jsonl"
-    log_2 = tmp_path / "worker2.log"
-    p2 = _start_mysql_streaming_worker(output_2, pstorage_path, input_table, log_2)
-    try:
-        returncode = p2.wait(timeout=90)
-    finally:
-        if p2.poll() is None:
-            p2.terminate()
-            p2.wait()
-    log_text = log_2.read_text()
-    assert returncode != 0, f"worker should have failed; log:\n{log_text}"
-    assert "no longer present" in log_text or "purged" in log_text, log_text
+        # --- Run 2: resume must fail loudly, not re-snapshot ---
+        output_2 = tmp_path / "output_2.jsonl"
+        log_2 = tmp_path / "worker2.log"
+        p2 = _start_mysql_streaming_worker(output_2, pstorage_path, input_table, log_2)
+        try:
+            returncode = p2.wait(timeout=90)
+        finally:
+            if p2.poll() is None:
+                p2.terminate()
+                p2.wait()
+        log_text = log_2.read_text()
+        assert returncode != 0, f"worker should have failed; log:\n{log_text}"
+        assert "no longer present" in log_text or "purged" in log_text, log_text

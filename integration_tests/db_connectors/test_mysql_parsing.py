@@ -16,7 +16,12 @@ from typing import Any, get_args, get_origin
 
 import pandas as pd
 import pytest
-from utils import MYSQL_CONNECTION_STRING, MySQLContext, SimpleObject
+from utils import (
+    MYSQL_CONNECTION_STRING,
+    MySQLContext,
+    SimpleObject,
+    binlog_reader_access,
+)
 
 import pathway as pw
 from pathway.internals import api
@@ -209,52 +214,63 @@ def _test_mysql_streaming(
         # Separate connection so this thread's cursor does not race with the main
         # thread's MysqlRowCountChecker.
         thread_mysql = MySQLContext()
-        for index, row in enumerate(streaming_rows):
-            # Wait for the snapshot (len(items) rows) plus every previously
-            # inserted streaming row to land in the output before inserting more.
-            wait_result_with_checker(
-                MysqlRowCountChecker(
-                    thread_mysql, output_table_name, index + len(items)
-                ),
-                60,
-                target=None,
-            )
-            # The input table was created by pw.io.mysql.write, which appends
-            # non-nullable `time`/`diff` columns; the binlog reader only maps
-            # `pkey` and `item`, so any valid metadata values work here.
-            thread_mysql.insert_row(
-                input_table_name,
-                {
-                    "pkey": row["pkey"],
-                    "item": _serialize_item_for_mysql(row["item"]),
-                    "time": 0,
-                    "diff": 1,
-                },
-            )
+        try:
+            for index, row in enumerate(streaming_rows):
+                # Wait for the snapshot (len(items) rows) plus every previously
+                # inserted streaming row to land in the output before inserting
+                # more.
+                wait_result_with_checker(
+                    MysqlRowCountChecker(
+                        thread_mysql, output_table_name, index + len(items)
+                    ),
+                    60,
+                    target=None,
+                )
+                # The input table was created by pw.io.mysql.write, which
+                # appends non-nullable `time`/`diff` columns; the binlog reader
+                # only maps `pkey` and `item`, so any valid metadata values work
+                # here.
+                thread_mysql.insert_row(
+                    input_table_name,
+                    {
+                        "pkey": row["pkey"],
+                        "item": _serialize_item_for_mysql(row["item"]),
+                        "time": 0,
+                        "diff": 1,
+                    },
+                )
+        finally:
+            thread_mysql.close()
 
-    streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
-    streaming_thread.start()
+    # Hold the binlog reader lock for the whole tailing phase so the
+    # server-global PURGE BINARY LOGS in the persistence-purge test cannot
+    # delete the log file this reader is resuming from (see
+    # ``binlog_reader_access`` in utils.py).
+    with binlog_reader_access():
+        streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
+        streaming_thread.start()
 
-    G.clear()
-    read_table = pw.io.mysql.read(
-        MYSQL_CONNECTION_STRING,
-        input_table_name,
-        InputSchemaWithPkey,
-        mode="streaming",
-    )
-    pw.io.mysql.write(
-        read_table,
-        MYSQL_CONNECTION_STRING,
-        table_name=output_table_name,
-        init_mode="create_if_not_exists",
-    )
-    # Forks a process that runs pw.run() on the streaming graph; the parent polls
-    # until the output table holds both the snapshot and the streamed rows.
-    wait_result_with_checker(
-        MysqlRowCountChecker(mysql, output_table_name, 2 * len(items)),
-        120,
-    )
-    streaming_thread.join()
+        G.clear()
+        read_table = pw.io.mysql.read(
+            MYSQL_CONNECTION_STRING,
+            input_table_name,
+            InputSchemaWithPkey,
+            mode="streaming",
+        )
+        pw.io.mysql.write(
+            read_table,
+            MYSQL_CONNECTION_STRING,
+            table_name=output_table_name,
+            init_mode="create_if_not_exists",
+        )
+        # Forks a process that runs pw.run() on the streaming graph; the parent
+        # polls until the output table holds both the snapshot and the streamed
+        # rows.
+        wait_result_with_checker(
+            MysqlRowCountChecker(mysql, output_table_name, 2 * len(items)),
+            120,
+        )
+        streaming_thread.join()
 
     output_rows = mysql.get_table_contents(output_table_name, ["pkey", "item"])
 

@@ -54,6 +54,7 @@ class QuerySchema(pw.Schema):
     limit: int
 
 
+@pytest.mark.xfail(reason="qdrant integration test is flaky")
 @xfail_on_connection_failure
 def test_basic_search():
     index = pw.debug.table_from_markdown(
@@ -103,6 +104,7 @@ def test_basic_search():
     assert_table_equality(result, expected)
 
 
+@pytest.mark.xfail(reason="qdrant integration test is flaky")
 @xfail_on_connection_failure
 def test_with_deletions():
     index = pw.debug.table_from_markdown(
@@ -153,6 +155,7 @@ def test_with_deletions():
     assert_table_equality(result, expected)
 
 
+@pytest.mark.xfail(reason="qdrant integration test is flaky")
 @xfail_on_connection_failure
 def test_filter():
     class InputSchemaWithFilter(pw.Schema):

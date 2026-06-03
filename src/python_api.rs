@@ -44,7 +44,10 @@ use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
 use mongodb::Namespace as MongoNamespace;
-use mysql::{Opts as MysqlOpts, Pool as MysqlConnectionPool};
+use mysql::{
+    Opts as MysqlOpts, OptsBuilder as MysqlOptsBuilder, Pool as MysqlConnectionPool,
+    PoolConstraints as MysqlPoolConstraints, PoolOpts as MysqlPoolOpts,
+};
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
@@ -7222,7 +7225,23 @@ impl DataStorage {
             license.check_entitlements(["mysql"])?;
         }
         let connection_string = self.connection_string()?;
-        let pool = MysqlConnectionPool::new(connection_string).map_err(|e| {
+        // Bound the connection pool. The `mysql` crate's default pool
+        // constraints are min=10/max=100, and the pool eagerly opens `min`
+        // connections the moment it is created. A single writer needs only one
+        // live connection (plus, at most, a transient replacement when
+        // reconnecting after a recoverable error), so the default would open
+        // nine idle connections per writer for nothing. Under parallel test or
+        // production fan-out that silently exhausts the server's
+        // `max_connections` and surfaces as a spurious "Too many connections"
+        // failure. min=0 keeps the pool lazy (no eager connections) and max=2
+        // leaves headroom for one in-flight reconnection.
+        let opts = MysqlOpts::from_url(connection_string)
+            .map_err(|e| PyValueError::new_err(format!("Invalid MySQL connection string: {e}")))?;
+        let pool_opts = MysqlPoolOpts::new().with_constraints(
+            MysqlPoolConstraints::new(0, 2).expect("0 <= 2 is a valid pool constraint"),
+        );
+        let opts = MysqlOptsBuilder::from_opts(opts).pool_opts(pool_opts);
+        let pool = MysqlConnectionPool::new(opts).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to create MySQL connection pool: {e}"))
         })?;
         let writer = MysqlWriter::new(

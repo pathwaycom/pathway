@@ -79,7 +79,14 @@ def dynamodb():
 
 @pytest.fixture
 def mysql():
-    return MySQLContext()
+    ctx = MySQLContext()
+    try:
+        yield ctx
+    finally:
+        # Close promptly instead of waiting for garbage collection: under xdist
+        # the accumulated open connections otherwise exhaust the server's
+        # max_connections and surface as flaky "Too many connections" errors.
+        ctx.close()
 
 
 _MSSQL_CAPTURE_JOB_CONFIGURED = False
