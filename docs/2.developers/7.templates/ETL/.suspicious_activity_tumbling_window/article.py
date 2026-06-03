@@ -28,7 +28,7 @@
 # %% [markdown]
 # # Real-Time Anomaly Detection: identifying brute-force logins using Tumbling Windows
 #
-# In this tutorial you will learn how to perform a [tumbling window](/glossary/tumbling-window) operation to detect suspicious activity.
+# In this tutorial you will learn how to perform a tumbling window operation to detect suspicious activity.
 #
 # Your task is to detect suspicious user login attempts during some period of time.
 # You have a record of login data. Your goal is to detect suspicious users who have logged in more than 5 times in a single minute.
@@ -104,4 +104,4 @@ pw.debug.compute_and_print(suspicious_logins)
 # %% [markdown]
 # And that's it! You have used a tumbling window operation to identify suspicious user activity and can now act on this information to increase the security of your platform.
 #
-# Reach out to us on [Discord](https://discord.gg/pathway) if you'd like to discuss [real time anomaly detection](/glossary/real-time-anomaly-detection) use cases like this one in more detail!
+# Reach out to us on [Discord](https://discord.gg/pathway) if you'd like to discuss real time anomaly detection use cases like this one in more detail!

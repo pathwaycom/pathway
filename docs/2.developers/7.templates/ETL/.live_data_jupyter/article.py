@@ -151,7 +151,7 @@ minute_20_stats = (
 #
 # Now it's time to compute the second Bollinger Bands: the 1-minute running mean. You will need to compute the mean price over the last minute of trades.
 #
-# The code is analogous to the 20-minute statistics but simpler: you can use a [`tumbling window`](/glossary/tumbling-window) and don't have to compute the standard deviation.
+# The code is analogous to the 20-minute statistics but simpler: you can use a `tumbling window` and don't have to compute the standard deviation.
 
 # %%
 minute_1_stats = (

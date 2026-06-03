@@ -18,7 +18,7 @@
 # Learn how to perform upsampling on multiple data streams. The data streams will be modelled as time series data and will have different sampling rates to begin with.
 # Using upsampling techniques in Python, you will align the sampling rates of the multiple data sources in order to perform data analysis over the entire stream.
 #
-# It is common practice to use [Digital Signal Processing](/glossary/digital-signal-processing) (DSP) in order to analyze and manipulate time series data.
+# It is common practice to use Digital Signal Processing (DSP) in order to analyze and manipulate time series data.
 # The time series can be considered as signals and by applying filters, you can remove the noise and do feature extraction on your data.
 # However, when working with multiple time series you are likely to run into the issue of data misalignment due to different sampling rates.
 # This issue needs to be addressed if you want to extract valuable insights from your time series data using digital signal processing.
@@ -41,16 +41,16 @@
 #
 # # What is Upsampling?
 #
-# [Upsampling](/glossary/upsampling) is a [signal processing](/glossary/signal-processing) technique used to increase the sampling rate of a signal.
+# Upsampling is a signal processing technique used to increase the sampling rate of a signal.
 # Upsampling is generally used to improve a signal and applications include improving the quality of images, increasing the accuracy of digital filters, or data enrichment.
 #
 # ## Upsampling: Combining Data Streams with Different Sampling Rates
 #
 # In many real-world scenarios, you may need to process data from multiple sources, each with its own sampling rate.
-# To work on both signals at the same time, it's important to have the same sampling rate in both signals. This can be done with [resampling](/glossary/resampling).
+# To work on both signals at the same time, it's important to have the same sampling rate in both signals. This can be done with resampling.
 # Resampling is the process of changing the sampling rate or the number of samples in a signal or data set. There are two primary types of resampling:
 #  1. **Upsampling** consists of increasing the sampling rate by adding new data points between existing ones to achieve a higher temporal or spatial resolution. It is used to increase the clarity of a signal or match the sampling rate of one signal to that of another for compatibility. New values are obtained by doing an **interpolation**.
-#  2. **[Downsampling](/glossary/downsampling)**, on the other hand, consists of decreasing the sampling rates by removing data points. It is typically used to reduce data volume, decrease computational complexity, and meet application storage or transmission constraints.
+#  2. **Downsampling**, on the other hand, consists of decreasing the sampling rates by removing data points. It is typically used to reduce data volume, decrease computational complexity, and meet application storage or transmission constraints.
 #
 # For example, consider a simple scenario: you are training to run your first marathon.
 # You would like to monitor your performance, so you buy a GPS watch.
