@@ -96,7 +96,7 @@ to obtain them.
     Example:
 
     Suppose that there is a Google BigQuery project with a dataset named ``animals`` and
-    you want to output the Pathway table ``animal_measurements`` into this dataset's
+    you want to output the Pathway Live Data Framework table ``animal_measurements`` into this dataset's
     table ``measurements``.
 
     Consider that the credentials are stored in the file ``./credentials.json``. Then,

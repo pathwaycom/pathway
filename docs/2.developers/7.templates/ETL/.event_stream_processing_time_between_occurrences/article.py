@@ -29,7 +29,7 @@
 # We are processing a stream of events on different topics.
 # We want to compute, for each event, how much time has passed since the previous event on the same topic.
 # The issue is that the events do not appear *in the order of their timestamps at input*!
-# With Pathway there is no need to worry about that!
+# With Pathway Live Data Framework there is no need to worry about that!
 #
 # First we use Debezium to synchronize the input data from a database table with the following columns:
 # * timestamp - logical date-time when the event happened
@@ -73,7 +73,7 @@ events = pw.io.debezium.read(
 )
 
 # %% [markdown]
-# Then we sort the events from the table. Pathway provides a `sort` function to sort a table according to its `key` column: in this case we are going to sort according to the timestamps of the events. In addition, each topic is mapped to an `instance` field, which allows us to work on different streams simultaneously.
+# Then we sort the events from the table. The Pathway Live Data Framework provides a `sort` function to sort a table according to its `key` column: in this case we are going to sort according to the timestamps of the events. In addition, each topic is mapped to an `instance` field, which allows us to work on different streams simultaneously.
 # The `prev` and `next` pointers are automatically extracted.
 
 # %%

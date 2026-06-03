@@ -247,7 +247,7 @@ def monitor_stats(
 
 
 class MonitoringLevel(Enum):
-    """Specifies a verbosity of Pathway monitoring mechanism."""
+    """Specifies a verbosity of Pathway Live Data Framework monitoring mechanism."""
 
     AUTO = 0
     """

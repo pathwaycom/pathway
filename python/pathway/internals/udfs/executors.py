@@ -19,7 +19,7 @@ from pathway.internals.udfs.utils import coerce_async
 
 class Executor(abc.ABC):
     """
-    Base class executors of Pathway UDFs (user-defined functions).
+    Base class executors of Pathway Live Data Framework UDFs (user-defined functions).
     """
 
     ...
@@ -47,7 +47,7 @@ class AutoExecutor(Executor):
 
 def auto_executor() -> Executor:
     """
-    Returns the automatic executor of Pathway UDF. It deduces whether the execution
+    Returns the automatic executor of Pathway Live Data Framework UDF. It deduces whether the execution
     should be synchronous or asynchronous from the function signature. If the function
     is a coroutine, then the execution is asynchronous. Otherwise, it is synchronous.
 
@@ -103,7 +103,7 @@ class SyncExecutor(Executor):
 
 def sync_executor() -> Executor:
     """
-    Returns the synchronous executor for Pathway UDFs.
+    Returns the synchronous executor for Pathway Live Data Framework UDFs.
 
     Example:
 
@@ -156,7 +156,7 @@ def async_executor(
     retry_strategy: AsyncRetryStrategy | None = None,
 ) -> Executor:
     """
-    Returns the asynchronous executor for Pathway UDFs.
+    Returns the asynchronous executor for Pathway Live Data Framework UDFs.
 
     Can be applied to a regular or an asynchronous function. If applied to a regular
     function, it is executed in ``asyncio`` loop's ``run_in_executor``.
@@ -242,7 +242,7 @@ def fully_async_executor(
     autocommit_duration_ms: int | None = 1500,
 ) -> Executor:
     """
-    Returns the fully asynchronous executor for Pathway UDFs.
+    Returns the fully asynchronous executor for Pathway Live Data Framework UDFs.
 
     Can be applied to a regular or an asynchronous function. If applied to a regular
     function, it is executed in ``asyncio`` loop's ``run_in_executor``.

@@ -1,13 +1,13 @@
-# Pathway EL Pipeline
+# Pathway Live Data Framework EL Pipeline
 
-Pathway's EL pipeline allows you to move data from different data sources (Extract) to the sinks of your choice (Load). 
+The Pathway Live Data Framework's EL pipeline allows you to move data from different data sources (Extract) to the sinks of your choice (Load). 
 By customizing a single YAML file, you can configure and run the pipeline without modifying any Python code.
 You can learn more about the pipeline in our [article](https://pathway.com/developers/templates/etl/el-pipeline/).
 
 
 ## Project Structure
 This projects contains two files:
-- `app.py`, the application code using Pathway and written in Python;
+- `app.py`, the application code using the Pathway Live Data Framework and written in Python;
 - `app.yaml`, the file containing the configuration of the pipelines such as the data sources and data sinks.
 
 ## Prerequisites
@@ -31,7 +31,7 @@ This file uses a declarative YAML format to define data sources, sinks, and othe
 You can learn more about YAML configuration in Pathway [here](https://pathway.com/developers/templates/configure-yaml).
 
 ### Declaring a Data Source
-Define a data source using Pathway input connectors. For example, to set up a file system input connector:
+Define a data source using Pathway Live Data Framework input connectors. For example, to set up a file system input connector:
 ```yaml
 $source: !pw.io.fs.read
   path: ./input_data/
@@ -40,7 +40,7 @@ $source: !pw.io.fs.read
 ```
 
 ### Declaring a Data Sink
-Similarly, define a data sink using Pathway output connectors. For example, to output data as a CSV file:
+Similarly, define a data sink using Pathway Live Data Framework output connectors. For example, to output data as a CSV file:
 ```yaml
 output: !pw.io.csv.write
   table: $source
@@ -48,8 +48,8 @@ output: !pw.io.csv.write
   name: output_connector
 ```
 
-### Pathway Connectors
-Pathway supports a wide range of connectors for various data sources and sinks.
+### Pathway Live Data Framework Connectors
+The Pathway Live Data Framework supports a wide range of connectors for various data sources and sinks.
 Refer to the [Pathway documentation](https://pathway.com/developers/user-guide/connect/pathway-connectors) for a complete list of connectors.
 
 ### Schema
@@ -175,10 +175,10 @@ To run this example, you need to set the following environment variables:
 - `DB_USER`: The username for the PostgreSQL database.
 - `DB_PASSWORD`: The password for the PostgreSQL database.
 
-## Pathway License
+## Pathway Live Data Framework License
 
-If you are using advanced connectors or functionalities like SharePoint connectors or persistence, your project will require Pathway license.
-You can learn about the license [here](/developers/user-guide/introduction/licensing-guide), and you can get a free Pathway license [here](/get-license).
+If you are using advanced connectors or functionalities like SharePoint connectors or persistence, your project will require Pathway Live Data Framework license.
+You can learn about the license [here](/developers/user-guide/introduction/licensing-guide), and you can get a free Pathway Live Data Framework license [here](/get-license).
 
 Setting up the license is easy, you simply need to set it as the environment variable `PATHWAY_LICENSE_KEY`:
 

@@ -168,7 +168,7 @@ pw.run()
 You can then run your Pathway Live Data Framework project (say, `main.py`) just like a normal Python script: `$ python main.py`.
 Pathway Live Data Framework comes with a monitoring dashboard that allows you to keep track of the number of messages sent by each connector and the latency of the system. The dashboard also includes log messages. 
 
-<img src="https://d14l3brkh44201.cloudfront.net/pathway-dashboard.png" width="1326" alt="Pathway dashboard"/>
+<img src="https://d14l3brkh44201.cloudfront.net/pathway-dashboard.png" width="1326" alt="Pathway Live Data Framework dashboard"/>
 
 Alternatively, you can use the pathway'ish version:
 

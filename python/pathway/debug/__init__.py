@@ -1,5 +1,5 @@
 # Copyright © 2026 Pathway
-"""Methods and classes for debugging Pathway computation.
+"""Methods and classes for debugging Pathway Live Data Framework computation.
 
 Typical use:
 
@@ -62,11 +62,11 @@ def table_to_dicts(
     **kwargs,
 ) -> tuple[list[api.Pointer], dict[str, dict[api.Pointer, api.Value]]]:
     """
-    Runs the computations needed to get the contents of the Pathway Table and converts it
+    Runs the computations needed to get the contents of the Pathway Live Data Framework Table and converts it
     to a dictionary representation, where each column is mapped to its respective values.
 
     Args:
-        table (Table): The Pathway Table to be converted.
+        table (Table): The Pathway Live Data Framework Table to be converted.
         **kwargs: Additional keyword arguments to customize the behavior of the function.
                   - terminate_on_error (bool): If True, the function will terminate execution upon
                   encountering an error during the squashing of updates. Defaults to True.
@@ -480,7 +480,7 @@ def table_from_parquet(
     _stacklevel: int = 1,
 ) -> Table:
     """
-    Reads a Parquet file into a pandas DataFrame and then converts that into a Pathway table.
+    Reads a Parquet file into a pandas DataFrame and then converts that into a Pathway Live Data Framework table.
     """
 
     df = pd.read_parquet(path)
@@ -492,7 +492,7 @@ def table_from_parquet(
 @check_arg_types
 def table_to_parquet(table: Table, filename: str | PathLike):
     """
-    Converts a Pathway Table into a pandas DataFrame and then writes it to Parquet
+    Converts a Pathway Live Data Framework Table into a pandas DataFrame and then writes it to Parquet
     """
     df = table_to_pandas(table)
     df = df.reset_index()

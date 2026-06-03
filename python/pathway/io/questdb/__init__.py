@@ -39,7 +39,7 @@ def write(
 
     This behavior can be changed using the ``designated_timestamp`` and ``designated_timestamp_policy``
     parameters. If ``designated_timestamp`` is specified, its values will be used as the timestamp.
-    If you set ``designated_timestamp_policy`` to ``use_pathway_time``, the Pathway minibatch time
+    If you set ``designated_timestamp_policy`` to ``use_pathway_time``, the Pathway Live Data Framework minibatch time
     will be used as the timestamp. You can also use ``designated_timestamp_policy="use_now"``
     to be more explicit about using the current machine time.
 
@@ -60,7 +60,7 @@ def write(
         table_name: The name of the target table in QuestDB.
         designated_timestamp_policy: Defines how the designated timestamp column is set. The value
             can be ``"use_now"``, which means the current machine time is used as the timestamp.
-            It can also be ``"use_pathway_time"``, in which case the Pathway minibatch time
+            It can also be ``"use_pathway_time"``, in which case the Pathway Live Data Framework minibatch time
             is used. Another option is ``"use_column"``, which means a specific column will
             be used as the timestamp; in this case, the ``designated_timestamp`` parameter must be
             provided. If not specified, the default is ``"use_now"``.
@@ -103,7 +103,7 @@ def write(
     ... ''')
 
     This table can now be written to QuestDB. If the output table is called ``"test"``,
-    the Pathway code looks like this:
+    the Pathway Live Data Framework code looks like this:
 
     >>> pw.io.questdb.write(
     ...     table,

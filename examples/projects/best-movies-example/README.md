@@ -1,15 +1,15 @@
 # Best-rated movies examples
 
 The purpose of this project is two-fold:
- 1. doing an end-to-end application with Pathway to compute the K-best-rated items in a movie dataset,
+ 1. doing an end-to-end application with Pathway Live Data Framework to compute the K-best-rated items in a movie dataset,
  2. switching from Kafka to Redpanda
 
-The aim is to show that Pathway can be used the same way independently of the choice between Kafka and Redpanda.
+The aim is to show that the Pathway Live Data Framework can be used the same way independently of the choice between Kafka and Redpanda.
 
 The project is organized as followed:
  - a streaming platform, Kafka/ZooKeeper or Redpanda depending on the project
  - a Python container creating the stream from a static CSV file and sending it to Kafka/Redpanda
- - a Python container computing the K-best-rated items using Pathway
+ - a Python container computing the K-best-rated items using the Pathway Live Data Framework
 
 The different containers are managed via docker-compose.
 

@@ -1,6 +1,6 @@
 # Copyright © 2026 Pathway
 """
-Pathway UDFs for calling LLMs
+The Pathway Live Data Framework UDFs for calling LLMs
 
 This module contains UDFs for calling LLMs chat services:
 1. wrappers over LLM APIs
@@ -43,7 +43,7 @@ def _prepare_messages(messages: list[dict] | list[pw.Json] | pw.Json) -> list[di
 class BaseChat(pw.UDF):
     """Base class for the LLM chat instances.
 
-    Subclasses need to implement ``__wrapped__`` for use in Pathway.
+    Subclasses need to implement ``__wrapped__`` for use in Pathway Live Data Framework.
 
     Constructor arguments are passed to the :py:func:`~pathway.UDF` constructor.
     Refer to :py:func:`~pathway.UDF` for more information.
@@ -93,7 +93,7 @@ def _prep_message_log(messages: list[dict], verbose: bool) -> str:
 
 
 class OpenAIChat(BaseChat):
-    """Pathway wrapper for OpenAI Chat services.
+    """Pathway Live Data Framework wrapper for OpenAI Chat services.
 
     The ``capacity``, ``retry_strategy``, ``cache_strategy`` and ``base_url`` need to be specified during object
     construction, and API key must be provided to the constructor with the ``api_key`` argument
@@ -325,7 +325,7 @@ class OpenAIChat(BaseChat):
 
 
 class LiteLLMChat(BaseChat):
-    """Pathway wrapper for LiteLLM Chat services.
+    """Pathway Live Data Framework wrapper for LiteLLM Chat services.
 
     Model has to be specified either in constructor call or in each application, no default
     is provided. The capacity, retry_strategy and cache_strategy need to be specified during object
@@ -461,7 +461,7 @@ class LiteLLMChat(BaseChat):
 
 class HFPipelineChat(BaseChat):
     """
-    Pathway wrapper for HuggingFace Pipeline.
+    The Pathway Live Data Framework wrapper for HuggingFace Pipeline.
 
     Args:
         model: ID of the model to be used
@@ -625,7 +625,7 @@ class HFPipelineChat(BaseChat):
 
 
 class CohereChat(BaseChat):
-    """Pathway wrapper for Cohere Chat services.
+    """Pathway Live Data Framework wrapper for Cohere Chat services.
     Returns answer and cited docs as tuple[str, list[dict]]. Cited docs is empty list if
     there are no citations.
 
@@ -720,9 +720,7 @@ class CohereChat(BaseChat):
         api_key = kwargs.pop("api_key", None)
 
         client = cohere.Client(api_key=api_key)
-        ret = client.chat(
-            message=message, chat_history=chat_history, documents=docs, **kwargs  # type: ignore
-        )
+        ret = client.chat(message=message, chat_history=chat_history, documents=docs, **kwargs)  # type: ignore
         response: str = ret.text
         cited_documents: list = ret.citations or []
         cited_documents = list(map(lambda citation: citation.dict(), cited_documents))
@@ -767,7 +765,7 @@ class CohereChat(BaseChat):
 
 
 class BedrockChat(BaseChat):
-    """Pathway wrapper for AWS Bedrock Chat services using the
+    """Pathway Live Data Framework wrapper for AWS Bedrock Chat services using the
     `Converse API <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html>`_.
 
     Supports models like Claude (Anthropic), Llama, Titan, Mistral, and others

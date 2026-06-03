@@ -1,5 +1,5 @@
 # ---
-# title: "Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join"
+# title: "Automating reconciliation of messy financial transaction logs using the Pathway Live Data Framework real-time fuzzy join"
 # description: Article introducing Fuzzy Join.
 # notebook_export_path: notebooks/showcases/fuzzy_join_part1.ipynb
 # aside: true
@@ -23,7 +23,7 @@
 # ---
 
 # %% [markdown] jp-MarkdownHeadingCollapsed=true
-# # Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join
+# # Automating reconciliation of messy financial transaction logs using Pathway Live Data Framework's real-time fuzzy join
 #
 # ## Fuzzy joins: 'errare humanum est'
 #
@@ -45,13 +45,13 @@
 # Fortunately not, several mechanisms exist to assist or even perform the matching, and **fuzzy join** is one of them: a fuzzy join is a process which automatically matches entries from different logs despite not having a perfect matching between their keys.
 
 # %% [markdown]
-# ## Fuzzy join in Pathway
+# ## Fuzzy join in Pathway Live Data Framework
 #
 # Fuzzy join is used to perform a join on datasets when the keys do not match exactly.
 # Simple use cases include matching lower case strings with camelCase strings or matching
 # floats with some precision threshold.
 #
-# Pathway's standard library comes with a powerful `smart_fuzzy_join` functionality.
+# Pathway Live Data Framework's standard library comes with a powerful `smart_fuzzy_join` functionality.
 # This tutorial is a showcase of its capabilities. We will develop a Data Application which allows for fuzzy-joining
 # two streams of data against each other, and also for maintaining audit entries and updating results on the fly. Here is a sneak preview:
 #
@@ -93,7 +93,7 @@
 #
 #
 # As you can see, it seems that each entry in the first dataset (data sourced automatically) has a corresponding entry in the other dataset (transaction logs entered by hand).
-# In this example we will use the `smart_fuzzy_join` function from Pathway's standard library to make sure all is correctly matched.
+# In this example we will use the `smart_fuzzy_join` function from Pathway Live Data Framework's standard library to make sure all is correctly matched.
 #
 # ## What are we going to obtain?
 # We want to obtain a table in which the matchings are expressed, e.g. the entry 0 for the first table corresponds to the entry 1 in the second table.
@@ -182,7 +182,7 @@ pw.debug.compute_and_print(match_transactions(transactionsA, transactionsB))
 # Super easy, few lines of code and you flawlessly manage datasets in different formats.
 # Hassle-free.
 #
-# ## Scaling with Pathway
+# ## Scaling with Pathway Live Data Framework
 #
 # `smart_fuzzy_join` is able to handle much bigger datasets.
 # Feel free to test it on your own data or use the full datasets from this tutorial,
@@ -201,7 +201,7 @@ pw.debug.compute_and_print(match_transactions(transactionsA, transactionsB))
 # From now on, you have no excuses for having mismatching logs: 'errare humanum est, perseverare diabolicum'!
 #
 #
-# If you would like to get some more experience with Pathway, you can try those two challenges:
+# If you would like to get some more experience with Pathway Live Data Framework, you can try those two challenges:
 #
 # **Challenge 1**
 #

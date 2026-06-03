@@ -5,9 +5,9 @@
 # ---
 
 # # Playing with Joins.
-# A brief explanation on how to perform joins with Pathway.
+# A brief explanation on how to perform joins with Pathway Live Data Framework Pathway Live Data Framework.
 #
-# Join is one of the basic table operations provided in Pathway.
+# Join is one of the basic table operations provided in Pathway Live Data Framework.
 # A join operation combines columns from two different tables by associating rows from both tables wich are matching on some given values.
 #
 # This guide presents several samples of code using the joins:
@@ -17,14 +17,14 @@
 #
 # The examples demonstrate usual use-cases, explain the behavior of
 # outer joins, and point out some peculiarities you may encounter
-# while using Pathway. In particular, they show how to:
+# while using Pathway Live Data Framework. In particular, they show how to:
 # * [inherit id from left or right table](#id-inheritance-in-join)
 # * [join tables using foreign keys](#joins-on-a-foreign-key)
 # * [use joins in a chain](#chaining-joins)
 
 # ## Prerequisites
 #
-# Be sure to import Pathway.
+# Be sure to import Pathway Live Data Framework.
 
 import pathway as pw
 
@@ -446,7 +446,7 @@ pw.debug.compute_and_print(
 # -
 
 # ## Joins on a foreign key
-# In Pathway, the id column is auto-generated, and as such joining over a foreign key kept in
+# In Pathway Live Data Framework, the id column is auto-generated, and as such joining over a foreign key kept in
 # some other table requires extra care. Let's assume that you have another table `likes`
 # that indicates that a friend (row in `friends`) likes some particular dish (row in `menu`).
 
@@ -465,7 +465,7 @@ likes = pw.debug.table_from_markdown(
 """
 )
 
-# Without further specification, Pathway treats columns `f_id` and `m_id` as numbers:
+# Without further specification, Pathway Live Data Framework treats columns `f_id` and `m_id` as numbers:
 
 pw.debug.compute_and_print(likes)
 
@@ -488,7 +488,7 @@ pw.debug.compute_and_print(likes)
 # is presented the next section on chaining joins.
 
 # ## Chaining joins:
-# Pathway provides two ways of chaining joins. The first relies on usage of [`pw.this`](/developers/api-docs/pathway#pathway.this),
+# Pathway Live Data Framework provides two ways of chaining joins. The first relies on usage of [`pw.this`](/developers/api-docs/pathway#pathway.this),
 # the second allows for slightly more compact code. Below, let's focus on chaining joins
 # using `pw.left`.
 #

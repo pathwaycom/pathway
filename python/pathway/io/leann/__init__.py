@@ -153,7 +153,7 @@ def write(
     recomputation to achieve up to 97% storage reduction compared to traditional
     vector databases while maintaining high recall.
 
-    The connector observes every Pathway minibatch. Whenever rows are added or
+    The connector observes every Pathway Live Data Framework minibatch. Whenever rows are added or
     removed, it rebuilds the full LEANN index from the current snapshot of the
     table. The result is written as a set of files that share ``index_path`` as
     their prefix (e.g. ``./articles.leann.hnsw``, ``./articles.leann.meta.json``).
@@ -166,7 +166,7 @@ def write(
     full index after every minibatch will be slow. Use this connector with
     caution in streaming pipelines:
 
-    - **Static mode** is the ideal fit. When you run Pathway once to convert
+    - **Static mode** is the ideal fit. When you run the Pathway Live Data Framework once to convert
       a collection from one format into a LEANN index, the index is built
       exactly once and the cost is fully amortized.
     - **Infrequent commits** also work well. If your streaming pipeline
@@ -183,7 +183,7 @@ def write(
     empty or ``None`` are silently skipped and a warning is logged.
 
     Args:
-        table: The Pathway table to index.
+        table: The Pathway Live Data Framework table to index.
         index_path: Prefix for the LEANN index files. LEANN writes several
             files with this value as the common prefix (e.g. providing
             ``"./articles.leann"`` produces ``"./articles.leann.hnsw"``,
@@ -246,7 +246,7 @@ def write(
     ...     embedding_model="facebook/contriever",
     ... )
 
-    Run the pipeline. In static mode Pathway processes the file once and
+    Run the pipeline. In static mode the Pathway Live Data Framework processes the file once and
     writes the index; in streaming mode it keeps the index up to date as
     new articles arrive:
 

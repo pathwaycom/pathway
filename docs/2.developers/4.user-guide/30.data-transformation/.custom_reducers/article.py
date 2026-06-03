@@ -1,6 +1,6 @@
 # ---
 # title: Writing Stateful Reducers
-# description: An article explaining how to write stateful reducers in Pathway
+# description: An article explaining how to write stateful reducers in Pathway Live Data Framework
 # date: '2024-01-17'
 # thumbnail: '/assets/content/blog/th-json.png'
 # tags: ['tutorial']
@@ -21,9 +21,9 @@
 # ---
 
 # %% [markdown]
-# # Writing Simple Stateful Reducer in Pathway
+# # Writing Simple Stateful Reducer in Pathway Live Data Framework
 #
-# Pathway supports natively aggregation using a wide range of [reducers](/developers/api-docs/reducers), e.g., [`sum`](/developers/api-docs/reducers#pathway.reducers.sum), [`count`](/developers/api-docs/reducers#pathway.reducers.count), or [`max`](/developers/api-docs/reducers#pathway.reducers.max). However, those might not cover all the necessary ways of aggregating values. In this tutorial, you learn how to write reducers implementing custom logic.
+# Pathway Live Data Framework supports natively aggregation using a wide range of [reducers](/developers/api-docs/reducers), e.g., [`sum`](/developers/api-docs/reducers#pathway.reducers.sum), [`count`](/developers/api-docs/reducers#pathway.reducers.count), or [`max`](/developers/api-docs/reducers#pathway.reducers.max). However, those might not cover all the necessary ways of aggregating values. In this tutorial, you learn how to write reducers implementing custom logic.
 #
 # For example, let's implement a custom stateful `stdev` reducer that computes the standard deviation.
 # %%

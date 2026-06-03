@@ -1,6 +1,6 @@
 # ---
 # title: Dealing with JSON Data Type
-# description: An article explaining how to use JSON in Pathway
+# description: An article explaining how to use JSON in Pathway Live Data Framework
 # date: '2023-12-22'
 # thumbnail: '/assets/content/blog/th-json.png'
 # tags: ['tutorial', 'table']
@@ -21,9 +21,9 @@
 # ---
 
 # %% [markdown]
-# # Handling JSON in Pathway
+# # Handling JSON in Pathway Live Data Framework
 #
-# JSON is a widely used format for data interchange due to its simplicity and readability. Upon finishing this article, managing JSON in Pathway should become effortlessly intuitive.
+# JSON is a widely used format for data interchange due to its simplicity and readability. Upon finishing this article, managing JSON in Pathway Live Data Framework should become effortlessly intuitive.
 #
 # As an example, we'll use JSON objects loaded directly from python list. However, JSON data can come from various sources that support this format, such as [Kafka](/developers/user-guide/connect/connectors/kafka_connectors) or an [HTTP connector](/developers/api-docs/pathway-io/http#pathway.io.http.rest_connector).
 # %%
@@ -93,7 +93,7 @@ pw.debug.compute_and_print(table)
 
 
 # %% [markdown]
-# Pathway enables manipulation of JSON from two perspectives: expressions and [user-defined functions](/developers/api-docs/pathway#pathway.udf). Let's examine each one separately.
+# Pathway Live Data Framework enables manipulation of JSON from two perspectives: expressions and [user-defined functions](/developers/api-docs/pathway#pathway.udf). Let's examine each one separately.
 
 # %% [markdown]
 # ## Working with JSONs using expressions
@@ -155,7 +155,7 @@ pw.debug.compute_and_print(flat_list)
 
 
 # %% [markdown]
-# Pathway enables manipulation of JSON using [user-defined functions](/developers/api-docs/pathway#pathway.udf). Just like with expressions, the index operator (`[]`) and methods allowing conversion into specific types are available.  It's crucial to note that this conversion is strict— attempting to convert incompatible data will result in an exception.
+# Pathway Live Data Framework enables manipulation of JSON using [user-defined functions](/developers/api-docs/pathway#pathway.udf). Just like with expressions, the index operator (`[]`) and methods allowing conversion into specific types are available.  It's crucial to note that this conversion is strict— attempting to convert incompatible data will result in an exception.
 
 
 # %%

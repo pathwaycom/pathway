@@ -1,6 +1,6 @@
 ---
 title: "Parsers"
-description: "Article about Pathway's parsers."
+description: "Article about parsers available in the Pathway Live Data Framework xpack."
 date: '2024-06-04'
 tags: ['tutorial', 'LLM']
 keywords: ['LLM', 'unstructured', 'docling', 'parsers', 'ocr']
@@ -57,13 +57,13 @@ However, there are some [limitations](https://docs.unstructured.io/open-source/i
 ### Chunking modes
 
 Many parsers include chunking functionality, allowing them to use a document's structure to split content into smaller, semantically consistent chunks.
-Pathway's `UnstructuredParser` supports five chunking modes:
+The `UnstructuredParser` supports five chunking modes:
 
 - `basic` - Uses Unstructured's [basic chunking strategy](https://github.com/Unstructured-IO/unstructured/blob/238f985ddaaa04952ac089c6e94e592de2bda9b6/unstructured/chunking/basic.py#L24), which splits text into chunks shorter than the specified `max_characters` length (set via the `chunking_kwargs` argument). It also supports a soft threshold for chunk length using `new_after_n_chars`.
 - `by_title` - Uses Unstructured's [chunk-by-title strategy](https://github.com/Unstructured-IO/unstructured/blob/238f985ddaaa04952ac089c6e94e592de2bda9b6/unstructured/chunking/title.py#L23) strategy, similar to basic chunking but with additional constraints to split chunks at section or page breaks, resulting in more structured chunks. Like basic chunking, it can be configured via `chunking_kwargs`.
 - `elements` -  Breaks down a document into homogeneous Unstructured elements such as `Title`, `NarrativeText`, `Footer`, `ListItem` etc. Not recommended for PDFs or other complex data sources. Best suited for simple input data where individual elements need to be separated.
 - `paged` - Collects all elements found on a single page into one chunk. Useful for documents where content is well-separated across pages.
-- `single` - Aggregates all Unstructured elements into a single large chunk. Use this mode when applying other chunking strategies available in Pathway <!-- TODO: Link Pathway-defined chunking here --> or when using a custom chunking approach.
+- `single` - Aggregates all Unstructured elements into a single large chunk. Use this mode when applying other chunking strategies available in Pathway Live Data Framework <!-- TODO: Link Pathway-defined chunking here --> or when using a custom chunking approach.
 
 ::if{path="/llm-xpack/"}
 Example of usage:
@@ -178,7 +178,7 @@ Let's put an image of corgi into `./dogs` directory:
 wget https://media.os.fressnapf.com/cms/2020/07/ratgeber_hund_rasse_portraits_welsh-corgi-pembroke_1200x527.jpg?t=seoimgsqr_527 -P ./dogs
 ```
 
-Now, lets build some simple Pathway pipeline that would try to parse the image and extract structured information defined in pydantic schema.
+Now, let's build a simple pipeline that would try to parse the image and extract structured information defined in pydantic schema.
 
 ```python
 from pydantic import BaseModel

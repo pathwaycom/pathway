@@ -67,7 +67,7 @@ __all__ = [
 
 class UDF(abc.ABC):
     """
-    Base class for Pathway UDF (user-defined functions).
+    Base class for Pathway Live Data Framework UDF (user-defined functions).
 
     Please use the wrapper ``udf`` to create UDFs out of Python functions.
     Please subclass this class to define UDFs using Python classes.
@@ -129,7 +129,8 @@ class UDF(abc.ABC):
                 ``self.__wrapped__`` signature.
             deterministic: Whether the provided function is deterministic. In this context,
                 it means that the function always returns the same value for the same arguments.
-                If it is not deterministic, Pathway will memoize the results until the row deletion.
+                If it is not deterministic, the Pathway Live Data Framework will memoize the
+                results until the row deletion.
                 If your function is deterministic, you're **strongly encouraged** to set it
                 to True as it will improve the performance.
                 Defaults to False, meaning that the function is not deterministic
@@ -344,7 +345,8 @@ def udf(
             Defaults to ``...``, meaning that the return type will be inferred from type annotation.
         deterministic: Whether the provided function is deterministic. In this context,
             it means that the function always returns the same value for the same arguments.
-            If it is not deterministic, Pathway will memoize the results until the row deletion.
+            If it is not deterministic, the Pathway Live Data Framework will memoize the
+            results until the row deletion.
             If your function is deterministic, you're **strongly encouraged** to set it
             to True as it will improve the performance.
             Defaults to False, meaning that the function is not deterministic

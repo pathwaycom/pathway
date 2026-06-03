@@ -43,7 +43,7 @@
 # - **Learn what is Multimodal RAG**: Gain a solid grasp of how these systems integrate multiple data types to
 # enhance AI capabilities. Understand how these systems improve performance, especially with unstructured data and complex visual elements. This includes handling PDFs with images, charts, and tables stored as images.
 #
-# - **Run an App Template:** See how to build and run a multimodal RAG application using open-source frameworks like Pathway. Specifically, we use GPT-4o to improve table data extraction accuracy, demonstrating superior performance over standard RAG toolkits. Implementing this approach allows your AI application to stay in sync with documents containing visually formatted elements.
+# - **Run an App Template:** See how to build and run a multimodal RAG application using open-source frameworks like Pathway Live Data Framework. Specifically, we use GPT-4o to improve table data extraction accuracy, demonstrating superior performance over standard RAG toolkits. Implementing this approach allows your AI application to stay in sync with documents containing visually formatted elements.
 #
 #
 #
@@ -101,9 +101,9 @@
 #
 
 # + [markdown] id="DBo5YKJzKpdR"
-# ## **What's the main difference between LlamaIndex and Pathway?**
+# ## **What's the main difference between LlamaIndex and Pathway Live Data Framework?**
 #
-# Pathway offers an indexing solution that always provides the latest information to your LLM application:  Pathway Vector Store preprocesses and indexes your data in real time, always giving up-to-date answers. LlamaIndex is a framework for writing LLM-enabled applications. Pathway and LlamaIndex are best [used together](/blog/llamaindex-pathway). Pathway vector store is natively available in LlamaIndex.
+# The Pathway Live Data Framework offers an indexing solution that always provides the latest information to your LLM application:  Pathway Live Data Framework Vector Store preprocesses and indexes your data in real time, always giving up-to-date answers. LlamaIndex is a framework for writing LLM-enabled applications. Pathway Live Data Framework and LlamaIndex are best [used together](/blog/llamaindex-pathway). The Pathway Live Data Framework vector store is natively available in LlamaIndex.
 
 # + [markdown] id="CzxFvo4S_RIj"
 # ## **Architecture Used for Multimodal RAG for Production Use Cases**
@@ -125,7 +125,7 @@
 #
 # - **BaseRAGQuestionAnswerer Class**: Integrates foundational RAG components.
 # - **GPT-4o by Open AI**: Used for extracting and understanding multimodal data, generating vector embeddings, and for answering queries with retrieved context.
-# - **Pathway**: Provides real-time synchronization, secure document handling, and a robust in-memory vector store for indexing.
+# - **Pathway Live Data Framework**: Provides real-time synchronization, secure document handling, and a robust in-memory vector store for indexing.
 #
 # This architecture ensures our multimodal RAG system is efficient, scalable, and capable of handling complex data types, making it ideal for production use cases, especially in finance where understanding data within PDFs is crucial.
 #
@@ -144,9 +144,9 @@
 #
 
 # + [markdown] id="5rHNeRXI8t2C"
-# ### Install Pathway
+# ### Install Pathway Live Data Framework
 #
-# Install Pathway and all its optional packages.
+# Install the Pathway Live Data Framework and all its optional packages.
 
 # + id="4hYX0Mb7a9aH"
 # _MD_SHOW_!pip install 'pathway[all]>=0.20.0'
@@ -171,7 +171,7 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 # + [markdown] id="Z5QxXaQM8w6J"
 # ### Imports and Environment Setup
 #
-# This cell sets up necessary imports and environment variables for using Pathway and related functionalities.
+# This cell sets up necessary imports and environment variables for using the Pathway Live Data Framework and related functionalities.
 #
 # #### Key Imports:
 # - **pathway**: Main library for document processing and question answering.
@@ -295,8 +295,8 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DefaultCache())
 
 # + [markdown] id="S3zsr-NGop8B"
 # ## **Conclusion**
-# This is how you can easily implement a Multimodal RAG Pipeline using GPT-4o and Pathway. You used the [BaseRAGQuestionAnswerer](https://pathway.com/developers/api-docs/pathway-xpacks-llm/question_answering#pathway.xpacks.llm.question_answering.BaseRAGQuestionAnswerer) class from [pathway.xpacks](https://pathway.com/developers/user-guide/llm-xpack/overview), which integrates the foundational components for our RAG application, including data ingestion, LLM integration, database creation and querying, and serving the application on an endpoint. For more advanced RAG options, you can explore [rerankers](https://pathway.com/developers/api-docs/pathway-xpacks-llm/rerankers#pathway.xpacks.llm.rerankers.CrossEncoderReranker) and the [adaptive RAG example](https://pathway.com/developers/showcases/adaptive-rag).
-# For implementing this example using open source LLMs, here’s a [private RAG app template](https://pathway.com/developers/showcases/private-rag-ollama-mistral) that you can use as a starting point. It will help you run the entire application locally making it ideal for use-cases with sensitive data and explainable AI needs. You can do this within Docker as well by following the steps in [Pathway’s LLM App templates](https://github.com/pathwaycom/llm-app/tree/main/templates/multimodal_rag) repository.
+# This is how you can easily implement a Multimodal RAG Pipeline using GPT-4o and the Pathway Live Data Framework. You used the [BaseRAGQuestionAnswerer](https://pathway.com/developers/api-docs/pathway-xpacks-llm/question_answering#pathway.xpacks.llm.question_answering.BaseRAGQuestionAnswerer) class from [pathway.xpacks](https://pathway.com/developers/user-guide/llm-xpack/overview), which integrates the foundational components for our RAG application, including data ingestion, LLM integration, database creation and querying, and serving the application on an endpoint. For more advanced RAG options, you can explore [rerankers](https://pathway.com/developers/api-docs/pathway-xpacks-llm/rerankers#pathway.xpacks.llm.rerankers.CrossEncoderReranker) and the [adaptive RAG example](https://pathway.com/developers/showcases/adaptive-rag).
+# For implementing this example using open source LLMs, here’s a [private RAG app template](https://pathway.com/developers/showcases/private-rag-ollama-mistral) that you can use as a starting point. It will help you run the entire application locally making it ideal for use-cases with sensitive data and explainable AI needs. You can do this within Docker as well by following the steps in [Pathway Live Data Framework’s LLM App templates](https://github.com/pathwaycom/llm-app/tree/main/templates/multimodal_rag) repository.
 #
 #
-# To explore more app templates and advanced use cases, visit [Pathway App Templates](https://pathway.com/developers/showcases) or Pathway’s [official blog](https://pathway.com/blog).
+# To explore more app templates and advanced use cases, visit [Pathway Live Data Framework App Templates](https://pathway.com/developers/showcases) or Pathway Live Data Framework’s [official blog](https://pathway.com/blog).

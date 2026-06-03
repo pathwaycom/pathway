@@ -52,14 +52,14 @@ def read(
 ) -> Table:
     """Reads a table or view from a `SQLite <https://www.sqlite.org/>`_ database.
     Both rowid tables and ``WITHOUT ROWID`` tables / views are supported —
-    the latter require a primary key declared in the Pathway schema
+    the latter require a primary key declared in the Pathway Live Data Framework schema
     (see below).
 
     The reader polls the database for changes and tracks each row by an
     identity so it can emit insertions, updates, and deletions. That
-    identity is chosen from the Pathway schema passed as ``schema``:
+    identity is chosen from the Pathway Live Data Framework schema passed as ``schema``:
 
-    * If the Pathway schema declares one or more columns with
+    * If the Pathway Live Data Framework schema declares one or more columns with
       ``pw.column_definition(primary_key=True)``, those columns form the
       identity. The SQLite table must carry a matching ``PRIMARY KEY``
       or ``UNIQUE`` constraint; otherwise the reader would silently
@@ -70,21 +70,21 @@ def read(
       constraints, the reader trusts the user's declaration.
     * Otherwise, SQLite's implicit ``_rowid_`` column is used.
       ``pw.io.sqlite.read`` raises ``ValueError`` at call time if the
-      target object has neither a primary key in the Pathway schema
+      target object has neither a primary key in the Pathway Live Data Framework schema
       nor ``_rowid_``. The same error fires when the target table has
       a user-defined column named ``rowid``, ``_rowid_``, or ``oid``
       (case-insensitive — these are SQLite's rowid aliases): the user
       column shadows the implicit alias, so the reader cannot fetch
       the integer rowid identity. Declare a primary key in the
-      Pathway schema to read such tables.
+      The Pathway Live Data Framework schema to read such tables.
 
-    The column names of the Pathway schema are verified against the
+    The column names of the Pathway Live Data Framework schema are verified against the
     target SQLite object's columns (via ``PRAGMA table_xinfo``, which
     exposes generated columns too) at connector construction; if the
-    Pathway schema declares a column the SQLite table does not carry,
+    The Pathway Live Data Framework schema declares a column the SQLite table does not carry,
     the reader refuses to start and names the offending column(s) in
     the error. Identifier comparison is ASCII case-insensitive,
-    matching SQLite's own rules — e.g. declaring ``ID`` in the Pathway
+    matching SQLite's own rules — e.g. declaring ``ID`` in the Pathway Live Data Framework
     schema matches a table column named ``id``.
     The path must point at a valid SQLite 3 database — the connector
     runs ``PRAGMA schema_version`` up-front and surfaces a clear error
@@ -122,7 +122,7 @@ def read(
 
     **Persistence is not supported.** SQLite has no change-log history
     to replay, so a pipeline that uses ``pw.io.sqlite.read`` cannot be
-    resumed from a Pathway snapshot. Enabling ``pw.persistence.Config``
+    resumed from a Pathway Live Data Framework snapshot. Enabling ``pw.persistence.Config``
     against such a pipeline raises ``ValueError`` at startup.
 
     Args:
@@ -133,12 +133,12 @@ def read(
             SQLite resolves identifiers case-insensitively, so a
             mixed-case ``table_name`` (e.g. ``"Users"``) matches a
             table created as ``users``.
-        schema: Pathway schema. Optionally annotate one or more
+        schema: Pathway Live Data Framework schema. Optionally annotate one or more
             columns with ``pw.column_definition(primary_key=True)`` to
             drive row-identity tracking (see above).
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         max_backlog_size: Limit on the number of entries read from the input source and kept
@@ -199,20 +199,20 @@ def write(
     changes** and **snapshot**.
 
     When using **stream of changes**, the output table contains a log of
-    every change seen in the Pathway table. Two extra ``INTEGER`` columns,
+    every change seen in the Pathway Live Data Framework table. Two extra ``INTEGER`` columns,
     ``time`` and ``diff``, are appended: ``time`` is the minibatch
     timestamp and ``diff`` is ``1`` for an insertion or ``-1`` for a
     deletion.
 
     When using **snapshot**, the output table holds the current state of
-    the Pathway table. Insertions are emitted as
+    the Pathway Live Data Framework table. Insertions are emitted as
     ``INSERT ... ON CONFLICT (primary_key) DO UPDATE SET ...`` and
     deletions as ``DELETE ... WHERE primary_key = ?``, so the destination
-    table always mirrors the logical contents of the Pathway table.
+    table always mirrors the logical contents of the Pathway Live Data Framework table.
 
     Values are encoded using the same storage-class mapping that
     :py:func:`pathway.io.sqlite.read` expects, so a ``write`` / ``read``
-    pair is a lossless round-trip for every supported Pathway type.
+    pair is a lossless round-trip for every supported Pathway Live Data Framework type.
 
     Args:
         table: The table to write. Its column names must be unique
@@ -232,7 +232,7 @@ def write(
             transaction.
         init_mode: Controls how the destination SQLite table is
             initialized. ``"default"`` requires the SQLite table to
-            already exist with columns matching the Pathway table;
+            already exist with columns matching the Pathway Live Data Framework table;
             ``"create_if_not_exists"`` creates it if missing;
             ``"replace"`` drops and recreates it. See
             `Output Connector: Initialization and Schema Checks` above
@@ -252,7 +252,7 @@ def write(
 
     Examples:
 
-    **Stream of changes.** Every event from the Pathway table is appended
+    **Stream of changes.** Every event from the Pathway Live Data Framework table is appended
     to the destination table together with its ``time`` and ``diff``
     metadata, so the result is a complete log of insertions and deletions.
     The destination table is created on demand when ``init_mode`` allows
@@ -277,7 +277,7 @@ def write(
     connector.
 
     **Snapshot.** The destination table is kept in sync with the current
-    state of the Pathway table: every ``+1`` event UPSERTs on the primary
+    state of the Pathway Live Data Framework table: every ``+1`` event UPSERTs on the primary
     key and every ``-1`` event issues a DELETE against the matching row.
     A primary key must be supplied via ``primary_key``:
 

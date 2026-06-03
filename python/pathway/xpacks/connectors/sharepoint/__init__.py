@@ -268,7 +268,7 @@ def read(
     max_failed_attempts_in_row: int | None = 8,
 ) -> Table:
     """Reads a table from a directory or a file in Microsoft SharePoint site.
-    Requires a valid Pathway Scale license key.
+    Requires a valid Pathway Live Data Framework Scale license key.
 
     It will return a table with single column `data` containing each file in a binary format.
 
@@ -339,7 +339,7 @@ That leads us to the following snippet:
     ...     recursive=False,
     ... )
 
-    SharePoint sites are often used with the subsites. Pathway supports the data reads \
+    SharePoint sites are often used with the subsites. The Pathway Live Data Framework supports the data reads \
 from the subsites as well. To read the data from the subsite, you need to specify its' \
 URL in the `url` parameter. For example, if you read the dataset from `vendor` subspace, \
 you can configure the connector this way:

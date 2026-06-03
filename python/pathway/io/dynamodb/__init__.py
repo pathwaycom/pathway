@@ -46,7 +46,7 @@ def write(
     The connector performs writes using the primary key, defined as a combination of the
     partition key and an optional sort key. Note that, due to how DynamoDB operates,
     entries may overwrite existing ones if their keys coincide. When an entry is deleted
-    from the Pathway table, the corresponding entry is also removed from the DynamoDB
+    from the Pathway Live Data Framework table, the corresponding entry is also removed from the DynamoDB
     table maintained by the connector. In this sense, the connector behaves similarly to
     the snapshot mode in the
     `Delta Lake </developers/api-docs/pathway-io/deltalake/#pathway.io.deltalake.write>`_
@@ -61,7 +61,7 @@ def write(
             `partition key <https://aws.amazon.com/blogs/database/choosing-the-right-dynamodb-partition-key/>`_
             in the destination table. Note that only the scalar types ``String``, ``Number``
             and ``Binary`` can be used as index fields in DynamoDB. Therefore, the field you
-            select in the Pathway table must serialize to one of these types. You can verify
+            select in the Pathway Live Data Framework table must serialize to one of these types. You can verify
             this using the conversion table provided in the connector documentation. In
             particular, ``bool`` columns serialize to the DynamoDB ``Boolean`` type, which is
             not a valid key type, so they cannot be used as a partition or sort key.
@@ -126,7 +126,7 @@ def write(
     ... )
 
     Remember to run your program by calling ``pw.run()``. Note that if the table does not
-    already exist, using ``init_mode="default"`` will result in a failure, as Pathway will
+    already exist, using ``init_mode="default"`` will result in a failure, as Pathway Live Data Framework will
     not create the table and the write will fail due to its absence.
 
     When finished, you can query the local DynamoDB for the table contents using the AWS

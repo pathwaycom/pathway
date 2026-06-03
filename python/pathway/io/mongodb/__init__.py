@@ -35,20 +35,20 @@ def read(
 ) -> Table:
     """
     **This module is available when using one of the following licenses only:**
-    `Pathway Scale, Pathway Enterprise </pricing>`_.
+    `Pathway Live Data Framework Scale, Pathway Live Data Framework Enterprise </pricing>`_.
 
     .. warning::
 
         This is an early version of the connector. The API and behavior may change
         in the next release as the connector is stabilized.
 
-    Reads a collection from MongoDB into a Pathway table.
+    Reads a collection from MongoDB into a Pathway Live Data Framework table.
 
     The connector fetches all documents from the specified collection and maps each
     document's fields to table columns according to the ``schema`` parameter. Field
     names in the documents must match the column names in the schema exactly.
 
-    Most BSON scalar types map to a Pathway type with the same name (``Boolean``
+    Most BSON scalar types map to a Pathway Live Data Framework type with the same name (``Boolean``
     → ``bool``, ``Int32``/``Int64`` → ``int``, ``Double`` → ``float``,
     ``String`` → ``str``, ``Binary`` → ``bytes``, ``DateTime`` → ``pw.DateTimeNaive``
     or ``pw.DateTimeUtc``, etc.). The following BSON-extended types are also
@@ -67,10 +67,10 @@ def read(
     ``pw.io.mongodb`` reference for the full list of supported mappings.
 
     **Note:** Specifying a primary key in the schema is not supported. The connector
-    uses MongoDB's ``_id`` field as the Pathway row key, ensuring that document
+    uses MongoDB's ``_id`` field as the Pathway Live Data Framework row key, ensuring that document
     identity is preserved consistently across the initial snapshot and subsequent
     incremental updates. Using a different primary key could cause mismatches between
-    Pathway's internal state and the actual collection contents. To reindex the
+    The Pathway Live Data Framework's internal state and the actual collection contents. To reindex the
     resulting table by a different column, use ``pw.Table.with_id_from()`` after
     reading.
 
@@ -105,11 +105,11 @@ def read(
     collection are not silently lost.
 
     **Parallelism.** This connector runs on a single worker thread, even when the
-    Pathway program is launched with ``pathway spawn -n N`` (multiple threads) or
+    The Pathway Live Data Framework program is launched with ``pathway spawn -n N`` (multiple threads) or
     ``pathway spawn --addresses ...`` (multiple processes). MongoDB change streams
     deliver events in oplog order from a single cursor, so partitioning the input
     across workers would either drop ordering guarantees or duplicate events.
-    Downstream Pathway operators still parallelize across all workers; only the
+    Downstream Pathway Live Data Framework operators still parallelize across all workers; only the
     initial read from MongoDB is serialized.
 
     Args:
@@ -127,7 +127,7 @@ def read(
             collection once and terminates without opening a change stream.
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector
-            are committed and pushed into Pathway's computation graph.
+            are committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's
@@ -177,7 +177,7 @@ def read(
             { product: "cherry", qty: 20 },
         ])
 
-    With data in place, define a matching schema in Pathway. Note that no primary key
+    With data in place, define a matching schema in the Pathway Live Data Framework. Note that no primary key
     is declared — the connector derives the row key from each document's ``_id``.
 
     >>> import pathway as pw
@@ -205,7 +205,7 @@ def read(
     **Streaming mode.** When ``mode="streaming"`` (the default), the connector first
     delivers the full collection as an initial snapshot and then continues to watch
     for changes. Every insert, replacement, update, or deletion in MongoDB is
-    forwarded to Pathway in real time.
+    forwarded to the Pathway Live Data Framework in real time.
 
     >>> table = pw.io.mongodb.read(
     ...     "mongodb://127.0.0.1:27017/?replicaSet=rs0",
@@ -215,21 +215,21 @@ def read(
     ... )
 
     After the snapshot is delivered, any change made in the MongoDB shell will be
-    reflected in Pathway immediately. For example, running the following in
+    reflected in the Pathway Live Data Framework immediately. For example, running the following in
     ``mongosh``:
 
     .. code-block:: rst
 
         db.orders.insertOne({ product: "durian", qty: 2 })
 
-    will cause Pathway to receive a new row ``{ product: "durian", qty: 2 }`` with
+    will cause Pathway Live Data Framework to receive a new row ``{ product: "durian", qty: 2 }`` with
     ``diff = 1``. Running:
 
     .. code-block:: rst
 
         db.orders.deleteOne({ product: "banana" })
 
-    will cause Pathway to retract the ``banana`` row with ``diff = -1``.
+    will cause Pathway Live Data Framework to retract the ``banana`` row with ``diff = -1``.
 
     **Persistence in static mode.** With persistence enabled, the connector records
     the oplog position after each run. On the next run it resumes from that position
@@ -339,18 +339,18 @@ def write(
     additional fields: ``time`` and ``diff``. The ``time`` field identifies the
     transactional minibatch in which the change occurred, while ``diff`` describes
     the nature of the change: ``diff = 1`` indicates that the row was inserted into
-    the Pathway table, and ``diff = -1`` indicates that the row was removed. Row
+    the Pathway Live Data Framework table, and ``diff = -1`` indicates that the row was removed. Row
     updates are represented as two events within the same transactional minibatch:
     first the old version of the row with ``diff = -1``, followed by the new version
     with ``diff = 1``. This format is used by default. Because ``time`` and ``diff``
     are reserved field names in this format, the input table must not contain columns
     with these names; otherwise a ``ValueError`` is raised at construction time.
 
-    The ``snapshot`` format maintains the current state of the Pathway table in the
+    The ``snapshot`` format maintains the current state of the Pathway Live Data Framework table in the
     output. The table's primary key is stored in the ``_id`` field. When a change
     occurs, no additional metadata fields are added; instead, the engine locates the
     corresponding row by ``_id`` and applies the update directly. As a result, the
-    output table always reflects the latest state of the Pathway table.
+    output table always reflects the latest state of the Pathway Live Data Framework table.
 
     **Reserved column name**: in both formats, the input table must not contain a
     column named ``_id`` — MongoDB uses ``_id`` as the primary key for every
@@ -397,7 +397,7 @@ for the details.
 
     The first command pulls the latest MongoDB image from Docker. The second command
     runs MongoDB in the background, naming the container ``mongo`` and exposing port
-    ``27017`` for external connections, such as from your Pathway program.
+    ``27017`` for external connections, such as from your Pathway Live Data Framework program.
 
     If the container doesn't start, check if port ``27017`` is already in use. If so, you
     can map it to a different port.
@@ -410,8 +410,8 @@ for the details.
 
     There's no need to create anything in the new instance at this point.
 
-    With MongoDB running, you can proceed with a Pathway program to write data to the
-    database. Start by importing Pathway and creating a test table.
+    With MongoDB running, you can proceed with a Pathway Live Data Framework program to write data to the
+    database. Start by importing the Pathway Live Data Framework and creating a test table.
 
     >>> import pathway as pw
     ...
@@ -422,7 +422,7 @@ for the details.
     ... 8   | Alice | cat
     ... ''')
 
-    Next, write this data to your MongoDB instance with the Pathway connector.
+    Next, write this data to your MongoDB instance with the Pathway Live Data Framework connector.
 
     >>> pw.io.mongodb.write(
     ...     pet_owners,

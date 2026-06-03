@@ -686,7 +686,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             threshold: value used to determine which entries are old enough to be removed.
                 Should match the type of the ``time_column`` (``int -> int``,
                 ``float -> float``, ``datetime -> timedelta``).
-            mark_forgetting_records : If set to ``True``, Pathway marks records
+            mark_forgetting_records : If set to ``True``, Pathway Live Data Framework marks records
                 corresponding to the deletion of expired entries in a special way,
                 without changing their visible representation.
                 This flag is useful when combined with ``filter_out_results_of_forgetting``,
@@ -802,12 +802,12 @@ id_type=<class 'pathway.engine.Pointer'>>
         are triggered by forgetting will be removed.
 
         Args:
-            ensure_consistency: When enabled, Pathway keeps track of the latest value for
+            ensure_consistency: When enabled, the Pathway Live Data Framework keeps track of the latest value for
             each key. This ensures that when entries emitted by forgetting are removed,
             the sequence of remaining additions and deletions stays consistent.
             For example, if an entry is removed due to forgetting and another entry with
             the same key appears afterward, the stream would normally have two additions
-            for the same key, which is inconsistent. With the flag enabled, Pathway
+            for the same key, which is inconsistent. With the flag enabled, the Pathway Live Data Framework
             tracks the state of each key. It will emit a deletion before the second
             addition, guaranteeing that the stream remains consistent. Note that this
             feature uses additional memory to store the current snapshot of the table.
@@ -2290,7 +2290,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         """Returns a copy of self with exactly the same universe as others.
 
         Semantics: Required precondition self.universe == other.universe
-        Used in situations where Pathway cannot deduce equality of universes, but
+        Used in situations where the Pathway Live Data Framework cannot deduce equality of universes, but
         those are equal as verified during runtime.
 
         Example:
@@ -2325,7 +2325,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         """Returns a copy of self with exactly the same universe as other.
 
         Semantics: Required precondition self.universe == other.universe
-        Used in situations where Pathway cannot deduce equality of universes, but
+        Used in situations where the Pathway Live Data Framework cannot deduce equality of universes, but
         those are equal as verified during runtime. Stricter than ``with_universe_of``.
         Both universes have to have updates to the same keys at the same processing time.
 
@@ -2912,7 +2912,8 @@ id_type=<class 'pathway.engine.Pointer'>>
         """
         Converts a stream of changes (updates and deletions) into a table.
 
-        In Pathway, a stream is a sequence of row changes, where each row has an id and a boolean column
+        In the Pathway Live Data Framework, a stream is a sequence of row changes, where each row
+        has an id and a boolean column
         (e.g., "is_upsert") indicating whether the row is an update (``True``) or a deletion (``False``).
 
         This method reconstructs the current state of the table from such a stream by applying the updates
@@ -3017,9 +3018,9 @@ id_type=<class 'pathway.engine.Pointer'>>
         """
         Sets the append_only property of all columns from a table to ``True``.
 
-        Sometimes Pathway can't automatically deduce that a table is append only. If you
-        know that the table is append-only (contains only insertions), you can tell Pathway
-        about it by using this method. At runtime Pathway will check if the table is
+        Sometimes the Pathway Live Data Framework can't automatically deduce that a table is append only. If you
+        know that the table is append-only (contains only insertions), you can tell the Pathway Live Data Framework
+        about it by using this method. At runtime the Pathway Live Data Framework will check if the table is
         really append-only and exit with an error otherwise.
 
         Returns:
@@ -3065,7 +3066,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         ``A``, ``B``, and ``D``.
 
         Use caution when applying this method to large tables that change frequently.
-        Any Pathway minibatch in which at least one row is modified will emit a snapshot
+        Any Pathway Live Data Framework minibatch in which at least one row is modified will emit a snapshot
         containing all rows in the table, which can result in a very large output.
 
         Example:

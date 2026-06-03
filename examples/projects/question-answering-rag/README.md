@@ -1,6 +1,6 @@
-# Retrieval-Augmented Generation (RAG) Pipeline with Pathway
+# Retrieval-Augmented Generation (RAG) Pipeline with Pathway Live Data Framework
 
-This project demonstrates how to build a Retrieval-Augmented Generation (RAG) pipeline using Pathway.
+This project demonstrates how to build a Retrieval-Augmented Generation (RAG) pipeline using the Pathway Live Data Framework.
 You can learn more about this [here](https://pathway.com/developers/user-guide/llm-xpack/create-your-own-rag).
 
 ## Table of Contents
@@ -8,7 +8,7 @@ You can learn more about this [here](https://pathway.com/developers/user-guide/l
 1. [Introduction](#introduction)
 2. [Prerequisites](#prerequisites)
 3. [RAG architecture](#rag-architecture)
-4. [Pathway HTTP Server](#pathway-http-server)
+4. [Pathway Live Data Framework HTTP Server](#pathway-http-server)
 5. [Setup and Installation](#setup-and-installation)
 6. [Usage](#usage)
 7. [Conclusions](#conclusions)
@@ -38,7 +38,7 @@ Here's how the RAG structure works:
 
 By integrating retrieval and generation, RAG ensures that the responses are not only accurate but also contextually relevant, making it a robust solution for complex information retrieval tasks.
 
-## Pathway HTTP server
+## Pathway Live Data Framework HTTP server
 This project comes with a light HTTP server to send queries and retrieve answers.
 By default, the host is `0.0.0.0` and the port is `8011`, you can configure it by editing this line:
 
@@ -83,7 +83,7 @@ webserver = pw.io.http.PathwayWebserver(host="0.0.0.0", port=8011)
    The server will process the query and return a generated response based on the retrieved documents.
 
 ## Conclusions
-This project provides a simple RAG pipeline using Pathway.
+This project provides a simple RAG pipeline using the Pathway Live Data Framework.
 The RAG is live by default, updating the index whenever the documentation changes.
 
 You can find more ready-to-run pipelines in our [templates section](/developers/templates?tab=ai-pipelines).

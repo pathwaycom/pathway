@@ -1,6 +1,6 @@
 # ---
-# title: "Computing the Option Greeks using Pathway and Databento"
-# description: "Computing the Option Greeks using Pathway and Databento, in the Black Model"
+# title: "Computing the Option Greeks using Pathway Live Data Framework and Databento"
+# description: "Computing the Option Greeks using the Pathway Live Data Framework and Databento, in the Black Model"
 # author: 'luca'
 # thumbnail:
 #   src: '/assets/content/showcases/option-greeks/option-greeks.png'
@@ -14,28 +14,28 @@
 # layout: 'template'
 # ---
 
-# # Option Greeks with Databento and Pathway
+# # Option Greeks with Databento and Pathway Live Data Framework
 #
 # ## Introduction
 #
-# Option Greeks are essential tools in financial risk management, measuring an option's price sensitivity. In this article, you'll learn to compute Option Greeks using the [Black/Black 76 model](https://en.wikipedia.org/wiki/Black_model), a variant of the more known [Black-Scholes model](https://en.wikipedia.org/wiki/Black%E2%80%93Scholes_model), and Databento's real-time and historical market data APIs. You'll compute the key Option Greeks, Delta, Gamma, Theta, Vega, and Rho, updating these values in real-time with Pathway to match the real-time data provided by Databento.
+# Option Greeks are essential tools in financial risk management, measuring an option's price sensitivity. In this article, you'll learn to compute Option Greeks using the [Black/Black 76 model](https://en.wikipedia.org/wiki/Black_model), a variant of the more known [Black-Scholes model](https://en.wikipedia.org/wiki/Black%E2%80%93Scholes_model), and Databento's real-time and historical market data APIs. You'll compute the key Option Greeks, Delta, Gamma, Theta, Vega, and Rho, updating these values in real-time with the Pathway Live Data Framework to match the real-time data provided by Databento.
 #
 # You can find the sources of the entire project in our [public repository](https://github.com/pathwaycom/pathway/tree/main/examples/projects/option-greeks).
 #
-# ### About Pathway
+# ### About Pathway Live Data Framework
 #
-# Pathway is a Python data processing framework for analytics and AI pipelines over data streams. It’s the ideal solution for real-time processing use cases like computing the Option Greeks.
-# Pathway comes with an easy-to-use Python API, syntax that is simple and intuitive, and you can use the same code for both batch and streaming processing.
-# Pathway is powered by a scalable Rust engine based on Differential Dataflow and performing incremental computation.
+# The Pathway Live Data Framework is a Python data processing framework for analytics and AI pipelines over data streams. It’s the ideal solution for real-time processing use cases like computing the Option Greeks.
+# The Pathway Live Data Framework comes with an easy-to-use Python API, syntax that is simple and intuitive, and you can use the same code for both batch and streaming processing.
+# The Pathway Live Data Framework is powered by a scalable Rust engine based on Differential Dataflow and performing incremental computation.
 #
 # ### About Databento
 #
 # [Databento](https://databento.com/) is a market data provider aiming at making access to institutional-grade financial data simpler and faster.
 # By providing the data directly without third-parties, Databento provides market data APIs with low latency and without data loss.
-# Their simple Python APIs are an ideal data source to perform real-time financial analysis using Pathway.
+# Their simple Python APIs are an ideal data source to perform real-time financial analysis using the Pathway Live Data Framework.
 # Don't hesitate to browse [Databento catalog](https://databento.com/venues) to see all the available data.
 #
-# ![Option Greeks workflow with Pathway and Databento](/assets/content/showcases/option-greeks/option-greeks.svg)
+# ![Option Greeks workflow with Pathway Live Data Framework and Databento](/assets/content/showcases/option-greeks/option-greeks.svg)
 #
 # ### Option Greeks
 #
@@ -130,7 +130,7 @@
 # # !pip install pathway databento pandas scipy numpy python-dotenv
 # ```
 
-# Let's start by importing Pathway and Databento:
+# Let's start by importing the Pathway Live Data Framework and Databento:
 
 #_MD_SHOW_import databento as db
 import pathway as pw
@@ -158,7 +158,7 @@ API_KEY = os.environ.get("API_KEY")
 
 # ## Getting the data
 #
-# Let's start with static data and switch to streaming once everything is ready. Both Databento and Pathway make switching to streaming very easy.
+# Let's start with static data and switch to streaming once everything is ready. Both Databento and the Pathway Live Data Framework make switching to streaming very easy.
 #
 # ### Data
 # Let's focus on E-mini S&P 500 futures contracts whose associated symbol is `ES`.
@@ -219,7 +219,7 @@ data_duration = pd.Timedelta(days=1)
 
 # -
 
-# Let's define a custom [Pathway connector](/developers/user-guide/connect/connectors/custom-python-connectors), to read the data directly from Databento's API.
+# Let's define a custom [Pathway Live Data Framework connector](/developers/user-guide/connect/connectors/custom-python-connectors), to read the data directly from Databento's API.
 # First, you need to declare the [schema](/developers/user-guide/connect/schema) of the data:
 
 class DefinitionInputSchema(pw.Schema):
@@ -526,7 +526,7 @@ def compute_volatility(
 
 # ### Computing $d_1$, $d_2$
 #
-# Now, let's compute the $d_1$, $d_2$ defined as before. Let's define those functions as [**Pathway user-defined function**](/developers/user-guide/data-transformation/user-defined-functions) using the `pw.udf` decorator. Another alternative would be to declare the functions as simple Python functions and apply them to the columns using [`pw.apply`](/developers/user-guide/data-transformation/table-operations#column-operations).
+# Now, let's compute the $d_1$, $d_2$ defined as before. Let's define those functions as [**Pathway Live Data Framework user-defined function**](/developers/user-guide/data-transformation/user-defined-functions) using the `pw.udf` decorator. Another alternative would be to declare the functions as simple Python functions and apply them to the columns using [`pw.apply`](/developers/user-guide/data-transformation/table-operations#column-operations).
 
 # +
 @pw.udf
@@ -650,9 +650,9 @@ pw.debug.compute_and_print(table_greeks, n_rows=5)
 # ### Output
 #
 # Now that you have successfully computed the Option Greeks, you can output the results to your favorite system.
-# Pathway supports many different [connectors](/developers/user-guide/connect/pathway-connectors).
+# The Pathway Live Data Framework supports many different [connectors](/developers/user-guide/connect/pathway-connectors).
 #
-# As an example, you might want to send the results to a CSV file, using Pathway CSV output connector:
+# As an example, you might want to send the results to a CSV file, using Pathway Live Data Framework CSV output connector:
 
 pw.io.csv.write(table_greeks, "./options-greeks.csv")
 
@@ -676,19 +676,19 @@ pw.io.csv.write(table_greeks, "./options-greeks.csv")
 
 # ## Going live
 #
-# Pathway has a unified engine capable of processing both static and streaming data, making it easy to transition from one mode to the other.
+# The Pathway Live Data Framework has a unified engine capable of processing both static and streaming data, making it easy to transition from one mode to the other.
 # You can easily make the book orders dynamic by updating the input connector `ConnectorSubject` (`MBP1Subject`) to **simulate** real-time data streaming by adding a `time.sleep()` function call after each `next` call.
 # This small modification introduces a delay between data points, emulating the arrival of new data over time.
 # The updated source is available in our [public GitHub repository](https://github.com/pathwaycom/pathway/tree/main/examples/projects/option-greeks).
 #
-# In this case, Pathway will update the results every time the input changes, at the reception of new data point from the _mbp-1_ data for example.
+# In this case, the Pathway Live Data Framework will update the results every time the input changes, at the reception of new data point from the _mbp-1_ data for example.
 #
 # Furthermore, you can use _[Databento live APIs](https://databento.com/docs/api-reference-live?historical=python&live=python)_ to obtain the market live data for the book orders and have the Option Greeks updated in real-time as the live data is ingested. This way, you can make full use of the streaming mode.
 
 # ## Conclusions
 #
-# Congratulations! You now are able to compute the _implied volatility_ and the _Option Greeks_ using Databento to extract the historical market data and Pathway to process it.
-# Pathway is the ideal tool for quantitative projects, allowing you to compute complex financial metrics like Options Greek in real-time.
+# Congratulations! You now are able to compute the _implied volatility_ and the _Option Greeks_ using Databento to extract the historical market data and the Pathway Live Data Framework to process it.
+# The Pathway Live Data Framework is the ideal tool for quantitative projects, allowing you to compute complex financial metrics like Options Greek in real-time.
 # If you are interested, check our example about [Bollinger Bands](/developers/templates/etl/live_data_jupyter) or reach out to us on [Discord](https://discord.com/invite/pathway)!
 #
 # ## Acknowledgements

@@ -30,7 +30,7 @@
 # In this article, we want to analyze a stream of transactions in a crypto exchange.
 # We find all the pairs of users A and B such as A sells B the ETH coin, and buys from B BTC in a separate transaction.
 #
-# First we import Pathway and load the two transactions logs.
+# First we import Pathway Live Data Framework and load the two transactions logs.
 
 # %%
 import pathway as pw

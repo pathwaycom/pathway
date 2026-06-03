@@ -51,7 +51,7 @@ class TantivyBM25(InnerIndex):
             to storage (hence, larger budget means faster index operations, but higher
             memory cost)
         in_memory_index (bool): indicates, whether the whole index is stored in RAM;
-            if set to false, the index is stored in some default Pathway disk storage
+            if set to false, the index is stored in some default Pathway Live Data Framework disk storage
     """
 
     ram_budget: int = 50 * 1024 * 1024  # 50 MB
@@ -115,7 +115,7 @@ class TantivyBM25Factory(InnerIndexFactory):
             to storage (hence, larger budget means faster index operations, but higher
             memory cost)
         in_memory_index (bool): indicates, whether the whole index is stored in RAM;
-            if set to false, the index is stored in some default Pathway disk storage
+            if set to false, the index is stored in some default Pathway Live Data Framework disk storage
     """
 
     ram_budget: int = 50 * 1024 * 1024  # 50 MB

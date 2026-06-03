@@ -1,4 +1,4 @@
-# Pathway RAG evals
+# Pathway Live Data Framework RAG evals
 
 ## Introduction
 This folder contains the automated continuous integration tests for RAG evaluations.
@@ -24,7 +24,7 @@ Make sure that Pathway is installed, you can install with `pip install "pathway[
 Install the other requirements by running `pip install -r requirements.txt`
 
 ### App config
-`app.yaml` is the config for the Pathway RAG app that will be running. 
+`app.yaml` is the config for the Pathway Live Data Framework RAG app that will be running. 
 You will want to modify `$sources` section and replace it with the connector(s) that has access to your files. 
 
 Our connector config points to the Google Drive folder that has the selected CUAD dataset files.

@@ -1,4 +1,4 @@
-# Pathway Monitoring using OpenTelemetry Collector and Grafana Cloud
+# Pathway Live Data Framework Monitoring using OpenTelemetry Collector and Grafana Cloud
 
 This example contains the necessary configuration files to set up an OpenTelemetry Collector instance using Docker Compose. It also includes an Grafana dashboard JSON file for visualizing the collected monitoring data.
 
@@ -7,7 +7,7 @@ This example contains the necessary configuration files to set up an OpenTelemet
 - [config.yaml](./config.yaml): OpenTelemetry Collector configuration file.
 - [docker-compose.yaml](./docker-compose.yaml): Docker Compose file to set up the OpenTelemetry Collector.
 - [grafana-dashboard.json](./grafana-dashboard.json): Example Grafana dashboard JSON file to import.
-- [monitoring_demo.py](./monitoring_demo.py): Example Pathway pipeline to test monitoring.
+- [monitoring_demo.py](./monitoring_demo.py): Example Pathway Live Data Framework pipeline to test monitoring.
 
 ## Getting Started
 
@@ -17,7 +17,7 @@ Ensure you have Docker and Docker Compose installed on your machine. For install
 
 To send data to Grafana Cloud, you will need a free Grafana account. You can create one by visiting [Grafana Cloud](https://grafana.com/).
 
-Make sure Pathway is installed in version 0.11.2 or higher:
+Make sure the Pathway Live Data Framework is installed in version 0.11.2 or higher:
 
 ```python
 pip install -U pathway
@@ -41,7 +41,7 @@ If you wish to use the default port (4317), you can omit the OTLP_GRPC_PORT envi
 
 ### Running pathway
 
-Once the OpenTelemetry Collector instance is running, you can start your Pathway pipeline.
+Once the OpenTelemetry Collector instance is running, you can start your Pathway Live Data Framework pipeline.
 
 ```python
 import pathway as pw

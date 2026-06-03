@@ -1,13 +1,13 @@
 # Realtime monitoring of logs
 
-The purpose of this project is to do an end-to-end application with Pathway to monitors logs (such as nginx logs).
-It connects Filebeat/Logstash to Pathway (via Kafka) and send the alerts to ElasticSearch.
+The purpose of this project is to do an end-to-end application with Pathway Live Data Framework to monitors logs (such as nginx logs).
+It connects Filebeat/Logstash to the Pathway Live Data Framework (via Kafka) and send the alerts to ElasticSearch.
 
 The project is organized in six docker containers:
  - Filebeat: this container contains the logs, and Filebeat is launch to monitors them and then the updates to Logstash.
  - Logstash: Logstash forwards the logs from Filebeat to Kafka.
- - Kafka and Zookeeper: these containers are working as a gateway between Filebeat and Pathway.
- - Pathway: the logs are received from Kafka, processed and send to ElasticSearch.
+ - Kafka and Zookeeper: these containers are working as a gateway between Filebeat and the Pathway Live Data Framework.
+ - The Pathway Live Data Framework: the logs are received from Kafka, processed and send to ElasticSearch.
  - ElasticSearch: the alerts processed by Pathway are stored in this container.
  
 The logs are processed as follows (in `./pathway-src/alerts.py`):

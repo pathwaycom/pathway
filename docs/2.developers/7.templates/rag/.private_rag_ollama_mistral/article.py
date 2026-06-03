@@ -1,5 +1,5 @@
 # ---
-# title: 'Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway'
+# title: 'Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway Live Data Framework'
 # description: 'Adaptive RAG with fully local models'
 # aside: true
 # thumbnail:
@@ -15,7 +15,7 @@
 # hide: true
 # ---
 
-# # Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway
+# # Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway Live Data Framework
 
 # Retrieval-Augmented Generation (RAG) is a powerful way to answer questions based on your own, private, knowledge database. However, data security is key: sensitive information like trade secrets, confidential IP, GDPR-protected data, and internal documents that cannot be entrusted to third parties.
 #
@@ -23,27 +23,27 @@
 #
 # Fortunately, there is a solution to keep your data private: deploying a local LLM. By deploying everything locally, your data remains secure within your own infrastructure. This eliminates the risk of sensitive information ever leaving your control.
 #
-# While this seems quite an engineering feat, don't worry. Pathway and Ollama provide you with everything you need to make this as easy as possible.
+# While this seems quite an engineering feat, don't worry. The Pathway Live Data Framework and Ollama provide you with everything you need to make this as easy as possible.
 #
-# In this showcase, you will learn how to set up a private RAG pipeline with adaptive retrieval using Pathway, Mistral, and Ollama.
+# In this showcase, you will learn how to set up a private RAG pipeline with adaptive retrieval using the Pathway Live Data Framework, Mistral, and Ollama.
 # The pipeline answers questions from the Stanford Question Answering Dataset [(SQUAD)](https://rajpurkar.github.io/SQuAD-explorer/) using a selection of Wikipedia pages from the same dataset as the context, split into paragraphs.
-# **This RAG pipeline runs without any API access or any data leaving the local machine with Pathway**.
+# **This RAG pipeline runs without any API access or any data leaving the local machine with the Pathway Live Data Framework**.
 #
 # The architecture consists of two connected technology bricks, which will run as services on your machine:
-# - Pathway brings support for real-time data synchronization pipelines out of the box, and the possibility of secure private document handling with enterprise connectors for synchronizing Sharepoint and Google Drive incrementally. The Pathway service we run will perform our live document indexing pipeline, and will use Pathway’s built-in vector store.
+# - The Pathway Live Data Framework brings support for real-time data synchronization pipelines out of the box, and the possibility of secure private document handling with enterprise connectors for synchronizing Sharepoint and Google Drive incrementally. The Pathway Live Data Framework service we run will perform our live document indexing pipeline, and will use Pathway Live Data Framework’s built-in vector store.
 #
 # - The language model we use will be a Mistral 7B, which we will locally deploy as an Ollama service. This model was chosen for its performance and compact size.
 #
 # ![Reference architecture](/assets/content/blog/local-adaptive-rag/local_adaptive.png)
 #
-# You will explore how to use Pathway to:
+# You will explore how to use the Pathway Live Data Framework to:
 # - connect a document source
 # - perform document indexing
 # - connect to our local LLM
 # - prompt our LLM with relevant context, and adaptively add more documents as needed
-# - combine everything, and orchestrate the RAG pipeline with Pathway.
+# - combine everything, and orchestrate the RAG pipeline with the Pathway Live Data Framework.
 #
-# If you are not familiar with the Pathway yet, you can refer to the [overview of Pathway's LLM xpack](https://pathway.com/developers/user-guide/llm-xpack/overview) and [its documentation](https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms).
+# If you are not familiar with the Pathway yet, you can refer to the [overview of Pathway Live Data Framework's LLM xpack](https://pathway.com/developers/user-guide/llm-xpack/overview) and [its documentation](https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms).
 
 
 # ## What is Private RAG and Why Do You Need It?
@@ -69,10 +69,10 @@
 # Ollama is used to download and configure locally the Mistral 7B model.
 
 
-# ## Private RAG with Pathway
+# ## Private RAG with Pathway Live Data Framework
 #
-# This section provides a step-by-step guide on how to set up Private RAG with Adaptive Retrieval using Pathway, a framework for building LLM applications. The guide covers:
-# 1. **Installation**: Installing Pathway and required libraries.
+# This section provides a step-by-step guide on how to set up Private RAG with Adaptive Retrieval using the Pathway Live Data Framework, a framework for building LLM applications. The guide covers:
+# 1. **Installation**: Installing the Pathway Live Data Framework and required libraries.
 # 2. **Data Loading**: Loading documents for which answer retrieval will be performed.
 # 3. **Embedding Model Selection**: Choosing an open-source embedding model from Hugging Face.
 # 4. **Local LLM Deployment**: Instructions on deploying a local LLM using Ollama, a lightweight container runtime.
@@ -83,7 +83,7 @@
 #
 # ### 1. Installation
 #
-# You install Pathway into a Python 3.10+ Linux runtime with a simple pip command:
+# You install the Pathway Live Data Framework into a Python 3.10+ Linux runtime with a simple pip command:
 
 
 # ```
@@ -137,7 +137,7 @@ documents = pw.io.fs.read(
 )
 # -
 
-# When testing during development, we can run this code in a "static" way and check if all the sources are correctly loaded. Later, in production, the Pathway service running our code will know how to refresh the loaded documents when new data arrives.
+# When testing during development, we can run this code in a "static" way and check if all the sources are correctly loaded. Later, in production, the Pathway Live Data Framework service running our code will know how to refresh the loaded documents when new data arrives.
 
 # +
 # check if documents are correctly loaded
@@ -209,7 +209,7 @@ print("Embedding dimension:", embedding_dimension)
 #  }'
 # ```
 #
-# Notice that here we are working on localhost. You could potentially run the Ollama and Pathway services on different machines as the RAG pipeline and LLM will communicate over API. We will not do it in this showcase, but you may consider such a possibility, for example, to run just one LLM service on a single GPU, and then connect multiple RAG pipelines running on different virtual machines to it.
+# Notice that here we are working on localhost. You could potentially run the Ollama and Pathway Live Data Framework services on different machines as the RAG pipeline and LLM will communicate over API. We will not do it in this showcase, but you may consider such a possibility, for example, to run just one LLM service on a single GPU, and then connect multiple RAG pipelines running on different virtual machines to it.
 
 
 # ### 5. LLM Initialization
@@ -237,13 +237,13 @@ index = default_vector_document_index(
 
 
 # ### 7. Retriever setup
-# Here, we specify to our Pathway service how to retrieve relevant context from the vector index for a user query. Pathway offers several retrieval strategies to choose from, which offer a lot of flexibility in configuring e.g. how many of the relevant chunks to retrieve into the LLM’s context, and in what order to rank them.
+# Here, we specify to our Pathway Live Data Framework service how to retrieve relevant context from the vector index for a user query. The Pathway Live Data Framework offers several retrieval strategies to choose from, which offer a lot of flexibility in configuring e.g. how many of the relevant chunks to retrieve into the LLM’s context, and in what order to rank them.
 #
 # A simple choice could be to pick the top-k retriever, which retrieves the top k chunks most relevant to a query, like this (for example, we could ask to retrieve k=10 chunks) and answer questions based on these chunks.
 #
 
 
-# Here, let’s take full advantage of what Pathway has to offer, and take a smarter top-k retriever called Adaptive RAG which adapts the number of chunks k as needed, by asking the LLM if it has received enough context already or still needs more. It’s just a single line to set up the hyperparameters, and in practice, this will often make your local LLM reply faster, sometimes consuming even 4x less tokens.
+# Here, let’s take full advantage of what the Pathway Live Data Framework has to offer, and take a smarter top-k retriever called Adaptive RAG which adapts the number of chunks k as needed, by asking the LLM if it has received enough context already or still needs more. It’s just a single line to set up the hyperparameters, and in practice, this will often make your local LLM reply faster, sometimes consuming even 4x less tokens.
 
 result = query.select(
     question=query.query,
@@ -275,9 +275,9 @@ Extensive genetic studies were conducted during the 2010s which indicated that d
 
 # # Going to Production
 
-# Now you have a fully private RAG set up with Pathway and Ollama. All your data remains safe on your system. Moreover, the set-up is optimized for speed, thanks to how Ollama runs the LLM, and how Pathway’s adaptive retrieval mechanism reduces token consumption while preserving the accuracy of the RAG.
+# Now you have a fully private RAG set up with the Pathway Live Data Framework and Ollama. All your data remains safe on your system. Moreover, the set-up is optimized for speed, thanks to how Ollama runs the LLM, and how Pathway Live Data Framework’s adaptive retrieval mechanism reduces token consumption while preserving the accuracy of the RAG.
 #
-# We can now go further by building and deploying your RAG application in production with Pathway, including updating data in constant connection with data sources and serving the endpoints 24/7. All the code logic we have built so far can be used directly!
+# We can now go further by building and deploying your RAG application in production with the Pathway Live Data Framework, including updating data in constant connection with data sources and serving the endpoints 24/7. All the code logic we have built so far can be used directly!
 #
 # For a full production-ready set-up, we have built a slightly larger RAG application demonstrator which also includes reading your data sources, parsing the data, and serving the endpoint. To get started, check it out [here](https://github.com/pathwaycom/llm-app/tree/main/templates/private_rag).
 # You will find easy-to-follow setup instructions in our [question answering demo](https://github.com/pathwaycom/llm-app/tree/main/templates/question_answering).
@@ -286,7 +286,7 @@ Extensive genetic studies were conducted during the 2010s which indicated that d
 
 # # Key Takeaways
 
-# In this showcase, you have learned how to design a fully local and private RAG setup, including a local embedder and LLM. We built our RAG pipeline as Python code using  Pathway ensuring that the necessary privacy is maintained at every step of the RAG pipeline. We finally showed how to use Pathway to orchestrate our Python code, running a service that incrementally updates our knowledge base as it changes, and answers questions with the LLM.
+# In this showcase, you have learned how to design a fully local and private RAG setup, including a local embedder and LLM. We built our RAG pipeline as Python code using the Pathway Live Data Framework ensuring that the necessary privacy is maintained at every step of the RAG pipeline. We finally showed how to use the Pathway Live Data Framework to orchestrate our Python code, running a service that incrementally updates our knowledge base as it changes, and answers questions with the LLM.
 #
-# **This private RAG setup can be run entirely locally with open-source LLMs, making it ideal for organizations with sensitive data and eXplainable AI needs.** We believe Mistral 7B with Ollama to be a good choice for the local LLM service. Still, in organizations that have already deployed local LLMs differently, the Pathway RAG pipeline may also be used with other models.
+# **This private RAG setup can be run entirely locally with open-source LLMs, making it ideal for organizations with sensitive data and eXplainable AI needs.** We believe Mistral 7B with Ollama to be a good choice for the local LLM service. Still, in organizations that have already deployed local LLMs differently, the Pathway Live Data Framework RAG pipeline may also be used with other models.
 #

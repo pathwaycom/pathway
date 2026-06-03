@@ -4,23 +4,23 @@
 # ---
 
 # # Streaming and Static Modes
-# While Pathway is made for processing bounded and unbounded streaming data, entirely static data can also be used for testing and debugging purposes. This article explains what are those two modes -streaming and static- and their differences.
+# While Pathway Live Data Framework is made for processing bounded and unbounded streaming data, entirely static data can also be used for testing and debugging purposes. This article explains what are those two modes -streaming and static- and their differences.
 #
-# Pathway is purposely designed to work with streaming data.
+# Pathway Live Data Framework is purposely designed to work with streaming data.
 # However, working in the **streaming mode** may not be the most convenient way to test and debug your application.
-# To ease testing and debugging, Pathway provides a **static mode** which allows you to manipulate static and finite data.
+# To ease testing and debugging, Pathway Live Data Framework provides a **static mode** which allows you to manipulate static and finite data.
 # In the following, you are going to see what lies behind those terms, their differences, and how to use both modes.
 #
 # ## Dataflow
 #
-# Let's start with a brief explanation of Pathway's [dataflow](/developers/user-guide/introduction/concepts#dataflow).
-# In Pathway, the processing pipeline that you define is modeled using a graph.
+# Let's start with a brief explanation of Pathway Live Data Framework's [dataflow](/developers/user-guide/introduction/concepts#dataflow).
+# In Pathway Live Data Framework, the processing pipeline that you define is modeled using a graph.
 # This graph, called the dataflow, models the different transformation steps performed on the data.
 # Each node is either an operation performed on one or more tables (e.g. a transformation), or a connector.
 #
 #
 # For example, consider the following scenario: you have two tables containing the ages (in T1) and the countries (in T2) of different people and you want to compute the list of people from a given country (let's say the US) and the list of people in this country and whether they are adults or not.
-# In Pathway, you can build a function which works on two tables T1 and T2 as follows:
+# In Pathway Live Data Framework, you can build a function which works on two tables T1 and T2 as follows:
 
 # ```python
 # T1bis = T1.select(*pw.this, adult=pw.apply(lambda x: x>18, pw.this.age))
@@ -37,33 +37,33 @@
 #
 # The corresponding notations would be: T1' $\rightarrow$ T1bis, T2' $\rightarrow$ T2bis, t1 $\rightarrow$ `select` with `apply`, t2 $\rightarrow$ `filter`, and t3 $\rightarrow$ `join` and `select`.
 #
-# The main take-away is that Pathway builds this graph based on the pipeline defined by the user, before any computation is actually done.
+# The main take-away is that Pathway Live Data Framework builds this graph based on the pipeline defined by the user, before any computation is actually done.
 # This graph models the relations between the different connectors, tables, and transformations.
 # Its main purpose is to provide fast updates in streaming mode.
 #
 #
 # ## Streaming mode
-# In the **streaming mode**, Pathway assumes unbounded input data updates.
+# In the **streaming mode**, Pathway Live Data Framework assumes unbounded input data updates.
 # This mode requires input connectors listening to streaming data sources.
-# Pathway starts to ingest the data into the dataflow only when `pw.run()` is called and the data is maintained in the graph during the computation: results cannot be printed but should be accessed using output connectors.
+# Pathway Live Data Framework starts to ingest the data into the dataflow only when `pw.run()` is called and the data is maintained in the graph during the computation: results cannot be printed but should be accessed using output connectors.
 # The computation runs until the process is killed: everything after `pw.run()` is unreachable code.
 #
 #
 # In this example, T1 and T2 could be obtained using Kafka connectors, and T2bis and T3 could be output using PostgreSQL connectors.
 #
-# Pathway uses the graph to provide fast updates: instead of ingesting the data from scratch in the graph everytime an update is received, the data is maintained in the graph and locally updated.
+# Pathway Live Data Framework uses the graph to provide fast updates: instead of ingesting the data from scratch in the graph everytime an update is received, the data is maintained in the graph and locally updated.
 # For instance, the reception of an update from the Input Data 1, would only modify T1, T1', and T3 without any impact on T2 and T2'.
 # The updates are processed as they are received, without notion of batch, providing realtime streaming processing.
 #
-# Pathway is designed to be run in this streaming mode and it is the standard way to run Pathway.
+# Pathway Live Data Framework is designed to be run in this streaming mode and it is the standard way to run Pathway Live Data Framework.
 #
 # ## Static mode
 # As briefly mentioned, the streaming mode may not be the most convenient when testing or debugging.
-# For that purpose, Pathway provides a **static mode** in which static data may be attached to the connectors.
+# For that purpose, Pathway Live Data Framework provides a **static mode** in which static data may be attached to the connectors.
 # In that mode, finite and static data can be loaded, e.g. from a table written in a static csv file or from a markdown table.
 #
 # In our example, Input Data 1 and Input Data 2 can be small static tables written by hand in a markdown file.
-# Pathway provides static output connectors to load this static data:
+# Pathway Live Data Framework provides static output connectors to load this static data:
 #
 # ```python
 # T1 = pw.debug.table_from_markdown(
@@ -87,8 +87,8 @@
 # When the computation is run in the static mode, all the data is loaded and processed at once.
 # While the static mode does not fully benefit from the dataflow, it allows checking if the graph is correctly built.
 #
-# To ease the debugging, Pathway provides a function called `compute_and_print`.
-# When calling `pw.debug.compute_and_print(t)`, Pathway builds the whole graph, ingests all the available static data, prints the obtained table `t`, and then discards the data.
+# To ease the debugging, Pathway Live Data Framework provides a function called `compute_and_print`.
+# When calling `pw.debug.compute_and_print(t)`, Pathway Live Data Framework builds the whole graph, ingests all the available static data, prints the obtained table `t`, and then discards the data.
 # Calling twice `compute_and_print` will result in ingesting the data twice.
 
 # ## Summaries of differences
@@ -108,7 +108,7 @@
 
 # ## Comparative example
 #
-# In the following, we implement our full example into Pathway using both modes.
+# In the following, we implement our full example into Pathway Live Data Framework using both modes.
 #
 # ### Common pipeline
 #
@@ -219,7 +219,7 @@ pw.debug.compute_and_print(T3)
 
 # ## Conclusion
 #
-# While Pathway is made for the streaming mode, the static mode can be used to test and debug your pipeline.
+# While Pathway Live Data Framework is made for the streaming mode, the static mode can be used to test and debug your pipeline.
 # The implementation should be the same in both modes. Only the way data is input and output differs.
 #
 # The different ways to access the data both in streaming and static mode is explained in more details in our [guide to connectors](/developers/user-guide/connect/pathway-connectors).

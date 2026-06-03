@@ -9,7 +9,7 @@ from pathway.stdlib.utils.col import unpack_col
 class KNNIndex:
     """
     An approximate K-Nearest Neighbors (KNN) index implementation using the Locality-Sensitive Hashing (LSH)
-    algorithm within Pathway. This index is designed to efficiently find the
+    algorithm within Pathway Live Data Framework. This index is designed to efficiently find the
     nearest neighbors of a given query embedding within a dataset.
     It is approximate in a sense that it might return less than k records per query or skip some closer points.
     If it returns not enough points too frequently, increase ``bucket_length`` accordingly.

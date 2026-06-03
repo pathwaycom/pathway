@@ -1,6 +1,6 @@
 # ---
-# title: "Sensor Fusion in real-time: combining time series data with Pathway"
-# description: "Learn how to combine between two time series with different timestamps in Pathway."
+# title: "Sensor Fusion in real-time: combining time series data with Pathway Live Data Framework"
+# description: "Learn how to combine between two time series with different timestamps in the Pathway Live Data Framework."
 # aside: true
 # date: '2023-04-28'
 # thumbnail:
@@ -25,8 +25,8 @@
 # ---
 
 # %% [markdown]
-# # Sensor Fusion in real-time: combining time series data with Pathway
-# In this article, you will learn how to combine time series in Pathway.
+# # Sensor Fusion in real-time: combining time series data with Pathway Live Data Framework
+# In this article, you will learn how to combine time series in the Pathway Live Data Framework.
 #
 # With the emergence of IoT technology, we now have a wide range of sensor devices at our disposal that can measure almost anything, from GPS positions to humidity and temperature.
 # Since each measurement is timestamped, this generated data are time series: the data can be analyzed and modeled as a sequence of values that change over time.
@@ -46,7 +46,7 @@
 # ---
 # ::
 #
-# In this article, we will explore how to combine time series data using Pathway by calculating the average speed of a fleet of cars.
+# In this article, we will explore how to combine time series data using the Pathway Live Data Framework by calculating the average speed of a fleet of cars.
 # So, fasten your seatbelt and get ready to explore the world of time series!
 #
 # ## Time series
@@ -170,9 +170,9 @@ with open(input_trace, "r") as file:
     trace2.close()
 
 # %% [markdown]
-# ## Loading the data sources in Pathway
+# ## Loading the data sources in Pathway Live Data Framework
 #
-# To connect Pathway to the two data sources, you have to use Pathway's input connectors.
+# To connect the Pathway Live Data Framework to the two data sources, you have to use Pathway Live Data Framework's input connectors.
 # You do not need all the provided data; you can keep only the interesting ones, namely the latitude, longitude, altitude, date, and time:
 
 # %%
@@ -237,13 +237,13 @@ t2_timestamp = format_table(t2)
 # %% [markdown]
 # ### Obtaining a preview of the data
 #
-# Pathway is a framework capable of handling both static and streaming data.
+# The Pathway Live Data Framework is a framework capable of handling both static and streaming data.
 # However, it is primarily designed to handle streaming data and enable real-time data processing.
 #
 # To ensure that the data is being processed correctly, you can define a function `preview_table` to preview the data.
 # ⚠️ It's important to note that **this function should not be used in a production environment** since it relies on `pw.debug.compute_and_print` and static data.
 # Its primary purpose is to check that the data is being processed correctly and to help with the development and testing phase of the data processing pipeline.
-# You should use [Pathway's output connectors](/developers/user-guide/connect/pathway-connectors) to access the data in streaming mode.
+# You should use [Pathway Live Data Framework's output connectors](/developers/user-guide/connect/pathway-connectors) to access the data in streaming mode.
 #
 # In this case, you can filter all the entries with a timestamp higher than a given value to only display a small portion of the dataset.
 
@@ -274,7 +274,7 @@ preview_table(t2_timestamp)
 #
 # ![Concatenating the timestamps of two time series](/assets/content/tutorials/time_series/concatenating_timestamps.svg)
 #
-# You can do it easily in Pathway with `pw.Table.concat_reindex`:
+# You can do it easily in the Pathway Live Data Framework with `pw.Table.concat_reindex`:
 
 # %%
 merged_timestamps = pw.Table.concat_reindex(
@@ -323,7 +323,7 @@ preview_table(joined_table)
 
 # %% [markdown]
 # You need to do a linear interpolation on each column, using the column timestamp as index.
-# This can be done using Pathway's `interpolate` function:
+# This can be done using Pathway Live Data Framework's `interpolate` function:
 
 # %%
 interpolated_table = joined_table.interpolate(

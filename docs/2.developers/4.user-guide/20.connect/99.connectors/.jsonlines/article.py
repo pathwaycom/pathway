@@ -1,6 +1,6 @@
 # ---
 # title: 'JSON Lines connectors'
-# description: 'Tutorial on the Pathway JSON Lines connectors.'
+# description: 'Tutorial on the Pathway Live Data Framework JSON Lines connectors.'
 # date: '2024-02-20'
 # tags: ['tutorial', 'connectors']
 # keywords: ['connector', 'JSON Lines', 'JSON', 'input', 'output', 'static', 'streaming']
@@ -8,7 +8,7 @@
 # ---
 
 # # JSON Lines connectors
-# Pathway provides connectors to read and write data streamings using JSON Lines files.
+# Pathway Live Data Framework provides connectors to read and write data streamings using JSON Lines files.
 #
 # [JSON Lines](https://jsonlines.org/), also called newline-delimited JSON, is a format for structured data, following three requirements:
 # 1. UTF-8 Encoding.
@@ -141,4 +141,4 @@ pw.debug.compute_and_print(table)
 # ```
 #
 # This example simply copies the streams of updates.
-# To do something more complicated, you can check [our tutorial about the basic table operations](/developers/user-guide/data-transformation/table-operations) Pathway supports.
+# To do something more complicated, you can check [our tutorial about the basic table operations](/developers/user-guide/data-transformation/table-operations) Pathway Live Data Framework supports.

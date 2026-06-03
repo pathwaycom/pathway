@@ -119,7 +119,7 @@ class TableOptimizer:
             is triggered. If a compression attempt fails, it will be retried immediately
             without waiting.
         retention_period: Retention period for the ``VACUUM`` operation.
-        remove_old_checkpoints: If ``True``, Pathway will keep only the most recent
+        remove_old_checkpoints: If ``True``, Pathway Live Data Framework will keep only the most recent
             checkpoint file to reduce storage usage.
 
     Example:
@@ -361,7 +361,7 @@ def read(
             incrementally.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -374,9 +374,9 @@ def read(
     Examples:
 
     Consider an example with a stream of changes on a simple key-value table, streamed by
-    another Pathway program with ``pw.io.deltalake.write`` method.
+    another Pathway Live Data Framework program with ``pw.io.deltalake.write`` method.
 
-    Let's start writing Pathway code. First, the schema of the table needs to be created:
+    Let's start writing Pathway Live Data Framework code. First, the schema of the table needs to be created:
 
     >>> import pathway as pw
     >>> class KVSchema(pw.Schema):
@@ -396,13 +396,13 @@ def read(
 
     >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
-    After that, you can read this table with Pathway as well. It requires the specification
+    After that, you can read this table with the Pathway Live Data Framework as well. It requires the specification
     of the URI and the schema that was created above. In addition, you can use the ``"static"``
     mode, so that the program finishes after the data is read:
 
     >>> input_table = pw.io.deltalake.read(lake_path, KVSchema, mode="static")
 
-    Please note that the table doesn't necessary have to be created by Pathway: an
+    Please note that the table doesn't necessary have to be created by the Pathway Live Data Framework: an
     append-only Delta Table created in any other way will also be processed correctly.
 
     Finally, you can check that the resulting table contains the same set of rows by
@@ -416,12 +416,12 @@ def read(
     Please note that you can use the same communication approach if S3 is used as a
     data storage. To do this, specify an S3 path starting with ``s3://``
     or ``s3a://``, and provide the credentials object as a parameter. If no credentials
-    are provided but the path starts with ``s3://`` or ``s3a://``, Pathway will use the
+    are provided but the path starts with ``s3://`` or ``s3a://``, the Pathway Live Data Framework will use the
     credentials of the currently authenticated user.
 
     **Reading Delta** ``decimal(p, s)`` **columns.** Pathway has no native ``Decimal`` type,
     so a Delta ``decimal`` column has to be projected onto something else, and the choice
-    is driven by the Pathway type declared in the schema:
+    is driven by the Pathway Live Data Framework type declared in the schema:
 
     * Declaring the column as ``float`` converts each value through ``f64``. This is
       lossy in general — both because ``f64`` is binary (e.g. ``0.1`` is not exact) and
@@ -534,7 +534,7 @@ def write(
 
     If the specified storage location doesn't exist, it will be created. The schema of
     the new table is inferred from the ``table``'s schema. Additionally, when the connector
-    creates a table, its Pathway schema is stored in the column metadata. This allows the
+    creates a table, its Pathway Live Data Framework schema is stored in the column metadata. This allows the
     table to be read using ``pw.io.deltalake.read`` without explicitly specifying a ``schema``.
 
     Args:
@@ -546,7 +546,7 @@ def write(
             custom endpoint is left blank, the authorized user's credentials for S3 will
             be used.
         partition_columns: Partition columns for the table. Used if the table is created by
-            Pathway.
+            the Pathway Live Data Framework.
         min_commit_frequency: Specifies the minimum time interval between two data commits in
             storage, measured in milliseconds. If set to None, finalized minibatches will
             be committed as soon as possible. Keep in mind that each commit in Delta Lake
@@ -569,8 +569,9 @@ def write(
             minibatch, and ``diff``, indicating the type of change (``1`` for row addition and
             ``-1`` for row deletion). If set to ``"snapshot"``, the table maintains the current
             state of the data, updated atomically with each minibatch and ensuring that no partial
-            minibatch updates are visible. To correctly track the relationship between the Pathway's
-            primary key and the output table in this mode, an additional ``_id`` field of the
+            minibatch updates are visible. To correctly track the relationship between the
+            Pathway Live Data Framework's primary key and the output table in this mode,
+            an additional ``_id`` field of the
             ``Pointer`` type is added. **Please note that this mode may be slower when there are many deletions,
             because a deletion in a minibatch causes the entire table to be rewritten once that minibatch reaches
             the output. Please also note that this method is not suitable for the tables that don't
@@ -607,25 +608,25 @@ def write(
     ... )
 
     Note that it is not necessary to specify the credentials explicitly if you are
-    logged into S3. Pathway can deduce them for you. For an authorized user, the code
+    logged into S3. The Pathway Live Data Framework can deduce them for you. For an authorized user, the code
     can be simplified as follows:
 
     >>> pw.io.deltalake.write(access_log, "s3://logs/access-log/")  # doctest: +SKIP
 
     **Writing to existing Delta** ``decimal(p, s)`` **columns.** When the destination
-    Delta table already has a ``decimal(p, s)`` column and the Pathway column written
+    Delta table already has a ``decimal(p, s)`` column and the Pathway Live Data Framework column written
     into it has type ``str``, the writer parses each row's decimal text into the
     underlying unscaled integer and stores it as a fixed-point value of the column's
     declared precision and scale — no f64 detour, no precision loss. This is the
     symmetric counterpart to reading a Delta ``decimal`` column as ``str``: a Delta
-    ``decimal`` column read into Pathway, processed as text, and written back into the
+    ``decimal`` column read into the Pathway Live Data Framework, processed as text, and written back into the
     same Delta column round-trips with no loss.
 
     A string that can't be parsed as a decimal of the column's shape (non-digit
     characters, more fractional digits than the column's scale, or more total digits
     than its precision) fails the write with an error message naming the offending
     value, the column's precision and scale, and the specific constraint it violated.
-    Tables that don't contain a ``decimal`` column are unaffected: writing a Pathway
+    Tables that don't contain a ``decimal`` column are unaffected: writing a Pathway Live Data Framework
     ``str`` column into a fresh table or into an existing Delta ``string`` column
     behaves exactly as before.
     """

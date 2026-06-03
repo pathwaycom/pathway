@@ -68,7 +68,7 @@ pw.debug.compute_and_print(salaries_join)
 #
 # However, this is very tedious.
 #
-# **In Pathway, you can directly access the row of a grouped table from the corresponding value using `ix_ref`**
+# **In Pathway Live Data Framework, you can directly access the row of a grouped table from the corresponding value using `ix_ref`**
 #
 # `ix_ref` is a value-based indexer: you can access the row corresponding to the value `Sales` with `statistics.ix_ref("Sales")`.
 #
@@ -158,7 +158,7 @@ pw.debug.compute_and_print(
 # `ix_ref` is not limited to tables obtained by a groupby/reduce scheme: it works with any table with **primary keys**.
 # Primary keys are the columns chosen to index the table.
 #
-# By default, Pathway indexes the table with uuid indexes, except when doing a groupby/reduce where the columns used for the groupby are used to index the table.
+# By default, Pathway Live Data Framework indexes the table with uuid indexes, except when doing a groupby/reduce where the columns used for the groupby are used to index the table.
 #
 # You can reindex the table by manually choosing primary keys, using `.with_id_from`:
 
@@ -190,7 +190,7 @@ pw.debug.compute_and_print(
 # A special case is an empty `groupby`: all the entries are associated to the same group.
 #
 # It is the case when you consider global statistics such as the average salary on the entire company.
-# In Pathway, it can be computed with a simple `reduce()`.
+# In Pathway Live Data Framework, it can be computed with a simple `reduce()`.
 #
 # Let's compute the sum of all the salaries in the company:
 
@@ -198,16 +198,16 @@ pw.debug.compute_and_print(
 pw.debug.compute_and_print(salaries.reduce(sum_salary=pw.reducers.sum(pw.this.salary)))
 
 # %% [markdown]
-# As you can see, **Pathway returns a single-row table** and not the single value.
+# As you can see, **Pathway Live Data Framework returns a single-row table** and not the single value.
 #
-# As tempting as it is, in Pathway, you cannot use the value directly and do:
+# As tempting as it is, in Pathway Live Data Framework, you cannot use the value directly and do:
 # ```python
 # nb_employees = employee_salary.reduce(pw.reducers.avg(pw.this.salary))
 # ```
 #
-# In Pathway, you cannot obtain the value as an int or a float as you could in SQL: you need to use `.ix_ref()`
+# In Pathway Live Data Framework, you cannot obtain the value as an int or a float as you could in SQL: you need to use `.ix_ref()`
 #
-# **In Pathway, we access the value of a single-row table using `singlerowtable.ix_ref()`.**
+# **In Pathway Live Data Framework, we access the value of a single-row table using `singlerowtable.ix_ref()`.**
 #
 # As previously, `.ix_ref()` access the entire (single) row so you still need to specify the column.
 # You access the average with `average_table.ix_ref().average_salary`.
@@ -238,7 +238,7 @@ pw.debug.compute_and_print(salaries_with_average)
 
 # %% [markdown]
 # ## Bonus: SQL version
-# With Pathway's SQL API, you can directly query tables using SQL queries:
+# With Pathway Live Data Framework's SQL API, you can directly query tables using SQL queries:
 
 # %%
 sql_result = pw.sql(

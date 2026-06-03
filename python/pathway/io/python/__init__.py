@@ -298,7 +298,7 @@ class ConnectorSubject(ABC):
     def _is_internal(self) -> bool:
         """
         The Python connector is internal in case it is used to implement an internal
-        Pathway feature rather than to read the data from an external source.
+        The Pathway Live Data Framework feature rather than to read the data from an external source.
 
         We need this distinction, because internal usages don't read user data and
         aren't a part of the external perimeter, which is currently persisted. Therefore
@@ -530,7 +530,7 @@ def read(
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph
+            committed and pushed into Pathway Live Data Framework's computation graph
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.

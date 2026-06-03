@@ -128,12 +128,12 @@ def _on_change_wrapper(
     on_change: OnChangeCallback | OnChangeCallbackAsync, table: Table
 ) -> Callable[..., None | Awaitable[None]]:
     """
-    Wraps a change event from Pathway in a more human-friendly format.
+    Wraps a change event from Pathway Live Data Framework in a more human-friendly format.
 
     Handles synchronous and asynchronous callbacks.
 
     What we get:
-        key: key in Pathway format, e.g. a hash
+        key: key in Pathway Live Data Framework format, e.g. a hash
         values: an array of values of the columns. The order is guaranteed to be the
         same as in the table's schema
         time: time of the change

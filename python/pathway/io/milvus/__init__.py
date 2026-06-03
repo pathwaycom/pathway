@@ -22,7 +22,7 @@ _SUPPORTED_TYPES = (bool, int, float, str, dict, list, tuple, bytes, np.ndarray)
 
 
 def _prepare_row(row: dict) -> dict:
-    """Convert Pathway-internal types to plain Python values for pymilvus.
+    """Convert Pathway Live Data Framework-internal types to plain Python values for pymilvus.
 
     Unwraps ``pw.Json`` wrapper objects, converts 1-D ``numpy.ndarray`` values
     to lists, and validates that every value belongs to a type the Milvus
@@ -90,9 +90,9 @@ def write(
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """**This connector is available when using one of the following licenses only:**
-    `Pathway Scale, Pathway Enterprise </pricing>`_.
+    `Pathway Live Data Framework Scale, Pathway Live Data Framework Enterprise </pricing>`_.
 
-    Writes a Pathway table to a Milvus collection.
+    Writes a Pathway Live Data Framework table to a Milvus collection.
 
     Each row addition (``diff = 1``) is sent to Milvus as an upsert and each row
     deletion (``diff = -1``) is sent as a delete. The value of the ``primary_key``
@@ -100,7 +100,7 @@ def write(
     passing a column from a different table raises a ``ValueError``.
 
     The target collection must already exist before the pipeline starts and its
-    schema must be compatible with the table's columns. Pathway cannot create
+    schema must be compatible with the table's columns. The Pathway Live Data Framework cannot create
     it automatically because the vector field dimension is not part of the
     Python type (a ``list`` of floats carries no size) and is only known once
     the first row arrives. Use ``pymilvus.MilvusClient.create_collection`` to
@@ -109,12 +109,12 @@ def write(
     Within every mini-batch, deletes are applied before upserts so that update
     pairs (retraction followed by insertion of the same key) are handled correctly.
 
-    **Supported type mappings** (Pathway → Milvus):
+    **Supported type mappings** (Pathway Live Data Framework → Milvus):
 
     .. list-table::
        :header-rows: 1
 
-       * - Pathway type
+       * - Pathway Live Data Framework type
          - Milvus field type
          - Notes
        * - ``int``
@@ -142,7 +142,7 @@ def write(
          - ``FLOAT_VECTOR`` or ``BINARY_VECTOR``
          - Must be 1-D; converted to list
 
-    Any other Pathway type raises a ``TypeError`` before reaching pymilvus,
+    Any other Pathway Live Data Framework type raises a ``TypeError`` before reaching pymilvus,
     with a message that names the offending column and lists the supported types.
     A multi-dimensional ``numpy.ndarray`` raises a ``ValueError``.
 
@@ -196,7 +196,7 @@ def write(
     >>> client.create_collection("docs", schema=schema, index_params=index_params)  # doctest: +SKIP
     >>> client.close()   # doctest: +SKIP
 
-    Define your Pathway schema and build the table:
+    Define your Pathway Live Data Framework schema and build the table:
 
     >>> class DocSchema(pw.Schema):
     ...     doc_id: int = pw.column_definition(primary_key=True)

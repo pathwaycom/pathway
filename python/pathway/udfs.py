@@ -1,5 +1,5 @@
 # Copyright © 2026 Pathway
-"""Methods and classes for controlling the behavior of UDFs (User-Defined Functions) in Pathway.
+"""Methods and classes for controlling the behavior of UDFs (User-Defined Functions) in Pathway Live Data Framework.
 
 Typical use:
 

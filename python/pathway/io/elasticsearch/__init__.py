@@ -101,7 +101,7 @@ def write(
     the `JSON output connector </developers/api-docs/pathway-io/jsonlines>`_.
 
     Note that two additional fields are included in the generated JSON: ``time``, which
-    indicates the time of the Pathway minibatch, and ``diff``, which can be either
+    indicates the time of the Pathway Live Data Framework minibatch, and ``diff``, which can be either
     ``1`` (row addition) or ``-1`` (row deletion).
 
     Args:
@@ -127,7 +127,7 @@ def write(
     For the sake of simplicity we will also consider that the cluster has a simple
     username-password authentication having both username and password equal to ``"admin"``.
 
-    Now suppose we want to send a Pathway table pets to this local instance of
+    Now suppose we want to send a Pathway Live Data Framework table pets to this local instance of
     Elasticsearch.
 
     >>> import pathway as pw

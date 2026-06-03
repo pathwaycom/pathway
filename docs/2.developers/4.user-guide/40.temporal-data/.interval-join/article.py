@@ -1,6 +1,6 @@
 # ---
 # title: 'Interval Join'
-# description: 'Tutorial on how to do an interval join in Pathway.'
+# description: 'Tutorial on how to do an interval join in Pathway Live Data Framework.'
 # date: '2023-05-22'
 # thumbnail: 'assets/content/tutorials/fleet_eta_interval_join/fleet-eta-interval-join-th.png'
 # tags: ['tutorial', 'engineering']
@@ -8,8 +8,8 @@
 # notebook_export_path: notebooks/tutorials/interval_join.ipynb
 # ---
 
-# # Performing Interval Joins in Pathway
-# This article offers a comprehensive tutorial on how to use the interval join function in Pathway to accurately compute the Estimated Time of Arrival (ETA) for vehicles.
+# # Performing Interval Joins in Pathway Live Data Framework
+# This article offers a comprehensive tutorial on how to use the interval join function in Pathway Live Data Framework to accurately compute the Estimated Time of Arrival (ETA) for vehicles.
 #
 # The practice of temporal data analysis often invokes the use of interval joins, which diverge from the conventional join operation by virtue of a more adaptable matching strategy. Rather than linking records from two tables based purely on a precise key match, interval joins offer a compound inequality based linkage.
 #
@@ -23,7 +23,7 @@
 #
 # ## 1. Setting Up the Tables
 #
-# Let's start by defining the tables: vehicle locations, routes, and maintenance schedules. For the sake of this tutorial, you could use `pw.debug.table_from_markdown` function to create tables from markdown formatted string. Please refer to our article about [connectors in Pathway](/developers/user-guide/connect/pathway-connectors) to find out more about data connectors. Be assured that this code is compatible with the streaming mode.
+# Let's start by defining the tables: vehicle locations, routes, and maintenance schedules. For the sake of this tutorial, you could use `pw.debug.table_from_markdown` function to create tables from markdown formatted string. Please refer to our article about [connectors in Pathway Live Data Framework](/developers/user-guide/connect/pathway-connectors) to find out more about data connectors. Be assured that this code is compatible with the streaming mode.
 
 # +
 import pathway as pw
@@ -98,7 +98,7 @@ pw.debug.compute_and_print(vehicle_locations[["distance_km"]])
 
 # ## 3. Performing the Interval Join
 #
-# Pathway has a function called `interval_join` (resp. `interval_join_{outer/left/right}`) which you can use to perform the interval join operation. As mentioned earlier, it is a temporal join operation that allows matching elements of a table `right` whose timestamps fall within a certain time interval relative to the timestamps of `left`'s elements.\
+# Pathway Live Data Framework has a function called `interval_join` (resp. `interval_join_{outer/left/right}`) which you can use to perform the interval join operation. As mentioned earlier, it is a temporal join operation that allows matching elements of a table `right` whose timestamps fall within a certain time interval relative to the timestamps of `left`'s elements.\
 # Using the left join variant `interval_join_left` retains records with and without delays, thereby perfectly addressing our current scenario.
 #
 # For simplicity, we'll make the assumption that maintenance operations are delocalized throughout the routes and they last for a duration of $\Delta$. A delay is incurred only if maintenance event $i$ at time $m_i$ has already began and hasn't ended yet at time $t$
@@ -187,4 +187,4 @@ pw.debug.compute_and_print(output)
 
 # ## Conclusion
 #
-# In this tutorial, you have learned how to use interval joins in Pathway to handle scenarios where you'd need to join tables based on intervals or timestamps. You have seen how to use these methods to calculate the ETA for vehicles considering their current locations, routes, and any potential maintenance delays. This kind of processing is common in transportation and logistics, and Pathway makes it easy to handle in real time.
+# In this tutorial, you have learned how to use interval joins in Pathway Live Data Framework to handle scenarios where you'd need to join tables based on intervals or timestamps. You have seen how to use these methods to calculate the ETA for vehicles considering their current locations, routes, and any potential maintenance delays. This kind of processing is common in transportation and logistics, and Pathway Live Data Framework makes it easy to handle in real time.

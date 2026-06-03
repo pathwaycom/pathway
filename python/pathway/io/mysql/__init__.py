@@ -317,7 +317,7 @@ for MySQL database.
     setting the credentials for the user and the database name.
 
     The database is now created and you can use the connector to write data to a table.
-    First, you will need a Pathway table for testing. You can create it as follows:
+    First, you will need a Pathway Live Data Framework table for testing. You can create it as follows:
 
     >>> import pathway as pw
     >>> table = pw.debug.table_from_markdown('''
@@ -371,9 +371,9 @@ for MySQL database.
     ...     primary_key=[table.key],
     ... )
 
-    **Note**: The table can be created in MySQL by Pathway when ``init_mode`` is set to
+    **Note**: The table can be created in MySQL by the Pathway Live Data Framework when ``init_mode`` is set to
     ``"replace"`` or when it is set to ``"create_if_not_exists"``. However, when creating
-    a table for snapshot mode, Pathway defines the primary key. If you use string or binary
+    a table for snapshot mode, the Pathway Live Data Framework defines the primary key. If you use string or binary
     objects as a primary key, there is a limitation because these fields cannot serve as
     a primary key. Instead, you need to use for example a ``VARCHAR`` with a length limit
     depending on your specific use case. Therefore, if you plan to use strings or

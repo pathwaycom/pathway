@@ -1,6 +1,6 @@
 # ---
 # title: Writing declarative over imperative pipelines
-# description: An article exploring concepts related to iterative computation in Pathway.
+# description: An article exploring concepts related to iterative computation in Pathway Live Data Framework.
 # date: '2025-11-25'
 # thumbnail: ''
 # tags: ['tutorial', 'engineering']
@@ -11,9 +11,9 @@
 # %% [markdown]
 # # Writing declarative over imperative pipelines
 #
-# Many real-world data processing tasks — such as those in logistics, supply chain management, or event stream analysis—rely on the order of events to extract meaningful insights. For example, tracking shipments, monitoring sensor data, or processing sequences of user actions all require careful handling of ordered streams. Pathway's declarative approach makes it easy to express such order-dependent logic, enabling robust solutions for these domains.
+# Many real-world data processing tasks — such as those in logistics, supply chain management, or event stream analysis—rely on the order of events to extract meaningful insights. For example, tracking shipments, monitoring sensor data, or processing sequences of user actions all require careful handling of ordered streams. Pathway Live Data Framework's declarative approach makes it easy to express such order-dependent logic, enabling robust solutions for these domains.
 #
-# In data processing, imperative pipelines require you to specify step-by-step instructions for how data should be transformed, often leading to complex and less maintainable code. Declarative pipelines, on the other hand, focus on describing what the desired outcome is, letting the system determine the best way to achieve it. Pathway encourages a declarative approach, as demonstrated in the examples below, allowing you to express complex data transformations and iterative computations in a concise and readable manner. This leads to more robust, scalable, and maintainable workflows.
+# In data processing, imperative pipelines require you to specify step-by-step instructions for how data should be transformed, often leading to complex and less maintainable code. Declarative pipelines, on the other hand, focus on describing what the desired outcome is, letting the system determine the best way to achieve it. Pathway Live Data Framework encourages a declarative approach, as demonstrated in the examples below, allowing you to express complex data transformations and iterative computations in a concise and readable manner. This leads to more robust, scalable, and maintainable workflows.
 
 # %% [markdown]
 # ## Splitting ordered stream into chunks
@@ -35,7 +35,7 @@
 # we would expect three "finished" chunks: `(0,1,2)`, `(3,4,5,6)`, `(7,8)` and one unfinished chunk `(9,...)`.
 #
 # One way to do this would be imperative style: go through rows one-by-one in order storing current chunk in a state and emitting it whenever `flag` is equal to True, while clearing the state.
-# Even though, its not recommended approach, let's see how to code it in Pathway.
+# Even though, its not recommended approach, let's see how to code it in Pathway Live Data Framework.
 
 # %%
 import pathway as pw
@@ -98,9 +98,9 @@ pw.debug.compute_and_print_update_stream(split_by_flag_imperative(t))
 #
 
 # %% [markdown]
-# Instead of manually managing state and control flow, Pathway allows you to define such logic using declarative constructs like `sort`, `iterate`, `groupby`. The result is a clear and concise pipeline that emits chunks of event times splitting the flag, showcasing the power and readability of declarative data processing.
+# Instead of manually managing state and control flow, Pathway Live Data Framework allows you to define such logic using declarative constructs like `sort`, `iterate`, `groupby`. The result is a clear and concise pipeline that emits chunks of event times splitting the flag, showcasing the power and readability of declarative data processing.
 #
-# In the following, we tell Pathway to propagate the starting time of each chunk across the rows. This is done by declaring a simple local rule: take the starting time of a chunk from previous row or use current event time. This rule is then iterated until fixed-point, so that the information is spread until all rows know the starting time of their chunk.
+# In the following, we tell Pathway Live Data Framework to propagate the starting time of each chunk across the rows. This is done by declaring a simple local rule: take the starting time of a chunk from previous row or use current event time. This rule is then iterated until fixed-point, so that the information is spread until all rows know the starting time of their chunk.
 #
 # Then we can just group rows by starting time of the chunk to get a table of chunks.
 
@@ -165,7 +165,7 @@ pw.debug.compute_and_print(split_by_flag_imperative(t_out_of_order))
 # %% [markdown]
 # To fix this, one would have to adapt the imperative code by implementing additional buffering, handling insertion of rows at correct place in the chunk and delaying emitting results until one's sure that no earlier events will arrive. This would significantly complicate the code.
 #
-# Pathway's declarative approach on the other hand keeps the code clean, simple and maintainable.
+# Pathway Live Data Framework's declarative approach on the other hand keeps the code clean, simple and maintainable.
 
 # %% [markdown]
 # ### Managing memory with forgetting
@@ -173,7 +173,7 @@ pw.debug.compute_and_print(split_by_flag_imperative(t_out_of_order))
 # Specifically, the sort, groupby, iterate, ix operators are stateful.
 
 # For large streaming data, we would want to keep the memory usage bounded.
-# Pathway provides a forgetting mechanism that can be used to limit the amount of state kept by these operators.
+# Pathway Live Data Framework provides a forgetting mechanism that can be used to limit the amount of state kept by these operators.
 # The solution would be to wrap the input table with `_forget` method, specifying the window of interest.
 
 # %%

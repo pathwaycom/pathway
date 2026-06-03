@@ -81,7 +81,7 @@ def register_input_synchronization_group(
       catch up.
 
     Limitations:
-    - This mechanism currently works only in runs that use a single Pathway process. The \
+    - This mechanism currently works only in runs that use a single Pathway Live Data Framework process. The \
       multi-processing support will be added soon.
     - Currently, ``int``, ``DateTimeNaive``, ``DateTimeUtc`` and ``Duration`` field types \
       are supported.

@@ -1,13 +1,13 @@
-# Web Scraping with Pathway
+# Web Scraping with Pathway Live Data Framework
 
-This project demonstrates how to create a real-time web scraper using Pathway, a powerful data processing framework. The implementation fetches and processes news articles from websites, making it possible to continuously monitor and analyze the web content.
+This project demonstrates how to create a real-time web scraper using the Pathway Live Data Framework, a powerful data processing framework. The implementation fetches and processes news articles from websites, making it possible to continuously monitor and analyze the web content.
 
 ## Overview
 
 This project consists of two main Python files:
 
 - `scraping_python.py`: Contains the core web scraping functionality using the `newspaper4k` and `news-please` libraries
-- `scraping_pathway.py`: Implements a Pathway connector that integrates the scraper with Pathway's data processing pipeline
+- `scraping_pathway.py`: Implements a Pathway Live Data Framework connector that integrates the scraper with Pathway Live Data Framework's data processing pipeline
 
 ## Features
 
@@ -18,7 +18,7 @@ This project consists of two main Python files:
 
 ## Requirements
 
-- Pathway
+- The Pathway Live Data Framework
 - newspaper4k
 - news-please
 
@@ -42,9 +42,9 @@ The main function `scrape_articles()` is a generator that yields article data wi
 
 ### scraping_pathway.py
 
-This file integrates the scraper with Pathway:
+This file integrates the scraper with the Pathway Live Data Framework:
 
-1. **Connector**: Implements `NewsScraperSubject` that inherits from Pathway's `ConnectorSubject`
+1. **Connector**: Implements `NewsScraperSubject` that inherits from Pathway Live Data Framework's `ConnectorSubject`
 2. **Data Schema**: Defines a schema for article data with URL as primary key
 3. **Table**: Each article is stored as a row in the table
 4. **Pipeline**: Sets up a data pipeline that:

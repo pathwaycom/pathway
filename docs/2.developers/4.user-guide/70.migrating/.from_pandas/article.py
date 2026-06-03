@@ -4,9 +4,9 @@
 # notebook_export_path: notebooks/tutorials/from_pandas.ipynb
 # ---
 
-# # Pathway Tutorial for Pandas Users
-# This tutorial gets you up and running with Pathway in 10 minutes. It is specificaly designed for users coming from `pandas`.
-# For more advanced users, you can find a Pandas-to-Pathway cheat sheet [here](/developers/user-guide/migrating/pandas-cheat-sheet).
+# # Pathway Live Data Framework Tutorial for Pandas Users
+# This tutorial gets you up and running with the Pathway Live Data Framework in 10 minutes. It is specificaly designed for users coming from `pandas`.
+# For more advanced users, you can find a Pandas-to-Pathway Live Data Framework cheat sheet [here](/developers/user-guide/migrating/pandas-cheat-sheet).
 #
 # In this tutorial, you will learn how to:
 # - build a real-time data streaming pipeline
@@ -22,9 +22,9 @@
 # df.value.sum()
 # ```
 
-# This is pretty straightforward...but doesn't work with streaming data 😕 Fortunately, Pathway does! 🙌
+# This is pretty straightforward...but doesn't work with streaming data 😕 Fortunately, the Pathway Live Data Framework does! 🙌
 #
-# This is the Pathway code that will solve our problem:
+# This is the Pathway Live Data Framework code that will solve our problem:
 #
 # ```python
 # import pathway as pw
@@ -43,8 +43,8 @@
 #
 # Don't worry if you don't fully understand it yet -- that's exactly what you will learn by completing this tutorial.
 
-# ## Install Pathway
-# To install the latest Pathway release, which is now available on a free-to-use license:
+# ## Install Pathway Live Data Framework
+# To install the latest Pathway Live Data Framework release, which is now available on a free-to-use license:
 #
 # ```bash
 # pip install -U pathway
@@ -60,7 +60,7 @@ import pathway as pw
 
 # Next, let's define a table. This table will contain the data that is flowing into our stream.
 #
-# A table in Pathway is comparable to a DataFrame in `pandas`. This table is created by 'listening' to a directory for new events.
+# A table in the Pathway Live Data Framework is comparable to a DataFrame in `pandas`. This table is created by 'listening' to a directory for new events.
 #
 # The term 'events' may be new to you if you're coming from `pandas`. Events are the core of data streaming architectures and it's important to understand their basic principles so that you can build effective data streaming pipelines. The next section explains some of these principles; you should feel free to skip it if you have a basic understanding of how data streaming works.
 #
@@ -75,7 +75,7 @@ import pathway as pw
 #
 # > So instead, data streaming pipelines are built around 'events': specific moments when something happens to our data. Common events are data being created, removed, or updated. Whenever an event happens, the data streaming pipeline is triggered and data processing starts.
 #
-# In our case, we will create a Pathway table by listening to a directory for new events (in this case `./sum_input_data/`) and defining the schema of the table which maps the columns to their data types. Be sure to toggle streaming mode on by setting `mode` to `streaming`.
+# In our case, we will create a Pathway Live Data Framework table by listening to a directory for new events (in this case `./sum_input_data/`) and defining the schema of the table which maps the columns to their data types. Be sure to toggle streaming mode on by setting `mode` to `streaming`.
 
 
 # +
@@ -95,9 +95,9 @@ t
 
 # <img src="/assets/content/documentation/manul-confused.svg" width=200>
 #
-# This is one of the fundamental differences between `pandas` and `pathway`. While pandas is static and requires a batch of data already available to process, a Pathway table can be created simply by pointing it in the right direction, and the table will be populated with data as it arrives.
+# This is one of the fundamental differences between `pandas` and `pathway`. While pandas is static and requires a batch of data already available to process, a Pathway Live Data Framework table can be created simply by pointing it in the right direction, and the table will be populated with data as it arrives.
 #
-# It's as if we're saying, "Hey Pathway, keep an eye on that corner of the restaurant and whenever new people arrive, give them a seat at that table over there."
+# It's as if we're saying, "Hey Pathway Live Data Framework, keep an eye on that corner of the restaurant and whenever new people arrive, give them a seat at that table over there."
 #
 # Or in more technical terms: every time a new CSV file is added into `./sum_input_data/`, the content of its `value` column will be automatically added to the table `t`.
 #
@@ -128,7 +128,7 @@ t = t.reduce(sum=pw.reducers.sum(t.value))
 #
 # Again, notice that we are 'performing' `select` and `reduce` actions without actually having any data yet. In fact, it would be more accurate to say that we are *describing* actions to be taken in the future, as soon as data arrives.
 #
-# What we are doing here is **building the pipeline**, so that when our data starts arriving it is processed correctly and ends up in the place where we want it to be. This is different from `pandas` in which we have all the data already and operations are executed the moment they are described. Read more about the [dataflow](/developers/user-guide/introduction/concepts#dataflow) to understand how Pathway pipelines are built under the hood.
+# What we are doing here is **building the pipeline**, so that when our data starts arriving it is processed correctly and ends up in the place where we want it to be. This is different from `pandas` in which we have all the data already and operations are executed the moment they are described. Read more about the [dataflow](/developers/user-guide/introduction/concepts#dataflow) to understand how Pathway Live Data Framework pipelines are built under the hood.
 #
 # ## Get the Data out of Your Stream
 #
@@ -157,7 +157,7 @@ pw.io.csv.write(t, "sum_output_stream.csv")
 #     sleep(1)
 # ```
 
-# We can then use the Pathway code we built above to listen to the `sum_input_data` directory and process data as it comes in:
+# We can then use the Pathway Live Data Framework code we built above to listen to the `sum_input_data` directory and process data as it comes in:
 #
 # ```python
 # class InputSchema(pw.Schema):
@@ -171,7 +171,7 @@ pw.io.csv.write(t, "sum_output_stream.csv")
 
 #
 # ::note
-# **IMPORTANT:** Make sure to always include `pw.run()` at the end of your Pathway script. All the steps before this command are simply defining the pipeline. `pw.run()` tells Pathway to actually execute it.
+# **IMPORTANT:** Make sure to always include `pw.run()` at the end of your Pathway Live Data Framework script. All the steps before this command are simply defining the pipeline. `pw.run()` tells the Pathway Live Data Framework to actually execute it.
 # ::
 #
 # To be able to see the result of your work in action, let's separate the data generation and data processing code into 2 separate scripts that we can then launch simultaneously from our terminal.
@@ -262,11 +262,11 @@ output.head(1)
 # > You might have noticed that in this particular example, the `sort_values` call was a little overkill since the data is being processed in a single, sequential process and so the resulting output was already neatly ordered. In real-world streaming use cases, however, you may be dealing with multiple data sources, latency and other factors that will disturb the order of your data. In these cases, the timestamp will enable you to order the data correctly.
 #
 # ## What's next?
-# Congratulations! You've just built your first realtime streaming application with Pathway.
+# Congratulations! You've just built your first realtime streaming application with the Pathway Live Data Framework.
 #
 # <img src="/assets/content/documentation/manul-celebrate.svg" width=250>
 #
-# For more Pandas-to-Pathway conversion, take a look at the [cheat sheet](/developers/user-guide/migrating/pandas-cheat-sheet).
+# For more Pandas-to-Pathway Live Data Framework conversion, take a look at the [cheat sheet](/developers/user-guide/migrating/pandas-cheat-sheet).
 # Now that you're up and running, consider taking trying one of our [templates](/developers/templates).
 #
 # We would love to hear your feedback about our product. Come say hi on our [Discord](https://discord.com/invite/pathway)!

@@ -1,19 +1,19 @@
 # ---
 # title: pw.sql
-# description: 'Using SQL commands with Pathway using pw.sql function.'
+# description: 'Using SQL commands with Pathway Live Data Framework using pw.sql function.'
 # notebook_export_path: notebooks/tutorials/sql_api.ipynb
 # ---
 
-# # Using SQL with Pathway
-# Perform SQL commands using Pathway's `pw.sql` function.
+# # Using SQL with Pathway Live Data Framework
+# Perform SQL commands using Pathway Live Data Framework's `pw.sql` function.
 #
 # ---
 #
-# Pathway provides a very simple way to use SQL commands directly in your Pathway application: the use of `pw.sql`.
-# Pathway is significantly different from a usual SQL database, and not all SQL operations are available in Pathway.
-# In the following, we present the SQL operations which are compatible with Pathway and how to use `pw.sql`.
+# Pathway Live Data Framework provides a very simple way to use SQL commands directly in your Pathway Live Data Framework application: the use of `pw.sql`.
+# Pathway Live Data Framework is significantly different from a usual SQL database, and not all SQL operations are available in Pathway Live Data Framework.
+# In the following, we present the SQL operations which are compatible with Pathway Live Data Framework and how to use `pw.sql`.
 #
-# **This article is a summary of dos and don'ts on how to use Pathway to execute SQL queries, this is not an introduction to SQL.**
+# **This article is a summary of dos and don'ts on how to use Pathway Live Data Framework to execute SQL queries, this is not an introduction to SQL.**
 #
 # ## Usage
 # You can very easily execute a SQL command by doing the following:
@@ -22,7 +22,7 @@
 # pw.sql(query, tab=t)
 # ```
 #
-# This will execute the SQL command `query` where the Pathway table `t` (Python local variable) can be referred to as  `tab` (SQL table name) inside `query`.
+# This will execute the SQL command `query` where the Pathway Live Data Framework table `t` (Python local variable) can be referred to as  `tab` (SQL table name) inside `query`.
 # More generally, you can pass an arbitrary number of tables associations `name, table` using `**kwargs`: `pw.sql(query, tab1=t1, tab2=t2,.., tabn=tn)`.
 #
 # ## Example
@@ -44,9 +44,9 @@ pw.debug.compute_and_print(ret)
 # -
 
 # ## Column names
-# Unlike in Pathway, column names are not case sensitive in SQL so **column names are NOT case sensitive when using `pw.sql`**.
-# To improve the compatibility with Pathway, we encourage the use of the standard Python naming convention for column and table names: no special character other than "\_", alphanumeric characters, and not starting with a number.
-# Using a space will work in the SQL layer (e.g. returning a column called `"a column"`), though it may be impractical afterwards, when using the dot notation in Pathway: `t.a column` will raise an error. You can still use the `t["a column"]` syntax in Pathway.
+# Unlike in Pathway Live Data Framework, column names are not case sensitive in SQL so **column names are NOT case sensitive when using `pw.sql`**.
+# To improve the compatibility with Pathway Live Data Framework, we encourage the use of the standard Python naming convention for column and table names: no special character other than "\_", alphanumeric characters, and not starting with a number.
+# Using a space will work in the SQL layer (e.g. returning a column called `"a column"`), though it may be impractical afterwards, when using the dot notation in Pathway Live Data Framework: `t.a column` will raise an error. You can still use the `t["a column"]` syntax in Pathway Live Data Framework.
 #
 # ## List of Available SQL Operations
 #
@@ -56,15 +56,15 @@ pw.debug.compute_and_print(ret)
 result_select = pw.sql("SELECT a FROM tab", tab=t)
 pw.debug.compute_and_print(result_select)
 
-# ⚠️ Pathway does not preserve the order of columns!
+# ⚠️ Pathway Live Data Framework does not preserve the order of columns!
 
 # #### Star notation
-# Pathway supports the star notation `*` to select all the columns:
+# Pathway Live Data Framework supports the star notation `*` to select all the columns:
 
 result_star = pw.sql("SELECT * FROM tab", tab=t)
 pw.debug.compute_and_print(result_star)
 
-# ⚠️ Every Pathway table has a special column `id`: this column is NOT captured by `*` expressions in SQL.
+# ⚠️ Every Pathway Live Data Framework table has a special column `id`: this column is NOT captured by `*` expressions in SQL.
 
 # ### `WHERE`
 # In a `SELECT` query, the `WHERE` clause can be used to select rows satisfying a given condition:
@@ -137,7 +137,7 @@ pw.debug.compute_and_print(result_groupby)
 # - `MIN`
 # - `SUM`
 #
-# ⚠️ Pathway reducers (`pw.count`, `pw.sum`, etc.) aggregate over `None` values, while traditional SQL aggregate functions skip `NULL` values: be careful to remove all the undefined values before using an aggregate function.
+# ⚠️ Pathway Live Data Framework reducers (`pw.count`, `pw.sum`, etc.) aggregate over `None` values, while traditional SQL aggregate functions skip `NULL` values: be careful to remove all the undefined values before using an aggregate function.
 
 # ### `HAVING`
 
@@ -145,7 +145,7 @@ result_having = pw.sql("SELECT a, SUM(b) FROM tab GROUP BY a HAVING SUM(b)>5", t
 pw.debug.compute_and_print(result_having)
 
 # ### `AS` (alias)
-# Pathway supports both notations: `old_name as new_name` and `old_name new_name`.
+# Pathway Live Data Framework supports both notations: `old_name as new_name` and `old_name new_name`.
 
 result_alias = pw.sql("SELECT b, a AS c FROM tab", tab=t)
 pw.debug.compute_and_print(result_alias)
@@ -154,7 +154,7 @@ result_alias = pw.sql("SELECT b, a c FROM tab", tab=t)
 pw.debug.compute_and_print(result_alias)
 
 # ### `UNION`
-# Pathway provides the standard `UNION` SQL operator.
+# Pathway Live Data Framework provides the standard `UNION` SQL operator.
 # Note that `UNION` requires matching column names.
 
 # +
@@ -171,7 +171,7 @@ pw.debug.compute_and_print(result_union)
 # -
 
 # ### `INTERSECT`
-# Pathway provides the standard `INTERSECT` SQL operator.
+# Pathway Live Data Framework provides the standard `INTERSECT` SQL operator.
 # Note that `INTERSECT` requires matching column names.
 
 # +
@@ -193,7 +193,7 @@ pw.debug.compute_and_print(result_inter)
 # ⚠️ `INTERSECT` does not support `INTERSECT ALL` (coming soon).
 
 # ### `JOIN`
-# Pathway provides different join operations: `INNER JOIN`, `LEFT JOIN` (or `LEFT OUTER JOIN`), `RIGHT JOIN` (or `RIGHT OUTER JOIN`), `SELF JOIN`, and `CROSS JOIN`.
+# Pathway Live Data Framework provides different join operations: `INNER JOIN`, `LEFT JOIN` (or `LEFT OUTER JOIN`), `RIGHT JOIN` (or `RIGHT OUTER JOIN`), `SELF JOIN`, and `CROSS JOIN`.
 
 t_join = pw.debug.table_from_markdown(
     """
@@ -224,17 +224,17 @@ result_with = pw.sql(
 pw.debug.compute_and_print(result_with)
 
 # ## Differences from the SQL standard
-# First of all, not all SQL queries can be executed in Pathway.
-# This stems mainly from the fact that Pathway is built to process streaming and dynamic data efficiently.
+# First of all, not all SQL queries can be executed in Pathway Live Data Framework.
+# This stems mainly from the fact that the Pathway Live Data Framework is built to process streaming and dynamic data efficiently.
 #
 # ### No ordering
-# In Pathway, indexes are separately generated and maintained by the engine, which does not guarantee any row order: SQL operations like `LIMIT`, `ORDER BY` or `SELECT TOP` don't always make sense in this context. In the future, we will support an `ORDER BY ... LIMIT ...` keyword combination, which is typically meaningful in Pathway.
+# In Pathway Live Data Framework, indexes are separately generated and maintained by the engine, which does not guarantee any row order: SQL operations like `LIMIT`, `ORDER BY` or `SELECT TOP` don't always make sense in this context. In the future, we will support an `ORDER BY ... LIMIT ...` keyword combination, which is typically meaningful in Pathway Live Data Framework.
 # The column `id` is reserved and should not be used as a column name, this column is not captured by `*` expressions.
 #
 # Furthermore, there is no order on the columns and the column order used in a `SELECT` query need not be preserved.
 #
 # ### Immutability
-# Pathway tables are immutable: operations such as `INSERT INTO` are not supported.
+# Pathway Live Data Framework tables are immutable: operations such as `INSERT INTO` are not supported.
 #
 # ### Limits
 # Correlated subqueries are currently not supported and keywords such as `LIKE`, `ANY`, `ALL`, or `EXISTS` are not supported.
@@ -242,5 +242,5 @@ pw.debug.compute_and_print(result_with)
 # We strongly suggest not to use anonymous columns: they might work but we cannot guarantee their behavior.
 #
 # ## Conclusion
-# Pathway provides a powerful API to ease the transition of SQL data transformations and pipelines into Pathway.
-# However, Pathway and SQL serve different purposes. To benefit from all the possibilities Pathway has to offer we strongly encourage you to use the Python syntax directly, as much as you can. Most of the time, this syntax is at least as easy to follow as SQL - see for example our [join](/developers/user-guide/data-transformation/join-manual) and [groupby](/developers/user-guide/data-transformation/groupby-reduce-manual) manu[a]ls.
+# Pathway Live Data Framework provides a powerful API to ease the transition of SQL data transformations and pipelines into Pathway Live Data Framework.
+# However, Pathway Live Data Framework and SQL serve different purposes. To benefit from all the possibilities Pathway Live Data Framework has to offer we strongly encourage you to use the Python syntax directly, as much as you can. Most of the time, this syntax is at least as easy to follow as SQL - see for example our [join](/developers/user-guide/data-transformation/join-manual) and [groupby](/developers/user-guide/data-transformation/groupby-reduce-manual) manu[a]ls.

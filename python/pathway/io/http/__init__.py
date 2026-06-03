@@ -74,7 +74,7 @@ def read(
           JSON, it will be defaulted to "application/json".
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
-          committed and pushed into Pathway's computation graph.
+          committed and pushed into Pathway Live Data Framework's computation graph.
         debug_data: static data replacing original one when debug mode is active.
         name: A unique name for the connector. If provided, this name will be used in
           logs and monitoring dashboards. Additionally, if persistence is enabled, it

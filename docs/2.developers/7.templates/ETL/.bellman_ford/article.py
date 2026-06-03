@@ -1,6 +1,6 @@
 # ---
-# title: Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway
-# description: Article explaining step-by-step how to implement the Bellman-Ford algorithm in Pathway.
+# title: Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway Live Data Framework
+# description: Article explaining step-by-step how to implement the Bellman-Ford algorithm in the Pathway Live Data Framework.
 # aside: true
 # date: '2022-11-03'
 # layout: 'template'
@@ -26,8 +26,8 @@
 # ---
 
 # %% [markdown]
-# # Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway
-# This article explains step-by-step how the Bellman–Ford algorithm may be implemented in Pathway.
+# # Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway Live Data Framework
+# This article explains step-by-step how the Bellman–Ford algorithm may be implemented in the Pathway Live Data Framework.
 #
 # ## Introduction
 #
@@ -36,7 +36,7 @@
 # A weighted graph is composed of a set of points, called *vertices*, which are connected via *edges*. Each edge is associated to a value, called either *weight* or *distance*.
 # For instance, the set of all the cities and the roads which connect them form such a graph. In that example, the Bellman-Ford algorithm would help to find the fastest way, in terms of distance, to go from a given city to another.
 #
-# This article is also a perfect place to familiarize yourself with several constructs used in Pathway.
+# This article is also a perfect place to familiarize yourself with several constructs used in the Pathway Live Data Framework.
 #
 # ## Code
 # First things first - imports 🙂
@@ -167,8 +167,8 @@ edges = pw.debug.table_from_markdown(
 )
 
 # %% [markdown]
-# Pathway automatically reindexes the tables, so we need a key column of the `vertices` table and we need ask Pathway to reindex the table using those.
-# In practice, Pathway uses pointers so the keys are automatically converted into pointers.
+# The Pathway Live Data Framework automatically reindexes the tables, so we need a key column of the `vertices` table and we need ask the Pathway Live Data Framework to reindex the table using those.
+# In practice, the Pathway Live Data Framework uses pointers so the keys are automatically converted into pointers.
 #
 # For the edges, we have to convert the keys into their references in order to be able to use `vertices_dist.ix(edges.u)` as `ix` only works with pointers.
 
@@ -176,7 +176,7 @@ edges = pw.debug.table_from_markdown(
 pw.debug.compute_and_print(bellman_ford(vertices, edges))
 
 # %% [markdown]
-# That was a simple introduction to writing code and tests in Pathway.
+# That was a simple introduction to writing code and tests in the Pathway Live Data Framework.
 #
 # Feel free to take this code and experiment with it 🙂  Do you see any possibility to
 # improve the code? (What happens when there is a negative cycle in the graph?)
@@ -184,7 +184,7 @@ pw.debug.compute_and_print(bellman_ford(vertices, edges))
 
 # %% [markdown]
 # ## Summary
-# The code above follows a pattern that is quite frequent when working with Pathway:
+# The code above follows a pattern that is quite frequent when working with the Pathway Live Data Framework:
 # - Define I/O data types
 # - Define transformations on tables
 # - Iterate the transformation until a fixed point is reached

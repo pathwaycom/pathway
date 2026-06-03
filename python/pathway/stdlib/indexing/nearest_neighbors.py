@@ -261,7 +261,7 @@ class BruteForceKnn(InnerIndex):
 @dataclass(frozen=True, kw_only=True)
 class LshKnn(InnerIndex):
     """
-    Interface for Pathway's implementation of KNN via LSH.
+    Interface for Pathway Live Data Framework's implementation of KNN via LSH.
 
     Args:
         data_column (pw.ColumnExpression): the column expression

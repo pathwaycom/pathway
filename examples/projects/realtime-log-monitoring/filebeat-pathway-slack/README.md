@@ -1,12 +1,12 @@
 # Realtime monitoring of logs
 
-The purpose of this project is to do an end-to-end application with Pathway to monitors logs (such as nginx logs).
-It connects Filebeat to Pathway (via Kafka) and send the alerts to a Slack channel.
+The purpose of this project is to do an end-to-end application with Pathway Live Data Framework to monitors logs (such as nginx logs).
+It connects Filebeat to the Pathway Live Data Framework (via Kafka) and send the alerts to a Slack channel.
 
 The project is organized in four docker containers:
  - Filebeat: this container contains the logs, and Filebeat is launch to monitors them and then the updates to Kafka.
- - Kafka and Zookeeper: these containers are working as a gateway between Filebeat and Pathway.
- - Pathway: the logs are received from Kafka, processed and send to a Slack channel.
+ - Kafka and Zookeeper: these containers are working as a gateway between Filebeat and the Pathway Live Data Framework.
+ - The Pathway Live Data Framework: the logs are received from Kafka, processed and send to a Slack channel.
  
 The logs are processed as follows (in `./pathway-src/alerts.py`):
  1. The timestamps and messages (logs) are extracted from the JSON messages created by Filebeat.

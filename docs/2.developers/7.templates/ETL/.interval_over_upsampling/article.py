@@ -1,6 +1,6 @@
 # ---
 # title: 'Signal Processing with Real-time Upsampling: combining multiple time series data streams.'
-# description: 'Tutorial on signal processing: how to do upsampling with Pathway using windowby and intervals_over'
+# description: 'Tutorial on signal processing: how to do upsampling with Pathway Live Data Framework using windowby and intervals_over'
 # notebook_export_path: notebooks/tutorials/upsampling.ipynb
 # author: 'olivier'
 # aside: true
@@ -62,8 +62,8 @@
 # While your phone outputs roughly one value per second, your GPS watch has only one recording every five seconds.
 # You will need to upsample your watch's data to match the sampling rate of your phone.
 #
-# Don't worry, Pathway allows you to aggregate and process data from these diverse sources easily.
-# Let's see how to do upsampling with Pathway.
+# Don't worry, the Pathway Live Data Framework allows you to aggregate and process data from these diverse sources easily.
+# Let's see how to do upsampling with the Pathway Live Data Framework.
 #
 # ### The data
 # First, we need data. For privacy issues, we will not work on real GPS traces, but we will generate artificial data.
@@ -161,7 +161,7 @@ plt.show()
 
 # As we can see, not only the sampling rates are not the same, but the times are not aligned.
 #
-# Let's load the data in Pathway before doing the upsampling:
+# Let's load the data in the Pathway Live Data Framework before doing the upsampling:
 
 # +
 import pathway as pw
@@ -327,12 +327,12 @@ plt.show()
 #
 # This approach is impossible in a streaming setup where data points can be delayed indefinitely.
 # The best we can do is to do the computation with the information at hand and then update our results whenever late data is received.
-# This is exactly what Pathway does: your results are kept up-to-date with respect to the latest available data.
+# This is exactly what the Pathway Live Data Framework does: your results are kept up-to-date with respect to the latest available data.
 # You can see how it works in practice with [our example about the Gaussian filter](/developers/templates/etl/gaussian_filtering_python).
 
 # ## Upsampling: Conclusion
 #
-# You can now use Pathway to do signal processing on multiple data sources simultaneously, which is one of the common operations of DSP.
-# With multiple data sources and filters, you should be able to do most of the common digital signal processing operations with Pathway!
+# You can now use the Pathway Live Data Framework to do signal processing on multiple data sources simultaneously, which is one of the common operations of DSP.
+# With multiple data sources and filters, you should be able to do most of the common digital signal processing operations with the Pathway Live Data Framework!
 #
 # If you have trouble implementing a DSP operation, don't hesitate to join us on [discord](https://discord.com/invite/pathway) so we can help you!

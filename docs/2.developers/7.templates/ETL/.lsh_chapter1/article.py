@@ -1,6 +1,6 @@
 # ---
 # title: 'Adaptive Classifiers: Evolving Predictions with Real-Time Data'
-# description: 'Pathway Showcase: kNN+LSH classifier'
+# description: 'Pathway Live Data Framework Showcase: kNN+LSH classifier'
 # notebook_export_path: notebooks/showcases/lsh.ipynb
 # author: 'olivier'
 # aside: true
@@ -29,7 +29,7 @@
 #
 # ## Using the Nearest-Neighbors Classifier
 #
-# ![Classification with Pathway](https://pathway.com/assets/content/showcases/lsh/KNN.gif)
+# ![Classification with Pathway Live Data Framework](https://pathway.com/assets/content/showcases/lsh/KNN.gif)
 #
 #
 # ## Classification - what is it all about?
@@ -44,54 +44,54 @@
 # It is used to label or tag new content and has various areas of applications such as marketing personalization.
 # For example, tagging new content on an e-commerce website or a streaming service will ease browsing and allow for better content recommendations.
 #
-# This showcase explains how to achieve high quality classification using Pathway.
+# This showcase explains how to achieve high quality classification using the Pathway Live Data Framework.
 #
-# ## Why use Pathway for classification?
+# ## Why use Pathway Live Data Framework for classification?
 #
 # In a traditional streaming system, the classification of a query is done based on the available data at the time of the query.
 # However, as time goes on, the available data grows, providing a better insight on the classification tasks done on previous queries.
 # The prediction which made sense with a partial view of a data can be seen as wrong with more complete data.
 #
-# Pathway guarantees classifications with the most up-to-date-model. Under the hood, the system does this by automatically revisiting the classifications of past queries in the stream as new training data becomes available.
+# The Pathway Live Data Framework guarantees classifications with the most up-to-date-model. Under the hood, the system does this by automatically revisiting the classifications of past queries in the stream as new training data becomes available.
 
 # %% [markdown]
-# ![Pathway performance](https://pathway.com/assets/content/showcases/lsh/lsh_mnist_streaming.png)
+# ![Pathway Live Data Framework performance](https://pathway.com/assets/content/showcases/lsh/lsh_mnist_streaming.png)
 
 # %% [markdown]
-# Unlike a classic streaming system, Pathway updates the previous query as data arrive, resulting in a lower error rate.
+# Unlike a classic streaming system, The Pathway Live Data Framework updates the previous query as data arrive, resulting in a lower error rate.
 #
-# The source code in this article is completely self-contained. With Pathway installed, you can run it directly!
+# The source code in this article is completely self-contained. With the Pathway Live Data Framework installed, you can run it directly!
 
 # %% [markdown]
-# ## How does Pathway perform classification?
+# ## How does Pathway Live Data Framework perform classification?
 #
-# Classifiers are just regular Pathway library functions. In Pathway' standard library, we provide you with a choice of neat classifiers for your convenience - but if you prefer to create your own, be our guest: the logic will only take a couple dozen lines of Python in our framework. As with all code written in Pathway, Pathway takes care of making sure classifiers work correctly on top of data streams.
+# Classifiers are just regular Pathway Live Data Framework library functions. In the Pathway Live Data Framework's standard library, we provide you with a choice of neat classifiers for your convenience - but if you prefer to create your own, be our guest: the logic will only take a couple dozen lines of Python in our framework. As with all code written in the Pathway Live Data Framework, the Pathway Live Data Framework takes care of making sure classifiers work correctly on top of data streams.
 #
-# In this showcase, we will show you how to use Pathway to make your own classification app. We will be using the kNN+LSH classifier from Pathway's standard library: if you are interested about how it works, you can find out more about those topics in our [article](/blog/realtime-classification) about it.
+# In this showcase, we will show you how to use the Pathway Live Data Framework to make your own classification app. We will be using the kNN+LSH classifier from Pathway Live Data Framework's standard library: if you are interested about how it works, you can find out more about those topics in our [article](/blog/realtime-classification) about it.
 
 
 # %% [markdown]
-# ## And here comes: Your real-time classification Data App in Pathway
+# ## And here comes: Your real-time classification Data App in Pathway Live Data Framework
 
 # %% [markdown]
-# In Pathway, everything you need to perform efficient real-time classification is already implemented for you.
+# In the Pathway Live Data Framework, everything you need to perform efficient real-time classification is already implemented for you.
 #
 # All you need is to load your data, and use our provided classifier functions to train the model and label your queries.
 #
-# Let's take a look how Pathway performs on a real-time classification problem. The kNN+LSH classifier we will use in this case is available with several metrics, such as cosine or Euclidean distance - we stick to the defaults.
+# Let's take a look how the Pathway Live Data Framework performs on a real-time classification problem. The kNN+LSH classifier we will use in this case is available with several metrics, such as cosine or Euclidean distance - we stick to the defaults.
 #
 
 # %% [markdown]
 # ### Connecting to streaming data
 
 # %% [markdown]
-# To illustrate how Pathway performs on real-time classification, we use Pathway to classify handwritten images fed into the system in streaming mode.
+# To illustrate how the Pathway Live Data Framework performs on real-time classification, we use the Pathway Live Data Framework to classify handwritten images fed into the system in streaming mode.
 #
 # We will use the well-known [MNIST](http://yann.lecun.com/exdb/mnist/) as an example. MNIST is composed of 70,000 handwritten digits, each image has a 28x28 resolution and is labeled.
 #
 # However, we work here with a **streaming data set**: we suppose that the MNIST data and the queries are arriving in a streaming fashion. In streaming, the data is incomplete and the stream progresses over time, until the full data is received.
 #
-# As MNIST is so standard, we provide a standard loader which simulates just such a data stream. Both the data and the queries are fed in at the same rate, with a 6:1 ratio of data to queries. (For production deployment of your application, you would normally use Pathway's input connectors instead of the simulator.)
+# As MNIST is so standard, we provide a standard loader which simulates just such a data stream. Both the data and the queries are fed in at the same rate, with a 6:1 ratio of data to queries. (For production deployment of your application, you would normally use Pathway Live Data Framework's input connectors instead of the simulator.)
 
 # %%
 import pathway as pw
@@ -109,7 +109,7 @@ import pathway as pw
 # ## Setting up classification
 
 # %% [markdown]
-# Here comes the actual training and classification source code, in Pathway.
+# Here comes the actual training and classification source code, in the Pathway Live Data Framework.
 
 # %%
 
@@ -163,7 +163,7 @@ pw.debug.compute_and_print(results)
 # %% [markdown]
 # As we can see, a normal streaming system exhibits poor performances at first due to an incomplete data set.
 #
-# Pathway, on the other hand, improves the accuracy of those previous queries by revisiting its predictions at each update. As the data grows, its error rate decreases until it converges to an error close to $5\% $. Here is a sample of outcomes we get at the end of the stream.
+# The Pathway Live Data Framework, on the other hand, improves the accuracy of those previous queries by revisiting its predictions at each update. As the data grows, its error rate decreases until it converges to an error close to $5\% $. Here is a sample of outcomes we get at the end of the stream.
 #
 # ![Classification results](https://pathway.com/assets/content/showcases/lsh/lsh_example_classification.png)
 #
@@ -172,8 +172,8 @@ pw.debug.compute_and_print(results)
 #
 # ## Conclusion
 #
-# When doing classification on a stream in Pathway, the model is kept up to date automatically. As the model improves over time, results get better and previous classification decisions are also updated to the most up-to-date-model, without having to worry about it.
+# When doing classification on a stream in the Pathway Live Data Framework, the model is kept up to date automatically. As the model improves over time, results get better and previous classification decisions are also updated to the most up-to-date-model, without having to worry about it.
 #
 # In many streaming scenarios, the kNN+LSH approach we used provides a sweet-spot between speed and quality. If you want to know more about how all of this works, you can read our [article](/blog/realtime-classification) about it.
 #
-# In our next articles, we will show you how to use Pathway to build streaming recommender systems and real-time anomaly detection. (Coming soon.)
+# In our next articles, we will show you how to use the Pathway Live Data Framework to build streaming recommender systems and real-time anomaly detection. (Coming soon.)

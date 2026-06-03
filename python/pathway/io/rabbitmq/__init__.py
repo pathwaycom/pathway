@@ -79,7 +79,7 @@ def read(
             ``"static"`` mode, it reads all existing messages and then stops.
         autocommit_duration_ms: The time interval (in milliseconds) between commits.
             After this time, the updates received by the connector are committed and
-            added to Pathway's computation graph.
+            added to Pathway Live Data Framework's computation graph.
         json_field_paths: For the ``"json"`` format, this allows mapping field names to
             paths within the JSON structure. Use the format ``<field_name>: <path>``
             where the path follows the
@@ -308,7 +308,7 @@ def write(
     Examples:
 
     Consider a RabbitMQ server with Streams enabled running locally on port ``5552``.
-    First, create a Pathway table:
+    First, create a Pathway Live Data Framework table:
 
     >>> import pathway as pw
     >>> table = pw.debug.table_from_markdown('''

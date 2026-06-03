@@ -1,4 +1,4 @@
-# Pathway LLM Extension Pack
+# Pathway Live Data Framework LLM Extension Pack
 
 This XPack contains [Pathway](pathway.com) functions useful in building data processing pipelines involving LLM models:
 1. pathway-compatible wrappers (UDFs) for popular AI and language modeling tasks, such as:

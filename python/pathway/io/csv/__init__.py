@@ -61,7 +61,7 @@ def read(
             source row. (6) size - File size in bytes.
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -86,7 +86,7 @@ def read(
 
         printf "id,owner,pet\\n1,Alice,dog\\n2,Bob,dog\\n3,Alice,cat\\n4,Bob,dog" > dataset.csv
 
-    In order to read it into Pathway's table, you can first do the import and then
+    In order to read it into Pathway Live Data Framework's table, you can first do the import and then
     use the `pw.io.csv.read` method:
 
     >>> import pathway as pw
@@ -132,7 +132,7 @@ def read(
     But what if you are working with a real-time system, which generates logs all the time.
     The logs are being written and after a while they get into the log directory (this is
     also called "logs rotation"). Now, consider that there is a need to fetch the new files
-    from this logs directory all the time. Would Pathway handle that? Sure!
+    from this logs directory all the time. Would the Pathway Live Data Framework handle that? Sure!
 
     The only difference would be in the usage of `mode` flag. So the code
     snippet will look as follows:
@@ -193,7 +193,7 @@ def write(
     Example:
 
     In this simple example you can see how table output works.
-    First, import Pathway and create a table:
+    First, import the Pathway Live Data Framework and create a table:
 
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")

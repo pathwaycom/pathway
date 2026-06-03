@@ -1,6 +1,6 @@
 # ---
-# title: Indexes in Pathway
-# description: An article explaining ways of indexing data in Pathway.
+# title: Indexes in Pathway Live Data Framework
+# description: An article explaining ways of indexing data in Pathway Live Data Framework.
 # date: '2023-11-15'
 # thumbnail: '/assets/content/blog/th-computing-pagerank.png'
 # tags: ['tutorial', 'engineering']
@@ -9,22 +9,22 @@
 # ---
 
 # %% [markdown]
-# # Indexes in Pathway
-# In this article, you'll learn about reactive indexes in Pathway and how they differ from conventional indexes used in databases. You'll also see how to use them to respond to a stream of queries in real time.
+# # Indexes in Pathway Live Data Framework
+# In this article, you'll learn about reactive indexes in Pathway Live Data Framework and how they differ from conventional indexes used in databases. You'll also see how to use them to respond to a stream of queries in real time.
 #
 # Indexes are data structures that improve the speed of queries. They are often used in databases. They are helpful if you want to retrieve records with a specific value in a given column (then you need an index based on this column). An example of this is answering a stream of queries using the contents of a database.
 #
 # ![LSM index context drawing](assets/content/tutorials/indexes/index.svg)
 #
 # Indexes can also speed up joins - an existing index can be used if it is built on appropriate columns but also an index can be built ad-hoc, during query execution.
-# Pathway offers indexes, but because it operates on streams, there are some differences as compared to database indexes. To learn about them, continue reading the article.
+# Pathway Live Data Framework offers indexes, but because it operates on streams, there are some differences as compared to database indexes. To learn about them, continue reading the article.
 
 # %% [markdown]
 # ## Joins
-# Pathway operates on streams. Unless it is informed otherwise, it assumes that new data can arrive from any stream. Thus, when joining two streams, Pathway has to keep these streams in memory. It builds [LSM trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree) on both sides of a join. Thanks to that, new records arriving in any of the two streams can be joined quickly - it is enough to look them up in the index of the other table and no costly scans are needed.
+# Pathway Live Data Framework operates on streams. Unless it is informed otherwise, it assumes that new data can arrive from any stream. Thus, when joining two streams, Pathway Live Data Framework has to keep these streams in memory. It builds [LSM trees](https://en.wikipedia.org/wiki/Log-structured_merge-tree) on both sides of a join. Thanks to that, new records arriving in any of the two streams can be joined quickly - it is enough to look them up in the index of the other table and no costly scans are needed.
 # In contrast, normal databases only use an index on one side of a join because once the query is processed the join results are not updated.
 #
-# Let's consider a simple example in which you join two tables in Pathway. Here, a table is built from a simulated stream of changes to its rows. The value in the `__time__` column represents the arrival time of the record to the engine. Rows with the same value in the `__time__` column belong to a single batch.
+# Let's consider a simple example in which you join two tables in Pathway Live Data Framework. Here, a table is built from a simulated stream of changes to its rows. The value in the `__time__` column represents the arrival time of the record to the engine. Rows with the same value in the `__time__` column belong to a single batch.
 #
 # To use an example with a real streaming source it is enough to replace [`pw.debug.table_from_markdown`](/developers/api-docs/debug#pathway.debug.table_from_markdown) with an appropriate [connector](/developers/user-guide/connect/supported-data-sources) (like Redpanda or Kafka connector).
 #
@@ -58,7 +58,7 @@ result = table_a.join(table_b, pw.left.instance == pw.right.instance).select(
 pw.debug.compute_and_print(result)
 
 # %% [markdown]
-# As you can see, the records from both sides get joined with the future records. It is expected, as Pathway incrementally updates all results to match the input data changes. However, if `table_a` would be `queries` on a `table_b` representing the `data` you want to query, you'd be surprised to see that answers to your queries are updated in the future when `data` changes. Let's say, you want to query the number of your website visits by location:
+# As you can see, the records from both sides get joined with the future records. It is expected, as Pathway Live Data Framework incrementally updates all results to match the input data changes. However, if `table_a` would be `queries` on a `table_b` representing the `data` you want to query, you'd be surprised to see that answers to your queries are updated in the future when `data` changes. Let's say, you want to query the number of your website visits by location:
 
 # %%
 import pathway as pw
@@ -102,7 +102,7 @@ answers = queries.join(
 pw.debug.compute_and_print(answers)
 
 # %% [markdown]
-# Please note how the answer to your query with `query_no=1` is updated a few times. At first, it is equal to `2`. At time `8`, it changes to `3` and finally is equal to `4` (starting from time `12`). It may be a bit surprising if you're new to Pathway. It turns out, the `join` allows you to keep track of the updates! And it has many cool uses, for instance alerting. You can use it to set up a real-time alerting system. However, if that is not what you want and you'd like to get an answer to your query once, at its processing time, Pathway supports it as well!
+# Please note how the answer to your query with `query_no=1` is updated a few times. At first, it is equal to `2`. At time `8`, it changes to `3` and finally is equal to `4` (starting from time `12`). It may be a bit surprising if you're new to Pathway Live Data Framework. It turns out, the `join` allows you to keep track of the updates! And it has many cool uses, for instance alerting. You can use it to set up a real-time alerting system. However, if that is not what you want and you'd like to get an answer to your query once, at its processing time, Pathway Live Data Framework supports it as well!
 
 # %% [markdown]
 # ## Asof now join
@@ -156,7 +156,7 @@ pw.debug.compute_and_print(answers)
 #
 # In contrast to an ordinary [`join`](/developers/user-guide/data-transformation/join-manual), `asof_now_join` is not symmetric. New rows on the left side of the join will produce a result under the condition they can be joined with at least one row from the right side. If you want to produce at least one result from every query, you can use `asof_now_join_left` - then all columns from the right side in the output row will be set to `None`. On the other hand, new rows on the right side of the join won't immediately produce any new rows in the output but will update the index and if they're matched with new records from the left side later, they will appear in the output.
 #
-# Please note that for a correct operation, the left table of the `asof_now_join` (`queries`) can only be extended with new queries. Pathway verifies it for you. You can't delete or update the queries. It is quite reasonable. Instead of updating the query, you can just send a new query because your previous query has been already forgotten anyway.
+# Please note that for a correct operation, the left table of the `asof_now_join` (`queries`) can only be extended with new queries. Pathway Live Data Framework verifies it for you. You can't delete or update the queries. It is quite reasonable. Instead of updating the query, you can just send a new query because your previous query has been already forgotten anyway.
 #
 # Another important thing is that `asof_now_join` depends on the processing time and because of that is non-deterministic. When sending data to a distributed system like pathway, you don't have a guarantee which data will enter the system first (network latencies, etc.). If both queries and data streams are updated at the same time, the amount of data that is already present in the system when a given query is answered is non-deterministic. Thus if you repeat the same experiment with real connectors (like Redpanda or Kafka), you may get different answers in different runs. If you used an ordinary `join`, you would always get the same answers in the end because the answers would be updated with the arrival of the new data.
 #
@@ -434,4 +434,4 @@ response_writer(result)
 # It is an LLM app that can send you alerts on slack when the response to your query has changed significantly.
 # %% [markdown]
 # ## Summary
-# In this article you learned about the differences in indexing between databases and Pathway. You can see that both approaches - keeping the queries to update them in the future or forgetting queries immediately after answering, are useful. It depends on your objective which approach should be used. Pathway provides methods to handle both variants.
+# In this article you learned about the differences in indexing between databases and Pathway Live Data Framework. You can see that both approaches - keeping the queries to update them in the future or forgetting queries immediately after answering, are useful. It depends on your objective which approach should be used. Pathway Live Data Framework provides methods to handle both variants.

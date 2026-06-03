@@ -4,7 +4,7 @@
 
 The purpose of this example is to show how to implement custom python connector.
 
-The sample script is a simple Pathway pipeline that turns a stream of tweets into a Pathway table and writes the stream of changes to an `output.csv` file. Twitter API was used as an example, but any data stream can be fed into Pathway using this method.
+The sample script is a simple Pathway Live Data Framework pipeline that turns a stream of tweets into a Pathway Live Data Framework table and writes the stream of changes to an `output.csv` file. Twitter API was used as an example, but any data stream can be fed into Pathway Live Data Framework using this method.
 
 How to launch this example:
 1. Install Pathway package using method described here `https://pathway.com/developers/documentation/introduction/installation-and-first-steps/` 

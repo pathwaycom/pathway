@@ -1,6 +1,6 @@
 # Copyright © 2026 Pathway
 """
-Pathway embedder UDFs.
+The Pathway Live Data Framework embedder UDFs.
 """
 import asyncio
 import json
@@ -105,7 +105,7 @@ def _split_batched_kwargs(
 
 
 class OpenAIEmbedder(BaseEmbedder):
-    """Pathway wrapper for OpenAI Embedding services.
+    """Pathway Live Data Framework wrapper for OpenAI Embedding services.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
     construction, and API key must be provided to the constructor with the ``api_key`` argument
@@ -326,7 +326,7 @@ class OpenAIEmbedder(BaseEmbedder):
 
 
 class LiteLLMEmbedder(BaseEmbedder):
-    """Pathway wrapper for `litellm.embedding`.
+    """Pathway Live Data Framework wrapper for `litellm.embedding`.
 
     Model has to be specified either in constructor call or in each application, no default
     is provided. The capacity, retry_strategy and cache_strategy need to be specified
@@ -421,7 +421,7 @@ class LiteLLMEmbedder(BaseEmbedder):
 
 class SentenceTransformerEmbedder(BaseEmbedder):
     """
-    Pathway wrapper for Sentence-Transformers embedder.
+    The Pathway Live Data Framework wrapper for Sentence-Transformers embedder.
 
     Args:
         model: model name or path
@@ -515,7 +515,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
 
 
 class GeminiEmbedder(BaseEmbedder):
-    """Pathway wrapper for Google Gemini Embedding services.
+    """Pathway Live Data Framework wrapper for Google Gemini Embedding services.
 
     The ``capacity``, ``retry_strategy`` and ``cache_strategy`` need to be specified during object
     construction. All other arguments can be overridden during application.
@@ -606,7 +606,7 @@ class GeminiEmbedder(BaseEmbedder):
 
 
 class BedrockEmbedder(BaseEmbedder):
-    """Pathway wrapper for AWS Bedrock Embedding services (see
+    """Pathway Live Data Framework wrapper for AWS Bedrock Embedding services (see
     `Titan Embeddings docs <https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html>`_).
 
     Supports Amazon Titan embeddings and other embedding models available on Bedrock.

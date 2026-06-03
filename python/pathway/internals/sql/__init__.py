@@ -6,12 +6,12 @@ from pathway.optional_import import optional_imports
 @check_arg_types
 def sql(query: str, **kwargs: table.Table) -> table.Table:
     r'''
-    Run a SQL query on Pathway tables.
+    Run a SQL query on Pathway Live Data Framework tables.
 
     Args:
         query: the SQL query to execute.
         kwargs: the association name: table used for the execution of the SQL query. \
-            Each name:table pair links a Pathway table to a table name used in the SQL query.
+            Each name:table pair links a Pathway Live Data Framework table to a table name used in the SQL query.
 
     Example:
 
@@ -36,11 +36,11 @@ def sql(query: str, **kwargs: table.Table) -> table.Table:
 
     Table and column names are case-sensitive.
 
-    Specificities of Pathway:
-    - `id` is a reserved key word for columns, every Pathway table has a special column \
+    Specificities of the Pathway Live Data Framework:
+    - `id` is a reserved key word for columns, every Pathway Live Data Framework table has a special column \
     `id`. This column is not captured by `*` expressions in SQL.
     - Order of columns might not be preserved with respect to SELECT query.
-    - Pathway reducers (pw.count, pw.sum, etc.) aggregate over None values, while SQL \
+    - Pathway Live Data Framework reducers (pw.count, pw.sum, etc.) aggregate over None values, while SQL \
     aggregation functions (COUNT, SUM, etc.) skip NULL values.
     - UNION requires matching column names.
     - INTERSECT requires matching column names.
@@ -53,8 +53,9 @@ def sql(query: str, **kwargs: table.Table) -> table.Table:
 
     Unsupported operations:
     - ordering operations: ORDER BY, LIMIT, SELECT TOP
-    - INSERT INTO (Pathway tables are immutable)
-    - Pathway does not support anonymous columns: they might work but we do not guarantee their behavior.
+    - INSERT INTO (Pathway Live Data Framework tables are immutable)
+    - The Pathway Live Data Framework does not support anonymous columns: they might work but
+      we do not guarantee their behavior.
     - INTERSECT does not support INTERSECT ALL.
     - COALESCE, IFNULL are not supported.
     - FULL JOIN and NATURAL JOIN are not supported.

@@ -25,7 +25,7 @@
 # ![Visual abstract](/assets/content/blog/adaptive-rag-plots/visual-abstract.png)
 # <!-- Source for plots: https://github.com/pathwaycom/IoT-Pathway/blob/develop/experimental/szymon/geometric-RAG-plots/replication.ipynb -->
 
-# **TLDR**: We demonstrate how to dynamically adapt the number of documents in a RAG prompt using feedback from the LLM. This allows a 4x cost reduction of RAG LLM question answering while maintaining good accuracy. We also show that the method helps explain the lineage of LLM outputs. We provide runnable code examples implemented in the [Pathway](/developers/user-guide/introduction/welcome) [LLM expansion pack](/developers/user-guide/llm-xpack/overview), feel free to [skip directly to the code](#trying-it-out).
+# **TLDR**: We demonstrate how to dynamically adapt the number of documents in a RAG prompt using feedback from the LLM. This allows a 4x cost reduction of RAG LLM question answering while maintaining good accuracy. We also show that the method helps explain the lineage of LLM outputs. We provide runnable code examples implemented in the [Pathway Live Data Framework](/developers/user-guide/introduction/welcome) [LLM expansion pack](/developers/user-guide/llm-xpack/overview), feel free to [skip directly to the code](#trying-it-out).
 
 # <details>
 # <summary>
@@ -171,13 +171,13 @@
 
 # ## Trying it out
 #
-# We provide an implementation of the Adaptive RAG in the [Pathway](/developers/user-guide/introduction/welcome) data processing framework. Pathway is your one-stop-shop for building realtime data processing pipelines, from simple ETL to synchronizing and indexing document collections into knowledge bases. The Pathway [LLM Xpack](/developers/user-guide/llm-xpack/overview) is a set of pipeline components that are useful in working with LLMs: [auto-updating vector stores](/developers/user-guide/llm-xpack/docs-indexing), [RAGs](/solutions)  and [many more LLM examples](https://github.com/pathwaycom/llm-app).
-# If you are interested in how Adaptive RAG is implemented inside Pathway, you can [dive into the internals directly here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/question_answering.py#L37).
+# We provide an implementation of the Adaptive RAG in the [Pathway Live Data Framework](/developers/user-guide/introduction/welcome) data processing framework. The Pathway Live Data Framework is your one-stop-shop for building realtime data processing pipelines, from simple ETL to synchronizing and indexing document collections into knowledge bases. The Pathway Live Data Framework [LLM Xpack](/developers/user-guide/llm-xpack/overview) is a set of pipeline components that are useful in working with LLMs: [auto-updating vector stores](/developers/user-guide/llm-xpack/docs-indexing), [RAGs](/solutions)  and [many more LLM examples](https://github.com/pathwaycom/llm-app).
+# If you are interested in how Adaptive RAG is implemented inside the Pathway Live Data Framework, you can [dive into the internals directly here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/question_answering.py#L37).
 
 # As a prerequisite to run the code, install necessary packages and download sample data which will be used.
 
 # +
-# Uncomment, if you need to install Pathway and OpenAI packages
+# Uncomment, if you need to install the Pathway Live Data Framework and OpenAI packages
 # # !pip install pathway
 # # !pip install openai
 # Download `adaptive-rag-contexts.jsonl` with ~1000 contexts from SQUAD dataset

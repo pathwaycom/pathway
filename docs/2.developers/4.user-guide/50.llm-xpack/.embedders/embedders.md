@@ -1,6 +1,6 @@
 ---
 title: 'Embedders'
-description: 'Embedders available through the Pathway xpack'
+description: 'Embedders available through the Pathway Live Data Framework xpack'
 date: '2025-02-04'
 thumbnail: ''
 tags: ['tutorial', 'embedder']
@@ -11,7 +11,7 @@ keywords: ['LLM', 'GPT', 'OpenAI', 'Gemini', 'LiteLLM', 'Embedder']
 
 When storing a document in a vector store, you compute the embedding vector for the text and store the vector with a reference to the original document. You can then compute the embedding of a query and find the embedded documents closest to the query.
 
-The following embedding wrappers are available through the Pathway xpack:
+The following embedding wrappers are available through the `pathway` xpack:
 
 - [`OpenAIEmbedder`](#openaiembedder) - Embed text with any of OpenAI's embedding models
 - [`LiteLLMEmbedder`](#litellmembedder) - Embed text with any model available through LiteLLM

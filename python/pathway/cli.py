@@ -546,7 +546,7 @@ def spawn_from_env():
     default=8088,
 )
 def web_dashboard(detailed_metrics_dir, port):
-    click.echo(f"Starting Pathway Web Dashboard on port {port}...")
+    click.echo(f"Starting Pathway Live Data Framework Web Dashboard on port {port}...")
     env = os.environ.copy()
     env["PATHWAY_DETAILED_METRICS_DIR"] = detailed_metrics_dir
     command = [

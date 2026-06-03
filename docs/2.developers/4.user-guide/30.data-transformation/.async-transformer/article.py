@@ -1,6 +1,6 @@
 # ---
 # title: Asynchronous Transformations
-# description: An article explaining how to perform asynchronous data transformations in Pathway
+# description: An article explaining how to perform asynchronous data transformations in Pathway Live Data Framework
 # date: '2024-02-20'
 # thumbnail: ''
 # tags: ['tutorial', 'engineering']
@@ -10,17 +10,17 @@
 
 # %% [markdown]
 # # AsyncTransformer
-# One way of transforming data in Pathway, when simple transformations are not enough, is using [UDFs](/developers/user-guide/data-transformation/user-defined-functions).
+# One way of transforming data in Pathway Live Data Framework, when simple transformations are not enough, is using [UDFs](/developers/user-guide/data-transformation/user-defined-functions).
 # However, if the flexibility of the UDFs is still not enough, you can use even more general and flexible `AsyncTransformer`, useful especially for asynchronous computations.
 #
 # `AsyncTransformer` is a different mechanism than UDFs.
-# It acts on the whole Pathway Table and returns a new Table.
+# It acts on the whole Pathway Live Data Framework Table and returns a new Table.
 # In contrast to UDFs, it is fully asynchronous.
 # It starts the `invoke` method for every row that arrives,
 # without waiting for the previous batches to finish.
 # When the call is finished, its result is returned to the engine with a new processing time.
 #
-# To write an `AsyncTransformer` you need to inherit from [`pw.AsyncTransformer`](/developers/api-docs/pathway#pathway.AsyncTransformer) and implement the [`invoke` method](/developers/api-docs/pathway#pathway.AsyncTransformer.invoke) (it is a coroutine). The names of the arguments of the method have to be the same as the columns in the input table. You can use additional arguments but then you have to specify their default value (it might be useful if you want to use the same `AsyncTransformer` on multiple Pathway tables with different sets of columns). You have to use all columns from the input table. The order of columns/arguments doesn't matter as they are passed to the method as keyword arguments.
+# To write an `AsyncTransformer` you need to inherit from [`pw.AsyncTransformer`](/developers/api-docs/pathway#pathway.AsyncTransformer) and implement the [`invoke` method](/developers/api-docs/pathway#pathway.AsyncTransformer.invoke) (it is a coroutine). The names of the arguments of the method have to be the same as the columns in the input table. You can use additional arguments but then you have to specify their default value (it might be useful if you want to use the same `AsyncTransformer` on multiple Pathway Live Data Framework tables with different sets of columns). You have to use all columns from the input table. The order of columns/arguments doesn't matter as they are passed to the method as keyword arguments.
 #
 # You also need to define the schema of a table that is produced. The `invoke` method has to return a dictionary containing values to put in all columns of the output table. The keys in the dictionary has to match fields from the output schema.
 # Let's create a simple `AsyncTransformer` that produces a Table with two output columns - `value` and `ret`.
@@ -301,7 +301,7 @@ pw.debug.compute_and_print_update_stream(result)
 # %% [markdown]
 # ## Conclusions
 # In this guide, you've learned how to create your own `AsyncTransformer`
-# when you need to process the data asynchronously in Pathway.
+# when you need to process the data asynchronously in Pathway Live Data Framework.
 # You know how to control its behavior by setting parameters like `timeout`, `cache_strategy` and `retry_strategy`.
 # You can control the tradeoff between the speed and the consistency of the results.
 #

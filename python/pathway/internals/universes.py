@@ -11,9 +11,9 @@ if TYPE_CHECKING:
 
 
 def promise_are_pairwise_disjoint(self: TableLike, *others: TableLike) -> None:
-    """Asserts to Pathway that an universe of self is a subset of universe of each of the others.
+    """Asserts to Pathway Live Data Framework that an universe of self is a subset of universe of each of the others.
 
-    Semantics: Used in situations where Pathway cannot deduce universes are disjoint.
+    Semantics: Used in situations where the Pathway Live Data Framework cannot deduce universes are disjoint.
 
     Returns: None
 
@@ -47,9 +47,11 @@ def promise_are_pairwise_disjoint(self: TableLike, *others: TableLike) -> None:
 
 
 def promise_is_subset_of(self: TableLike, *others: TableLike) -> None:
-    """Asserts to Pathway that an universe of self is a subset of universe of each of the others.
+    """Asserts to the Pathway Live Data Framework that an universe of self is a subset of
+    universe of each of the others.
 
-    Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
+    Semantics: Used in situations where the Pathway Live Data Framework cannot deduce one
+    universe being a subset of another.
 
     Returns: None
 
@@ -81,9 +83,11 @@ def promise_is_subset_of(self: TableLike, *others: TableLike) -> None:
 
 
 def promise_are_equal(self: TableLike, *others: TableLike) -> None:
-    r"""Asserts to Pathway that an universe of self is equal to each of the others universes.
+    r"""Asserts to the Pathway Live Data Framework that an universe of self is equal to each of
+    the others universes.
 
-    Semantics: Used in situations where Pathway cannot deduce one universe being equal to another universe.
+    Semantics: Used in situations where the Pathway Live Data Framework cannot deduce one
+    universe being equal to another universe.
 
     Returns: None
 

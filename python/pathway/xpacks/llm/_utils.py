@@ -73,14 +73,14 @@ def _extract_value_inside_dict(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _unwrap_udf(func: pw.UDF | Callable) -> Callable:
-    """Turn a Pathway UDF function into regular callable function."""
+    """Turn a Pathway Live Data Framework UDF function into regular callable function."""
     if isinstance(func, pw.UDF):
         return func.func  # use settings applied to a UDF
     return func
 
 
 def _wrap_udf(func: pw.UDF | Callable) -> pw.UDF:
-    """Wrap a callable function into Pathway UDF."""
+    """Wrap a callable function into Pathway Live Data Framework UDF."""
     if isinstance(func, pw.UDF):
         return func
     return pw.udf(func)

@@ -57,7 +57,7 @@ def read(
             ``"json"``.
         autocommit_duration_ms: The time interval (in milliseconds) between commits.
             After this time, the updates received by the connector are committed and
-            added to Pathway's computation graph. Please note that it has to be a not-None
+            added to Pathway Live Data Framework's computation graph. Please note that it has to be a not-None
             value in this connector.
         json_field_paths: For the ``"json"`` format, this allows mapping field names to
             paths within the JSON structure. Use the format ``<field_name>: <path>``
@@ -127,16 +127,16 @@ def read(
     ...     Data="Hello, world!".encode("utf-8"),
     ... )
 
-    Finally, you have a stream with data. You can now read it using the Pathway connector:
+    Finally, you have a stream with data. You can now read it using the Pathway Live Data Framework connector:
 
     >>> import pathway as pw
     >>> table = pw.io.kinesis.read("testing", format="plaintext")
 
-    Here you first import Pathway, then read the Kinesis stream.
+    Here you first import the Pathway Live Data Framework, then read the Kinesis stream.
     The ``"plaintext"`` format decodes UTF-8 so the text ``"Hello, world!"`` can be
     viewed as plain text.
 
-    Finally, write the row to a file using a Pathway output connector, for example JSONLines:
+    Finally, write the row to a file using a Pathway Live Data Framework output connector, for example JSONLines:
 
     >>> pw.io.jsonlines.write(table, "output.jsonl")
 
@@ -206,7 +206,7 @@ def write(
             of a single column of the string type, or the reference to the target string column
             must be specified explicitly in the ``data`` parameter.
         partition_key: Reference to the column used as the partition key in the produced message.
-            It can have any data type, because if it is not a string, Pathway will obtain its
+            It can have any data type, because if it is not a string, the Pathway Live Data Framework will obtain its
             string representation and use that value. Note that the maximum length of a partition key
             in Kinesis is 256 bytes. If the key is not specified, internal row key will be used.
         data: Reference to the column that should be used as data in the produced message in
@@ -267,7 +267,7 @@ def write(
     >>> client.create_stream(StreamName="testing", ShardCount=1)  # doctest: +SKIP
 
     The stream is now ready and you can send messages to it with this connector.
-    First, import Pathway and create a static table with sample data.
+    First, import the Pathway Live Data Framework and create a static table with sample data.
     The code would look like this:
 
     >>> import pathway as pw
@@ -332,7 +332,7 @@ def write(
     Partition key: 2; Value: b'two'
     Partition key: 3; Value: b'three'
 
-    You could also read these messages using the Pathway Kinesis input connector. Then,
+    You could also read these messages using the Pathway Live Data Framework Kinesis input connector. Then,
     the reading code would look like this:
 
     >>> reread_table = pw.io.kinesis.read("testing", format="plaintext")

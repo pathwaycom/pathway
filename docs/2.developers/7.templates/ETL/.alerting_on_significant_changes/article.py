@@ -25,7 +25,7 @@
 # %% [markdown]
 # # Smart real-time monitoring application with alert deduplication
 #
-# In many monitoring environments, especially those dealing with complex systems, it's common for multiple alerts to be triggered for the same underlying issue. This creates the necessity for alert deduplication, with rules matching specific business needs. In this tutorial we will show how to design and implement such deduplication mechanism in Pathway handling real-time streaming data.
+# In many monitoring environments, especially those dealing with complex systems, it's common for multiple alerts to be triggered for the same underlying issue. This creates the necessity for alert deduplication, with rules matching specific business needs. In this tutorial we will show how to design and implement such deduplication mechanism in Pathway Live Data Framework handling real-time streaming data.
 #
 # For the sake of this tutorial, let's assume we observe a simple stream of floating-point values and our business rule is to notify only whenever the maximal observed value is 30% larger than the previously alerted value.
 #
@@ -70,7 +70,7 @@ plt.plot(x, y)
 plt.show()
 
 # %% [markdown]
-# Great! The rule mentioned at the beginning should discover the peaks in this data. Let's see how to use Pathway to create an alerting application notifying us about these peaks.
+# Great! The rule mentioned at the beginning should discover the peaks in this data. Let's see how to use the Pathway Live Data Framework to create an alerting application notifying us about these peaks.
 #
 
 # %% [markdown]
@@ -122,7 +122,7 @@ def accept_larger_max(new_max: float, prev_max: float) -> bool:
 
 
 # %% [markdown]
-# All you have to do now is to use the `pw.stateful.deduplicate` function to tell Pathway to use your newly defined rule. New values pushed by the stream to the `col` column will be compared to the previously accepted value using the `acceptor` function which we just wrote. Pathway will keep the needed state (i.e. previously accepted value) and perform all the necessary updates for you.
+# All you have to do now is to use the `pw.stateful.deduplicate` function to tell the Pathway Live Data Framework to use your newly defined rule. New values pushed by the stream to the `col` column will be compared to the previously accepted value using the `acceptor` function which we just wrote. The Pathway Live Data Framework will keep the needed state (i.e. previously accepted value) and perform all the necessary updates for you.
 
 # %%
 result = pw.stateful.deduplicate(reduced, col=reduced.value, acceptor=accept_larger_max)

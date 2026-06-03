@@ -1,6 +1,6 @@
 # ---
 # title: User-defined Functions
-# description: An article exploring concepts related to user defined functions in Pathway.
+# description: An article exploring concepts related to user defined functions in Pathway Live Data Framework.
 # date: '2024-02-21'
 # thumbnail: ''
 # tags: ['tutorial', 'engineering']
@@ -9,10 +9,10 @@
 # ---
 
 # %% [markdown]
-# # User-defined Functions (UDFs) in Pathway
-# Pathway supports a wide range of expressions that allow you to operate on individual rows. <!-- TODO: link article when done -->
+# # User-defined Functions (UDFs) in Pathway Live Data Framework
+# Pathway Live Data Framework supports a wide range of expressions that allow you to operate on individual rows. <!-- TODO: link article when done -->
 # However, not all operations can be expressed that way.
-# To address this problem, Pathway allows you to write a user-defined function (UDF) in Python.
+# To address this problem, Pathway Live Data Framework allows you to write a user-defined function (UDF) in Python.
 # Such function is then applied to each row of your data individually in the same way as the predefined expressions.
 # UDFs can be customized in various ways and all of them are explored in this guide.
 #
@@ -32,7 +32,7 @@ def inc(x: int) -> int:
 
 # %% [markdown]
 # and that's everything you need.
-# Now you can use it as an ordinary Pathway expression, as in the example shown below.
+# Now you can use it as an ordinary Pathway Live Data Framework expression, as in the example shown below.
 # %%
 table = pw.debug.table_from_markdown(
     """
@@ -72,7 +72,7 @@ print(result_2.schema)
 
 # %% [markdown]
 # In this case, it is also set correctly.
-# If a UDF is not annotated and the `return_type` is not set, Pathway can't determine the return type of the column and sets it as `Any`.
+# If a UDF is not annotated and the `return_type` is not set, Pathway Live Data Framework can't determine the return type of the column and sets it as `Any`.
 # It is an undesirable situation as many expressions can't be called on columns of type `Any`.
 # For example, you can't add a column with type `Any` to a column of type `int` (you also can't add `Any` to `Any`), but you can add a column of type `int` to a column of type `int`.
 # %%
@@ -100,14 +100,14 @@ print(result_4.schema)
 
 # %% [markdown]
 # *Remark:* to keep the examples as simple as possible, the code pieces in this guide use `table_from_markdown` to define the example tables and `compute_and_print` to run the computations.
-# Those functions use Pathway in the static mode.
-# However, Pathway is a streaming data processing system and can work on dynamically changing data.
-# See [Pathway modes](/developers/user-guide/introduction/streaming-and-static-modes) for more info on this topic.
+# Those functions use Pathway Live Data Framework in the static mode.
+# However, Pathway Live Data Framework is a streaming data processing system and can work on dynamically changing data.
+# See [Pathway Live Data Framework modes](/developers/user-guide/introduction/streaming-and-static-modes) for more info on this topic.
 #
 # Also note that the `inc` function is only present in this guide for demonstration purposes.
-# It is possible to get the same result using Pathway native operations and this is the recommended way as then the computations are performed in Rust, not Python.
+# It is possible to get the same result using Pathway Live Data Framework native operations and this is the recommended way as then the computations are performed in Rust, not Python.
 #
-# The UDFs are useful for more complicated solutions that cannot be fully expressed in Pathway but the functions in the guide are kept simple to focus on UDFs usage and configuration options.
+# The UDFs are useful for more complicated solutions that cannot be fully expressed in Pathway Live Data Framework but the functions in the guide are kept simple to focus on UDFs usage and configuration options.
 
 # %%
 result_5 = table.with_columns(value_inc=table.value + 1)
@@ -160,10 +160,10 @@ pw.debug.compute_and_print(result)
 
 # %% [markdown]
 # ## Propagating Nones
-# By default, Pathway UDFs are called on all rows, however it may not always be desired.
+# By default, Pathway Live Data Framework UDFs are called on all rows, however it may not always be desired.
 # In particular, if you have a function that requires values to be non-optional but your data has some missing entries, you may want to return `None` immediately instead of calling a function.
-# In Pathway, you can enable such mechanism with the `propagate_none` parameter of `pw.udf`.
-# By default, it is set to `False`. Setting it  to `True` makes Pathway to look at the inputs of the UDF, and if at least one of the arguments is `None`, then the function is not called, and `None` is returned instead.
+# In Pathway Live Data Framework, you can enable such mechanism with the `propagate_none` parameter of `pw.udf`.
+# By default, it is set to `False`. Setting it  to `True` makes Pathway Live Data Framework to look at the inputs of the UDF, and if at least one of the arguments is `None`, then the function is not called, and `None` is returned instead.
 
 # %%
 table = pw.debug.table_from_markdown(
@@ -190,16 +190,16 @@ pw.debug.compute_and_print(result)
 
 # %% [markdown]
 # ## Determinism
-# Pathway assumes that a UDF is not deterministic unless told otherwise.
+# Pathway Live Data Framework assumes that a UDF is not deterministic unless told otherwise.
 # In this context, being deterministic means that the function always returns the same value for the same arguments.
-# Pathway requires this information for consistency reasons.
+# Pathway Live Data Framework requires this information for consistency reasons.
 # If you're sure that your function is deterministic, you can set `deterministic=True` as it usually improves the speed and memory requirements of the computation.
 # However sometimes the function may be nondeterministic in a non-obvious way. For example, some linear algebra operations on floating point numbers that use multithreading under the hood can return slightly different results across runs. Such functions are not deterministic.
 # If this explanation is enough for you, feel free to skip to the next section.
-# If you want to learn more about how Pathway handles non-deterministic functions, dive in.
+# If you want to learn more about how Pathway Live Data Framework handles non-deterministic functions, dive in.
 #
 # To maintain consistency, it'll memoize the result of a UDF call until the corresponding input row is deleted.
-# Being able to produce deleting rows is the reason why Pathway has to store the results of UDFs.
+# Being able to produce deleting rows is the reason why Pathway Live Data Framework has to store the results of UDFs.
 # The values in the inserted and deleted entries have to be the same so that they can cancel out.
 # If a UDF is non-deterministic, it can produce a different value and the entries can't cancel out as they are not equal.
 # To get the same values at row deletion as at insertion, the results have to be remembered.
@@ -211,7 +211,7 @@ pw.debug.compute_and_print(result)
 #
 # If the function is slow, setting `deterministic=False` might result in a faster execution, but it's not recommended if the function is deterministic. It's better to use [caching](#caching).
 # Caching can help with slow functions even if you call the function with each argument only once.
-# It because Pathway has to evaluate the function also on deletion and when it is cached, the value can be taken from cache instead of evaluating it.
+# It because Pathway Live Data Framework has to evaluate the function also on deletion and when it is cached, the value can be taken from cache instead of evaluating it.
 #
 # Let's see the effects of `deterministic` parameter in practice. To do that, let's simulate a stream.
 # It contains special columns: `id` that sets the id of the row (a deletion has to have the same `id` as the insertion it removes),
@@ -247,7 +247,7 @@ pw.debug.compute_and_print(result_default)
 # As you can see from the printed messages, the function is called three times.
 # It is because the function was not called on deletion.
 #
-# This time, let's tell Pathway that the function is deterministic.
+# This time, let's tell Pathway Live Data Framework that the function is deterministic.
 
 
 # %%
@@ -271,7 +271,7 @@ pw.debug.compute_and_print(result_default)
 # UDFs are Python functions so you can capture non-local variables and modify them inside the functions.
 # From the UDF it is also possible to call external services and modify their state.
 # This is, however, strongly discouraged.
-# There's no guarantee that Pathway will run a UDF exactly once for each row.
+# There's no guarantee that the Pathway Live Data Framework will run a UDF exactly once for each row.
 # If the function is non-deterministic it might not always be called (see above).
 # Also if caching is set, the functions will be called less frequently.
 #
@@ -366,13 +366,13 @@ pw.run(persistence_config=persistence_config)
 
 # %% [markdown]
 # ## Asynchronous UDFs
-# By default, Pathway UDFs are synchronous and blocking.
+# By default, Pathway Live Data Framework UDFs are synchronous and blocking.
 # If one worker is used, only one UDF call is active at a time and it has to finish for the next UDF call to start.
 # If more workers are used, the maximal number of UDFs that have started and haven't finished is equal to the number of workers.
 # It is a good situation for CPU bound tasks.
-# If you want, however, to execute I/O bound tasks, like calling external services, it is better to have more than one task started per worker. Pathway provides asynchronous UDFs for it.
+# If you want, however, to execute I/O bound tasks, like calling external services, it is better to have more than one task started per worker. Pathway Live Data Framework provides asynchronous UDFs for it.
 #
-# Asynchronous UDFs can be defined in Pathway using [Python coroutines](https://docs.python.org/3/library/asyncio-task.html#id2) with the `async`/`await` keywords.
+# Asynchronous UDFs can be defined in Pathway Live Data Framework using [Python coroutines](https://docs.python.org/3/library/asyncio-task.html#id2) with the `async`/`await` keywords.
 # The asynchronous UDFs are asynchronous *within a single batch*.
 # In this context, we define a batch as all entries with equal processing times assigned.
 # The UDFs are started for all entries in the batch and the execution of further batches is blocked until all UDFs for a given batch have finished.
@@ -540,7 +540,7 @@ pw.debug.compute_and_print(result)
 
 # %% [markdown]
 # ## Batch UDFs
-# Pathway's UDFs, unless otherwise specified, are computed for each row separately.
+# Pathway Live Data Framework's UDFs, unless otherwise specified, are computed for each row separately.
 # Sometimes, however, it makes sense to compute value of a UDF for multiple rows at once for performance reasons - e.g. if UDF for each row multiplies a fixed matrix by a vector, it is faster to combine the vectors from one batch into a matrix and compute one matrix multiplication.
 # Another example when to use them would be for calculating embeddings locally - these are faster to compute in batch and were the reason we introduced the batch UDFs.
 #
@@ -625,7 +625,7 @@ pw.debug.compute_and_print(result)
 
 # %% [markdown]
 # ## Conclusions
-# In this guide, you've learned how to define Python functions (UDFs) to process data in Pathway.
+# In this guide, you've learned how to define Python functions (UDFs) to process data in Pathway Live Data Framework.
 # The functions process a single row in a single call.
 # It is possible to define the behavior of the functions by using UDF's parameters,
 # like `deterministic`, `propagate_none`, `cache_strategy`, `executor`, etc.

@@ -31,7 +31,7 @@ def run(
             pathway.MonitoringLevel.ALL. If unset, pathway will choose between
             NONE and IN_OUT based on output interactivity.
         with_http_server: whether to start a http server with runtime metrics. [will be deprecated soon]
-            Learn more about Pathway monitoring in a
+            Learn more about Pathway Live Data Framework monitoring in a
             `tutorial </developers/user-guide/deployment/pathway-monitoring/>`_ .
         default_logging: whether to allow pathway to set its own logging handler. Set
             it to False if you want to set your own logging handler.
@@ -84,7 +84,7 @@ def run_all(
             pathway.MonitoringLevel.ALL. If unset, pathway will choose between
             NONE and IN_OUT based on output interactivity.
         with_http_server: whether to start a http server with runtime metrics. [will be deprecated soon]
-            Learn more about Pathway monitoring in a
+            Learn more about Pathway Live Data Framework monitoring in a
             `tutorial </developers/user-guide/deployment/pathway-monitoring/>`_ .
         default_logging: whether to allow pathway to set its own logging handler. Set
             it to False if you want to set your own logging handler.

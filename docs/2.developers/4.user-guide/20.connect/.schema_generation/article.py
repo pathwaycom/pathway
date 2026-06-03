@@ -9,14 +9,14 @@
 # notebook_export_path: notebooks/tutorials/schema-generation.ipynb
 # ---
 
-# # Automatic Generation of Schema in Pathway
+# # Automatic Generation of Schema in Pathway Live Data Framework
 #
 # In this article, you will learn how to easily generate Schemas, which are used to define the
-# structure of a Pathway Table.
+# structure of a Pathway Live Data Framework Table.
 
 
-# In Pathway, Schemas are used to define the structure of a Table, that is, names and types
-# of columns. To learn the basics of Schemas in Pathway, and how you can create them by writing
+# In Pathway Live Data Framework, Schemas are used to define the structure of a Table, that is, names and types
+# of columns. To learn the basics of Schemas in Pathway Live Data Framework, and how you can create them by writing
 # a class definition in Python, read our [user guide](/developers/user-guide/connect/schema).
 # In this tutorial, you will learn alternative ways to create Schemas, either by providing a dictionary of column definitions or sample input data in CSV format.
 
@@ -29,9 +29,9 @@
 
 # ## Schema generation from JSON
 #
-# In Pathway, you can build a Schema from a dictionary using the
+# In Pathway Live Data Framework, you can build a Schema from a dictionary using the
 # [schema_builder function](/developers/user-guide/connect/schema#schema-as-a-dictionary), described in our user guide.
-# The values in the dictionary given as an input to `pw.schema_builder`, however, are instances of `pw.column_definition`, which has some limitations, e.g. they can't be easily serialized in a JSON file. For this purpose, in Pathway there is a `pw.schema_from_dict` function, which takes
+# The values in the dictionary given as an input to `pw.schema_builder`, however, are instances of `pw.column_definition`, which has some limitations, e.g. they can't be easily serialized in a JSON file. For this purpose, in Pathway Live Data Framework there is a `pw.schema_from_dict` function, which takes
 # as an input a dictionary whose keys are names of the columns, and values are either:
 # - type of a column
 # - a dictionary with keys "dtype", "primary_key", "default_value", which define respectively the type of the column, whether it is a primary key of the Table, and what is its default value.
@@ -77,7 +77,7 @@ schema, schema.primary_key_columns(), schema.default_values()
 
 # ## Schema generation from data in a CSV file
 #
-# If you have a CSV file with sample data, you can use it to generate a schema in Pathway. The name of columns will be taken from the header of the CSV file, whereas types of columns are inferred by checking if values in the given column can be parsed to int or float. This method of Schema generation does not support choosing primary keys or setting default values. Still, once you generate a Schema, you can generate a class definition using the method described later in this tutorial and then edit it to suit your needs.
+# If you have a CSV file with sample data, you can use it to generate a schema in Pathway Live Data Framework. The name of columns will be taken from the header of the CSV file, whereas types of columns are inferred by checking if values in the given column can be parsed to int or float. This method of Schema generation does not support choosing primary keys or setting default values. Still, once you generate a Schema, you can generate a class definition using the method described later in this tutorial and then edit it to suit your needs.
 #
 # To generate a Schema based on a CSV file, use a `pw.schema_from_csv` function. To see how it works, you will use the following example data in CSV format:
 # ```csv

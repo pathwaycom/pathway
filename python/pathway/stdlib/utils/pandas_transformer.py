@@ -135,7 +135,7 @@ def pandas_transformer(
         output_universe: Index or name of an argument whose universe will be used \
         in resulting table. Defaults to `None`.
     Returns:
-        Transformer that can be applied on Pathway tables.
+        Transformer that can be applied on Pathway Live Data Framework tables.
 
 
     Example:

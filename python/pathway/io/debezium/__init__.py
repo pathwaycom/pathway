@@ -28,7 +28,7 @@ def read(
 ) -> Table:
     """
     Connector, which takes a topic in the format of Debezium
-    and maintains a corresponding table in Pathway, on which you can do all the
+    and maintains a corresponding table in Pathway Live Data Framework, on which you can do all the
     table operations provided. In order to do that, you will need a Debezium connector.
 
     Args:
@@ -40,7 +40,7 @@ def read(
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -55,7 +55,7 @@ def read(
     Example:
 
     Consider there is a need to stream a database table along with its changes directly into
-    the Pathway engine. One of the standard well-known solutions for table streaming is
+    the Pathway Live Data Framework engine. One of the standard well-known solutions for table streaming is
     `Debezium <https://debezium.io/>`_:
     it supports streaming data from MySQL, Postgres, MongoDB and a few more databases directly to a
     topic in Kafka. The streaming first sends a snapshot of the data and then streams

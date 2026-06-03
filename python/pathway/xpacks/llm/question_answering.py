@@ -442,7 +442,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     """
     Builds the logic and the API for basic RAG application.
 
-    Base class to build RAG app with Pathway vector store and Pathway components.
+    Base class to build RAG app with Pathway Live Data Framework vector store and Pathway Live Data Framework components.
     Allows for LLM agnosticity with freedom to choose from proprietary or open-source LLMs.
 
     Args:
@@ -819,7 +819,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
     """
     Builds the logic and the API for adaptive RAG application.
 
-    It allows to build a RAG app with Pathway vector store and Pathway components.
+    It allows to build a RAG app with Pathway Live Data Framework vector store and Pathway Live Data Framework components.
     Gives the freedom to choose between two question answering strategies,
     short (concise), and long (detailed) response, that can be set during the post request.
     Allows for LLM agnosticity with freedom to choose from proprietary or open-source LLMs.
@@ -1068,7 +1068,7 @@ def send_post_request(
 
 class RAGClient:
     """
-    Connector for interacting with the Pathway RAG applications.
+    Connector for interacting with the Pathway Live Data Framework RAG applications.
     Either (`host` and `port`) or `url` must be set.
 
     Args:

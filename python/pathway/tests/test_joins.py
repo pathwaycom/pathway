@@ -133,8 +133,8 @@ def test_left_join_015():
     )
 
     res = t1.join_left(t2, t1.a == t2.c).select(
-        a=t2.c  # pw.require(t1.a + t2.c, t2.id),
-    )
+        a=t2.c
+    )  # pw.require(t1.a + t2.c, t2.id),
     assert_table_equality_wo_index(res, expected)
 
 

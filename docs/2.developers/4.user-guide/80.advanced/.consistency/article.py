@@ -1,6 +1,6 @@
 # ---
 # title: 'Data Model Consistency'
-# description: 'Computations in Pathway are expressed as if static data were loaded into the system. Pathway delivers consistent results by explicitly reasoning about time: every processed input message bears a timestamp, and each output message specifies exactly for which input times it was computed.'
+# description: 'Computations in Pathway Live Data Framework are expressed as if static data were loaded into the system. Pathway Live Data Framework delivers consistent results by explicitly reasoning about time: every processed input message bears a timestamp, and each output message specifies exactly for which input times it was computed.'
 # notebook_export_path: notebooks/tutorials/consistency.ipynb
 # jupyter:
 #   jupytext:
@@ -17,9 +17,9 @@
 # ---
 
 # %% [markdown]
-# # Consistency of the Pathway Data Model
+# # Consistency of the Pathway Live Data Framework Data Model
 #
-# Computations in Pathway are expressed as if static data were loaded into the system. When streaming changes, Pathway produces inputs consistent with the state of all inputs at a given point in time.
+# Computations in Pathway Live Data Framework are expressed as if static data were loaded into the system. When streaming changes, Pathway Live Data Framework produces inputs consistent with the state of all inputs at a given point in time.
 #
 # Pathway delivers consistent results by explicitly reasoning about time: every processed input message bears a timestamp, and each output message specifies exactly for which input times it was computed. In other words, each output produced by Pathway is the final answer that would have been given if all sources were read up to the indicated cutoff times, and the computation was carried in entirety. No intermediate results are shown. Updates to the outputs will be sent only when new data is input into the system.
 #
@@ -33,8 +33,8 @@
 # However, processing event-packs is complex, and logic is much easier if the event-pack stream is unpacked into a single message stream (e.g., we can then group events by account and compute the balances).
 
 # Since Kafka only guarantees the atomic processing of single messages, consistency is lost once the event-packs are flattened into a stream of individual events.
-# On the other hand, Pathway guarantees consistency.
-# If a Pathway computation unpacks the event-pack into individual events, all messages that form a transaction will be consistently processed, ensuring that every produced output depends on either all or no events that were grouped together into a single event-pack.
+# On the other hand, Pathway Live Data Framework guarantees consistency.
+# If a Pathway Live Data Framework computation unpacks the event-pack into individual events, all messages that form a transaction will be consistently processed, ensuring that every produced output depends on either all or no events that were grouped together into a single event-pack.
 #
 # Let’s simulate such a scenario by implementing a simple connector.
 
@@ -102,7 +102,7 @@ debits = (
 )
 # %% [markdown]
 #
-# Events from the same transactions have been divided into independent streams. However, this doesn't imply a loss of consistency. Pathway's secret sauce lies in keeping everything consistent across dataflow nodes.
+# Events from the same transactions have been divided into independent streams. However, this doesn't imply a loss of consistency. Pathway Live Data Framework's secret sauce lies in keeping everything consistent across dataflow nodes.
 # To illustrate this fact, let's calculate the balance for each account.
 
 # %%
@@ -166,12 +166,12 @@ pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 # _MD_SHOW_pw.run()
 
 # %% [markdown]
-# You can observe that Pathway processed all the events intended to be simultaneous at the same time, and the sum of operations always equals 0.
+# You can observe that the Pathway Live Data Framework processed all the events intended to be simultaneous at the same time, and the sum of operations always equals 0.
 #
 # ## Persistency guarantees
 #
-# Pathway persists intermediate results recording the state of inputs with each saved datum. When restarted from a checkpoint, the saved state is loaded into memory first. Then all inputs are replayed starting at times recorded in the checkpoint. To avoid data loss, all streaming inputs should be buffered into a persistent message queue which allows multiple reads to recent items, such as a topic in Apache Kafka.
+# Pathway Live Data Framework persists intermediate results recording the state of inputs with each saved datum. When restarted from a checkpoint, the saved state is loaded into memory first. Then all inputs are replayed starting at times recorded in the checkpoint. To avoid data loss, all streaming inputs should be buffered into a persistent message queue which allows multiple reads to recent items, such as a topic in Apache Kafka.
 #
-# Pathway gives "at least once" output data delivery guarantee for the data output in the different runs. More precisely, if some of the lines were outputted to a data sink in a non-closed Pathway's data batch, these output lines may appear on the output after the program has been re-run.
+# Pathway Live Data Framework gives "at least once" output data delivery guarantee for the data output in the different runs. More precisely, if some of the lines were outputted to a data sink in a non-closed Pathway Live Data Framework's data batch, these output lines may appear on the output after the program has been re-run.
 #
 # The enterprise version of Pathway supports "exactly once" message delivery on selected combinations of input and output connectors which enable the use of the 2-phase commit protocol.

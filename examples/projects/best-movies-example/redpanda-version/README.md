@@ -1,11 +1,11 @@
 # Best-rated movies example - Redpanda version
 
-In this project, you build an end-to-end application with Pathway to compute the K-best-rated items in a movie dataset.
+In this project, you build an end-to-end application with Pathway Live Data Framework to compute the K-best-rated items in a movie dataset.
 
 The project is organized as followed:
  - a streaming platform: Redpanda
  - a Python container creating the stream from a static CSV file and sending it to Redpanda
- - a Python container computing the K-best-rated items using Pathway
+ - a Python container computing the K-best-rated items using the Pathway Live Data Framework
 
 The different containers are managed via docker-compose.
 
@@ -16,7 +16,7 @@ we encourage you to test it on the entire dataset.
 
 You can launch the project using `docker compose up -d` or using the make file.
 
-To access the Pathway's container and check the results:
+To access the Pathway Live Data Framework's container and check the results:
  - connect to the container with `make connect` (or `docker compose exec -it pathway bash`)
  - print the file `cat best_ratings.csv`
 

@@ -1,9 +1,10 @@
 # Copyright © 2026 Pathway
 
-"""Pathway demo module
+"""Pathway Live Data Framework demo module
 
 This module allows you to create custom data streams from scratch or by utilizing a CSV file.
-This feature empowers you to effectively test and debug your Pathway implementation using realtime data.
+This feature empowers you to effectively test and debug your Pathway Live Data Framework
+implementation using realtime data.
 
 Typical use:
 
@@ -52,7 +53,7 @@ types (``pw.Type``) of the values of those columns. This parameter is optional, 
 provided the default type is ``pw.Type.ANY``.
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
-          committed and pushed into Pathway's computation graph.
+          committed and pushed into Pathway Live Data Framework's computation graph.
         input_rate: The rate at which rows are generated per second. Defaults to 1.0.
 
     Returns:
@@ -176,7 +177,7 @@ def range_stream(
         input_rate (float, optional): The rate at which rows are generated per second. Defaults to 1.0.
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
-          committed and pushed into Pathway's computation graph.
+          committed and pushed into Pathway Live Data Framework's computation graph.
 
     Returns:
         pw.Table: a table containing the generated data stream.
@@ -221,7 +222,7 @@ def replay_csv(
         schema: Schema of the resulting table.
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         input_rate (float, optional): The rate at which rows are read per second. Defaults to 1.0.
 
     Returns:
@@ -273,7 +274,7 @@ def replay_csv_with_time(
         unit: Unit of the timestamps. Only 's', 'ms', 'us', and 'ns' are supported. Defaults to 's'.
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
-          committed and pushed into Pathway's computation graph.
+          committed and pushed into Pathway Live Data Framework's computation graph.
         speedup: Produce stream `speedup` times faster than it would result from the time column.
 
     Returns:

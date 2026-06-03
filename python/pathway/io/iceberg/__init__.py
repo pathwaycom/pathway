@@ -115,7 +115,7 @@ def read(
     """
     Reads a table from Apache Iceberg. In ``"streaming"`` mode the connector polls
     the catalog for new snapshots and reflects the diff between the previous and
-    new snapshot's **data files** in the Pathway table: files added to the new
+    new snapshot's **data files** in the Pathway Live Data Framework table: files added to the new
     plan become row additions, files removed from it become row deletions. Note
     that this is a file-level diff — Iceberg V2 row-level delete files (positional
     or equality deletes added alongside the same data files) are not separately
@@ -142,7 +142,7 @@ def read(
             of it in one commit. The default value is ``"streaming"``.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -159,7 +159,7 @@ def read(
 
     Consider a users data table stored in the Iceberg storage. The table is located in the
     ``app`` namespace and is named ``users``. The catalog URI is ``http://localhost:8181``.
-    Below is an example of how to read this table into Pathway.
+    Below is an example of how to read this table into the Pathway Live Data Framework.
 
     First, the schema of the table needs to be created. The schema doesn't have to contain
     all the columns of the table, you can only specify the ones that are needed for the

@@ -219,8 +219,11 @@ class McpServer(PathwayServer):
         async def wrapper(*args, **kwargs):
             return await handler(*args, **kwargs)
 
-        wrapper.__signature__, wrapper.__annotations__ = (  # type:ignore[attr-defined]
-            _generate_handler_signature(schema)
+        (
+            wrapper.__signature__,
+            wrapper.__annotations__,
+        ) = _generate_handler_signature(  # type:ignore[attr-defined]
+            schema
         )
 
         self._fastmcp.tool(

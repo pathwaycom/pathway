@@ -73,7 +73,7 @@ def read(
     restart it skips the full table snapshot and resumes from that LSN, so
     downstream sees only the rows that changed since the last checkpoint — no
     re-delivery of the original table contents.  Passing an explicit ``name``
-    is optional — Pathway will auto-generate one if omitted — but setting it
+    is optional — Pathway Live Data Framework will auto-generate one if omitted — but setting it
     makes the saved state easier to identify in the persistence directory and
     protects against accidental mismatches when the pipeline graph changes
     between runs.
@@ -114,7 +114,7 @@ def read(
             ``"dbo"``, which is the default schema in MSSQL.
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
         max_backlog_size: Limit on the number of entries read from the input source and kept

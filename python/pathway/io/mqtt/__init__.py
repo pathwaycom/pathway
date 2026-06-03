@@ -58,7 +58,7 @@ def read(
             ``"json"``.
         autocommit_duration_ms: The time interval (in milliseconds) between commits.
             After this time, the updates received by the connector are committed and
-            added to Pathway's computation graph.
+            added to Pathway Live Data Framework's computation graph.
         json_field_paths: For the ``"json"`` format, this allows mapping field names to
             paths within the JSON structure. Use the format ``<field_name>: <path>``
             where the path follows the
@@ -82,14 +82,14 @@ def read(
     with the communication port exposed. By default, port ``1883`` is commonly used.
 
     If your MQTT broker is running on ``localhost`` using the default port, you can
-    stream the ``"test/data"`` topic to a Pathway table like this:
+    stream the ``"test/data"`` topic to a Pathway Live Data Framework table like this:
 
     >>> import pathway as pw
     >>> table = pw.io.mqtt.read("mqtt://localhost:1883/?client_id=test", "test/data")
 
     Keep in mind that MQTT does not guarantee message storage. In other words, you cannot
     assume that a message present in the queue will remain there. MQTT also lacks any
-    concept of message offsets within a topic. As a result, when Pathway persistence is enabled,
+    concept of message offsets within a topic. As a result, when Pathway Live Data Framework persistence is enabled,
     it saves the message stream without making assumptions about the topic's state at the time of a
     restart. Therefore, we recommend designing your data flow to tolerate at-least-once or
     at-most-once delivery semantics depending on the configuration.
@@ -125,7 +125,7 @@ def read(
     ... )
 
     As a result, you will have a table with three columns: ``"user_id"``, ``"username"``, and
-    ``"phone"``. The ``"user_id"`` column will also act as the primary key for the Pathway table.
+    ``"phone"``. The ``"user_id"`` column will also act as the primary key for the Pathway Live Data Framework table.
     """
 
     data_storage = api.DataStorage(
@@ -229,7 +229,7 @@ def write(
     Assume you have the MQTT server running locally on the default port, ``1883``. Let's
     explore a few ways to send the contents of a table to the topic ``test/topic`` on this server.
 
-    First, you'll need to create a Pathway table. You can do this using the ``table_from_markdown``
+    First, you'll need to create a Pathway Live Data Framework table. You can do this using the ``table_from_markdown``
     method to set up a test table with information about pets and their owners.
 
     >>> import pathway as pw

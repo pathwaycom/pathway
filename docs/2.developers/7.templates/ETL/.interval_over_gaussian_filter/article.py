@@ -1,6 +1,6 @@
 # ---
 # title: 'Gaussian Filtering in Real-time: Signal processing with out-of-order data streams'
-# description: 'Tutorial on signal processing: how to apply a Gaussian filter with Pathway using windowby and intervals_over'
+# description: 'Tutorial on signal processing: how to apply a Gaussian filter with Pathway Live Data Framework using windowby and intervals_over'
 # notebook_export_path: notebooks/tutorials/gaussian-filtering-python.ipynb
 # author: 'olivier'
 # aside: true
@@ -22,28 +22,28 @@
 # The tutorial will walk you through the following 3 steps:
 # 1. Preprocess the noisy data using interval joins;
 # 2. Apply a Gaussian filter to smoothen the signal;
-# 3. Dive deeper into how Pathway handles out-of-order data points.
+# 3. Dive deeper into how the Pathway Live Data Framework handles out-of-order data points.
 #
-# ## Signal Processing with Pathway
+# ## Signal Processing with Pathway Live Data Framework
 #
 # Standard DSP systems do not support the addition of late data points because they assume a perfectly regular sampling. This allows these systems to wait until all signals to arrive before starting the processing computation.
 # But in real-world and real-time settings, these assumptions are rarely guaranteed. Data points may arrive late or, worse, not at all, in which case the computation would never start.
-# Pathway allows you to manipulate streaming data as if it were static, i.e., as if all the data is already gathered.
-# **You don't have to worry about the late or out-of-order data: Pathway will handle it by updating its results whenever late or out-of-order points are added to the system.**
+# The Pathway Live Data Framework allows you to manipulate streaming data as if it were static, i.e., as if all the data is already gathered.
+# **You don't have to worry about the late or out-of-order data: the Pathway Live Data Framework will handle it by updating its results whenever late or out-of-order points are added to the system.**
 #
 # However, you still have to deal with data misalignment.
 # Therefore, **you must consider the signal as a time series**, and data points should be seen as a list of (time, value) pairs rather than an array of regularly sampled values.
-# While the time variable makes signal processing more complex, Pathway offers several functions to make signal processing on realtime data streams as simple as it can be.
+# While the time variable makes signal processing more complex, the Pathway Live Data Framework offers several functions to make signal processing on realtime data streams as simple as it can be.
 #
 # ## Gaussian Filtering in Python: Preprocess the data
 #
 # Because of the out-of-order data points, the use of IIR ([Infinite Impulse Response](https://en.wikipedia.org/w/index.php?title=Infinite_impulse_response&oldid=1079405495)) filters, which depend on the sequential order of data, is impractical as their outputs cannot be efficiently recomputed when late points arrive.
-# Instead, Pathway offers ways to easily implement FIR ([Finite Impulse Response](https://en.wikipedia.org/w/index.php?title=Finite_impulse_response&oldid=1172063361)) filters, where each data point influences the filter's response for a limited duration.
+# Instead, the Pathway Live Data Framework offers ways to easily implement FIR ([Finite Impulse Response](https://en.wikipedia.org/w/index.php?title=Finite_impulse_response&oldid=1172063361)) filters, where each data point influences the filter's response for a limited duration.
 # Consequently, you should primarily employ kernel smoothing techniques to process signals in a manner that accommodates unordered or non-sequential data points, ensuring accurate and efficient analysis.
 #
 # Furthermore, without sample numbers, you cannot rely on a prev/next order among your data points: not only some points may be missing, but there may also be an important temporal gap between two consecutive points.
 # You need to connect your point to other points close in time.
-# To do so, Pathway provides [interval joins](/developers/user-guide/temporal-data/interval-join).
+# To do so, the Pathway Live Data Framework provides [interval joins](/developers/user-guide/temporal-data/interval-join).
 #
 # Interval joins merge records by comparing the timestamp from each record of two tables and evaluating whether the difference falls within a specified time window or `interval`.
 #
@@ -95,7 +95,7 @@
 # ------------------------------
 # ```
 #
-# In Pathway, you can obtain the same results directly using `windowby` with `intervals_over`.
+# In the Pathway Live Data Framework, you can obtain the same results directly using `windowby` with `intervals_over`.
 # Both the `interval_join` and `intervals_over` approach arrive at the same result. The `intervals_over` is preferred in this case because of its compact syntax. We will use the `intervals_over` in this tutorial.
 #
 # ```python
@@ -110,18 +110,18 @@
 # )
 # ```
 #
-# ## 2. Apply Gaussian Filtering with Pathway
+# ## 2. Apply Gaussian Filtering with Pathway Live Data Framework
 #
 # Now that you know how to aggregate the data, let's do some signal processing!
 #
-# Let's start with a simple Gaussian filter in Pathway.
+# Let's start with a simple Gaussian filter in the Pathway Live Data Framework.
 # A Gaussian filter is a linear filter used to reduce the noise of a signal.
 # The filter works by smoothing the signal using a convolution, applying a Gaussian function to a local segment of the signal.
 # I will not delve into details: if you are interested you can check out the [Wikipedia article](https://en.wikipedia.org/w/index.php?title=Gaussian_filter&oldid=1161463896).
 #
 # To apply a Gaussian filter, you first need to aggregate the local segments: each point is associated with its surrounding counterparts.
 # This aggregation is done using an *interval join* in data streaming processing (note: an interval join is usually done on two different data streams, but it is possible to do a self-interval join. See our [tutorial](/developers/user-guide/temporal-data/interval-join) for more info about interval joins).
-# You can easily perform a regular interval join using Pathway with `interval_join`, but in this case you will need to aggregate the points to perform a convolution, so we will use the `windowby` and `intervals_over` syntax we saw earlier.
+# You can easily perform a regular interval join using the Pathway Live Data Framework with `interval_join`, but in this case you will need to aggregate the points to perform a convolution, so we will use the `windowby` and `intervals_over` syntax we saw earlier.
 #
 # Before entering the details, let's generate some data to play with.
 #
@@ -129,7 +129,7 @@
 #
 # For this example, you will work on static data.
 # However, in a real use case, your data source might be a data stream.
-# Fortunately, you won't need to change the code, as Pathway works transparently with static and streaming data: you will only need to update your input connector to connect to your live data.
+# Fortunately, you won't need to change the code, as the Pathway Live Data Framework works transparently with static and streaming data: you will only need to update your input connector to connect to your live data.
 #
 # The raw data needs to be noisy to see the impact of a Gaussian filter.
 # Let's generate noisy data by first generating "perfect data": data ranging from 0 to 10000 for the timestamps, and the values are generated by adding to an increasing trend some periodic patterns.
@@ -181,7 +181,7 @@ plt.plot(x, y)
 plt.show()
 # -
 
-# Now you can convert this data to Pandas and load it to Pathway
+# Now you can convert this data to Pandas and load it to the Pathway Live Data Framework
 
 import pandas as pd
 
@@ -199,7 +199,7 @@ time_series = load_to_pathway(x, y)
 
 time_series.typehints()
 
-# And that's it! Now, let's see how to build and apply a Gaussian filter in Pathway.
+# And that's it! Now, let's see how to build and apply a Gaussian filter in the Pathway Live Data Framework.
 #
 # ### Computing aggregations with `windowby`
 #
@@ -230,7 +230,7 @@ points_within_50 = time_series.windowby(
 # ### Gaussian Filtering in Python as a UDF
 #
 # Now that you have the intervals, you need the Gaussian filter.
-# In Pathway, you can easily define a User-Defined Function (UDF) with the `@pw.udf` annotation.
+# In the Pathway Live Data Framework, you can easily define a User-Defined Function (UDF) with the `@pw.udf` annotation.
 # To perform a Gaussian filter, you need the data points gathered by the `windowby` and the associated time (called `window_location`).
 # The times and the values are kept in separate columns, so we takes two different arrays as input:
 
@@ -290,13 +290,13 @@ plt.show()
 
 # ## Gaussian Filtering in Python: Handling Late and Out-of-Order data points
 #
-# Now that your pipeline is ready, Pathway will manage late and out-of-order points by updating its results whenever new (or late, in this case) data points come into the system.
+# Now that your pipeline is ready, the Pathway Live Data Framework will manage late and out-of-order points by updating its results whenever new (or late, in this case) data points come into the system.
 #
 # But what does it mean exactly? What happens when late points arrive?
 #
 # As a reminder, a standard DSP system will retain the data until all the data is ready to apply the Gaussian filter.
 # **In a streaming system, you cannot afford to wait for data points for an undetermined time: some data points may be lost and never arrive!
-# Pathway computes an output with whatever data is available then and revises the result whenever new data points arrive.**
+# The Pathway Live Data Framework computes an output with whatever data is available then and revises the result whenever new data points arrive.**
 #
 # Let's see the impact on late data points in our example by delaying the arrival of several points.
 #
@@ -433,7 +433,7 @@ results["time"] = results["time"].replace({time_min: new_time, time_max: new_tim
 results.head()
 
 # There are two new columns: `time` and `diff`.
-# The column `time` corresponds to the processing time at which Pathway generated the output, and `diff` represents whether the output was added or removed.
+# The column `time` corresponds to the processing time at which the Pathway Live Data Framework generated the output, and `diff` represents whether the output was added or removed.
 # An update is decomposed in two simultaneous atomic operations: the removal of the last value (`diff==-1`) and the addition of the new one (`diff==1`).
 #
 # Here we have only two batches, so there are only two different values in the column `time`.
@@ -484,7 +484,7 @@ set_params_plot()
 # _MD_COMMENT_END_
 
 # The arrival of late data points has triggered an update of the output: not only the gap has been filled, but existing values have been updated to take into account the incoming data points.
-# Furthermore, the smoothing has been updated only for data points close to the late points: Pathway did not apply the filter to the whole signal from scratch, but only updated the local parts that were impacted by the arrival of the late points.
+# Furthermore, the smoothing has been updated only for data points close to the late points: the Pathway Live Data Framework did not apply the filter to the whole signal from scratch, but only updated the local parts that were impacted by the arrival of the late points.
 #
 # This is the power of Pathway: you can build your pipeline as if the data were static, and Pathway will take care of the late and out-of-order data for you.
 # **Your results will always be up-to-date compared to the latest available data points.**
@@ -492,7 +492,7 @@ set_params_plot()
 # ## Gaussian Filtering in Python: Conclusion
 #
 # Signal processing is a fundamental tool for extracting meaningful insights from data, but signal processing on real-world data requires data alignment.
-# Pathway provides all you need to tackle the challenges of real-world digital signal processing on data streams.
-# Now that you understand the differences between idealized signal processing and data stream processing, I'm sure you can leverage Pathway's capabilities to process, filter, and analyze data efficiently, even when dealing with imperfect sampling rates and data imperfections.
+# The Pathway Live Data Framework provides all you need to tackle the challenges of real-world digital signal processing on data streams.
+# Now that you understand the differences between idealized signal processing and data stream processing, I'm sure you can leverage Pathway Live Data Framework's capabilities to process, filter, and analyze data efficiently, even when dealing with imperfect sampling rates and data imperfections.
 #
-# If you want to learn more about DSP in Pathway, try our [tutorial](/developers/templates/etl/upsampling) about manipulating different data sources by *upsampling* a data source to match the sampling rate of given data source.
+# If you want to learn more about DSP in the Pathway Live Data Framework, try our [tutorial](/developers/templates/etl/upsampling) about manipulating different data sources by *upsampling* a data source to match the sampling rate of given data source.

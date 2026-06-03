@@ -7,7 +7,7 @@
 # # Windowby - Reduce
 # In this manu\[a\]l, you will learn how to aggregate data with the windowby-reduce scheme.
 #
-# Pathway offers powerful features for time series data manipulation. One such feature is the `windowby` function, which allows for intricate data segmentation based on specified criteria.
+# Pathway Live Data Framework offers powerful features for time series data manipulation. One such feature is the `windowby` function, which allows for intricate data segmentation based on specified criteria.
 #
 # The `windowby` function can operate in three distinct modes—session, sliding, and tumbling—which are determined by the type of windowing function you pass to it.
 # * Session Window: Groups adjacent elements based on activity and inactivity periods.
@@ -132,4 +132,4 @@ pw.debug.compute_and_print(result, include_id=False)
 
 # ## Conclusion
 #
-# In this guide, you've mastered the use of the windowby-reduce scheme in the Pathway library, a robust tool for time-series data aggregation. The three types of window functions—session, sliding, and tumbling—have been unveiled, each with its unique way of segmenting data. A playful example of chocolate consumption illuminated their practical application. As you continue to delve into data analysis, check out the tutorial [Detecting suspicious user activity with Tumbling Window group-by](/developers/templates/etl/suspicious_activity_tumbling_window), which utilizes the tumbling window function to spot unusual user behavior. Continue exploring, and elevate your data analysis prowess.
+# In this guide, you've mastered the use of the windowby-reduce scheme in the Pathway Live Data Framework library, a robust tool for time-series data aggregation. The three types of window functions—session, sliding, and tumbling—have been unveiled, each with its unique way of segmenting data. A playful example of chocolate consumption illuminated their practical application. As you continue to delve into data analysis, check out the tutorial [Detecting suspicious user activity with Tumbling Window group-by](/developers/templates/etl/suspicious_activity_tumbling_window), which utilizes the tumbling window function to spot unusual user behavior. Continue exploring, and elevate your data analysis prowess.

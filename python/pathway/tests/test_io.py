@@ -3462,9 +3462,7 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
     input_path.write_text("test")
 
     table = pw.io.plaintext.read(input_path, mode="static")
-    table = table.select(
-        data=pw.this.data, fun=pw.wrap_py_object(len, serializer=pickle)  # type: ignore
-    )
+    table = table.select(data=pw.this.data, fun=pw.wrap_py_object(len, serializer=pickle))  # type: ignore
     if data_format == "delta":
         pw.io.deltalake.write(table, auxiliary_path)
     elif data_format == "json":

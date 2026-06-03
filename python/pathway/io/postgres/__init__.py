@@ -38,7 +38,7 @@ def _quote_libpq_value(value) -> str:
 
 def _build_application_name(unique_name: str | None) -> str:
     """Build the ``application_name`` libpq parameter so that every
-    Pathway connection is identifiable in ``pg_stat_activity`` /
+    The Pathway Live Data Framework connection is identifiable in ``pg_stat_activity`` /
     ``pg_stat_replication`` and in ``log_line_prefix`` lines that
     include ``%a``.
 
@@ -129,7 +129,7 @@ def _kv_translate_value(key: str, value):
 
 
 def _augment_postgres_settings(settings: dict, unique_name: str | None) -> dict:
-    """Return a copy of ``settings`` with the Pathway-managed defaults
+    """Return a copy of ``settings`` with the Pathway Live Data Framework-managed defaults
     (``application_name`` and TCP-keepalive tuning) injected for any
     key the user did not provide. The user's explicit values always
     win — :py:meth:`dict.setdefault` is the explicit Python idiom for
@@ -297,7 +297,7 @@ def read(
 ) -> Table:
     """
     **This module is available when using one of the following licenses only:**
-    `Pathway Scale, Pathway Enterprise </pricing>`_.
+    `Pathway Live Data Framework Scale, Pathway Live Data Framework Enterprise </pricing>`_.
 
     Reads a table from a PostgreSQL database.
 
@@ -327,17 +327,17 @@ def read(
             dictionary of key-value pairs. The connection string is assembled by joining
             all pairs with spaces, each formatted as ``key=value``. Keys must be strings;
             values of other types are converted via Python's ``str()``.
-            Pathway injects conservative TCP-keepalive defaults (``keepalives``,
+            The Pathway Live Data Framework injects conservative TCP-keepalive defaults (``keepalives``,
             ``keepalives_idle=300``, ``keepalives_interval=30``, ``keepalives_count=3``,
             and ``tcp_user_timeout=300000``) so that an unreachable
-            Pathway process is detected by PostgreSQL within minutes rather than
+            the Pathway Live Data Framework process is detected by PostgreSQL within minutes rather than
             the OS-inherited ~2-hour default; any of these can be overridden by
             passing the same key in ``postgres_settings``.
         table_name: Name of the PostgreSQL table to read from. Any PostgreSQL
             identifier is accepted — the connector quotes the name before
             interpolating it into generated SQL, so hyphens, mixed case, and
             reserved words round-trip as-is.
-        schema: Pathway schema describing the table's columns and their types.
+        schema: Pathway Live Data Framework schema describing the table's columns and their types.
             Column names may be any PostgreSQL identifier for the same reason
             as ``table_name``.
         mode: Polling mode for the connector. Accepted values are ``"streaming"``
@@ -359,7 +359,7 @@ def read(
             schema.
         autocommit_duration_ms: the maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector
-            are committed and pushed into Pathway's computation graph.
+            are committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -379,7 +379,7 @@ def read(
 
     Suppose you have a ``users`` table with the following columns: ``id`` (an auto-incremented
     integer serving as the primary key), ``login`` (a string), and ``last_seen_at`` (a unix
-    timestamp). To read this table with Pathway, start by declaring the corresponding schema:
+    timestamp). To read this table with the Pathway Live Data Framework, start by declaring the corresponding schema:
 
     >>> import pathway as pw
     >>> class UsersSchema(pw.Schema):
@@ -405,7 +405,7 @@ def read(
     ...     mode="static",
     ... )
 
-    The resulting ``table`` object supports all Pathway transformations and can be passed
+    The resulting ``table`` object supports all Pathway Live Data Framework transformations and can be passed
     to any output connector for further processing or storage.
 
     To go beyond a one-time snapshot and perform Change Data Capture (CDC), continuously
@@ -431,7 +431,7 @@ def read(
     discouraged. A replication slot causes PostgreSQL to retain WAL segments until all
     changes have been acknowledged by the consumer. If a slot is created but its LSN
     position is not advanced regularly, unacknowledged WAL can accumulate and eventually
-    exhaust disk space on the database server. To prevent this, Pathway manages the
+    exhaust disk space on the database server. To prevent this, the Pathway Live Data Framework manages the
     replication slot internally: it uses a temporary slot that is automatically dropped
     when the session ends, and continuously acknowledges processed LSN positions while
     the program is running.
@@ -474,7 +474,7 @@ def read(
     ...     publication_name="products_pub",
     ... )
 
-    PostgreSQL's ``UUID`` type is also supported. Because Pathway represents UUID
+    PostgreSQL's ``UUID`` type is also supported. Because Pathway Live Data Framework represents UUID
     values as strings, the corresponding schema field must be declared as ``str``.
     Suppose you have a ``messages`` table whose primary key is a UUID column ``id``,
     alongside a string ``body`` column:
@@ -483,7 +483,7 @@ def read(
     ...     id: str = pw.column_definition(primary_key=True)
     ...     body: str
 
-    Pathway will read the UUID values as standard hyphenated strings, for example
+    The Pathway Live Data Framework will read the UUID values as standard hyphenated strings, for example
     ``"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"``. Both modes are supported. For a
     one-time snapshot:
 
@@ -511,7 +511,7 @@ def read(
     ... )
 
     Tables with composite primary keys — where the primary key spans multiple columns
-    — are supported as well. To declare a composite primary key in Pathway, mark every
+    — are supported as well. To declare a composite primary key in the Pathway Live Data Framework, mark every
     participating column with ``pw.column_definition(primary_key=True)``. Suppose you
     have an ``order_items`` table where each row is uniquely identified by the
     combination of ``order_id`` and ``product_id``, both integers, alongside a
@@ -620,7 +620,7 @@ def write(
     **stream of changes** and **snapshot**.
 
     When using **stream of changes**, the output table contains a log of all changes that
-    occurred in the Pathway table. In this case, it is expected to have two additional columns,
+    occurred in the Pathway Live Data Framework table. In this case, it is expected to have two additional columns,
     ``time`` and ``diff``, both of integer type. ``time`` indicates the transactional
     minibatch time in which the row change occurred. ``diff`` can be either ``1`` for
     row insertion or ``-1`` for row deletion.
@@ -635,10 +635,10 @@ def write(
             with each pair formatted as `key=value`. Keys must be strings. Values can be
             of any type; if a value is not a string, it will be converted using Python's
             `str()` function.
-            Pathway injects conservative TCP-keepalive defaults (``keepalives``,
+            The Pathway Live Data Framework injects conservative TCP-keepalive defaults (``keepalives``,
             ``keepalives_idle=300``, ``keepalives_interval=30``, ``keepalives_count=3``,
             and ``tcp_user_timeout=300000``) so that an unreachable
-            Pathway process is detected by PostgreSQL within minutes rather than
+            the Pathway Live Data Framework process is detected by PostgreSQL within minutes rather than
             the OS-inherited ~2-hour default; any of these can be overridden by
             passing the same key in ``postgres_settings``.
         table_name: Name of the target table. Any PostgreSQL identifier is
@@ -677,7 +677,7 @@ def write(
 
     Example:
 
-    Consider there's a need to output a stream of updates from a table in Pathway to
+    Consider there's a need to output a stream of updates from a table in the Pathway Live Data Framework to
     a table in Postgres. Let's see how this can be done with the connector.
 
     First of all, one needs to provide the required credentials for Postgres
@@ -705,7 +705,7 @@ def write(
 
     In order to output the table, we will need to create a new table in the database. The table
     would need to have all the columns that the output data has. Moreover it will need
-    a ``time`` column of type ``BIGINT`` (Pathway timestamps are milliseconds since epoch and
+    a ``time`` column of type ``BIGINT`` (Pathway Live Data Framework timestamps are milliseconds since epoch and
     routinely exceed the 32-bit range) and a ``diff`` column of type ``SMALLINT``. Finally,
     it is also a good idea to create the sequential primary key for our changes so that we
     know the updates' order.
@@ -937,10 +937,11 @@ def write_snapshot(
 
     Example:
 
-    Consider there is a table ``stats`` in Pathway, containing the average number of requests to some
+    Consider there is a table ``stats`` in the Pathway Live Data Framework, containing the average
+    number of requests to some
     service or operation per user, over some period of time. The number of requests
     can be large, so we decide not to store the whole stream of changes, but to only store
-    a snapshot of the data, which can be actualized by Pathway.
+    a snapshot of the data, which can be actualized by the Pathway Live Data Framework.
 
     The minimum set-up would require us to have a Postgres table with two columns: the ID
     of the user ``user_id`` and the number of requests across some period of time ``number_of_requests``.

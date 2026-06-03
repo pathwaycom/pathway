@@ -23,7 +23,7 @@
 
 # %% [markdown]
 # # File System Connectors
-# This guide explains the [fs connectors](/developers/api-docs/pathway-io/fs) that connect Pathway to your file system to read and write data with the following basic formats: binary, plaintext, CSV, and JSON.
+# This guide explains the [fs connectors](/developers/api-docs/pathway-io/fs) that connect Pathway Live Data Framework to your file system to read and write data with the following basic formats: binary, plaintext, CSV, and JSON.
 #
 # The first part of this guide focuses on defining the source of the data for our connector (using plaintext data format to keep things simple). The second part explains additional configuration that can (or needs to) be defined for all simple data formats.
 # In particular we show the input connectors ([`pw.io.fs.read`](/developers/api-docs/pathway-io/fs#pathway.io.fs.read)) reading data in:
@@ -171,7 +171,7 @@ rewrite_time_json('./json_output/json_out1.txt', 1727690271844)
 # ! cat ./json_output/json_out1.txt
 # %% [markdown]
 # ### Unstructured data
-# Pathway allows you to read unstructured data using three formats: `plaintext`, `plaintext_by_file`, and  `binary`. `binary` and `plaintext` considers each line as a separate row that will be stored in the column `data`, and the format `plaintext_by_file` treats each file as a single row.
+# Pathway Live Data Framework allows you to read unstructured data using three formats: `plaintext`, `plaintext_by_file`, and  `binary`. `binary` and `plaintext` considers each line as a separate row that will be stored in the column `data`, and the format `plaintext_by_file` treats each file as a single row.
 # %%
 # ! mkdir -p unstructured_output
 

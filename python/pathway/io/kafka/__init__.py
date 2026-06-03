@@ -80,13 +80,13 @@ def read(
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         json_field_paths: If the format is JSON, this field allows to map field names
             into path in the field. For the field which require such mapping, it should be
             given in the format ``<field_name>: <path to be mapped>``, where the path to
             be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
-        autogenerate_key: If ``True``, Pathway automatically generates unique primary key
+        autogenerate_key: If ``True``, Pathway Live Data Framework automatically generates unique primary key
             for the entries read. Otherwise it first tries to use the key from the message.
             This parameter is used only if the ``format`` is "raw" or "plaintext".
         with_metadata: When set to ``True``, the connector will add an additional column
@@ -104,7 +104,7 @@ def read(
             timestamp in the past, specified in milliseconds.
         parallel_readers: number of copies of the reader to work in parallel. In case
             the number is not specified, min{pathway_threads, total number of partitions}
-            will be taken. This number also can't be greater than the number of Pathway
+            will be taken. This number also can't be greater than the number of Pathway Live Data Framework
             engine threads, and will be reduced to the number of engine threads, if it
             exceeds.
         name: A unique name for the connector. If provided, this name will be used in
@@ -453,7 +453,7 @@ def simple_read(
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         json_field_paths: If the format is JSON, this field allows to map field names
             into path in the field. For the fields which require such mapping, it should be
             given in the format ``<field_name>: <path to be mapped>``, where the path to
@@ -461,7 +461,7 @@ def simple_read(
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         parallel_readers: number of copies of the reader to work in parallel. In case
             the number is not specified, min{pathway_threads, total number of partitions}
-            will be taken. This number also can't be greater than the number of Pathway
+            will be taken. This number also can't be greater than the number of Pathway Live Data Framework
             engine threads, and will be reduced to the number of engine threads, if it
             exceeds.
         name: A unique name for the connector. If provided, this name will be used in
@@ -629,7 +629,7 @@ def write(
     ...     "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
 
-    You want to send a Pathway table ``t`` to the Kafka instance.
+    You want to send a Pathway Live Data Framework table ``t`` to the Kafka instance.
 
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")

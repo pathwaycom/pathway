@@ -1,6 +1,6 @@
 ---
 title: 'Rerankers'
-description: 'Rerankers available through the Pathway xpack'
+description: 'Rerankers available through the Pathway Live Data Framework xpack'
 date: '2025-02-04'
 thumbnail: ''
 tags: ['tutorial', 'reranker']
@@ -13,7 +13,7 @@ Rerankers can be used to have the model rank the relevance of documents against 
 In RAG systems, initial sparse retrieval is often based on cosine similarity. This will likely result in some documents not being relevant to the query. This happens because retrieval is typically based on vector representations that condense a passage's meaning into a single embedding, which can overlook important nuances. While this approach is fast, it can also be inaccurate. To improve the quality of retrieved documents, it is common to refine the initial set and select only the most relevant ones using rerankers.
 Rerankers help the model reassess and prioritize documents based on their relevance to the query. This is usually done by presenting the model with `(query, document)` pairs and evaluating whether the given `document` contributes to answering the `query`.
 
-Pathway xpack provides the following rerankers:
+The Pathway Live Data Framework xpack provides the following rerankers:
 - [`LLMReranker`](#llmreranker) - Have an LLM rerank the documents
 - [`CrossEncoderReranker`](#crossencoderreranker) - Rerank with a CrossEncoder from SBERT / SentenceTransformers)
 - [`EncoderReranker`](#encoderreranker): Rerank with SentenceTransformers EncoderRerank (measure similarity)

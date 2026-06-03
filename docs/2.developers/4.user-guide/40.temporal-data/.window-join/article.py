@@ -1,6 +1,6 @@
 # ---
 # title: 'Window Join'
-# description: 'Tutorial on how to do a window join in Pathway.'
+# description: 'Tutorial on how to do a window join in Pathway Live Data Framework.'
 # date: '2023-06-14'
 # thumbnail: '/assets/content/tutorials/clickstream_window_join/clickstream-window-join-th.png'
 # tags: ['tutorial', 'engineering']
@@ -10,9 +10,9 @@
 
 # # User Behavior Analysis with Window Join on Clickstream Data
 #
-# Welcome to this detailed tutorial on how to analyze user behavior by correlating clickstream data with purchase data using Pathway's window join functionality. Joining clickstream data with purchase data can be particularly useful for businesses in analyzing the success of product page visits converting into purchases, improving their marketing strategies and product offerings.
+# Welcome to this detailed tutorial on how to analyze user behavior by correlating clickstream data with purchase data using Pathway Live Data Framework's window join functionality. Joining clickstream data with purchase data can be particularly useful for businesses in analyzing the success of product page visits converting into purchases, improving their marketing strategies and product offerings.
 #
-# The `window_join` function from Pathway associates records from two different tables that occur within the same time frame, specified by a window of time, creating sets of temporally correlated records.
+# The `window_join` function from Pathway Live Data Framework associates records from two different tables that occur within the same time frame, specified by a window of time, creating sets of temporally correlated records.
 #
 # In a `window_join`, all pairs of records that fall within the same window and satisfy the specified conditions are joined together. This operation is performed for each window whether it is a sliding window, a session window or a tumbling window. In the case of a sliding window, this means the window slides across the time axis, capturing different subsets of records at each step.
 #
@@ -37,7 +37,7 @@
 #
 # ## Setting Up the Data
 #
-# First, import the necessary Pathway library and load the clickstream and purchase data.
+# First, import the necessary Pathway Live Data Framework library and load the clickstream and purchase data.
 
 import pathway as pw
 
@@ -167,6 +167,6 @@ pw.debug.compute_and_print(results)
 
 # By printing the results, you now have a clear overview of the conversion rate for each product page within the specified time window. This powerful insight can help you understand which product pages are performing well and which ones need improvement.
 #
-# And that concludes the demonstration of the comprehensive, data-driven approach to analyzing user behavior and conversion rates on your e-commerce website using Pathway.
+# And that concludes the demonstration of the comprehensive, data-driven approach to analyzing user behavior and conversion rates on your e-commerce website using Pathway Live Data Framework.
 #
-# If you found this demonstration useful and want to dive deeper into Pathway's capabilities, we recommend exploring tutorials about [Interval Joins](/developers/user-guide/temporal-data/interval-join) and [Asof Joins](/developers/user-guide/temporal-data/asof-join), which are alternative ways for merging time-based datasets. As always, feel free to reach out to our community for any questions and further discussions. Happy analyzing!
+# If you found this demonstration useful and want to dive deeper into Pathway Live Data Framework's capabilities, we recommend exploring tutorials about [Interval Joins](/developers/user-guide/temporal-data/interval-join) and [Asof Joins](/developers/user-guide/temporal-data/asof-join), which are alternative ways for merging time-based datasets. As always, feel free to reach out to our community for any questions and further discussions. Happy analyzing!

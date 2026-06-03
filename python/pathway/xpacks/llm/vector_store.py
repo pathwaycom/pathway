@@ -1,7 +1,7 @@
 # Copyright © 2026 Pathway
 
 """
-Pathway vector search server and client.
+The Pathway Live Data Framework vector search server and client.
 
 The server reads source documents and build a vector index over them, then starts serving
 HTTP requests.

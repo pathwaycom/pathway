@@ -49,9 +49,9 @@ class TableLike(DeprecationSuperclass):
     def promise_universes_are_disjoint(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
-        """Asserts to Pathway that an universe of self is disjoint from universe of other.
+        """Asserts to Pathway Live Data Framework that an universe of self is disjoint from universe of other.
 
-        Semantics: Used in situations where Pathway cannot deduce universes are disjoint.
+        Semantics: Used in situations where the Pathway Live Data Framework cannot deduce universes are disjoint.
 
         Returns:
             self
@@ -89,9 +89,11 @@ class TableLike(DeprecationSuperclass):
     def promise_universe_is_subset_of(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
-        """Asserts to Pathway that an universe of self is a subset of universe of each of the other.
+        """Asserts to the Pathway Live Data Framework that an universe of self is a subset of
+        universe of each of the other.
 
-        Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
+        Semantics: Used in situations where the Pathway Live Data Framework cannot deduce one
+        universe being a subset of another.
 
         Returns:
             self
@@ -126,9 +128,11 @@ class TableLike(DeprecationSuperclass):
     def promise_universe_is_equal_to(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
-        """Asserts to Pathway that an universe of self is a subset of universe of each of the others.
+        """Asserts to the Pathway Live Data Framework that an universe of self is a subset of
+        universe of each of the others.
 
-        Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
+        Semantics: Used in situations where the Pathway Live Data Framework cannot deduce one
+        universe being a subset of another.
 
         Returns:
             None

@@ -2,7 +2,7 @@
 
 This repository contains the necessary files to benchmark Delta Lake S3 messaging describe in [this article](https://pathway.com/developers/templates/kafka-alternatives).
 Below is a description of each file:
-* `lib.py`: Contains Python wrappers for Pathway classes, which are used to build a message queue on top of Delta Lake.
+* `lib.py`: Contains Python wrappers for Pathway Live Data Framework classes, which are used to build a message queue on top of Delta Lake.
 * `producer.py`: Implements the producer logic, which generates messages and adds them to the Delta Lake-based message queue at a specified streaming rate.
 * `consumer.py`: Implements the consumer logic, which retrieves messages from the message queue and tracks latencies across various percentiles (50th, 75th, 85th, 95th, and 99th).
 * `benchmark.py`: Coordinates the execution of both the producer and consumer, and saves the benchmark results in the `benchmark-results/` directory.

@@ -20,7 +20,7 @@
 # ## Prerequisites
 # The assumption is that we are familiar with some basic operations
 # explained in the [First-steps Guide](/developers/user-guide/data-transformation/table-operations).
-# As usual, we begin with importing Pathway.
+# As usual, we begin with importing Pathway Live Data Framework.
 
 import pathway as pw
 

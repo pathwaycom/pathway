@@ -5,7 +5,7 @@ AG2 Multi-Agent Conversations with Pathway Real-Time RAG
 =========================================================
 
 Demonstrates AG2 (formerly AutoGen) multi-agent conversations using
-Pathway's real-time VectorStoreServer as the knowledge retrieval backend.
+Pathway Live Data Framework's real-time VectorStoreServer as the knowledge retrieval backend.
 
 Pathway continuously indexes documents and serves them via a REST API.
 AG2 agents query this API as a tool during multi-agent conversations.
@@ -41,9 +41,9 @@ from pathway.xpacks.llm.embedders import OpenAIEmbedder
 from pathway.xpacks.llm.splitters import TokenCountSplitter
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
-# To use advanced features with Pathway Scale, get your free license key from
+# To use advanced features with Pathway Live Data Framework Scale, get your free license key from
 # https://pathway.com/features and paste it below.
-# To use Pathway Community, comment out the line below.
+# To use Pathway Live Data Framework Community, comment out the line below.
 pw.set_license_key("demo-license-key-with-telemetry")
 
 load_dotenv()
@@ -54,7 +54,7 @@ DATA_DIR = "./data"
 
 
 def start_pathway_server():
-    """Start Pathway VectorStoreServer in a background thread."""
+    """Start Pathway Live Data Framework VectorStoreServer in a background thread."""
     documents = pw.io.fs.read(
         DATA_DIR,
         format="binary",
@@ -80,7 +80,7 @@ def start_pathway_server():
 
 
 def query_pathway_server(query: str, k: int = 5) -> str:
-    """Query the Pathway VectorStoreServer via HTTP.
+    """Query the Pathway Live Data Framework VectorStoreServer via HTTP.
 
     The /v1/retrieve endpoint returns a JSON list of objects:
     [{"text": "...", "metadata": {...}, "dist": float}, ...]
@@ -112,7 +112,9 @@ def query_pathway_server(query: str, k: int = 5) -> str:
         return "\n\n---\n\n".join(formatted)
 
     except requests.exceptions.ConnectionError:
-        return "Error: Pathway server is not running or not ready yet."
+        return (
+            "Error: Pathway Live Data Framework server is not running or not ready yet."
+        )
     except Exception as e:
         return f"Error querying Pathway: {e}"
 
@@ -138,13 +140,13 @@ def main():
         print("Please add documents (TXT, MD, PDF) and re-run.")
         sys.exit(1)
 
-    # Start Pathway server in background thread
-    print("Starting Pathway VectorStoreServer...")
+    # Start Pathway Live Data Framework server in background thread
+    print("Starting Pathway Live Data Framework VectorStoreServer...")
     server_thread = threading.Thread(target=start_pathway_server, daemon=True)
     server_thread.start()
 
     # Wait for server to be ready
-    print("Waiting for Pathway server to initialize...")
+    print("Waiting for Pathway Live Data Framework server to initialize...")
     for attempt in range(60):
         try:
             resp = requests.post(
@@ -155,13 +157,13 @@ def main():
             if resp.status_code == 200:
                 stats = resp.json()
                 print(
-                    f"Pathway server is ready! Indexed files: {stats.get('file_count', 'N/A')}"
+                    f"Pathway Live Data Framework server is ready! Indexed files: {stats.get('file_count', 'N/A')}"
                 )
                 break
         except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
             time.sleep(2)
     else:
-        print("Warning: Pathway server may not be fully ready.")
+        print("Warning: Pathway Live Data Framework server may not be fully ready.")
 
     # AG2 LLM Configuration
     llm_config = LLMConfig(
@@ -217,7 +219,7 @@ def main():
         )
     )
     def search_documents(query: str, top_k: int = 5) -> str:
-        """Search Pathway VectorStoreServer for relevant document chunks.
+        """Search Pathway Live Data Framework VectorStoreServer for relevant document chunks.
 
         Args:
             query: The search query string.

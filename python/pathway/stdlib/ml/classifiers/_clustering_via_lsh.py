@@ -28,9 +28,7 @@ def np_divide(data: np.ndarray, other: float) -> np.ndarray:
     return data / other
 
 
-def clustering_via_lsh(
-    data: pw.Table[DataPoint], bucketer, k: int
-) -> pw.Table[DataPoint | Label]:  # type: ignore
+def clustering_via_lsh(data: pw.Table[DataPoint], bucketer, k: int) -> pw.Table[DataPoint | Label]:  # type: ignore
     flat_data = lsh(data, bucketer, origin_id="data_id", include_data=True)
 
     representatives = (

@@ -1,5 +1,5 @@
 # ---
-# title: "Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway"
+# title: "Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway Live Data Framework"
 # description: ''
 # aside: true
 # author:
@@ -29,7 +29,7 @@
 # ---
 
 # %% [markdown]
-# # Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway
+# # Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway Live Data Framework
 #
 # <b> 💡 This notebook is one part of a [full-length tutorial](/developers/user-guide/deployment/from-jupyter-to-deploy) depicting a production-grade data science scenario from data exploration to interactive dashboarding and containerized deploy.</b>
 #
@@ -38,9 +38,9 @@
 #
 # Most data analysts use Jupyter notebooks with static (or "batch") workflows. Using Jupyter with streaming workflows can feel intimidating or have mixed results due to inadequate tooling.
 #
-# In this notebook you will learn how to visualise a live data stream in real-time from the familiar context of a Jupyter Notebook. You will use Pathway, [Bokeh](https://bokeh.org/) and [Panel](https://panel.holoviz.org/) to build a real-time data visualisation that will alert you when the data hits a critical threshold. You can follow along on this page or run the code for yourself [in Colab](https://colab.research.google.com/github/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb) or [from Github](https://github.com/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb).
+# In this notebook you will learn how to visualise a live data stream in real-time from the familiar context of a Jupyter Notebook. You will use the Pathway Live Data Framework, [Bokeh](https://bokeh.org/) and [Panel](https://panel.holoviz.org/) to build a real-time data visualisation that will alert you when the data hits a critical threshold. You can follow along on this page or run the code for yourself [in Colab](https://colab.research.google.com/github/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb) or [from Github](https://github.com/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb).
 #
-# Because Pathway [unites static and stream processing](/developers/user-guide/connect/switch-from-batch-to-streaming#switching-from-batch-to-streaming) in a single syntax, you can use the exact same code for both batch and streaming. This way you can test your workflow with a static snapshot and then simply switch out the data source for a live stream when you want to visualise the full data flow in real-time.
+# Because the Pathway Live Data Framework [unites static and stream processing](/developers/user-guide/connect/switch-from-batch-to-streaming#switching-from-batch-to-streaming) in a single syntax, you can use the exact same code for both batch and streaming. This way you can test your workflow with a static snapshot and then simply switch out the data source for a live stream when you want to visualise the full data flow in real-time.
 #
 # Let's jump in! 🪂
 #
@@ -81,11 +81,11 @@ import pathway as pw
 # %% [markdown]
 # ## Data source setup
 #
-# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/deployment/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda).
+# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use the Pathway Live Data Framework with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/deployment/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda).
 #
 # The `input_rate` parameter controls how fast the data is replayed.
 #
-# 💡 No data processing actually happens when you run this cell. We are building a computational graph that will only be executed at the end of the notebook. This allows Pathway to optimise the computations and perform them as fast as possible when the data starts streaming.
+# 💡 No data processing actually happens when you run this cell. We are building a computational graph that will only be executed at the end of the notebook. This allows the Pathway Live Data Framework to optimise the computations and perform them as fast as possible when the data starts streaming.
 
 # %%
 fname = "ticker.csv"
@@ -101,13 +101,13 @@ data = data.with_columns(t=data.t.dt.utc_from_timestamp(unit="ms"))
 # %% [markdown]
 # ## Switching between static and stream processing
 #
-# As you probably noticed, the code block above also includes a commented-out section. You can use this line instead of `data = pw.demo.replay_csv(...)` to test the workflow with static data. This is the only change you need to make in your code to switch between static and stream processing. Learn more about Pathway's unified engine and single syntax in [our User Guide](/developers/user-guide/connect/switch-from-batch-to-streaming#switching-from-batch-to-streaming).
+# As you probably noticed, the code block above also includes a commented-out section. You can use this line instead of `data = pw.demo.replay_csv(...)` to test the workflow with static data. This is the only change you need to make in your code to switch between static and stream processing. Learn more about Pathway Live Data Framework's unified engine and single syntax in [our User Guide](/developers/user-guide/connect/switch-from-batch-to-streaming#switching-from-batch-to-streaming).
 #
 # ## 20-minute rolling statistics
 #
 # Now it's time to build your trading algorithm. There is no need to fully understand the terminology or the math here. What's most important to grasp is how you are taking a stream of data and performing a windowing transformation to get more analytical value out of the raw data.
 #
-# Start by creating the first of our two Bollinger Bands: the 20-minute volatility measured as the Volume Weighted Standard Deviation. Use a [`sliding window`](/developers/user-guide/temporal-data/windows-manual#temporal-sliding-windowing) to compute at every minute the volume weighted price mean and standard deviation aggregate on the past 20 minutes of data. The `behavior` option tells Pathway that the window should emit the statistics only when it is finished - we do not want to see incomplete results.
+# Start by creating the first of our two Bollinger Bands: the 20-minute volatility measured as the Volume Weighted Standard Deviation. Use a [`sliding window`](/developers/user-guide/temporal-data/windows-manual#temporal-sliding-windowing) to compute at every minute the volume weighted price mean and standard deviation aggregate on the past 20 minutes of data. The `behavior` option tells the Pathway Live Data Framework that the window should emit the statistics only when it is finished - we do not want to see incomplete results.
 #
 # To compute the standard deviation, use the identity:
 #
@@ -115,7 +115,7 @@ data = data.with_columns(t=data.t.dt.utc_from_timestamp(unit="ms"))
 # \sigma(X) = \sqrt{\operatorname E\left[(X - \operatorname E[X])^2\right]} = \sqrt{\operatorname E\left[X^2\right] - (\operatorname E[X])^2},
 # $$
 #
-# which is easily expressible using [Pathway reducers](/developers/api-docs/reducers): we first compute the total $\mathrm{volume}$, $\mathrm{price}$, and $\mathrm{price}^2$. We then postprocess them to obtain the mean ($\mathrm{vwap}$), standard deviation ($\mathrm{vwstd}$), and Bollinger Bands places at $\mathrm{vwap} \pm 2\cdot \mathrm{vwstd}$.
+# which is easily expressible using [Pathway Live Data Framework reducers](/developers/api-docs/reducers): we first compute the total $\mathrm{volume}$, $\mathrm{price}$, and $\mathrm{price}^2$. We then postprocess them to obtain the mean ($\mathrm{vwap}$), standard deviation ($\mathrm{vwstd}$), and Bollinger Bands places at $\mathrm{vwap} \pm 2\cdot \mathrm{vwstd}$.
 #
 # <b>Or in simpler terms: the code block below takes your incoming data stream and calculates important statistics in real-time. These statistics are continually updated as the data comes in so that you can identify critical moments as they happen.</b>
 
@@ -260,7 +260,7 @@ viz = panel.Row(
 # %% [markdown]
 # ## Running the computation
 #
-# All the hard work is done! The final step is to start the Pathway data processing engine using the `pw.run()` command:
+# All the hard work is done! The final step is to start the Pathway Live Data Framework data processing engine using the `pw.run()` command:
 #
 # %%
 %%capture --no-display
@@ -290,7 +290,7 @@ pw.run()
 #
 # This is just a taste of what is possible. If you're interested in diving deeper and building a production-grade data science pipeline all the way from data exploration to deployment, you may want to check out the full-length [From Jupyter to Deploy](/developers/user-guide/deployment/from-jupyter-to-deploy) tutorial.
 #
-# ## What else can you do with Pathway?
+# ## What else can you do with Pathway Live Data Framework?
 #
 # * Perform machine learning in real time. e.g. [real-time
 # Classification](/developers/templates/etl/lsh_chapter1) , [real-time fuzzy joins](/developers/templates/etl/fuzzy_join_chapter2)
@@ -301,4 +301,4 @@ pw.run()
 #
 # And so much more... Read more about what we can do in the [developer docs](/developers/user-guide/introduction/welcome).
 #
-# We would love to have you try out [Pathway on GitHub](https://github.com/pathwaycom/pathway).
+# We would love to have you try out [Pathway Live Data Framework on GitHub](https://github.com/pathwaycom/pathway).

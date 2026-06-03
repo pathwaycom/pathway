@@ -134,7 +134,7 @@ class EndpointDocumentation:
         summary: Short endpoint description shown as a hint in the endpoints list.
         description: Comprehensive description for the endpoint.
         tags: Tags for grouping the endpoints.
-        method_types: If set, Pathway will document only the given method types. This
+        method_types: If set, Pathway Live Data Framework will document only the given method types. This
             way, one can exclude certain endpoints and methods from being documented.
     """
 
@@ -751,7 +751,7 @@ def rest_connector(
         methods: HTTP methods that this endpoint will accept;
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
-          committed and pushed into Pathway's computation graph;
+          committed and pushed into Pathway Live Data Framework's computation graph;
         keep_queries: whether to keep queries after processing; defaults to False. [deprecated]
         delete_completed_queries: whether to send a deletion entry after the query is processed.
           Allows to remove it from the system if it is stored by operators such as ``join`` or ``groupby``;
@@ -771,7 +771,7 @@ def rest_connector(
 
     Let's consider the following example: there is a collection of words that are
     received through HTTP REST endpoint `/uppercase` located at `127.0.0.1`, port `9999`.
-    The Pathway program processes this table by converting these words to the upper case.
+    The Pathway Live Data Framework program processes this table by converting these words to the upper case.
     This conversion result must be provided to the user on the output.
 
     Then, you can proceed with the following REST connector configuration code.

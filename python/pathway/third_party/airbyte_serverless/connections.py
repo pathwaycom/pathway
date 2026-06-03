@@ -45,7 +45,7 @@ class Connection:
     - instantiates a `source` and a `destination` from provided `yaml_config`
     - has a `run` method to perform extract-load from `source` to `destination`
 
-    Both `Connection` and `ConnectionFromFile` are only used in Pathway CLI to generate
+    Both `Connection` and `ConnectionFromFile` are only used in Pathway Live Data Framework CLI to generate
     config templates based on the connector name.
     """
 

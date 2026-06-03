@@ -183,7 +183,7 @@ class TokenCountSplitter(BaseSplitter):
     ensuring that each chunk has a token count between `min_tokens` and
     `max_tokens`. It also attempts to break chunks at sensible points such as
     punctuation marks.
-    Splitter expects input to be a Pathway column of strings OR pairs of strings and dict metadata.
+    Splitter expects input to be a Pathway Live Data Framework column of strings OR pairs of strings and dict metadata.
 
     All default arguments may be overridden in the UDF call
 

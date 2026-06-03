@@ -38,7 +38,7 @@ def write(
     Example:
 
     One (of a very few) examples, where you can probably need this kind of functionality
-    if the case when a Pathway program is benchmarked and the IO part needs to be
+    if the case when a Pathway Live Data Framework program is benchmarked and the IO part needs to be
     simplified as much as possible.
 
     If the table is ``table``, the null output can be configured in the following way:

@@ -1,4 +1,4 @@
-# AG2 Multi-Agent Conversations with Pathway Real-Time RAG
+# AG2 Multi-Agent Conversations with Pathway Live Data Framework Real-Time RAG
 
 This example demonstrates how to combine [AG2](https://ag2.ai/) (formerly AutoGen)
 multi-agent conversations with [Pathway](https://pathway.com/)'s real-time RAG pipeline.
@@ -19,10 +19,10 @@ AG2 is a multi-agent conversation framework with 500K+ monthly PyPI downloads,
 ## Introduction
 
 This project combines two powerful frameworks:
-- **Pathway** continuously indexes documents in real-time using its streaming engine, serving them through a VectorStoreServer REST API
-- **AG2** orchestrates multiple AI agents (Researcher + Analyst) that query Pathway's index as a tool during their conversation
+- **Pathway Live Data Framework** continuously indexes documents in real-time using its streaming engine, serving them through a VectorStoreServer REST API
+- **AG2** orchestrates multiple AI agents (Researcher + Analyst) that query Pathway Live Data Framework's index as a tool during their conversation
 
-The key advantage: Pathway re-indexes documents automatically whenever they change, so AG2 agents always query the **latest** version of the knowledge base — no manual re-indexing required.
+The key advantage: The Pathway Live Data Framework re-indexes documents automatically whenever they change, so AG2 agents always query the **latest** version of the knowledge base — no manual re-indexing required.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ The key advantage: Pathway re-indexes documents automatically whenever they chan
 ## Architecture
 
 ```
-Documents (live folder) --> Pathway VectorStoreServer (real-time indexing)
+Documents (live folder) --> Pathway Live Data Framework VectorStoreServer (real-time indexing)
                                          |
                                     REST API /v1/retrieve
                                          |
@@ -73,21 +73,21 @@ User Query --> AG2 UserProxy --> GroupChat [Researcher + Analyst]
    ```
 
 2. The script will:
-   - Start a Pathway VectorStoreServer that indexes documents in `./data/`
+   - Start a Pathway Live Data Framework VectorStoreServer that indexes documents in `./data/`
    - Launch AG2 agents that query the server for information
    - Print the multi-agent conversation with grounded answers
 
-3. **Add documents while running** — Pathway re-indexes automatically.
+3. **Add documents while running** — The Pathway Live Data Framework re-indexes automatically.
 
 ## How It Works
 
-- **Pathway** reads documents from `./data/`, chunks them with `TokenCountSplitter`, embeds them with OpenAI embeddings, and serves the index via HTTP
-- **AG2 Researcher agent** queries Pathway's `/v1/retrieve` endpoint via the `search_documents` tool to retrieve relevant chunks
+- **Pathway Live Data Framework** reads documents from `./data/`, chunks them with `TokenCountSplitter`, embeds them with OpenAI embeddings, and serves the index via HTTP
+- **AG2 Researcher agent** queries Pathway Live Data Framework's `/v1/retrieve` endpoint via the `search_documents` tool to retrieve relevant chunks
 - **AG2 Analyst agent** synthesizes retrieved information into a comprehensive answer
 - The agents communicate via AG2's `GroupChat`, coordinated by a `GroupChatManager`
 
 ## Conclusions
 
-This example shows how Pathway's real-time document indexing complements AG2's multi-agent orchestration. The combination is especially useful for scenarios where documents change frequently and agents need access to the latest information — such as live knowledge bases, continuously updated reports, or streaming data pipelines.
+This example shows how Pathway Live Data Framework's real-time document indexing complements AG2's multi-agent orchestration. The combination is especially useful for scenarios where documents change frequently and agents need access to the latest information — such as live knowledge bases, continuously updated reports, or streaming data pipelines.
 
 You can find more ready-to-run pipelines in our [templates section](/developers/templates?tab=ai-pipelines).

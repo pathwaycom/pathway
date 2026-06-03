@@ -140,7 +140,7 @@ def get_pathway_config() -> PathwayConfig:
 
 
 def set_license_key(key: str | None) -> None:
-    """Sets Pathway license key.
+    """Sets Pathway Live Data Framework license key.
     License key can be obtained from the
     `official website <https://pathway.com/get-license>`_.
 
@@ -164,7 +164,7 @@ def set_monitoring_config(
     detailed_metrics_dir: str | os.PathLike | None = None,
 ) -> None:
     """Sets the monitoring server endpoint.
-    Requires a valid Pathway Scale license key.
+    Requires a valid Pathway Live Data Framework Scale license key.
 
     Args:
         server_endpoint: The server endpoint URL for monitoring,

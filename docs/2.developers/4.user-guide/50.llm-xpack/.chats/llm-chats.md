@@ -1,6 +1,6 @@
 ---
 title: 'LLM Chats'
-description: 'LLM Wrappers available through Pathway xpack'
+description: 'LLM Wrappers available through the Pathway Live Data Framework xpack'
 date: '2025-01-30'
 thumbnail: ''
 tags: ['tutorial', 'LLM', 'LLM Wrappers', 'LLM Chats']
@@ -11,14 +11,14 @@ keywords: ['LLM', 'GPT', 'OpenAI', 'Gemini', 'LiteLLM', 'Wrapper']
 
 Out of the box, the LLM xpack provides wrappers for text generation and embedding LLMs. For text generation, you can use native wrappers for the OpenAI chat model and HuggingFace models running locally. Many other popular models, including Azure OpenAI, HuggingFace (when using their API) or Gemini can be used with the [`LiteLLM`](/developers/user-guide/llm-xpack/llm-chats#litellm) wrapper. To check the full list of providers supported by LiteLLM check [LiteLLM documentation](https://docs.litellm.ai/docs/providers). 
 ::if{path="/llm-xpack/"}
-Currently, Pathway provides wrappers for the following LLMs:
+Currently, Pathway Live Data Framework provides wrappers for the following LLMs:
 - [OpenAI](/developers/user-guide/llm-xpack/llm-chats#openaichat)
 - [LiteLLM](/developers/user-guide/llm-xpack/llm-chats#litellm)
 - [Hugging Face Pipeline](/developers/user-guide/llm-xpack/llm-chats#hugging-face-pipeline)
 - [Cohere](/developers/user-guide/llm-xpack/llm-chats#cohere)
 ::
 ::if{path="/templates/"}
-Currently, Pathway provides wrappers for the following LLMs:
+Currently, Pathway Live Data Framework provides wrappers for the following LLMs:
 - [OpenAI](/developers/user-guide/llm-xpack/llm-chats#openaichat)
 - [LiteLLM](/developers/user-guide/llm-xpack/llm-chats#litellm)
 - [Hugging Face Pipeline](/developers/user-guide/llm-xpack/llm-chats#hugging-face-pipeline)
@@ -28,7 +28,7 @@ Currently, Pathway provides wrappers for the following LLMs:
 ::if{path="/llm-xpack/"}
 To use a wrapper, first create an instance of the wrapper, which you can then apply to a column containing prompts.
 
-We create a Pathway table to be used in the examples below:
+We create a table to be used in the examples below:
 ```python
 import pathway as pw
 queries = pw.debug.table_from_markdown(
@@ -44,9 +44,9 @@ How many 'r' there are in 'strawberry'? | 400
 ::if{path="/llm-xpack/"}
 ## UDFs
 
-Each wrapper is a [UDF](/developers/api-docs/pathway#pathway.UDF) (User Defined Function), which allows users to define their own functions to interact with Pathway objects. A UDF, in general, is any function that takes some input, processes it, and returns an output. In the context of the Pathway library, UDFs enable seamless integration of custom logic, such as invoking LLMs for specific tasks.
+Each wrapper is a [UDF](/developers/api-docs/pathway#pathway.UDF) (User Defined Function), which allows users to define their own functions to interact with the framework. A UDF, in general, is any function that takes some input, processes it, and returns an output. In the context of the Pathway library, UDFs enable seamless integration of custom logic, such as invoking LLMs for specific tasks.
 
-In particular a UDF can serve as a wrapper for LLM calls, allowing users to pass prompts or other inputs to a model and retrieve the corresponding outputs. This design makes it easy to interact with Pathway tables and columns while incorporating the power of LLMs.
+In particular a UDF can serve as a wrapper for LLM calls, allowing users to pass prompts or other inputs to a model and retrieve the corresponding outputs. This design makes it easy to interact with tables and columns while incorporating the power of LLMs.
 ::
 
 ## OpenAIChat
@@ -116,7 +116,7 @@ pw.debug.compute_and_print(responses)
 ::
 
 ## LiteLLM
-Pathway has a wrapper for LiteLLM - [`LiteLLMChat`](/developers/api-docs/pathway-xpacks-llm/llms#pathway.xpacks.llm.llms.LiteLLMChat). For example, to use Gemini with LiteLLM, create an instance of `LiteLLMChat` and then apply it to the column with messages to be sent over API.
+The Pathway Live Data Framework has a wrapper for LiteLLM - [`LiteLLMChat`](/developers/api-docs/pathway-xpacks-llm/llms#pathway.xpacks.llm.llms.LiteLLMChat). For example, to use Gemini with LiteLLM, create an instance of `LiteLLMChat` and then apply it to the column with messages to be sent over API.
 
 ::if{path="/llm-xpack/"}
 ```python
@@ -138,10 +138,10 @@ llm: !pw.xpacks.llm.llms.LiteLLMChat
 ``` 
 ::
 
-With the wrapper for LiteLLM, Pathway allows you to use many popular LLMs.
+With the wrapper for LiteLLM, Pathway Live Data Framework allows you to use many popular LLMs.
 
 ## Hugging Face pipeline
-For models from Hugging Face that you want to run locally, Pathway gives a separate wrapper called `HFPipelineChat` (for calling HuggingFace through API, use LiteLLM wrapper). When an instance of this wrapper is created, it initializes a HuggingFace `pipeline`, so any [argument to the `pipeline`](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline) - including the name of the model - must be set during the initialization of `HFPipelineChat`. Any parameters to `pipeline.__call__` can be as before set during initialization or overridden during application.
+For models from Hugging Face that you want to run locally, Pathway Live Data Framework gives a separate wrapper called `HFPipelineChat` (for calling HuggingFace through API, use LiteLLM wrapper). When an instance of this wrapper is created, it initializes a HuggingFace `pipeline`, so any [argument to the `pipeline`](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline) - including the name of the model - must be set during the initialization of `HFPipelineChat`. Any parameters to `pipeline.__call__` can be as before set during initialization or overridden during application.
 
 ::if{path="/llm-xpack/"}
 ```python
@@ -163,7 +163,7 @@ llm: !pw.xpacks.llm.llms.HFPipelineChat
 
 Note that format of questions used in Hugging Face pipeline depends on the model. Some models, like [`gpt2`](https://huggingface.co/openai-community/gpt2), expect a prompt string, whereas conversation models also accept messages as a list of dicts. The model's prompt template will be used if a conversation with a list of dicts is passed.
 ::if{path="/templates/"}
-Note that Pathway AI pipelines expect conversation models, so models like `gpt2` cannot be used. 
+Note that the AI pipelines expect conversation models, so models like `gpt2` cannot be used. 
 ::
 For more information, see [pipeline docs](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.TextGenerationPipeline.__call__.text_inputs). 
 
@@ -183,7 +183,7 @@ pw.debug.compute_and_print(responses)
 
 ::if{path="/llm-xpack/"}
 ## Cohere
-Pathway has a wrapper for the [`Cohere Chat Services`](https://docs.cohere.com/docs/command-beta). The wrapper allows for augmenting the query with documents. The result contains cited documents along with the response.
+The Pathway Live Data Framework has a wrapper for the [`Cohere Chat Services`](https://docs.cohere.com/docs/command-beta). The wrapper allows for augmenting the query with documents. The result contains cited documents along with the response.
 
 ```python
 from pathway.xpacks.llm import llms
@@ -213,7 +213,7 @@ pw.debug.compute_and_print(parsed_table)
 ::
 
 ## Wrappers are asynchronous
-Wrapper for OpenAI and LiteLLM, both for chat and embedding, are asynchronous, and Pathway allows you to set three parameters to set their behavior. These are:
+Wrapper for OpenAI and LiteLLM, both for chat and embedding, are asynchronous, and Pathway Live Data Framework allows you to set three parameters to set their behavior. These are:
 - `capacity`, which sets the number of concurrent operations allowed,
 - `retry_strategy`, which sets the strategy for handling retries in case of failures,
 - `cache_strategy`, which defines the cache mechanism.

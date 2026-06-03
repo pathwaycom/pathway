@@ -1,6 +1,6 @@
 # ---
 # title: "ASOF Join"
-# description: Tutorial about ASOF Joins in Pathway.
+# description: Tutorial about ASOF Joins in Pathway Live Data Framework.
 # date: '2023-05-24'
 # thumbnail: '/assets/content/tutorials/finance_ts_asof_join/asof-join-tutorial-th.png'
 # tags: ['tutorial', 'engineering']
@@ -9,7 +9,7 @@
 # ---
 
 # %% [markdown] tags=[]
-# # Bridging Financial Data Streams: A Look at ASOF Join in Pathway
+# # Bridging Financial Data Streams: A Look at ASOF Join in Pathway Live Data Framework
 #
 #
 # This tutorial provides an in-depth exploration of ASOF joins in pathway. You will learn how to employ this feature to align stock prices and corporate events, showcasing the practicality and efficiency of ASOF joins in financial data analysis.
@@ -48,7 +48,7 @@
 #
 # However, a conventional join operation is insufficient in this context. Why? Because corporate events and stock prices don't align perfectly in time. Corporate events are sporadic, whereas stock prices fluctuate continuously throughout trading hours. To correlate these events with stock prices effectively, you'd need a more sophisticated join operation that can accurately pair an event with the closest corresponding stock price, in terms of timing.
 #
-# In the scope of this tutorial, you will be leveraging data from a public API in a static mode purely for illustrative purposes. However, a more typical use-case would involve the processing of realtime data streams. In such scenarios, Pathway input connectors come into play, seamlessly integrating with the remaining parts of your code to facilitate uninterrupted data flow and processing. The events data comes with dates instead of datetimes. Hence the choice of daily stock prices.
+# In the scope of this tutorial, you will be leveraging data from a public API in a static mode purely for illustrative purposes. However, a more typical use-case would involve the processing of realtime data streams. In such scenarios, Pathway Live Data Framework input connectors come into play, seamlessly integrating with the remaining parts of your code to facilitate uninterrupted data flow and processing. The events data comes with dates instead of datetimes. Hence the choice of daily stock prices.
 #
 #
 # ## Prerequisites
@@ -94,9 +94,9 @@ prices.date = pd.to_datetime(prices.date, utc=True).dt.tz_localize(None)
 events = t.corporate_events.reset_index()
 
 # %% [markdown] tags=[]
-# ## Using Pathway to Process Data
+# ## Using Pathway Live Data Framework to Process Data
 #
-# The next phase involves transforming the two dataframes into Pathway Tables and calculating the Daily Return - the percentage change between the opening and closing prices for the chosen companies. This crucial step will provide us with insights into the relationship between corporate events and corresponding price fluctuations.
+# The next phase involves transforming the two dataframes into Pathway Live Data Framework Tables and calculating the Daily Return - the percentage change between the opening and closing prices for the chosen companies. This crucial step will provide us with insights into the relationship between corporate events and corresponding price fluctuations.
 
 # %% tags=[]
 from datetime import datetime, timedelta
@@ -117,12 +117,12 @@ price_table = pw.debug.table_from_pandas(prices).select(
 
 
 # %% [markdown] tags=[]
-# The `table_from_pandas` function converts pandas DataFrames into Pathway tables. The `select` function is used to choose the columns you want to keep in the new tables.
+# The `table_from_pandas` function converts pandas DataFrames into Pathway Live Data Framework tables. The `select` function is used to choose the columns you want to keep in the new tables.
 #
 # ## Previewing Your Data
-# Pathway is a powerful tool designed to work with both static and real-time streaming data, though its primary strength lies in handling real-time data processing.
+# Pathway Live Data Framework is a powerful tool designed to work with both static and real-time streaming data, though its primary strength lies in handling real-time data processing.
 #
-# During the development and testing stages of your data processing pipeline, it's essential to validate that the data is processed correctly. To facilitate this, you could define a function named preview_table for data inspection. However, keep in mind that this function should not be utilized in a production setting. It employs pw.debug.compute_and_print and uses static data. For a production environment involving real-time data streams, you should rely on [Pathway's output connectors](/developers/user-guide/connect/pathway-connectors) to access the data.
+# During the development and testing stages of your data processing pipeline, it's essential to validate that the data is processed correctly. To facilitate this, you could define a function named preview_table for data inspection. However, keep in mind that this function should not be utilized in a production setting. It employs pw.debug.compute_and_print and uses static data. For a production environment involving real-time data streams, you should rely on [Pathway Live Data Framework's output connectors](/developers/user-guide/connect/pathway-connectors) to access the data.
 #
 # Let's take a look at the first few rows of our newly created tables.
 
@@ -140,7 +140,7 @@ preview_table(price_table)
 # %% [markdown] tags=[]
 # ## Applying `asof_join`
 #
-# With your Pathway tables prepared, you can now perform the `asof_join` operation.
+# With your Pathway Live Data Framework tables prepared, you can now perform the `asof_join` operation.
 
 # %% tags=[]
 merged = events_table.asof_join(
@@ -206,6 +206,6 @@ pw.debug.compute_and_print(highest_impact_events, include_id=False)
 # %% [markdown] tags=[]
 # ## Conclusion
 #
-# And there you have it! By using the `asof_join` in Pathway, you have efficiently combined realtime stock price data with corporate event data for multiple companies. This can provide valuable insights for financial analysis. As you can see, Pathway provides a powerful framework for managing and manipulating time-series data.
+# And there you have it! By using the `asof_join` in Pathway Live Data Framework, you have efficiently combined realtime stock price data with corporate event data for multiple companies. This can provide valuable insights for financial analysis. As you can see, Pathway Live Data Framework provides a powerful framework for managing and manipulating time-series data.
 #
 # Thank you for following this tutorial, and we hope you've found it valuable. As always, we welcome your questions and feedback.

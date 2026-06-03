@@ -1,5 +1,5 @@
 # ---
-# title: Real-Time PageRank on Dynamic Graphs with Pathway
+# title: Real-Time PageRank on Dynamic Graphs with Pathway Live Data Framework
 # description: Demonstration of a PageRank computation
 # notebook_export_path: notebooks/tutorials/pagerank.ipynb
 # aside: true
@@ -26,7 +26,7 @@
 # ---
 
 # %% [markdown]
-# # Real-Time PageRank on Dynamic Graphs with Pathway
+# # Real-Time PageRank on Dynamic Graphs with Pathway Live Data Framework
 #
 # ## Introduction
 # PageRank is best known for its success in ranking web pages in Google Search engine.
@@ -42,7 +42,7 @@
 # - In each turn, some users decide to click on a random link and visit a new page.
 # - We iterate for a fixed number of rounds.
 #
-# This article assumes that you are already familiar with some basics of [Pathway transformations](/developers/user-guide/introduction/concepts#processing-the-data-with-transformations).
+# This article assumes that you are already familiar with some basics of [Pathway Live Data Framework transformations](/developers/user-guide/introduction/concepts#processing-the-data-with-transformations).
 #
 # ## Code
 # First things first - imports and constants.

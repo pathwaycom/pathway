@@ -329,8 +329,7 @@ class _HierarchicalChunker(HierarchicalChunker):
                     if isinstance(
                         item, ListItem
                     ) or (  # TODO remove when all captured as ListItem:
-                        isinstance(item, TextItem)
-                        and item.label == DocItemLabel.LIST_ITEM  # type: ignore
+                        isinstance(item, TextItem) and item.label == DocItemLabel.LIST_ITEM  # type: ignore
                     ):
                         list_items.append(item)
                         continue

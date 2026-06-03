@@ -1,6 +1,6 @@
 # Copyright © 2026 Pathway
 """
-Pathway Document Store for processing and indexing documents.
+The Pathway Live Data Framework Document Store for processing and indexing documents.
 
 The document store reads source documents and build a vector index over them, and exposes
 multiple methods for querying.

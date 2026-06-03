@@ -6,9 +6,9 @@ from pathway.xpacks.llm.parsers import UnstructuredParser
 from pathway.xpacks.llm.splitters import TokenCountSplitter
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
-# To use advanced features with Pathway Scale, get your free license key from
+# To use advanced features with Pathway Live Data Framework Scale, get your free license key from
 # https://pathway.com/features and paste it below.
-# To use Pathway Community, comment out the line below.
+# To use Pathway Live Data Framework Community, comment out the line below.
 pw.set_license_key("demo-license-key-with-telemetry")
 
 load_dotenv()

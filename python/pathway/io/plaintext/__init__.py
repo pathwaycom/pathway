@@ -57,7 +57,7 @@ def read(
             named ``path`` that will show the full path to the file from where a row was filled.
         autocommit_duration_ms: the maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
-            committed and pushed into Pathway's computation graph.
+            committed and pushed into Pathway Live Data Framework's computation graph.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.

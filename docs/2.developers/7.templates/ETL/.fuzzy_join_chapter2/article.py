@@ -30,7 +30,7 @@
 #
 # ## Fuzzy Join - reconciliation with audit: when the computer is not enough
 #
-# In this article, we are going to show you how Pathway interacts with incremental data flows with a **feedback loop**.
+# In this article, we are going to show you how Pathway Live Data Framework interacts with incremental data flows with a **feedback loop**.
 #
 # In the [another showcase](/developers/templates/etl/fuzzy_join_chapter1) we explained how `smart_fuzzy_join` may be helpful in bookkeeping.
 # Previously, we had a simple pipeline that matched entries of two different tables, such as two logs of bank transfers, in two different formats.
@@ -40,7 +40,7 @@
 # As such, we extend our pipeline with an auditor that supervises the process of reconciliation.
 # The auditor may help the system by providing some hints, i.e. suggesting difficult matchings by hand.
 #
-# ## Feedback loop in Pathway
+# ## Feedback loop in Pathway Live Data Framework
 # ![Graph image](/assets/content/showcases/fuzzy_join/reconciliation_chapter3_trim.png)
 #
 # This figure represents an architecture with a feedback loop to understand how the pieces work together.
@@ -125,7 +125,7 @@ pw.debug.compute_and_print(transactionsB)
 
 
 # %% [markdown]
-# We use the provided column `key` as indexes: Pathway will generate indexes based on those.
+# We use the provided column `key` as indexes: the Pathway Live Data Framework will generate indexes based on those.
 #
 # We add a wrapper `reconcile_transactions` to replace the generated indexes by the corresponding key.
 
@@ -239,9 +239,9 @@ pw.debug.compute_and_print(matching)
 # ## Conclusion
 # In conclusion, writing pipelines with a feedback loop is as easy as can be.
 # When writing such a data processing algorithm, a tip is to always clearly separate inputs from outputs.
-# It is important because the Pathway engine observes inputs for any changes and recalculates parts of the computation when needed.
+# It is important because the Pathway Live Data Framework engine observes inputs for any changes and recalculates parts of the computation when needed.
 #
 #
-# In the next chapter, we will show you how to make a Pathway installation which provides a full Fuzzy-Matching application, complete with frontend. (Coming soon!)
+# In the next chapter, we will show you how to make a Pathway Live Data Framework installation which provides a full Fuzzy-Matching application, complete with frontend. (Coming soon!)
 #
 # ![Demo animation](/assets/content/showcases/fuzzy_join/demo.gif)

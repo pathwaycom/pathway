@@ -1,6 +1,6 @@
 ---
 title: 'Chunking text'
-description: 'Splitters available through the Pathway xpack'
+description: 'Splitters available through the Pathway Live Data Framework xpack'
 date: '2025-02-04'
 thumbnail: ''
 tags: ['splitters', 'chunking']
@@ -16,7 +16,7 @@ There a several strategies how to best chunk a document. A simple approach might
 A better method is to chunk the text by tokens, ensuring each chunk makes sense and aligns with sentence or paragraph boundaries. Token-based chunking is typically done at logical breakpoints, such as periods, commas, or newlines.
 
 ## TokenCountSplitter
-Pathway offers a [`TokenCountSplitter`](/developers/api-docs/pathway-xpacks-llm/splitters#pathway.xpacks.llm.splitters.TokenCountSplitter) for token-based chunking. Here's how to use it:
+The Pathway Live Data Framework offers a [`TokenCountSplitter`](/developers/api-docs/pathway-xpacks-llm/splitters#pathway.xpacks.llm.splitters.TokenCountSplitter) for token-based chunking. Here's how to use it:
 
 ::if{path="/llm-xpack/"}
 ```python
