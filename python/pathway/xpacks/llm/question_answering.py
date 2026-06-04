@@ -146,6 +146,20 @@ def _get_context_processor_udf(
         )
 
 
+def _get_query_transformer_udf(
+    query_transformer: Callable[[str], str] | pw.UDF | None,
+) -> pw.UDF:
+    if query_transformer is None:
+        return pw.udf(lambda query: query)
+    if isinstance(query_transformer, pw.UDF):
+        return query_transformer
+    if callable(query_transformer):
+        return pw.udf(query_transformer)
+    raise ValueError(
+        f"Query transformer is not of expected type. Got: {type(query_transformer)}."
+    )
+
+
 def _query_chat(
     chat: BaseChat,
     t: Table,
@@ -460,6 +474,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
+        query_transformer: Optional callable or UDF applied to the user query before retrieval.
         rerank_topk: Number of top-scoring documents to retain after reranking, when a reranker is provided.
             If ``None``, reranking is disabled. Defaults to ``None``.
 
@@ -521,6 +536,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         ) = SimpleContextProcessor(),
         summarize_template: pw.UDF = prompts.prompt_summarize,
         search_topk: int = 6,
+        query_transformer: Callable[[str], str] | pw.UDF | None = None,
         reranker: pw.UDF | None = None,
         rerank_topk: int | None = None,
     ) -> None:
@@ -535,6 +551,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self._init_schemas(default_llm_name)
 
         self.prompt_udf = _get_RAG_prompt_udf(prompt_template)
+        self.query_transformer = _get_query_transformer_udf(query_transformer)
 
         if isinstance(context_processor, BaseContextProcessor):
             self.docs_to_context_transformer = context_processor.as_udf()
@@ -638,11 +655,15 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
 
+        pw_ai_queries += pw_ai_queries.select(
+            search_query=self.query_transformer(pw.this.prompt)
+        )
+
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
                 metadata_filter=pw.this.filters,
                 filepath_globpattern=pw.cast(str | None, None),
-                query=pw.this.prompt,
+                query=pw.this.search_query,
                 k=self.search_topk,
             )
         ).select(
