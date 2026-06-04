@@ -55,8 +55,8 @@ class TransformerColumnWithDependenecies(TransformerColumn, ABC):
     def dependencies(self) -> StableSet[TransformerColumn]:
         result: StableSet[TransformerColumn] = StableSet()
         operator: RowTransformerOperator = (
-            self.graph_column.lineage.source.operator
-        )  # type:ignore
+            self.graph_column.lineage.source.operator  # type: ignore[assignment]
+        )
         stack = operator.all_columns()
         while stack:
             column = stack.pop()

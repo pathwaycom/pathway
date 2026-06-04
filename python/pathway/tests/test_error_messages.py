@@ -395,9 +395,9 @@ def test_traceback_connectors_1():
 
 
 def test_traceback_connectors_2(tmp_path):
-    pw.io.csv.write(
+    pw.io.csv.write(  # cause
         pw.Table.empty(), tmp_path / "non_existing_directory" / "output.csv"
-    )  # cause
+    )
     with _assert_error_trace(OSError):
         run_all()
 
@@ -500,9 +500,9 @@ def test_filter_bad_expression():
         last_timestamp = t_input.reduce(
             last_timestamp=pw.reducers.max(t_input.timestamp)
         )
-        t_input.filter(
+        t_input.filter(  # cause
             t_input.timestamp >= last_timestamp.last_timestamp - 3600
-        )  # cause
+        )
 
 
 def test_method_in_pathway_this():

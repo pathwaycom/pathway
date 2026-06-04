@@ -381,8 +381,8 @@ def prompt_citing_qa(
 @pw.udf
 def parse_cited_response(response_text, docs):
     cited_docs = [
-        int(cite[1:-1]) - 1 for cite in set(re.findall("\[\d+\]", response_text))
-    ]  # noqa: W605
+        int(cite[1:-1]) - 1 for cite in set(re.findall(r"\[\d+\]", response_text))
+    ]
     start_index = response_text.find("*") + 1
     end_index = response_text.find("*", start_index)
 
