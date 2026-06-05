@@ -64,6 +64,20 @@ QUEST_DB_NAME = "qdb"
 QUEST_DB_USER = "admin"
 QUEST_DB_PASSWORD = "quest"
 
+CLICKHOUSE_HOST = "clickhouse"
+CLICKHOUSE_NATIVE_PORT = 9000
+CLICKHOUSE_HTTP_PORT = 8123
+CLICKHOUSE_DB_NAME = "default"
+# Recent clickhouse-server images restrict the built-in ``default`` user to
+# localhost, so the compose service provisions this network-accessible user via
+# the CLICKHOUSE_USER / CLICKHOUSE_PASSWORD environment variables.
+CLICKHOUSE_USER = "pathway"
+CLICKHOUSE_PASSWORD = "pathway"
+CLICKHOUSE_CONNECTION_STRING = (
+    f"tcp://{CLICKHOUSE_USER}:{CLICKHOUSE_PASSWORD}@{CLICKHOUSE_HOST}:"
+    f"{CLICKHOUSE_NATIVE_PORT}/{CLICKHOUSE_DB_NAME}"
+)
+
 MONGODB_HOST_WITH_PORT = "mongodb:27017"
 MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
@@ -477,6 +491,92 @@ class QuestDBContext(WireProtocolSupporterContext):
             user=QUEST_DB_USER,
             password=QUEST_DB_PASSWORD,
         )
+
+
+class ClickHouseContext:
+    """Test helper talking to ClickHouse over its HTTP interface.
+
+    The Pathway connector writes through the native protocol (port 9000); this
+    context reads results back over HTTP (port 8123) so the tests need no extra
+    native-protocol client dependency. ``connection_string`` is the value to be
+    passed to ``pw.io.clickhouse.write``.
+    """
+
+    def __init__(self):
+        self.http_url = f"http://{CLICKHOUSE_HOST}:{CLICKHOUSE_HTTP_PORT}/"
+        self.connection_string = CLICKHOUSE_CONNECTION_STRING
+
+    def _query(self, sql: str, *, settings: dict | None = None) -> str:
+        params = {"database": CLICKHOUSE_DB_NAME}
+        if settings is not None:
+            params.update(settings)
+        auth = (CLICKHOUSE_USER, CLICKHOUSE_PASSWORD)
+        response = requests.post(
+            self.http_url,
+            params=params,
+            data=sql.encode("utf-8"),
+            auth=auth,
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.text
+
+    def execute_sql(self, query: str) -> None:
+        self._query(query)
+
+    def drop_table(self, table_name: str) -> None:
+        self.execute_sql(f"DROP TABLE IF EXISTS {table_name}")
+
+    def random_table_name(self) -> str:
+        return f"ch_{uuid.uuid4().hex}"
+
+    @contextmanager
+    def temp_table(self):
+        """Yield a randomly-generated table name and drop the table afterwards,
+        whether the body succeeds or raises.
+
+        Replaces the ``table_name = random_table_name() ... try/finally
+        drop_table`` boilerplate::
+
+            with clickhouse.temp_table() as table_name:
+                ...
+        """
+        table_name = self.random_table_name()
+        try:
+            yield table_name
+        finally:
+            try:
+                self.drop_table(table_name)
+            except Exception as e:
+                logging.warning(f"Failed to drop temporary table {table_name}: {e}")
+
+    def get_table_contents(
+        self,
+        table_name: str,
+        column_names: list[str],
+        sort_by: str | tuple | None = None,
+        final_: bool = False,
+    ) -> list[dict]:
+        columns = ",".join(column_names)
+        # ``FINAL`` forces ClickHouse to deduplicate a ReplacingMergeTree at query
+        # time, returning the current snapshot (latest version per key, deleted
+        # keys excluded) regardless of whether a background merge has run yet.
+        final_clause = " FINAL" if final_ else ""
+        sql = f"SELECT {columns} FROM {table_name}{final_clause} FORMAT JSON"
+        # Return 64-bit integers as JSON numbers rather than quoted strings so
+        # callers get native Python ints without post-processing.
+        text = self._query(sql, settings={"output_format_json_quote_64bit_integers": 0})
+        data = json.loads(text)["data"]
+        # Each row is already keyed by the output column name (the alias for
+        # expressions such as ``hex(col) AS col_hex``), so the rows are returned
+        # as-is.
+        result = [dict(row) for row in data]
+        if sort_by is not None:
+            if isinstance(sort_by, tuple):
+                result.sort(key=lambda item: tuple(item[key] for key in sort_by))
+            else:
+                result.sort(key=lambda item: item[sort_by])
+        return result
 
 
 MILVUS_VECTOR_DIM = 3

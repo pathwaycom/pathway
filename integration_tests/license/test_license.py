@@ -29,6 +29,7 @@ only_enterprise_build = pytest.mark.xfail(
 SCALE_TIER_ENTITLEMENTS = [
     "advanced-parser",
     "bigquery",
+    "clickhouse",
     "deltalake",
     "dynamodb",
     "elasticsearch",
@@ -115,6 +116,7 @@ def test_license_default_policy(caplog):
     pw.set_license_key(PATHWAY_LICENSES["default-key"])
 
     _check_entitlements("bigquery")
+    _check_entitlements("clickhouse")
     _check_entitlements("deltalake")
     _check_entitlements("elasticsearch")
     _check_entitlements("iceberg")

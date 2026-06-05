@@ -38,6 +38,12 @@ cached = "0.55.1"
 cfg-if = "1.0.0"
 chrono = { version = "0.4.39", features = ["std", "clock"], default-features = false }
 chrono-tz = "0.10.3"
+# ClickHouse output connector. Its native-protocol client builds insertion
+# blocks from `chrono::DateTime<chrono_tz::Tz>`, and the `Tz` it expects comes
+# from chrono-tz 0.8 — a different major than the 0.10 used elsewhere — so that
+# version is pulled in under an explicit alias purely to build datetime columns.
+chrono-tz-0_8 = { package = "chrono-tz", version = "0.8" }
+clickhouse-rs = "1.1.0-alpha.1"
 crossbeam-channel = "0.5.15"
 csv = "1.3.1"
 deltalake = { version = "0.31.1", features = ["datafusion", "s3"] }

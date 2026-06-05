@@ -1,6 +1,7 @@
 // Copyright © 2026 Pathway
 
 pub mod aws;
+pub mod clickhouse;
 pub mod data_lake;
 pub mod elasticsearch;
 pub mod file;
@@ -24,6 +25,8 @@ pub use mqtt::{MqttReader, MqttWriter, MQTT_CLIENT_MAX_CHANNEL_SIZE, MQTT_MAX_ME
 pub use null::NullWriter;
 pub use python::{PythonReader, PythonReaderBuilder};
 pub use questdb::{QuestDBAtColumnPolicy, QuestDBWriter};
+
+pub use self::clickhouse::{ClickHouseError, ClickHouseWriter};
 
 use s3::error::S3Error;
 use std::any::type_name;
@@ -747,6 +750,9 @@ pub enum WriteError {
 
     #[error("the 'at' QuestDB column is not of the time type: {0}")]
     QuestDBAtColumnNotTime(Value),
+
+    #[error(transparent)]
+    ClickHouse(#[from] ClickHouseError),
 
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),

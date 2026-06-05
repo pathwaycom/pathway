@@ -2,6 +2,7 @@ import pathlib
 
 import pytest
 from utils import (
+    ClickHouseContext,
     DebeziumContext,
     DynamoDBContext,
     MilvusContext,
@@ -58,6 +59,11 @@ def pgvector():
 @pytest.fixture
 def questdb():
     return QuestDBContext()
+
+
+@pytest.fixture
+def clickhouse():
+    return ClickHouseContext()
 
 
 @pytest.fixture(scope="session")

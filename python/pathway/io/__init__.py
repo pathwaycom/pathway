@@ -4,6 +4,7 @@ from pathway.internals._io_helpers import TLSSettings
 from pathway.io import (
     airbyte,
     bigquery,
+    clickhouse,
     csv,
     debezium,
     deltalake,
@@ -53,6 +54,7 @@ from pathway.io._utils import CsvParserSettings
 __all__ = [
     "airbyte",
     "bigquery",
+    "clickhouse",
     "csv",
     "CsvParserSettings",
     "debezium",

@@ -120,13 +120,13 @@ use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::{
-    ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader,
-    KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader,
-    MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlReader,
-    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
-    QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
-    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter,
+    IcebergReader, KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader,
+    MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter,
+    ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
+    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark,
+    ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
+    TableWriterInitMode, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -7137,6 +7137,31 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_clickhouse_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["clickhouse"])?;
+        }
+        let connection_string = self.connection_string()?;
+        let writer = ClickHouseWriter::new(
+            connection_string,
+            self.table_name()?,
+            data_format.value_fields_vec(py),
+            self.max_batch_size,
+            self.table_writer_init_mode,
+            self.snapshot_maintenance_on_output,
+            data_format.key_field_names.clone(),
+        )
+        .map_err(|e| {
+            PyValueError::new_err(format!("Failed to initialize ClickHouse writer: {e}"))
+        })?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_dynamodb_writer(
         &self,
         py: pyo3::Python,
@@ -7277,6 +7302,7 @@ impl DataStorage {
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
+            "clickhouse" => self.construct_clickhouse_writer(py, data_format, license),
             "dynamodb" => self.construct_dynamodb_writer(py, data_format, license),
             "kinesis" => self.construct_kinesis_writer(license),
             "mssql" => self.construct_mssql_writer(py, data_format, license),
