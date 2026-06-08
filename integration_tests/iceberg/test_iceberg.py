@@ -13,7 +13,11 @@ import pytest
 from dateutil import tz
 from pyiceberg.catalog import load_catalog
 from pyiceberg.catalog.glue import GlueCatalog
-from pyiceberg.exceptions import ServerError
+from pyiceberg.exceptions import (
+    NamespaceAlreadyExistsError,
+    ServerError,
+    TableAlreadyExistsError,
+)
 from pyiceberg.schema import Schema as PyIcebergSchema
 from pyiceberg.types import (
     DateType,
@@ -89,7 +93,7 @@ def _get_pandas_table(backend: str, table_name: str) -> pd.DataFrame:
             name="default",
             uri=os.environ.get("ICEBERG_CATALOG_URI", "http://iceberg:8181"),
         )
-        iceberg_table = catalog.load_table(table_name)
+        iceberg_table = _retry_catalog_op(lambda: catalog.load_table(table_name))
     elif backend == GLUE_BACKEND_NAME:
         iceberg_table = GLUE_CATALOG.load_table(table_name)
     else:
@@ -247,9 +251,14 @@ def test_iceberg_streaming(backend, tmp_path, s3_path):
         for i in range(1, len(INPUT_CONTENTS) + 1):
             input_path = inputs_path / f"{i}.txt"
             input_path.write_text(INPUT_CONTENTS[i])
+            # Generous per-wave timeout: with many parallel test workers the
+            # forked `pw.run()` can take tens of seconds just to spin up and
+            # emit its first minibatch. A tight bound here makes the whole test
+            # flaky, because a slow first wave kills this feeder thread and
+            # starves the remaining waves.
             wait_result_with_checker(
                 FileLinesNumberChecker(output_path, 4 * i),
-                30,
+                90,
                 target=None,
             )
 
@@ -279,7 +288,7 @@ def test_iceberg_streaming(backend, tmp_path, s3_path):
         IcebergEntriesCountChecker(
             backend, f"{namespace}.{table_name}", 4 * len(INPUT_CONTENTS)
         ),
-        timeout_sec=100,
+        timeout_sec=180,
     )
 
     all_ids = set()
@@ -494,7 +503,7 @@ def _count_iceberg_snapshots(backend: str, qualified_name: str) -> int:
             name="default",
             uri=os.environ.get("ICEBERG_CATALOG_URI", "http://iceberg:8181"),
         )
-        iceberg_table = catalog.load_table(qualified_name)
+        iceberg_table = _retry_catalog_op(lambda: catalog.load_table(qualified_name))
     elif backend == GLUE_BACKEND_NAME:
         iceberg_table = GLUE_CATALOG.load_table(qualified_name)
     else:
@@ -553,22 +562,31 @@ def test_iceberg_min_commit_frequency_rate_limits_after_first_window(
 
     t = threading.Thread(target=stream_inputs)
     t.start()
+    start_time = time.monotonic()
     wait_result_with_checker(
         FileLinesNumberChecker(output_path, n_files),
-        timeout_sec=int(n_files * file_period_sec) + 10,
+        # Generous slack: under heavy parallel load the pipeline can take far
+        # longer than the nominal streaming duration to ingest every file.
+        timeout_sec=int(n_files * file_period_sec) + 60,
     )
+    t.join()
+    elapsed_sec = time.monotonic() - start_time
 
     snapshots = _count_iceberg_snapshots(backend, f"{namespace}.{table_name}")
-    expected_runtime_sec = n_files * file_period_sec
-    # Floor of how many `min_commit_frequency` intervals fit in the run,
-    # plus 1 for the leading partial interval, plus 1 slack for any commit
-    # at shutdown.
-    max_expected_snapshots = (
-        int(expected_runtime_sec * 1000 / min_commit_frequency_ms) + 2
-    )
+    # The commit rate is bounded by wall-clock time, so the snapshot ceiling has
+    # to be derived from the *actual* elapsed time rather than the ideal
+    # streaming duration. Under load the run stretches out and a ceiling based
+    # on the nominal runtime would spuriously trip even though commits are
+    # correctly throttled. Floor of how many `min_commit_frequency` intervals
+    # fit in the measured run, plus 1 for the leading partial interval, plus 1
+    # slack for any commit at shutdown. Without throttling there would be
+    # roughly one snapshot per 200ms autocommit minibatch (tens of snapshots),
+    # so this bound still fails loudly if `min_commit_frequency` stops
+    # rate-limiting subsequent commits.
+    max_expected_snapshots = int(elapsed_sec * 1000 / min_commit_frequency_ms) + 2
     assert snapshots <= max_expected_snapshots, (
         f"Expected at most {max_expected_snapshots} snapshots in "
-        f"{expected_runtime_sec:.0f}s with min_commit_frequency="
+        f"{elapsed_sec:.0f}s with min_commit_frequency="
         f"{min_commit_frequency_ms}ms, observed {snapshots}. "
         "min_commit_frequency only rate-limits the first commit; subsequent "
         "commits are not throttled."
@@ -593,17 +611,27 @@ def _local_catalog():
     )
 
 
-def _retry_catalog_op(op, *, attempts: int = 5, base_delay: float = 0.2):
-    """Run a local-catalog mutation, retrying transient server errors with
+def _retry_catalog_op(op, *, attempts: int = 6, base_delay: float = 0.2):
+    """Run a local-catalog operation, retrying transient server errors with
     exponential backoff. The `tabulario/iceberg-rest` backend (a SQLite-backed
     JDBC catalog) intermittently answers ``500 ServerError``
-    (`UncheckedSQLException: Unknown failure`) when many parallel test workers
-    create namespaces/tables at once. These are not schema problems — the same
-    request succeeds on retry — so we only swallow `ServerError` and let every
-    other exception (e.g. a genuinely invalid schema) propagate immediately."""
+    (`UncheckedSQLException: Unknown failure` / `Failed to get table ...`) when
+    many parallel test workers hit it at once. These are not schema problems —
+    the same request succeeds on retry — so we only swallow `ServerError` and
+    let every other exception (e.g. a genuinely invalid schema) propagate
+    immediately.
+
+    A mutation that answers 500 may nonetheless have committed server-side, so a
+    subsequent retry observes ``409 AlreadyExists``. Because every namespace and
+    table name in these tests is a fresh uuid, an AlreadyExists can only be the
+    echo of this op's own earlier (apparently-failed) attempt — so we treat it
+    as success rather than letting a transient 500 turn into a spurious
+    conflict failure."""
     for attempt in range(attempts):
         try:
             return op()
+        except (NamespaceAlreadyExistsError, TableAlreadyExistsError):
+            return None
         except ServerError:
             if attempt == attempts - 1:
                 raise
@@ -874,7 +902,7 @@ def test_iceberg_read_date_as_datetime_naive(tmp_path):
     import pyarrow as pa
 
     catalog = _local_catalog()
-    table = catalog.load_table(f"{namespace}.{table_name}")
+    table = _retry_catalog_op(lambda: catalog.load_table(f"{namespace}.{table_name}"))
     arrow_table = pa.table(
         {
             "id": pa.array([1], type=pa.int32()),

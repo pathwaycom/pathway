@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 import pathway as pw
@@ -6,6 +8,36 @@ from pathway.xpacks.llm import embedders
 
 SHORT_TEXT = "A"
 LONG_TEXT = "B" * 50_000
+
+# The shared OpenAI gateway occasionally answers a transient 5xx / dropped
+# connection that is unrelated to the request itself (Envoy "upstream connect
+# error ...", "connection termination", a bare 500, etc.). These markers let a
+# test distinguish such infrastructure noise from a real, deterministic API
+# verdict so it can retry instead of failing spuriously.
+_TRANSIENT_ERROR_MARKERS = (
+    "connection termination",
+    "upstream connect error",
+    "internal server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "connection reset",
+    "connection error",
+    "connection aborted",
+    "server disconnected",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "overloaded",
+    "rate limit",
+    "too many requests",
+    "429",
+)
+
+
+def _is_transient_gateway_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _TRANSIENT_ERROR_MARKERS)
 
 
 @pytest.mark.parametrize(
@@ -43,18 +75,37 @@ def test_openai_embedder(text: str, model: str | None, strategy: str):
 @pytest.mark.parametrize("model", ["text-embedding-ada-002", "text-embedding-3-small"])
 def test_openai_embedder_fails_no_truncation(model: str):
     truncation_keep_strategy = None
+    # Deliberately no retry strategy: the over-long input is rejected
+    # deterministically, so retries only waste time. We classify the gateway's
+    # answer ourselves below and retry the whole call only on transient
+    # infrastructure errors, which keeps the assertion meaningful without
+    # flaking on gateway 5xx noise.
     embedder = embedders.OpenAIEmbedder(
         model=model,
         truncation_keep_strategy=truncation_keep_strategy,
-        retry_strategy=pw.udfs.ExponentialBackoffRetryStrategy(),
+        retry_strategy=pw.udfs.NoRetryStrategy(),
     )
 
     sync_embedder = _coerce_sync(embedder.func)
 
-    with pytest.raises(Exception) as exc:
-        sync_embedder([LONG_TEXT])
+    expected_markers = ("maximum context length", "maximum input length")
+    last_error: str | None = None
+    for attempt in range(6):
+        with pytest.raises(Exception) as exc:
+            sync_embedder([LONG_TEXT])
+        message = str(exc.value)
+        if any(marker in message for marker in expected_markers):
+            return
+        last_error = message
+        if _is_transient_gateway_error(message):
+            time.sleep(2.0)
+            continue
+        pytest.fail(f"embedder raised an unexpected (non-transient) error: {message}")
 
-    assert "maximum context length" in str(exc) or "maximum input length" in str(exc)
+    pytest.fail(
+        "embedder kept returning transient gateway errors instead of the "
+        f"expected context-length rejection; last error: {last_error}"
+    )
 
 
 def test_openai_embedder_with_common_parameter():
