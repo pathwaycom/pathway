@@ -9,6 +9,7 @@ from utils import (
     MongoDBContext,
     MssqlContext,
     MySQLContext,
+    NeonContext,
     PgvectorContext,
     PostgresContext,
     PostgresWithTlsContext,
@@ -54,6 +55,16 @@ def postgres_with_tls():
 @pytest.fixture
 def pgvector():
     return PgvectorContext()
+
+
+@pytest.fixture
+def neon():
+    # ``NeonContext`` is a context manager: on exit it drops every table the
+    # test created so nothing survives the run, whatever the verdict — Neon
+    # storage quotas are tight and the backend may be a real cloud project,
+    # not just an ephemeral branch.
+    with NeonContext() as ctx:
+        yield ctx
 
 
 @pytest.fixture

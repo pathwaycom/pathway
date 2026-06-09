@@ -57,6 +57,33 @@ PGVECTOR_SETTINGS = {
     "password": POSTGRES_DB_PASSWORD,
 }
 
+# NeonDB is exposed through the official ``neondatabase/neon_local`` proxy
+# container (service name ``neon`` in docker-compose). The proxy speaks the
+# plain PostgreSQL wire protocol on 5432 and forwards to an ephemeral branch of
+# a real Neon cloud project. Every connection parameter is read from the
+# environment so nothing is hardcoded; the defaults are the neon_local proxy's
+# well-known values, so the suite runs against the docker-compose ``neon``
+# service with no configuration:
+#   NEON_HOST     - proxy host                       (default: ``neon``)
+#   NEON_PORT     - proxy port                        (default: ``5432``)
+#   NEON_USER     - proxy database user               (default: ``neon``)
+#   NEON_PASSWORD - proxy database password           (default: ``npg``)
+#   NEON_DATABASE - database name                     (default: ``neondb``)
+# Overriding them lets the suite point at a neon_local container published on
+# localhost, or any other reachable proxy, outside CI.
+NEON_DB_HOST = os.environ.get("NEON_HOST", "neon")
+NEON_DB_PORT = int(os.environ.get("NEON_PORT", "5432"))
+NEON_DB_USER = os.environ.get("NEON_USER", "neon")
+NEON_DB_PASSWORD = os.environ.get("NEON_PASSWORD", "npg")
+NEON_DB_NAME = os.environ.get("NEON_DATABASE", "neondb")
+NEON_SETTINGS = {
+    "host": NEON_DB_HOST,
+    "port": str(NEON_DB_PORT),
+    "dbname": NEON_DB_NAME,
+    "user": NEON_DB_USER,
+    "password": NEON_DB_PASSWORD,
+}
+
 QUEST_DB_HOST = "questdb"
 QUEST_DB_WIRE_PORT = 8812
 QUEST_DB_LINE_PORT = 9000
@@ -465,6 +492,96 @@ class PostgresWithTlsContext(WireProtocolSupporterContext):
             user=POSTGRES_DB_USER,
             password=POSTGRES_DB_PASSWORD,
         )
+
+
+class NeonContext(WireProtocolSupporterContext):
+
+    def __init__(self, timeout_sec: float = 120.0):
+        # The proxy provisions its ephemeral branch from a real Neon project, so
+        # it cannot work without these. Fail loudly and immediately on a missing
+        # credential rather than letting the connect loop below time out with an
+        # opaque error — a misconfigured CI must never pass by accident.
+        missing = [
+            name
+            for name in ("NEON_API_KEY", "NEON_PROJECT_ID")
+            if not os.environ.get(name)
+        ]
+        if missing:
+            raise RuntimeError(
+                "NeonDB integration tests require "
+                + " and ".join(missing)
+                + " to be set: the neon_local proxy uses them to provision an "
+                "ephemeral branch of a real Neon project."
+            )
+
+        # The ``neon_local`` proxy provisions a fresh ephemeral branch when its
+        # container starts; the upstream compute can take several seconds to
+        # become routable, and the proxy may briefly refuse connections in that
+        # window. The compose dependency is therefore ``service_started`` (not
+        # ``service_healthy``), so wait for the endpoint here with bounded
+        # backoff — the same approach ``_connect_to_mysql`` uses for the MySQL
+        # init window.
+        deadline = time.monotonic() + timeout_sec
+        delay = 0.5
+        while True:
+            try:
+                super().__init__(
+                    host=NEON_DB_HOST,
+                    port=NEON_DB_PORT,
+                    database=NEON_DB_NAME,
+                    user=NEON_DB_USER,
+                    password=NEON_DB_PASSWORD,
+                )
+                self._tracked_tables: set[str] = set()
+                return
+            except psycopg2.OperationalError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 5.0)
+
+    def __enter__(self) -> "NeonContext":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        # Drop this context's tables and close the connection on exit, whatever
+        # the verdict — see ``cleanup``.
+        self.cleanup()
+
+    def random_table_name(self) -> str:
+        # Track every name handed out so ``cleanup`` can drop it even if the
+        # test that used it left it behind (e.g. an assertion failed before a
+        # manual DROP, or the test creates the table with no DROP at all).
+        name = super().random_table_name()
+        self._tracked_tables.add(name)
+        return name
+
+    @staticmethod
+    def _quote_ident(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    def cleanup(self) -> None:
+        """Drop the tables this context created, then close the connection.
+        Called from the ``neon`` fixture teardown, so it runs whatever the test
+        verdict — pass, fail, or error. Only this instance's own tables (tracked
+        through ``random_table_name``) are touched, so the suite stays
+        parallel-safe and nothing leaks between tests in a run. End-of-run
+        leftovers need no handling here: the proxy deletes the ephemeral Neon
+        branch on shutdown (``DELETE_BRANCH=true``).
+        """
+        for name in self._tracked_tables:
+            try:
+                self.cursor.execute(
+                    f"DROP TABLE IF EXISTS {self._quote_ident(name)} CASCADE"
+                )
+            except Exception as e:
+                logging.warning(f"NeonDB cleanup: failed to drop table {name}: {e}")
+        self._tracked_tables.clear()
+
+        try:
+            self.connection.close()
+        except Exception:
+            pass
 
 
 class PgvectorContext(WireProtocolSupporterContext):
