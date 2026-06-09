@@ -1,5 +1,5 @@
 ### Introduction
-To contribute code to the Pathway project, start by discussing your proposed changes on Discord or by filing an issue. 
+To contribute code to the Pathway Live Data Framework project, start by discussing your proposed changes on Discord or by filing an issue. 
 Once approved, follow the fork + pull request model against the main branch, ensuring you've signed the contributor license agreement.
 
 ### Context
