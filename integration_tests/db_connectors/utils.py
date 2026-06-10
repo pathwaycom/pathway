@@ -18,7 +18,6 @@ import psycopg2
 import pymssql
 import requests
 from pymongo import MongoClient
-from pymongo.read_concern import ReadConcern
 
 import pathway as pw
 from pathway.internals import api, dtype
@@ -108,6 +107,17 @@ CLICKHOUSE_CONNECTION_STRING = (
 MONGODB_HOST_WITH_PORT = "mongodb:27017"
 MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
+
+ELASTICSEARCH_HOST = "elasticsearch"
+ELASTICSEARCH_PORT = 9200
+ELASTICSEARCH_URL = f"http://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"
+
+
+def elasticsearch_now_ms() -> int:
+    # The Elasticsearch reader requires a numeric timestamp column and watermarks
+    # by it; tests build per-document timestamps off this epoch-millisecond clock.
+    return int(time.time() * 1000)
+
 
 KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
 KAFKA_SETTINGS = {
@@ -795,11 +805,18 @@ class MongoDBContext:
         return collection_name in db.list_collection_names()
 
     def get_full_collection(self, collection_name):
+        # Read with the default ("local") read concern, NOT "majority". The tests
+        # gate on this via default-read-concern polls (e.g. `count_documents`), and
+        # the connector writes with the default write concern (w:1), so the data is
+        # already committed on the primary. A "majority" read here can lag behind
+        # those just-written rows under load — the single-node replica set's
+        # majority-commit point advances slightly after the write is locally
+        # visible — producing a spurious "row missing" assertion even though the
+        # data is present (it would appear a few hundred ms later). Reading the
+        # primary with the default concern returns the same committed state the
+        # poll observed.
         db = self.client[MONGODB_BASE_NAME]
-        collection = db[collection_name].with_options(
-            read_concern=ReadConcern("majority")
-        )
-        return list(collection.find({}, {"_id": 0}))
+        return list(db[collection_name].find({}, {"_id": 0}))
 
     def get_collection(
         self, collection_name: str, field_names: list[str]
@@ -911,6 +928,158 @@ class DynamoDBContext:
 
     def generate_table_name(self) -> str:
         return "table" + str(uuid.uuid4())
+
+
+class ElasticsearchContext:
+    """Minimal Elasticsearch helper for the input-connector tests.
+
+    Talks to the cluster over its REST API with ``requests`` so the tests do not
+    depend on the Python ``elasticsearch`` client. Documents are indexed with
+    ``refresh="wait_for"`` so they are immediately visible to the connector's
+    search queries.
+
+    Every request goes through :meth:`_request`, which retries on transient
+    connection / read-timeout errors. A single Elasticsearch node shared by many
+    parallel xdist workers (each also running a Pathway engine that hammers it)
+    can momentarily take longer than a naive timeout to answer; the retry makes
+    the bookkeeping resilient so it never turns cluster back-pressure into a
+    spurious test failure (the same reason :func:`_connect_to_mysql` waits for
+    MySQL to become reachable).
+    """
+
+    # Generous per-attempt timeout plus retries: under heavy parallel load a
+    # request can legitimately take a while, and an occasional dropped
+    # connection should be retried rather than failing the test.
+    _REQUEST_TIMEOUT = 120
+    _MAX_ATTEMPTS = 8
+
+    def __init__(self, base_url: str = ELASTICSEARCH_URL):
+        self.base_url = base_url.rstrip("/")
+        self._created_indices: list[str] = []
+        self._session = requests.Session()
+
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        kwargs.setdefault("timeout", self._REQUEST_TIMEOUT)
+        url = f"{self.base_url}{path}"
+        last_exc: Exception | None = None
+        for attempt in range(self._MAX_ATTEMPTS):
+            try:
+                return self._session.request(method, url, **kwargs)
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                time.sleep(min(0.5 * (2**attempt), 8.0))
+        assert last_exc is not None
+        raise last_exc
+
+    def generate_index_name(self) -> str:
+        return f'es_{str(uuid.uuid4()).replace("-", "")}'
+
+    def create_index(
+        self,
+        index_name: str,
+        properties: dict[str, dict[str, str]],
+        *,
+        dynamic: bool = True,
+    ) -> str:
+        """Create an index with an explicit mapping.
+
+        The timestamp and id columns must be given sortable mappings (``long``
+        and ``keyword`` respectively) so the connector can ``range``-filter and
+        sort on them. Pass ``dynamic=False`` to keep all other fields in
+        ``_source`` (so the connector still reads them) while never indexing
+        them — this avoids dynamic-mapping conflicts when a single field holds
+        values of different JSON shapes across documents (e.g. a ``Json`` column
+        that is sometimes an object, sometimes an array, sometimes a scalar).
+        """
+        mappings: dict[str, Any] = {"properties": properties}
+        if not dynamic:
+            mappings["dynamic"] = False
+        # Track the index up-front so cleanup runs even if a retried create
+        # actually succeeded server-side before a read timeout surfaced.
+        self._created_indices.append(index_name)
+        response = self._request("PUT", f"/{index_name}", json={"mappings": mappings})
+        # A create that timed out after succeeding, then retried, comes back as
+        # "already exists" — treat that as success.
+        if response.status_code == 400 and (
+            "resource_already_exists_exception" in response.text
+        ):
+            return index_name
+        response.raise_for_status()
+        return index_name
+
+    def refresh(self, index_name: str) -> None:
+        self._request("POST", f"/{index_name}/_refresh")
+
+    def get_all_sources(self, index_name: str) -> list[dict[str, Any]]:
+        """Return the ``_source`` of every document in the index."""
+        self.refresh(index_name)
+        response = self._request(
+            "GET",
+            f"/{index_name}/_search",
+            json={"size": 10000, "query": {"match_all": {}}},
+        )
+        response.raise_for_status()
+        return [hit["_source"] for hit in response.json()["hits"]["hits"]]
+
+    def index_document(
+        self, index_name: str, document: dict[str, Any], *, refresh: bool = True
+    ) -> None:
+        params = {"refresh": "wait_for"} if refresh else {}
+        response = self._request(
+            "POST", f"/{index_name}/_doc", json=document, params=params
+        )
+        response.raise_for_status()
+
+    def index_documents(
+        self,
+        index_name: str,
+        documents: list[dict[str, Any]],
+        *,
+        refresh: bool = True,
+        id_field: str | None = None,
+    ) -> None:
+        """Bulk-index documents.
+
+        When ``id_field`` is given, each document's ``_id`` is set from that
+        field so a retried bulk (after a transient error) upserts rather than
+        duplicating — keeping document counts exact under parallel load.
+        """
+        if not documents:
+            return
+        lines = []
+        for document in documents:
+            if id_field is not None:
+                action = {"index": {"_id": str(document[id_field])}}
+            else:
+                action = {"index": {}}
+            lines.append(json.dumps(action))
+            lines.append(json.dumps(document))
+        body = "\n".join(lines) + "\n"
+        params = {"refresh": "wait_for"} if refresh else {}
+        response = self._request(
+            "POST",
+            f"/{index_name}/_bulk",
+            data=body,
+            params=params,
+            headers={"Content-Type": "application/x-ndjson"},
+        )
+        response.raise_for_status()
+        assert not response.json().get("errors"), response.text
+
+    def document_count(self, index_name: str) -> int:
+        self.refresh(index_name)
+        response = self._request("GET", f"/{index_name}/_count")
+        response.raise_for_status()
+        return response.json()["count"]
+
+    def delete_index(self, index_name: str) -> None:
+        self._request("DELETE", f"/{index_name}", params={"ignore_unavailable": "true"})
+
+    def cleanup(self) -> None:
+        for index_name in self._created_indices:
+            self.delete_index(index_name)
+        self._created_indices.clear()
+        self._session.close()
 
 
 class MySQLContext:
@@ -1211,6 +1380,41 @@ class MssqlContext:
             f"CDC capture agent did not produce {target_count} rows for "
             f"'{capture_instance}' within {timeout_sec}s — last seen: {last_count}"
         )
+
+    def ensure_database_cdc(self) -> None:
+        """Idempotently enable change data capture at the database level.
+
+        Table-level ``sp_cdc_enable_table`` (see ``enable_cdc``) fails with
+        error 22901 unless the database itself is CDC-enabled first.  The
+        docker ``mssql-init`` job runs ``sp_cdc_enable_db`` once, but relying
+        on a single external one-shot step makes every CDC test flaky: if that
+        step is skipped or silently fails (``sqlcmd`` does not fail on SQL
+        errors without ``-b``) the whole suite collapses with 22901 in setup.
+        Re-establishing the precondition from inside the fixture makes the CDC
+        tests self-sufficient regardless of how the database was provisioned.
+
+        Guarded by ``is_cdc_enabled`` so the steady state is a cheap no-op, and
+        tolerant of the concurrent-enable race under xdist: if another worker
+        enables CDC between our check and our ``EXEC``, ``sp_cdc_enable_db``
+        rejects the second call — we re-confirm the desired end state and only
+        re-raise if it is genuinely not enabled.
+        """
+        self.execute_sql(
+            "SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()"
+        )
+        row = self.cursor.fetchone()
+        if row is not None and row[0]:
+            return
+        try:
+            self.execute_sql("EXEC sys.sp_cdc_enable_db", drain_status_rows=True)
+        except pymssql.exceptions.OperationalError as e:
+            self.execute_sql(
+                "SELECT is_cdc_enabled FROM sys.databases WHERE name = DB_NAME()"
+            )
+            row = self.cursor.fetchone()
+            if not (row is not None and row[0]):
+                raise
+            logging.warning(f"sp_cdc_enable_db raced with another worker: {e}")
 
     def enable_cdc(
         self, table_name: str, max_retries: int = 10, retry_delay: float = 1.0

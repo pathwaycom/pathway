@@ -115,6 +115,7 @@ use crate::connectors::data_storage::data_lake::iceberg::{IcebergBatchWriter, Ic
 use crate::connectors::data_storage::data_lake::{
     DeltaBatchWriter, MaintenanceMode, PathwayStorageFactory,
 };
+use crate::connectors::data_storage::elasticsearch::build_elasticsearch_reader;
 use crate::connectors::data_storage::mssql::MssqlWriter;
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
@@ -4618,6 +4619,39 @@ impl ElasticSearchParams {
     }
 }
 
+/// Polling parameters for the Elasticsearch input connector. Carried alongside
+/// the shared [`ElasticSearchParams`] (host / index / auth) so the generalized
+/// polling reader knows which columns drive the watermark and how often to poll.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct ElasticSearchReaderParams {
+    timestamp_field: String,
+    id_field: String,
+    max_transaction_duration_ms: i64,
+    read_batch_size: usize,
+    poll_interval_ms: i64,
+}
+
+#[pymethods]
+impl ElasticSearchReaderParams {
+    #[new]
+    fn new(
+        timestamp_field: String,
+        id_field: String,
+        max_transaction_duration_ms: i64,
+        read_batch_size: usize,
+        poll_interval_ms: i64,
+    ) -> Self {
+        ElasticSearchReaderParams {
+            timestamp_field,
+            id_field,
+            max_transaction_duration_ms,
+            read_batch_size,
+            poll_interval_ms,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen, name = "DeltaOptimizerRule")]
 pub struct PyDeltaOptimizerRule {
@@ -4747,6 +4781,7 @@ pub struct DataStorage {
     snapshot_maintenance_on_output: bool,
     aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
     elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
+    elasticsearch_reader_params: Option<Arc<Py<ElasticSearchReaderParams>>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Arc<Py<PythonSubject>>>,
     unique_name: Option<UniqueName>,
@@ -5310,6 +5345,7 @@ impl DataStorage {
         snapshot_maintenance_on_output = false,
         aws_s3_settings = None,
         elasticsearch_params = None,
+        elasticsearch_reader_params = None,
         parallel_readers = None,
         python_subject = None,
         unique_name = None,
@@ -5357,6 +5393,7 @@ impl DataStorage {
         snapshot_maintenance_on_output: bool,
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
+        elasticsearch_reader_params: Option<Py<ElasticSearchReaderParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
         unique_name: Option<UniqueName>,
@@ -5421,6 +5458,7 @@ impl DataStorage {
             snapshot_maintenance_on_output,
             aws_s3_settings: aws_s3_settings.map(Into::into),
             elasticsearch_params: elasticsearch_params.map(Into::into),
+            elasticsearch_reader_params: elasticsearch_reader_params.map(Into::into),
             parallel_readers,
             python_subject: python_subject.map(Into::into),
             unique_name,
@@ -6441,6 +6479,17 @@ impl DataStorage {
                     .map_err(|e| {
                         PyIOError::new_err(format!("Failed to subscribe to NATS topic: {e}"))
                     })?;
+                // Ensure the SUBSCRIBE has reached the server before this builder
+                // returns. async_nats buffers protocol commands and flushes them
+                // on a background interval; without forcing a flush, the dataflow
+                // can start and a NATS *writer* in the same program can publish
+                // before the subscription is registered server-side, so core-NATS
+                // (non-JetStream) pub/sub silently drops those first messages.
+                // `flush` sends PING and awaits PONG, guaranteeing the server has
+                // processed the SUBSCRIBE.
+                client.flush().await.map_err(|e| {
+                    PyIOError::new_err(format!("Failed to flush NATS subscription: {e}"))
+                })?;
                 Ok::<NatsSubscriber, PyErr>(subscriber)
             })?;
             nats::NatsPoller::Simple(subscriber)
@@ -6696,6 +6745,57 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn construct_elasticsearch_reader(
+        &self,
+        py: pyo3::Python,
+        scope: &Scope,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["elasticsearch"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .elasticsearch_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For elasticsearch input, elasticsearch_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+        let client = params.client(py)?;
+        let index_name = params.index_name.clone();
+
+        let reader_params_py: &Py<_> = self
+            .elasticsearch_reader_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For elasticsearch input, elasticsearch_reader_params section must be specified",
+                )
+            })?
+            .borrow();
+        let reader_params = reader_params_py.get();
+
+        let reader = build_elasticsearch_reader(
+            client,
+            index_name,
+            reader_params.timestamp_field.clone(),
+            reader_params.id_field.clone(),
+            self.mode,
+            reader_params.max_transaction_duration_ms,
+            reader_params.read_batch_size,
+            time::Duration::from_millis(u64::try_from(reader_params.poll_interval_ms).map_err(
+                |_| PyValueError::new_err("poll_interval must be a non-negative duration"),
+            )?),
+        )
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to create ElasticSearch reader: {e}"))
+        })?;
+        Ok((Box::new(reader), 1))
+    }
+
     fn construct_mongodb_reader(&self, scope: &Scope) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         if let Some(license) = scope.license.as_ref() {
             license.check_entitlements(["mongodb-oplog-reader"])?;
@@ -6736,6 +6836,7 @@ impl DataStorage {
             "postgres" => self.construct_postgres_reader(py, data_format, scope, properties),
             "mongodb" => self.construct_mongodb_reader(scope),
             "mysql" => self.construct_mysql_reader(py, data_format, scope),
+            "elasticsearch" => self.construct_elasticsearch_reader(py, scope),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -7940,6 +8041,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<ElasticSearchReaderParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
     m.add_class::<CsvParserSettings>()?;
     m.add_class::<ValueField>()?;

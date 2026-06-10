@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::mem::take;
 use std::time::Duration;
 
-use mongodb::bson::{doc, Document as BsonDocument};
+use mongodb::bson::{doc, Document as BsonDocument, Timestamp};
 use mongodb::change_stream::event::{ChangeStreamEvent, OperationType, ResumeToken};
 use mongodb::options::{
     DeleteOneModel as MongoDeleteOneModel, FullDocumentType, UpdateOneModel as MongoUpdateOneModel,
@@ -308,6 +308,18 @@ impl MongoSnapshotEntry {
     }
 }
 
+/// Where the change-stream cursor should begin.
+enum StreamStart {
+    /// Cold start: anchor to a definite cluster time captured *before* the
+    /// collection dump.  Unlike opening a cursor with no anchor (which starts
+    /// at the fuzzy "cursor established" moment and can miss events committed
+    /// around that point under load), this guarantees every event at or after
+    /// the timestamp is delivered, with no gap against the dump.
+    OperationTime(Timestamp),
+    /// Persistence resume: continue strictly after the saved oplog position.
+    AfterToken(ResumeToken),
+}
+
 pub struct MongoReader {
     namespace: MongoNamespace,
     client: MongoClient,
@@ -351,24 +363,18 @@ impl MongoReader {
             .collection(self.collection.name())
     }
 
-    fn capture_start_token(&self) -> Result<ResumeToken, ReadError> {
+    /// Read a change stream's current oplog position (resume token) without
+    /// assuming anything about pending events.  The initial `watch` aggregate
+    /// usually carries a `postBatchResumeToken`, returned immediately; if it
+    /// doesn't, drive `next_if_any` a few times so an empty getMore populates
+    /// it.  Used on a cold start to anchor the snapshot offset to the *already
+    /// open* live cursor's starting point — so nothing can fall between the
+    /// position read here and live tailing.  If the token never appears the
+    /// collection is not on a replica set and change streams are unavailable.
+    fn fetch_resume_token(
+        stream: &mut ChangeStream<ChangeStreamEvent<BsonDocument>>,
+    ) -> Result<ResumeToken, ReadError> {
         const MAX_TOKEN_FETCH_ATTEMPTS: usize = 5;
-        // Open a fresh change stream just to read the current oplog position.
-        // We use `start_at_operation_time(now)` so the cursor is anchored to
-        // a definite point in time even if the initial aggregate response
-        // happens to omit `postBatchResumeToken`.  We then drive `next_if_any`
-        // up to a few times: each call ends with the driver having processed
-        // either an event or an empty getMore response, and in both cases the
-        // `postBatchResumeToken` carried by that response is cached as the
-        // stream's current resume token.  Any event the cursor returns is
-        // safe to discard — `dump_collection` reads the post-event state and
-        // `catchup_replay` starts strictly after the returned token.
-        let mut stream = self
-            .collection()
-            .watch()
-            .max_await_time(Duration::from_millis(200))
-            .run()?;
-
         if let Some(token) = stream.resume_token() {
             return Ok(token);
         }
@@ -379,6 +385,40 @@ impl MongoReader {
             }
         }
         Err(MongoDbError::ReplicationNotConfigured.into())
+    }
+
+    /// Read the current cluster operation time, used to anchor a cold-start
+    /// cursor to a definite point before the dump (see [`StreamStart`]).  On a
+    /// replica set every command response carries `operationTime`; its absence
+    /// means change streams are unavailable.
+    fn current_operation_time(&self) -> Result<Timestamp, ReadError> {
+        let response = self
+            .client
+            .database(&self.namespace.db)
+            .run_command(doc! { "ping": 1 })
+            .run()?;
+        response
+            .get_timestamp("operationTime")
+            .map_err(|_| MongoDbError::ReplicationNotConfigured.into())
+    }
+
+    /// Open the change stream used for both catch-up and live tailing.
+    /// `UpdateLookup` makes replace/update events carry the full post-image, and
+    /// the await time bounds how long a live `next()` blocks between polls.
+    fn open_change_stream(
+        &self,
+        start: StreamStart,
+    ) -> Result<ChangeStream<ChangeStreamEvent<BsonDocument>>, ReadError> {
+        let collection = self.collection();
+        let builder = collection
+            .watch()
+            .full_document(FullDocumentType::UpdateLookup)
+            .max_await_time(Duration::from_secs(1));
+        let stream = match start {
+            StreamStart::OperationTime(ts) => builder.start_at_operation_time(ts).run()?,
+            StreamStart::AfterToken(token) => builder.start_after(token).run()?,
+        };
+        Ok(stream)
     }
 
     fn doc_id_string(doc: &BsonDocument) -> String {
@@ -414,22 +454,6 @@ impl MongoReader {
     /// These bytes can be round-tripped via `bson::from_slice::<ResumeToken>`.
     fn token_bytes(token: &ResumeToken) -> Vec<u8> {
         mongodb::bson::to_vec(token).unwrap_or_default()
-    }
-
-    /// Extract the `_data` hex string bytes from a `ResumeToken` for ordering
-    /// comparisons. `MongoDB` guarantees that `_data` values are lexicographically
-    /// ordered by oplog position. We must compare only `_data`, not the full BSON
-    /// document, because `kHighWaterMark` tokens (from `capture_start_token`) and
-    /// `kEventCandidate` tokens (from event `_id`s) have different `_data` string
-    /// lengths. Their serialized BSON documents therefore have different lengths, so
-    /// a raw `bson::to_vec` byte comparison is dominated by the document-length
-    /// prefix rather than the actual oplog position.
-    fn token_order_key(token: &ResumeToken) -> Vec<u8> {
-        let raw = Self::token_bytes(token);
-        mongodb::bson::from_slice::<mongodb::bson::Document>(&raw)
-            .ok()
-            .and_then(|doc| doc.get_str("_data").ok().map(|s| s.as_bytes().to_vec()))
-            .unwrap_or(raw)
     }
 
     fn apply_event_to_snapshot(
@@ -475,87 +499,50 @@ impl MongoReader {
         }
     }
 
-    fn catchup_replay(
-        &self,
-        snapshot: &mut Vec<MongoSnapshotEntry>,
+    /// Fold the change-stream backlog into `entries` until the cursor is caught
+    /// up to the current oplog tip, then leave it positioned for live tailing.
+    ///
+    /// Catch-up events are applied to the in-memory snapshot rather than emitted
+    /// as live changes so that, on a cold start, events overlapping the
+    /// collection dump are consolidated with it inside a single minibatch (a
+    /// re-applied unchanged upsert nets to nothing) instead of producing
+    /// spurious retraction/insert churn in a later minibatch.  "Caught up" is
+    /// detected by consecutive empty getMores: a change stream returns empty
+    /// only once it has delivered every event up to the majority-committed tip
+    /// (`next_if_any` already blocks up to the stream's `max_await_time`).  The
+    /// same cursor is then reused by `read()` for live events, so — unlike the
+    /// previous capture-token/re-open design — there is no resume-token handoff
+    /// for a concurrently arriving event to slip through.
+    fn drain_catchup(
+        stream: &mut ChangeStream<ChangeStreamEvent<BsonDocument>>,
+        entries: &mut Vec<MongoSnapshotEntry>,
         start_token: ResumeToken,
     ) -> Result<ResumeToken, ReadError> {
-        const MAX_CONSECUTIVE_EMPTIES: usize = 4;
-        // Capture "end mark" — the resume token of the current oplog tip.
-        // We open a second stream just for this, then close it immediately.
-        let end_token = self.capture_start_token()?;
-        if Self::token_order_key(&start_token) >= Self::token_order_key(&end_token) {
-            return Ok(end_token);
-        }
-
-        // Use a large batch_size so a single getMore can carry many historical
-        // events.  The driver still splits into multiple batches if needed;
-        // the loop below polls `next_if_any` until the stream's resume token
-        // has advanced past `end_token`.  `max_await_time` is kept short so
-        // that the empty-tail case (no events between runs) returns quickly.
-        let mut stream = self
-            .collection()
-            .watch()
-            .start_after(start_token)
-            .full_document(FullDocumentType::UpdateLookup)
-            .max_await_time(Duration::from_millis(500))
-            .batch_size(10_000_u32)
-            .run()?;
-
-        let mut last_token: Option<ResumeToken> = None;
-
-        // Drive the stream until its resume token has advanced past `end_token`.
-        //
-        // `next_if_any` returns `None` for either `BatchValue::Empty` (the
-        // server returned a getMore with no documents within `max_await_time`,
-        // typically meaning we've drained the historical backlog and are now
-        // tailing the live oplog tip) or `BatchValue::Exhausted` (cursor closed).
-        // For both we re-check `resume_token`: MongoDB advances it on every
-        // getMore, including empty ones, so once it has crossed `end_token` we
-        // know all events up to that mark have been observed and it's safe to
-        // stop.  Otherwise we keep polling, with a small sleep between empty
-        // attempts and a hard cap on consecutive empties so a stuck server
-        // can't hang the connector.
+        const MAX_CONSECUTIVE_EMPTIES: usize = 2;
+        let mut last_token = start_token;
         let mut empties = 0usize;
         loop {
             match stream.next_if_any() {
                 Ok(Some(event)) => {
                     empties = 0;
-                    let current_token = event.id.clone();
-
-                    Self::apply_event_to_snapshot(snapshot, &event)?;
-                    last_token = Some(current_token.clone());
-
-                    // Stop once we've reached (or passed) the end mark.
-                    if Self::token_order_key(&current_token) >= Self::token_order_key(&end_token) {
-                        break;
-                    }
+                    last_token = event.id.clone();
+                    Self::apply_event_to_snapshot(entries, &event)?;
                 }
                 Ok(None) => {
-                    // `resume_token` reflects the latest oplog position the
-                    // stream has observed, even on empty getMore responses.
+                    // `resume_token` advances on every getMore, including empty
+                    // ones, so it tracks the oplog position even with no events.
                     if let Some(rt) = stream.resume_token() {
-                        if Self::token_order_key(&rt) >= Self::token_order_key(&end_token) {
-                            last_token = Some(rt);
-                            break;
-                        }
+                        last_token = rt;
                     }
                     empties += 1;
                     if empties >= MAX_CONSECUTIVE_EMPTIES {
-                        // The server is taking too long to advance.  Return
-                        // whatever progress we made; the live change stream
-                        // (in streaming mode) will keep filling the gap, and
-                        // a subsequent persistence resume in static mode will
-                        // continue from the last applied event.
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(e) => return Err(ReadError::MongoDb(classify_mongo_error(e))),
             }
         }
-
-        Ok(last_token.unwrap_or(end_token))
+        Ok(last_token)
     }
 
     fn build_snapshot_block(
@@ -583,56 +570,49 @@ impl MongoReader {
     }
 
     fn initialize(&mut self) -> Result<(), ReadError> {
-        if let Some(token_bytes) = self.saved_resume_token.take() {
-            // Resuming from a persisted oplog position.  Find the current oplog tip,
-            // then replay every change-stream event that arrived between the saved
-            // token and that tip.  All replayed entries share the single `end_token`
-            // offset, so they must be delivered as an atomic transactional block —
-            // otherwise a mid-batch commit would persist `end_token` before the
-            // remaining in-memory entries are processed, and a crash at that point
-            // would drop them (the main change stream resumes strictly after
-            // `end_token`).  Wrapping in NewSource/FinishedSource tells the engine
-            // not to commit until the whole block is consumed.
+        // One durable change-stream cursor is opened up front and used for BOTH
+        // the initial catch-up and subsequent live tailing.  Opening it before
+        // the snapshot is taken (cold start) or at the saved position (resume)
+        // guarantees there is no window between "snapshot taken" and "live
+        // stream attached" in which a concurrently committed event could be
+        // lost: the earlier design opened short-lived streams to capture oplog
+        // tokens and then re-opened a separate live stream with `start_after`,
+        // and under concurrent load an event landing around that handoff could
+        // slip through and never be delivered.
+        //
+        // Catch-up events are folded into the snapshot block (delivered as one
+        // atomic NewSource/FinishedSource transaction) so the dump overlap is
+        // consolidated within a single minibatch.
+        let (start_token, mut stream, mut entries) = if let Some(token_bytes) =
+            self.saved_resume_token.take()
+        {
+            // Resume: tail strictly after the persisted position and replay
+            // only the delta — the full collection dump is not repeated.
             let saved_token = mongodb::bson::from_slice::<ResumeToken>(&token_bytes)
                 .map_err(|_| MongoDbError::CorruptResumeToken)?;
-            let mut entries = Vec::new();
-            let end_token = self.catchup_replay(&mut entries, saved_token)?;
-            self.snapshot = Self::build_snapshot_block(entries, &end_token);
-            self.is_initialized = true;
+            let stream = self.open_change_stream(StreamStart::AfterToken(saved_token.clone()))?;
+            (saved_token, stream, Vec::new())
+        } else {
+            // Cold start: capture a definite cluster time, open the cursor
+            // anchored at it, THEN dump.  The anchor sits at or before the
+            // dump's snapshot, so the union of "dump" and "cursor from the
+            // anchor" leaves no gap — every event is in one, the other, or
+            // both (the overlap is folded into the snapshot block).
+            let op_time = self.current_operation_time()?;
+            let mut stream = self.open_change_stream(StreamStart::OperationTime(op_time))?;
+            let start_token = Self::fetch_resume_token(&mut stream)?;
+            let entries = self.dump_collection()?;
+            (start_token, stream, entries)
+        };
 
-            if self.mode.is_polling_enabled() {
-                self.change_stream = Some(
-                    self.collection()
-                        .watch()
-                        .start_after(end_token)
-                        .full_document(FullDocumentType::UpdateLookup)
-                        .max_await_time(Duration::from_secs(1))
-                        .run()?,
-                );
-            }
-            return Ok(());
-        }
-
-        // Cold start: capture the current oplog position, dump the full collection,
-        // then replay any writes that arrived during the dump.
-        let start_token = self.capture_start_token()?;
-        let mut entries = self.dump_collection()?;
-        let resume_token = self.catchup_replay(&mut entries, start_token)?;
-
-        // Each entry carries the oplog token so seek() can restore the exact position
-        // on restart, enabling the catch-up replay path above.
+        // The resulting token is carried by every snapshot entry so seek() can
+        // restore the exact oplog position on restart (the resume path above).
+        let resume_token = Self::drain_catchup(&mut stream, &mut entries, start_token)?;
         self.snapshot = Self::build_snapshot_block(entries, &resume_token);
         self.is_initialized = true;
 
         if self.mode.is_polling_enabled() {
-            self.change_stream = Some(
-                self.collection()
-                    .watch()
-                    .start_after(resume_token)
-                    .full_document(FullDocumentType::UpdateLookup)
-                    .max_await_time(Duration::from_secs(1))
-                    .run()?,
-            );
+            self.change_stream = Some(stream);
         }
 
         Ok(())

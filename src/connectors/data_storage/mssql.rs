@@ -742,10 +742,28 @@ impl MssqlReader {
 
                     let qualified_name = qualified_table_name(&schema_name, &table_name);
                     let qualified_lit = n_string_literal(&qualified_name);
+                    // Match a capture instance only if its source object is the
+                    // table that currently bears this name AND that table is
+                    // actively tracked by CDC.  `cdc.change_tables.source_object_id`
+                    // alone is not enough: when a CDC-enabled table is dropped
+                    // without `sp_cdc_disable_table` (e.g. a crashed/killed test),
+                    // SQL Server leaves the capture instance behind for a while,
+                    // and its now-dangling `source_object_id` can be reused by an
+                    // unrelated, non-CDC table created afterwards. Matching on the
+                    // bare object id would then report that fresh table as
+                    // CDC-enabled, so a streaming reader would start successfully
+                    // and tail a stale change table forever instead of failing
+                    // fast with `CdcNotEnabledOnTable`. Joining `sys.tables` and
+                    // requiring `is_tracked_by_cdc = 1` rejects both the orphan
+                    // (source table gone) and the object-id-reuse (fresh table is
+                    // not tracked) cases.
                     let query = format!(
-                        "SELECT capture_instance, start_lsn FROM cdc.change_tables \
-                         WHERE source_object_id = OBJECT_ID({qualified_lit}) \
-                         ORDER BY capture_instance"
+                        "SELECT ct.capture_instance, ct.start_lsn \
+                         FROM cdc.change_tables ct \
+                         JOIN sys.tables t ON t.object_id = ct.source_object_id \
+                         WHERE ct.source_object_id = OBJECT_ID({qualified_lit}) \
+                         AND t.is_tracked_by_cdc = 1 \
+                         ORDER BY ct.capture_instance"
                     );
                     let rows = client
                         .simple_query(&query)

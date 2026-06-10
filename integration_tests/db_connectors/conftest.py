@@ -5,6 +5,7 @@ from utils import (
     ClickHouseContext,
     DebeziumContext,
     DynamoDBContext,
+    ElasticsearchContext,
     MilvusContext,
     MongoDBContext,
     MssqlContext,
@@ -85,6 +86,13 @@ def mongodb():
 
 
 @pytest.fixture
+def elasticsearch():
+    ctx = ElasticsearchContext()
+    yield ctx
+    ctx.cleanup()
+
+
+@pytest.fixture
 def debezium():
     return DebeziumContext()
 
@@ -113,6 +121,12 @@ _MSSQL_CAPTURE_JOB_CONFIGURED = False
 def mssql():
     global _MSSQL_CAPTURE_JOB_CONFIGURED
     ctx = MssqlContext()
+    # Guarantee the precondition every CDC test depends on: the database must
+    # be CDC-enabled before any `sp_cdc_enable_table` call.  Done on every
+    # fixture acquisition (idempotent, cheap no-op once enabled) rather than
+    # trusting only the one-shot docker init, which can be skipped or silently
+    # fail and would otherwise make the whole MSSQL suite fail in setup.
+    ctx.ensure_database_cdc()
     if not _MSSQL_CAPTURE_JOB_CONFIGURED:
         # Make the CDC capture job run back-to-back instead of sleeping
         # the default 5 s between scans.  Under heavy xdist parallelism

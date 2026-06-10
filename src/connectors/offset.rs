@@ -35,6 +35,7 @@ pub enum OffsetKey {
     Rabbitmq(RabbitmqStreamType),
     Mssql,
     Mysql,
+    ElasticSearch,
 }
 
 impl HashInto for OffsetKey {
@@ -51,7 +52,11 @@ impl HashInto for OffsetKey {
                 hasher.update(stream_name.as_bytes());
             }
             OffsetKey::Kinesis(shard) => hasher.update(shard.as_bytes()),
-            OffsetKey::Empty | OffsetKey::MongoDb | OffsetKey::Mssql | OffsetKey::Mysql => {}
+            OffsetKey::Empty
+            | OffsetKey::MongoDb
+            | OffsetKey::Mssql
+            | OffsetKey::Mysql
+            | OffsetKey::ElasticSearch => {}
         }
     }
 }
@@ -114,6 +119,27 @@ pub enum OffsetValue {
     MysqlBinlogPos {
         filename: String,
         position: u64,
+    },
+    /// Persistent state of a timestamp-based polling reader (any source driven by
+    /// the generic `PollingReader`).
+    ///
+    /// * `watermark` — the highest `timestamp_column` value strictly below which
+    ///   every row has already been delivered and will never be re-read.
+    /// * `entries_read` — a monotonically increasing count of delivered rows. It
+    ///   carries no semantic state on its own; it exists only so that two
+    ///   frontiers can be ordered (the `watermark` stalls at the live edge while
+    ///   rows keep arriving, so it cannot serve as the progress key by itself).
+    /// * `pending` — the already-delivered rows that still fall inside the overlap
+    ///   window (`timestamp_column >= watermark`), each as an `(id_column,
+    ///   timestamp_column)` pair, and must be deduplicated when the next poll
+    ///   re-reads them. The timestamp is kept alongside the id so the reader can
+    ///   evict an entry once it settles without re-reading the whole window. Stored
+    ///   sorted so the serialized representation and the `Ord` derive are
+    ///   deterministic.
+    PollingWatermark {
+        watermark: i64,
+        entries_read: u64,
+        pending: Vec<(String, i64)>,
     },
 }
 
@@ -203,6 +229,14 @@ impl HashInto for OffsetValue {
             OffsetValue::MysqlBinlogPos { filename, position } => {
                 hasher.update(filename.as_bytes());
                 position.hash_into(hasher);
+            }
+            OffsetValue::PollingWatermark {
+                watermark,
+                entries_read,
+                ..
+            } => {
+                watermark.hash_into(hasher);
+                entries_read.hash_into(hasher);
             }
             OffsetValue::Empty => {}
         }

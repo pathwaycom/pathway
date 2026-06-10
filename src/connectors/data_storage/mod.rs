@@ -12,6 +12,7 @@ pub mod mssql;
 pub mod mysql;
 pub mod nats;
 pub mod null;
+pub mod polling;
 pub mod postgres;
 pub mod python;
 pub mod questdb;
@@ -82,12 +83,13 @@ use serde::{Deserialize, Serialize};
 pub use self::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
 pub use self::data_lake::iceberg::{IcebergError, IcebergReader};
 pub use self::data_lake::LakeWriter;
-pub use self::elasticsearch::ElasticSearchWriter;
+pub use self::elasticsearch::{ElasticSearchError, ElasticSearchReader, ElasticSearchWriter};
 pub use self::mongodb::{MongoReader, MongoWriter};
 pub use self::mssql::{MssqlError, MssqlReader};
 pub use self::mysql::{MysqlError, MysqlReader, MysqlReaderError};
 pub use self::nats::NatsReader;
 pub use self::nats::NatsWriter;
+pub use self::polling::{LiveState, PolledRow, PollingDataSource, PollingReader};
 pub use self::postgres::{
     PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
@@ -368,6 +370,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     Rabbitmq(#[from] RabbitmqError),
+
+    #[error(transparent)]
+    ElasticSearch(#[from] ElasticSearchError),
 }
 
 // Allow `?` on unboxed `AwsKinesisError` in functions returning `Result<_, ReadError>`.
@@ -453,6 +458,7 @@ pub enum StorageType {
     MongoDb,
     Rabbitmq,
     Mysql,
+    ElasticSearch,
 }
 
 impl StorageType {
@@ -480,6 +486,7 @@ impl StorageType {
             StorageType::MongoDb => MongoReader::merge_two_frontiers(lhs, rhs),
             StorageType::Rabbitmq => RabbitmqReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mysql => MysqlReader::merge_two_frontiers(lhs, rhs),
+            StorageType::ElasticSearch => ElasticSearchReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -624,6 +631,24 @@ pub trait Reader {
                         .is_gt() =>
                     {
                         result.advance_offset(offset_key.clone(), other_value.clone());
+                    }
+                    (
+                        OffsetValue::PollingWatermark {
+                            entries_read: offset_entries_read,
+                            ..
+                        },
+                        OffsetValue::PollingWatermark {
+                            entries_read: other_entries_read,
+                            ..
+                        },
+                    ) => {
+                        // The watermark stalls at the live edge while rows keep
+                        // arriving, so ordering by the monotonic delivered-row
+                        // count is the only reliable way to pick the more
+                        // advanced frontier.
+                        if other_entries_read > offset_entries_read {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
                     }
                     (_, _) => {
                         error!("Incomparable offsets in the frontier: {offset_value:?} and {other_value:?}");

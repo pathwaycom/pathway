@@ -5,9 +5,13 @@ pub mod mongodb;
 pub mod mssql;
 pub mod mysql;
 pub mod parquet;
+pub mod polling;
 pub mod postgres;
 pub mod rabbitmq;
 pub mod sqlite;
+
+#[allow(clippy::module_name_repetitions)]
+pub use polling::PollingMetadata;
 
 #[allow(clippy::module_name_repetitions)]
 pub use file_like::FileLikeMetadata;
@@ -42,6 +46,7 @@ pub use sqlite::SQLiteMetadata;
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
 pub enum SourceMetadata {
+    Polling(PollingMetadata),
     FileLike(FileLikeMetadata),
     Kafka(KafkaMetadata),
     MongoDb(MongoDbMetadata),
@@ -52,6 +57,12 @@ pub enum SourceMetadata {
     Parquet(ParquetMetadata),
     Postgres(PostgresMetadata),
     Rabbitmq(RabbitmqMetadata),
+}
+
+impl From<PollingMetadata> for SourceMetadata {
+    fn from(impl_: PollingMetadata) -> Self {
+        Self::Polling(impl_)
+    }
 }
 
 impl From<FileLikeMetadata> for SourceMetadata {
@@ -117,6 +128,7 @@ impl From<SQLiteMetadata> for SourceMetadata {
 impl SourceMetadata {
     pub fn serialize(&self) -> serde_json::Value {
         match self {
+            Self::Polling(meta) => serde_json::to_value(meta),
             Self::FileLike(meta) => serde_json::to_value(meta),
             Self::Kafka(meta) => serde_json::to_value(meta),
             Self::MongoDb(meta) => serde_json::to_value(meta),
@@ -133,7 +145,8 @@ impl SourceMetadata {
 
     pub fn commits_allowed_in_between(&self) -> bool {
         match self {
-            Self::FileLike(_)
+            Self::Polling(_)
+            | Self::FileLike(_)
             | Self::MongoDb(_)
             | Self::Mssql(_)
             | Self::Mysql(_)

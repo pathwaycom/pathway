@@ -49,8 +49,18 @@ RABBITMQ_STREAM_URI = (
 # always transient, so the timeout is generous on purpose.
 RABBITMQ_READY_TIMEOUT = 90.0
 
+# How long to wait for a single freshly created stream to elect a leader before
+# giving up on it and recreating it (see _ensure_stream). The stream coordinator
+# occasionally leaves a stream leaderless under load; recreating nudges it to
+# redo the election, whereas re-querying the same wedged stream never recovers.
+RABBITMQ_STREAM_READY_ATTEMPT = 15.0
+
 # Polling interval while waiting for a transient broker error to clear.
 RABBITMQ_RETRY_INTERVAL = 0.2
+
+# Timeout for a synchronous (confirmed) publish. Generous so a busy broker has
+# time to confirm rather than failing a test on a transient slow round-trip.
+RABBITMQ_SEND_TIMEOUT = 30
 
 # Broker errors that are transient during startup / under load and clear on
 # their own if we retry:
@@ -480,37 +490,70 @@ class RabbitmqTestContext:
     # Create a stream and wait until it is fully usable. create_stream returns
     # before RabbitMQ has propagated the stream's metadata and elected a leader,
     # and under load the create request itself can be lost to a transient error.
-    # Retry the create (StreamAlreadyExists means it is already there), then wait
-    # for the leader. Without this, the rabbitmq fixture errors at setup under
-    # heavy CI load.
+    #
+    # Crucially, re-querying the leader is not always enough on its own: under
+    # load the stream coordinator can leave a freshly created stream permanently
+    # without a leader (leader_ref 65535, with queries returning
+    # StreamDoesNotExist forever). No amount of re-querying *that* stream will
+    # fix it — which is why the previous retry-only loop still timed out at
+    # setup. So if a stream does not become ready within
+    # RABBITMQ_STREAM_READY_ATTEMPT we delete it and create a brand-new one,
+    # repeating until the overall deadline; recreating forces the coordinator to
+    # redo the leader election.
     async def _ensure_stream(self, name: str, deadline: float):
+        while True:
+            await self._create_stream_once(name, deadline)
+            attempt_deadline = min(
+                deadline, time.monotonic() + RABBITMQ_STREAM_READY_ATTEMPT
+            )
+            if await self._wait_until_stream_ready(name, attempt_deadline):
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"RabbitMQ stream {name!r} never elected a leader within "
+                    f"{RABBITMQ_READY_TIMEOUT}s"
+                )
+            # Leader election for this stream is wedged; drop it and retry with a
+            # fresh stream of the same name.
+            await self._safe_delete_stream(name)
+            await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
+
+    # Issue a single create_stream, retrying only transient errors. A stream that
+    # already exists (e.g. recreated after a wedged election) is fine.
+    async def _create_stream_once(self, name: str, deadline: float):
         while True:
             try:
                 await self._producer.create_stream(name)
+                return
             except StreamAlreadyExists:
-                pass  # already created by a previous attempt — fine
-            except RABBITMQ_TRANSIENT_ERRORS:
-                if time.monotonic() >= deadline:
-                    raise
-                await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
-                continue
-            await self._wait_until_stream_ready(name, deadline)
-            return
-
-    # While waiting for the stream to become usable, querying it can yield any
-    # of the transient errors above (StreamDoesNotExist while metadata is still
-    # propagating, StreamNotAvailable while resources start, LeaderNotAvailable
-    # while a leader is elected) — or a connection-level error if the locator
-    # connection blips. Retry until the query succeeds or the deadline fires.
-    async def _wait_until_stream_ready(self, name: str, deadline: float):
-        while True:
-            try:
-                client = await self._producer.default_client
-                await client.query_leader_and_replicas(name)
                 return
             except RABBITMQ_TRANSIENT_ERRORS:
                 if time.monotonic() >= deadline:
                     raise
+                await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
+
+    async def _safe_delete_stream(self, name: str):
+        try:
+            await self._producer.delete_stream(name)
+        except Exception:
+            pass
+
+    # Query the stream's leader until it answers (the stream is then usable) or
+    # the attempt deadline fires. Returns True if the stream became ready and
+    # False if the deadline passed — the caller decides whether to recreate the
+    # stream or give up. Querying can yield any transient error
+    # (StreamDoesNotExist while metadata propagates, StreamNotAvailable while
+    # resources start, LeaderNotAvailable while a leader is elected) or a
+    # connection-level blip on the locator.
+    async def _wait_until_stream_ready(self, name: str, deadline: float) -> bool:
+        while True:
+            try:
+                client = await self._producer.default_client
+                await client.query_leader_and_replicas(name)
+                return True
+            except RABBITMQ_TRANSIENT_ERRORS:
+                if time.monotonic() >= deadline:
+                    return False
                 await asyncio.sleep(RABBITMQ_RETRY_INTERVAL)
 
     async def _cleanup(self):
@@ -561,4 +604,14 @@ class RabbitmqTestContext:
 
     async def _send_async(self, message: str) -> None:
         amqp_message = AMQPMessage(body=message.encode())
-        await self._producer.send(self.stream_name, amqp_message)
+        # send_wait publishes synchronously and waits for the broker's
+        # confirmation, so the message is durably committed — in its own stream
+        # chunk, with the server-side timestamp set — before the caller
+        # proceeds. The buffered send() flushes only every
+        # default_batch_publishing_delay (3 s by default), which under load
+        # races with timestamp-sensitive tests and can pack messages sent
+        # seconds apart into a single chunk, defeating per-message timestamp
+        # filtering (test_rabbitmq_start_from_timestamp).
+        await self._producer.send_wait(
+            self.stream_name, amqp_message, timeout=RABBITMQ_SEND_TIMEOUT
+        )

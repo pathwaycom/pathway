@@ -6,7 +6,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from typing import Literal
+from typing import Callable, Literal
 
 import lz4.block
 import pytest
@@ -15,7 +15,6 @@ from utils import MONGODB_BASE_NAME, MONGODB_CONNECTION_STRING, MongoDBContext
 import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
-    ExceptionAwareThread,
     FileLinesNumberChecker,
     read_jsonlines,
     run,
@@ -125,6 +124,119 @@ def _wait_and_terminate(
     time.sleep(persistence_flush_sec)
     proc.terminate()
     proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# Subprocess workers for the non-persistence streaming tests.  These read a
+# collection in `streaming` mode and run forever, so the pipeline MUST run in a
+# separate process: an in-process `pw.run()` on a daemon thread never returns
+# and leaks the engine's global Rust/tokio state into the rest of the worker,
+# which under concurrency corrupts later in-process runs.  The test process
+# only performs the MongoDB writes and polls the results.
+# ---------------------------------------------------------------------------
+_READ_TO_JSONLINES_WORKER = textwrap.dedent(
+    """\
+    import json
+    import sys
+
+    cfg = json.loads(sys.argv[1])
+
+    import pathway as pw
+    from pathway.internals.parse_graph import G
+    from pathway.tests.utils import run
+
+    class InputSchema(pw.Schema):
+        product: str
+        quantity: int
+        price: float
+
+    G.clear()
+    table = pw.io.mongodb.read(
+        connection_string=cfg["connection_string"],
+        database=cfg["database"],
+        collection=cfg["collection"],
+        schema=InputSchema,
+        mode="streaming",
+    )
+    pw.io.jsonlines.write(table, cfg["output_path"])
+    run()
+    """
+)
+
+_READ_TO_MONGO_WORKER = textwrap.dedent(
+    """\
+    import json
+    import sys
+
+    cfg = json.loads(sys.argv[1])
+
+    import pathway as pw
+    from pathway.internals.parse_graph import G
+    from pathway.tests.utils import run
+
+    class InputSchema(pw.Schema):
+        product: str
+        qty: int
+
+    G.clear()
+    table = pw.io.mongodb.read(
+        connection_string=cfg["connection_string"],
+        database=cfg["database"],
+        collection=cfg["source_collection"],
+        schema=InputSchema,
+        mode="streaming",
+    )
+    pw.io.mongodb.write(
+        table,
+        connection_string=cfg["connection_string"],
+        database=cfg["database"],
+        collection=cfg["dest_collection"],
+        output_table_type="stream_of_changes",
+    )
+    pw.io.jsonlines.write(table, cfg["output_path"])
+    run()
+    """
+)
+
+
+# Generous bound for the FIRST result from a freshly spawned pipeline: it must
+# cover the subprocess importing pathway and establishing the change stream,
+# which can run long when many workers spawn pipelines at once.  Steady-state
+# change delivery (subsequent waits) stays tight.
+_PIPELINE_STARTUP_TIMEOUT = 120
+
+
+def _start_pipeline_worker(script: str, **cfg) -> subprocess.Popen:
+    """Run a streaming pipeline `script` in a fresh subprocess (see above)."""
+    cfg.setdefault("connection_string", MONGODB_CONNECTION_STRING)
+    cfg.setdefault("database", MONGODB_BASE_NAME)
+    return subprocess.Popen(
+        [sys.executable, "-c", script, json.dumps(cfg)],
+        env=os.environ,
+    )
+
+
+def _poll_until(
+    check: Callable[[], bool],
+    timeout_sec: float,
+    proc: subprocess.Popen,
+    *,
+    what: str,
+) -> None:
+    """Poll `check` until it passes, failing fast if the pipeline subprocess
+    dies first or the timeout elapses.  The caller owns `proc` and terminates it
+    (typically in a `finally`)."""
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_sec:
+        if check():
+            return
+        if proc.poll() is not None:
+            raise AssertionError(
+                f"pipeline subprocess exited early (code {proc.returncode}) "
+                f"while waiting for {what}"
+            )
+        time.sleep(0.1)
+    raise AssertionError(f"timed out after {timeout_sec}s waiting for {what}")
 
 
 def write_items_with_connector(
@@ -717,13 +829,11 @@ def test_mongodb_invalid_resume_token(tmp_path, mongodb):
 
 
 def test_mongodb_streaming_no_primary_key(tmp_path, mongodb):
-    # Schema intentionally has no primary key — Pathway will derive the row key
-    # from the MongoDB _id, making this a pure stream-of-changes view.
-    class InputSchema(pw.Schema):
-        product: str
-        quantity: int
-        price: float
-
+    # Schema (in the worker) intentionally has no primary key — Pathway derives
+    # the row key from the MongoDB _id, making this a pure stream-of-changes
+    # view.  The pipeline runs in a subprocess (not an in-process daemon thread)
+    # so pw.run()'s global engine state can't leak into other tests in the same
+    # worker; this process only performs the writes and polls the output.
     output_path = tmp_path / "output.txt"
     input_collection = mongodb.generate_collection_name()
 
@@ -756,34 +866,31 @@ def test_mongodb_streaming_no_primary_key(tmp_path, mongodb):
     # Cumulative output line counts that follow from the above.
     cumulative_lines = [1, 2, 3, 5, 6, 7, 8, 10, 11, 12]
 
-    def streaming_target():
-        for op, expected_lines in zip(operations, cumulative_lines):
+    proc = _start_pipeline_worker(
+        _READ_TO_JSONLINES_WORKER,
+        collection=input_collection,
+        output_path=str(output_path),
+    )
+    try:
+        for step, (op, expected_lines) in enumerate(zip(operations, cumulative_lines)):
             if op[0] == "insert":
                 mongodb.insert_document(input_collection, op[1])
             elif op[0] == "replace":
                 mongodb.replace_document(input_collection, op[1], op[2])
             elif op[0] == "delete":
                 mongodb.delete_document(input_collection, op[1])
-            wait_result_with_checker(
-                FileLinesNumberChecker(output_path, expected_lines), 30, target=None
+            # The first wait absorbs subprocess startup (importing pathway +
+            # opening the change stream); once the pipeline is up, each later
+            # change is delivered quickly, so a tighter bound is enough.
+            _poll_until(
+                FileLinesNumberChecker(output_path, expected_lines),
+                _PIPELINE_STARTUP_TIMEOUT if step == 0 else 30,
+                proc,
+                what=f"{expected_lines} output line(s)",
             )
-
-    streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
-    streaming_thread.start()
-
-    table = pw.io.mongodb.read(
-        connection_string=MONGODB_CONNECTION_STRING,
-        database=MONGODB_BASE_NAME,
-        collection=input_collection,
-        schema=InputSchema,
-        mode="streaming",
-    )
-    pw.io.jsonlines.write(table, output_path)
-    # Fails with fork
-    pathway_thread = ExceptionAwareThread(target=run, daemon=True)
-    pathway_thread.start()
-    wait_result_with_checker(FileLinesNumberChecker(output_path, 12), 30, target=None)
-    streaming_thread.join()
+    finally:
+        proc.terminate()
+        proc.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -899,59 +1006,49 @@ def test_mongodb_write_reserved_column_allowed_in_snapshot(tmp_path, mongodb):
 # both events reach the destination collection.
 # ---------------------------------------------------------------------------
 def test_mongodb_write_stream_of_changes_preserves_retractions(tmp_path, mongodb):
-    class InputSchema(pw.Schema):
-        product: str
-        qty: int
-
+    # The pipeline runs in a subprocess (see the worker scripts above) so its
+    # streaming `pw.run()` can't leak engine state into the rest of the worker.
+    # This process seeds `src`, drives the replace, and polls `dst`.
     src_collection = mongodb.generate_collection_name()
     dst_collection = mongodb.generate_collection_name()
     mongodb.insert_document(src_collection, {"product": "apple", "qty": 10})
 
     output_path = tmp_path / "output.txt"
 
-    def driver():
-        class Checker:
-            def __init__(self, n):
-                self.n = n
+    def dst_count_at_least(n: int) -> Callable[[], bool]:
+        return (
+            lambda: mongodb.client[MONGODB_BASE_NAME][dst_collection].count_documents(
+                {}
+            )
+            >= n
+        )
 
-            def __call__(self):
-                return (
-                    mongodb.client[MONGODB_BASE_NAME][dst_collection].count_documents(
-                        {}
-                    )
-                    >= self.n
-                )
-
-        wait_result_with_checker(Checker(1), 30, target=None)
+    proc = _start_pipeline_worker(
+        _READ_TO_MONGO_WORKER,
+        source_collection=src_collection,
+        dest_collection=dst_collection,
+        output_path=str(output_path),
+    )
+    try:
+        # The initial insert (diff=+1) must reach dst before we mutate `src`.
+        # The first wait absorbs subprocess startup; the second is post-startup.
+        _poll_until(
+            dst_count_at_least(1),
+            _PIPELINE_STARTUP_TIMEOUT,
+            proc,
+            what="initial insert in dst",
+        )
         mongodb.replace_document(
             src_collection,
             {"product": "apple"},
             {"product": "apple", "qty": 99},
         )
-        wait_result_with_checker(Checker(3), 30, target=None)
-
-    G.clear()
-    src = pw.io.mongodb.read(
-        connection_string=MONGODB_CONNECTION_STRING,
-        database=MONGODB_BASE_NAME,
-        collection=src_collection,
-        schema=InputSchema,
-        mode="streaming",
-    )
-    pw.io.mongodb.write(
-        src,
-        connection_string=MONGODB_CONNECTION_STRING,
-        database=MONGODB_BASE_NAME,
-        collection=dst_collection,
-        output_table_type="stream_of_changes",
-    )
-    pw.io.jsonlines.write(src, output_path)
-
-    drv = ExceptionAwareThread(target=driver, daemon=True)
-    drv.start()
-    pt = ExceptionAwareThread(target=run, daemon=True)
-    pt.start()
-    drv.join(timeout=60)
+        # The replace becomes a retraction (diff=-1) + insert (diff=+1), so dst
+        # grows from 1 to 3 documents.
+        _poll_until(dst_count_at_least(3), 30, proc, what="retraction + insert in dst")
+    finally:
+        proc.terminate()
+        proc.wait()
 
     rows = mongodb.get_full_collection(dst_collection)
     diffs = sorted(r["diff"] for r in rows)

@@ -928,6 +928,7 @@ class DataStorage:
         snapshot_maintenance_on_output: bool = False,
         aws_s3_settings: AwsS3Settings | None = None,
         elasticsearch_params: ElasticSearchParams | None = None,
+        elasticsearch_reader_params: ElasticSearchReaderParams | None = None,
         parallel_readers: int | None = None,
         python_subject: PythonSubject | None = None,
         unique_name: str | None = None,
@@ -1001,6 +1002,9 @@ class ElasticSearchAuth:
     def __init__(self, *args, **kwargs): ...
 
 class ElasticSearchParams:
+    def __init__(self, *args, **kwargs): ...
+
+class ElasticSearchReaderParams:
     def __init__(self, *args, **kwargs): ...
 
 class PersistenceConfig:

@@ -1220,8 +1220,8 @@ def test_mssql_write_null_non_string_columns(mssql):
 def test_mssql_streaming_requires_cdc_on_table(tmp_path, mssql):
     """Streaming mode on a table without `sp_cdc_enable_table` must fail with
     the specific `CdcNotEnabledOnTable` error.  The database does have CDC
-    enabled (docker init runs `sp_cdc_enable_db`), so this exercises the
-    table-level branch of `probe_cdc_availability`."""
+    enabled (the `mssql` fixture's `ensure_database_cdc` guarantees it), so
+    this exercises the table-level branch of `probe_cdc_availability`."""
     table_name = mssql.random_table_name()
     mssql.execute_sql(
         f"CREATE TABLE {table_name} ("
