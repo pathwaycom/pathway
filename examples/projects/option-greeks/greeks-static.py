@@ -1,4 +1,4 @@
-# Option Greeks with Databento and Pathway
+# Option Greeks with Databento and the Pathway Live Data Framework
 # The static case: the data is read from CSV files
 import math
 import os

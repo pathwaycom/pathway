@@ -1,6 +1,6 @@
 # Copyright © 2026 Pathway
 
-"""Pathway code for twitter showcase.
+"""Pathway Live Data Framework code for twitter showcase.
 
 The code is responsible for parsing and processing the tweets from the Twitter API.
 See public/website3/content/2.developers/7.showcases/1.twitter.md

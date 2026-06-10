@@ -1,4 +1,4 @@
-# Option Greeks with Databento and Pathway
+# Option Greeks with Databento and the Pathway Live Data Framework
 # The replay case: the data is read from Databento Historical API.
 import math
 import os

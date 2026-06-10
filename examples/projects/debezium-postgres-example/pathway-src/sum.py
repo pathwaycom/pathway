@@ -32,7 +32,7 @@ class InputSchema(pw.Schema):
 
 print("Imports OK!")
 time.sleep(10)
-print("Starting Pathway:")
+print("Starting the Pathway Live Data Framework:")
 
 
 # We use the Kafka connector to listen to the "connector_example" topic

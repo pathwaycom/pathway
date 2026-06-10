@@ -6,7 +6,7 @@ The Pathway Live Data Framework is a Python data processing framework for analyt
 Options are financial derivatives that give the holder the right, but not the obligation, to buy or sell an underlying asset at a specified price within a certain period. 
 The Option Greeks are metrics used to assess the sensitivity of option prices and provide detailed, quantifiable measures of various risk factors. Using Option Greeks, traders and risk managers make more informed, strategic decisions, enhancing their ability to manage risk and optimize returns.
 
-The Option Greeks are computed by Pathway on the data obtained using Databento APIs.
+The Option Greeks are computed by the Pathway Live Data Framework on the data obtained using Databento APIs.
 The results are displayed in a Streamlit Dashboard.
 
 ![Option Greeks workflow with Pathway Live Data Framework and Databento](option-greeks.svg)

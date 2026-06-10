@@ -1,7 +1,7 @@
-# Contributing to Pathway
+# Contributing to the Pathway Live Data Framework
 
 Welcome! This guide is intended to help developers that are new to the community
-to make contributions to the Pathway project. Please be sure to also read our [code of conduct](CODE_OF_CONDUCT.md). We work hard to make this a welcoming community for all, and we're excited to have you on board!
+to make contributions to the Pathway Live Data Framework project. Please be sure to also read our [code of conduct](CODE_OF_CONDUCT.md). We work hard to make this a welcoming community for all, and we're excited to have you on board!
 
 ## The basics:
 
@@ -16,7 +16,7 @@ to make contributions to the Pathway project. Please be sure to also read our [c
 
 ## Contributing Code
 
-We are eager to build Pathway together with the community and are excited to have you here!
+We are eager to build the Pathway Live Data Framework together with the community and are excited to have you here!
 
 Important: Before you contribute any changes to our repositories (make a Pull Request) please get in touch with us and explain what you want to work on. You can do so by filing an issue, or asking us on Discord. That way you can get coding advice and speedier reviews. If you start to work on an issue before hearing back from a Pathway core team engineer there is a chance that we will not be able to accept your changes - something we all want to avoid!
 

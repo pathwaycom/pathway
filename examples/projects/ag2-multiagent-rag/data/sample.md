@@ -1,14 +1,14 @@
-# Pathway + AG2 Sample Document
+# Pathway Live Data Framework + AG2 Sample Document
 
-This is a sample document for testing the AG2 multi-agent RAG example with Pathway.
+This is a sample document for testing the AG2 multi-agent RAG example with the Pathway Live Data Framework.
 
-## About Pathway
+## About the Pathway Live Data Framework
 
-Pathway is a Python ETL framework for stream processing, real-time analytics,
+The Pathway Live Data Framework is a Python ETL framework for stream processing, real-time analytics,
 LLM pipelines, and RAG. It uses a high-performance Rust engine under the hood,
 providing multithreading and multiprocessing capabilities.
 
-Key features of Pathway include:
+Key features of the Pathway Live Data Framework include:
 - Real-time document indexing and re-indexing
 - Support for various data sources (Kafka, S3, GDrive, PostgreSQL, and more)
 - Built-in LLM integration with the xpacks.llm module

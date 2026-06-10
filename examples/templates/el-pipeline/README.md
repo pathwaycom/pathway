@@ -204,14 +204,14 @@ Or use Docker for containerized execution.
 
 
 ## Documentation and Support<a id="resources"></a>
-The entire documentation of Pathway is available at [pathway.com/developers/](https://pathway.com/developers/user-guide/introduction/welcome), including the [API Docs](https://pathway.com/developers/api-docs/pathway).
+The entire documentation of the Pathway Live Data Framework is available at [pathway.com/developers/](https://pathway.com/developers/user-guide/introduction/welcome), including the [API Docs](https://pathway.com/developers/api-docs/pathway).
 
 If you have any question, don't hesitate to [open an issue on GitHub](https://github.com/pathwaycom/pathway/issues), join us on [Discord](https://discord.com/invite/pathway), or send us an email at [contact@pathway.com](mailto:contact@pathway.com).
 
 ## Contribution Guidelines
 If you develop a library or connector which you would like to integrate with this repo, we suggest releasing it first as a separate repo on a MIT/Apache 2.0 license. 
 
-For all concerns regarding core Pathway functionalities, Issues are encouraged. For further information, don't hesitate to engage with Pathway's [Discord community](https://discord.gg/pathway).
+For all concerns regarding core Pathway Live Data Framework functionalities, Issues are encouraged. For further information, don't hesitate to engage with Pathway's [Discord community](https://discord.gg/pathway).
 
 ## License
-Pathway is distributed on a [BSL 1.1 License](https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt) which allows for unlimited non-commercial use, as well as use of the Pathway package [for most commercial purposes](https://pathway.com/license/), free of charge. Code in this repository automatically converts to Open Source (Apache 2.0 License) after 4 years. Some [public repos](https://github.com/pathwaycom) which are complementary to this one (examples, libraries, connectors, etc.) are licensed as Open Source, under the MIT license.
+The Pathway Live Data Framework is distributed on a [BSL 1.1 License](https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt) which allows for unlimited non-commercial use, as well as use of the Pathway Live Data Framework package [for most commercial purposes](https://pathway.com/license/), free of charge. Code in this repository automatically converts to Open Source (Apache 2.0 License) after 4 years. Some [public repos](https://github.com/pathwaycom) which are complementary to this one (examples, libraries, connectors, etc.) are licensed as Open Source, under the MIT license.

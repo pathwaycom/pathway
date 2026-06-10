@@ -1,20 +1,20 @@
 # Copyright © 2026 Pathway
 
 """
-AG2 Multi-Agent Conversations with Pathway Real-Time RAG
+AG2 Multi-Agent Conversations with Pathway Live Data Framework Real-Time RAG
 =========================================================
 
 Demonstrates AG2 (formerly AutoGen) multi-agent conversations using
 Pathway Live Data Framework's real-time VectorStoreServer as the knowledge retrieval backend.
 
-Pathway continuously indexes documents and serves them via a REST API.
+The Pathway Live Data Framework continuously indexes documents and serves them via a REST API.
 AG2 agents query this API as a tool during multi-agent conversations.
 
 Requirements:
     pip install -U pathway "ag2[openai]>=0.11.4,<1.0" requests python-dotenv
 
 Environment variables:
-    OPENAI_API_KEY - OpenAI API key (used by both Pathway and AG2)
+    OPENAI_API_KEY - OpenAI API key (used by both the Pathway Live Data Framework and AG2)
 
 Usage:
     1. Place documents in ./data/ folder
@@ -116,11 +116,11 @@ def query_pathway_server(query: str, k: int = 5) -> str:
             "Error: Pathway Live Data Framework server is not running or not ready yet."
         )
     except Exception as e:
-        return f"Error querying Pathway: {e}"
+        return f"Error querying the Pathway Live Data Framework: {e}"
 
 
 def main():
-    """Run AG2 multi-agent RAG with Pathway real-time indexing."""
+    """Run AG2 multi-agent RAG with Pathway Live Data Framework real-time indexing."""
 
     # Validate environment
     if not os.environ.get("OPENAI_API_KEY"):
@@ -208,11 +208,11 @@ def main():
         and "TERMINATE" in x.get("content", ""),
     )
 
-    # Register Pathway search as AG2 tool
+    # Register Pathway Live Data Framework search as AG2 tool
     @user_proxy.register_for_execution()
     @researcher.register_for_llm(
         description=(
-            "Search the document knowledge base powered by Pathway. "
+            "Search the document knowledge base powered by the Pathway Live Data Framework. "
             "Returns relevant document chunks with source citations. "
             "The knowledge base is continuously updated in real-time. "
             "Use specific, targeted search queries for best results."
@@ -249,7 +249,7 @@ def main():
     )
 
     print(f"\n{'=' * 60}")
-    print("AG2 Multi-Agent RAG with Pathway Real-Time Indexing")
+    print("AG2 Multi-Agent RAG with Pathway Live Data Framework Real-Time Indexing")
     print(f"{'=' * 60}")
     print(f"Query: {query}\n")
 

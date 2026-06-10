@@ -8,7 +8,7 @@ The project is organized in six docker containers:
  - Logstash: Logstash forwards the logs from Filebeat to Kafka.
  - Kafka and Zookeeper: these containers are working as a gateway between Filebeat and the Pathway Live Data Framework.
  - The Pathway Live Data Framework: the logs are received from Kafka, processed and send to ElasticSearch.
- - ElasticSearch: the alerts processed by Pathway are stored in this container.
+ - ElasticSearch: the alerts processed by the Pathway Live Data Framework are stored in this container.
  
 The logs are processed as follows (in `./pathway-src/alerts.py`):
  1. The timestamps and messages (logs) are extracted from the JSON messages created by Filebeat.
