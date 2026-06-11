@@ -267,7 +267,7 @@ time_series_filtered = points_within_50.select(
 #
 # Let's plot the results.
 # Let's first output the data in Pandas and then plot the timeseries.
-# In practice you'd use a [output connector](/developers/user-guide/connect/pathway-connectors) to output the results to Kafka or Postgres.
+# In practice you'd use a [output connector](/developers/user-guide/connect/live-data-framework-connectors) to output the results to Kafka or Postgres.
 
 time_series_filtered_pd = pw.debug.table_to_pandas(time_series_filtered)
 time_series_filtered_pd = time_series_filtered_pd.sort_values(by=["x"])

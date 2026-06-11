@@ -650,7 +650,7 @@ pw.debug.compute_and_print(table_greeks, n_rows=5)
 # ### Output
 #
 # Now that you have successfully computed the Option Greeks, you can output the results to your favorite system.
-# The Pathway Live Data Framework supports many different [connectors](/developers/user-guide/connect/pathway-connectors).
+# The Pathway Live Data Framework supports many different [connectors](/developers/user-guide/connect/live-data-framework-connectors).
 #
 # As an example, you might want to send the results to a CSV file, using Pathway Live Data Framework CSV output connector:
 
