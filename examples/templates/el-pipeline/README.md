@@ -178,7 +178,7 @@ To run this example, you need to set the following environment variables:
 ## Pathway Live Data Framework License
 
 If you are using advanced connectors or functionalities like SharePoint connectors or persistence, your project will require Pathway Live Data Framework license.
-You can learn about the license [here](/developers/user-guide/introduction/licensing-guide), and you can get a free Pathway Live Data Framework license [here](/get-license).
+You can learn about the license [here](/developers/user-guide/introduction/licensing-guide), and you can get a free Pathway Live Data Framework license [here](/framework/get-license).
 
 Setting up the license is easy, you simply need to set it as the environment variable `PATHWAY_LICENSE_KEY`:
 
