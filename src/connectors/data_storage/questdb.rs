@@ -23,6 +23,14 @@ pub enum QuestDBAtColumnPolicy {
     UseColumn(usize),
 }
 
+// Flush the ILP buffer to QuestDB once it grows past this many bytes,
+// instead of accumulating a whole minibatch. questdb-rs rejects a single
+// flush above its max_buf_size (default 100 MiB), so an unbounded buffer
+// crashes on large minibatches; chunking also bounds the writer's memory
+// and overlaps serialization with the network. Overridable via
+// PATHWAY_QUESTDB_FLUSH_BYTES (mainly for benchmarking).
+const QUESTDB_DEFAULT_FLUSH_BYTES: usize = 48 * 1024 * 1024;
+
 pub struct QuestDBWriter {
     sender: QuestDBSender,
     table_name: String,
@@ -30,17 +38,29 @@ pub struct QuestDBWriter {
     designated_timestamp_policy: QuestDBAtColumnPolicy,
     buffer: QuestDBBuffer,
     has_updates: bool,
+    max_buffer_bytes: usize,
 }
 
 impl QuestDBWriter {
+    // Returns `Result` for symmetry with the other SQL/ingest writers and
+    // so reintroducing a fallible setup step here stays source-compatible.
+    #[allow(clippy::unnecessary_wraps)]
     pub fn new(
         sender: QuestDBSender,
         table_name: String,
         field_names: Vec<String>,
         designated_timestamp_policy: QuestDBAtColumnPolicy,
     ) -> Result<Self, WriteError> {
-        let mut buffer = QuestDBBuffer::new();
-        buffer.table(table_name.as_str())?;
+        // The ILP buffer is row-oriented: every row begins with a
+        // `table()` call and ends with `at()`/`at_now()`. We therefore
+        // start each row inside `write` rather than priming the buffer
+        // here.
+        let buffer = QuestDBBuffer::new();
+        let max_buffer_bytes = std::env::var("PATHWAY_QUESTDB_FLUSH_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(QUESTDB_DEFAULT_FLUSH_BYTES);
         Ok(Self {
             sender,
             table_name,
@@ -48,6 +68,7 @@ impl QuestDBWriter {
             designated_timestamp_policy,
             buffer,
             has_updates: false,
+            max_buffer_bytes,
         })
     }
 
@@ -95,6 +116,14 @@ impl QuestDBWriter {
 
 impl Writer for QuestDBWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        // Begin a fresh ILP row. This MUST be called once per row,
+        // before any `column_*` call: `table()` opens a row and the
+        // trailing `at()`/`at_now()` closes it. Previously the buffer
+        // was primed only in `new`/`flush`, so the second and later
+        // rows of any multi-row minibatch hit
+        // "Bad call to `column`, should have called `flush` or `table`".
+        self.buffer.table(self.table_name.as_str())?;
+
         let (at_timestamp, skip_column_id) =
             if let QuestDBAtColumnPolicy::UseColumn(column_id) = self.designated_timestamp_policy {
                 let at_value = &data.values[column_id];
@@ -158,14 +187,24 @@ impl Writer for QuestDBWriter {
         }
         self.has_updates = true;
 
+        // Bound the in-flight buffer: flush mid-minibatch once it grows
+        // past the threshold so we never hand `questdb-rs` a buffer above
+        // its `max_buf_size` (which would panic the worker) and so memory
+        // stays bounded for arbitrarily large minibatches.
+        if self.buffer.len() >= self.max_buffer_bytes {
+            self.sender.flush(&mut self.buffer)?;
+            self.has_updates = false;
+        }
+
         Ok(())
     }
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         if self.has_updates {
+            // `Sender::flush` drains (clears) the buffer; the next
+            // `write` starts the following row with its own `table()`.
             self.sender.flush(&mut self.buffer)?;
             self.has_updates = false;
-            self.buffer.table(self.table_name.as_str())?;
         }
         Ok(())
     }

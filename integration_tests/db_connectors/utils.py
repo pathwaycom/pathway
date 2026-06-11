@@ -1730,6 +1730,37 @@ class EntryCountChecker:
         return len(table_contents) == self.n_expected_entries
 
 
+class RowCountChecker:
+    """Polls ``SELECT count(*)`` over the wire protocol until at least
+    ``n_expected_entries`` rows are present in ``table_name``.
+
+    Unlike :class:`EntryCountChecker`, it counts server-side instead of
+    fetching every row, so polling stays cheap even against a multi-hundred-
+    thousand-row table. That makes it the right checker for throughput /
+    deadline tests driven by ``wait_result_with_checker``: the pipeline runs in
+    a background process and this returns ``True`` as soon as the target count
+    is reached, so the test passes promptly on a fast writer and fails at the
+    timeout (not after the whole — possibly very slow — run) on a broken one.
+    """
+
+    def __init__(
+        self,
+        n_expected_entries: int,
+        db_context: WireProtocolSupporterContext,
+        table_name: str,
+    ):
+        self.n_expected_entries = n_expected_entries
+        self.db_context = db_context
+        self.table_name = table_name
+
+    def __call__(self) -> bool:
+        try:
+            self.db_context.cursor.execute(f'SELECT count(*) FROM "{self.table_name}"')
+            return self.db_context.cursor.fetchone()[0] >= self.n_expected_entries
+        except Exception:
+            return False
+
+
 def _compare_input_and_output(
     ItemType: type,
     input_rows: list[dict],

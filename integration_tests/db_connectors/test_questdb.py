@@ -4,7 +4,7 @@ import json
 import os
 
 import pytest
-from utils import QUEST_DB_HOST, QUEST_DB_LINE_PORT, EntryCountChecker
+from utils import QUEST_DB_HOST, QUEST_DB_LINE_PORT, EntryCountChecker, RowCountChecker
 
 import pathway as pw
 from pathway.tests.utils import ExceptionAwareThread, wait_result_with_checker
@@ -220,3 +220,46 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
     for time_reread in times_reread:
         times_reread_flat.append(time_reread[time_column])
     assert times_reread_flat == times_original_flat
+
+
+def test_questdb_writer_ingests_500k_rows_within_30s(tmp_path, questdb):
+    """The QuestDB sink must ingest a 500,000-row batch within 30 seconds.
+
+    The connector accumulates rows in the ILP buffer and sends them in bulk, so
+    half a million rows is comfortably within reach. This guards against two
+    regressions that make a multi-row minibatch fail outright (and therefore
+    blow the time budget): forgetting to begin each ILP row with ``table()``
+    (the second row of a minibatch then errors), and buffering an entire
+    minibatch into a single flush (which overruns the questdb-rs buffer cap on
+    large batches). A single static CSV file is used as the input so the whole
+    batch is handed to the writer in large minibatches.
+    """
+    n_rows = 500_000
+
+    class InputSchema(pw.Schema):
+        k: int
+        name: str
+        value: float
+        flag: bool
+
+    # A directory with one CSV file, read in streaming mode so the run process
+    # stays alive while we poll (and is terminated by the checker on success or
+    # timeout). The deadline in wait_result_with_checker bounds the wait: a
+    # broken writer (e.g. one that errors on multi-row minibatches) fails the
+    # test at ~30s instead of after the whole run.
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    with open(input_dir / "data.csv", "w") as f:
+        f.write("k,name,value,flag\n")
+        for i in range(n_rows):
+            f.write(f"{i},item_{i},{i * 0.5},{'True' if i % 2 else 'False'}\n")
+
+    table_name = questdb.random_table_name()
+    table = pw.io.csv.read(str(input_dir), schema=InputSchema)
+    pw.io.questdb.write(
+        table,
+        connection_string=QUESTDB_CONNECTION_STRING,
+        table_name=table_name,
+        designated_timestamp_policy="use_now",
+    )
+    wait_result_with_checker(RowCountChecker(n_rows, questdb, table_name), 30)
