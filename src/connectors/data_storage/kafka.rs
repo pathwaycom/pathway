@@ -51,14 +51,6 @@ impl RdkafkaWatermark {
     pub fn has_messages(&self) -> bool {
         self.low < self.high
     }
-
-    /// The `self.high` is the offset of the next message that will
-    /// be written into partition, therefore the partition has more
-    /// messages if the provided offset doesn't correspond to the last
-    /// message in the watermark.
-    pub fn has_messages_after_offset(&self, offset: i64) -> bool {
-        offset < self.high - 1
-    }
 }
 
 pub struct KafkaReader {
@@ -68,6 +60,13 @@ pub struct KafkaReader {
     watermarks: Vec<RdkafkaWatermark>,
     deferred_read_result: Option<ReadResult>,
     mode: ConnectorMode,
+    // Whether this reader was given any partitions in static mode (see
+    // `construct_kafka_reader`). False in streaming mode, and for a static
+    // reader whose shard is empty (more workers than partitions) — such a reader
+    // has nothing to read and finishes immediately. The actual assigned
+    // partitions are read back from `consumer.position()` when needed, so only
+    // the "owns something" bit is kept here.
+    has_assigned_partitions: bool,
 }
 
 impl Reader for KafkaReader {
@@ -187,6 +186,7 @@ impl KafkaReader {
         positions_for_seek: HashMap<i32, KafkaOffset>,
         watermarks: Vec<RdkafkaWatermark>,
         mode: ConnectorMode,
+        has_assigned_partitions: bool,
     ) -> KafkaReader {
         KafkaReader {
             consumer,
@@ -194,6 +194,7 @@ impl KafkaReader {
             positions_for_seek,
             watermarks,
             mode,
+            has_assigned_partitions,
             deferred_read_result: None,
         }
     }
@@ -226,47 +227,41 @@ impl KafkaReader {
     }
 
     fn static_read_has_finished(&self) -> Result<bool, ReadError> {
-        let total_partitions = self.watermarks.len();
-        let mut tpl = TopicPartitionList::with_capacity(total_partitions);
-        for partition_idx in 0..total_partitions {
-            tpl.add_partition(
-                self.topic.as_str(),
-                partition_idx
-                    .try_into()
-                    .expect("kafka partition must fit 32-bit signed integer"),
-            );
+        // In static mode this reader owns a fixed shard of partitions (assigned
+        // explicitly in `construct_kafka_reader`) and reads each from its lower
+        // boundary up to the high watermark captured at construction time. The
+        // read is complete once the consume position of every assigned partition
+        // has reached that boundary. Positions advance as messages are returned
+        // by `poll()`, so — unlike the previous consumer-group-committed-offset
+        // approach — this does not depend on any group coordinator round-trip.
+        if !self.has_assigned_partitions {
+            return Ok(true);
         }
-        let committed_offsets = self
-            .consumer
-            .committed_offsets(tpl, Self::default_timeout())?;
-        for committed_offset in committed_offsets.elements() {
-            let partition: usize = committed_offset
+        let positions = self.consumer.position()?;
+        for element in positions.elements() {
+            let partition: usize = element
                 .partition()
                 .try_into()
                 .expect("kafka partition can't be negative");
-            let offset = match committed_offset.offset() {
-                KafkaOffset::End => {
-                    // The exact offset is not reported, but it's greater than the
-                    // threshold.
-                    continue;
+            match element.offset() {
+                KafkaOffset::Offset(offset) => {
+                    if offset < self.watermarks[partition].high {
+                        // Not all messages up to the captured boundary have been
+                        // consumed from this partition yet.
+                        return Ok(false);
+                    }
                 }
-                KafkaOffset::Invalid => {
+                KafkaOffset::End => {
+                    // The position is past the end, hence past the boundary too.
+                }
+                _ => {
+                    // The position is not established yet (no fetch has completed
+                    // for this partition). If the partition still holds messages
+                    // within the boundary, the read is not finished.
                     if self.watermarks[partition].has_messages() {
                         return Ok(false);
                     }
-                    // It is OK to have unassigned offsets for empty partitions.
-                    continue;
                 }
-                KafkaOffset::Offset(offset) => offset,
-                _ => {
-                    // There is no way to compare this offset to the desired border.
-                    return Ok(false);
-                }
-            };
-            if self.watermarks[partition].has_messages_after_offset(offset) {
-                // The committed offset is still smaller than the last offset to be read
-                // from this partition.
-                return Ok(false);
             }
         }
 

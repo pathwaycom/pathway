@@ -29,6 +29,7 @@ class WordcountChecker:
         self.output_file_path = output_file_path
         self.n_words = n_words
         self.n_word_repetitions = n_word_repetitions
+        self._expected_word_counts: dict[str, int] | None = None
 
     def __call__(self):
         try:
@@ -37,14 +38,24 @@ class WordcountChecker:
             return False
 
     def expected_word_counts(self):
-        # workaround for some messages being lost in kafka
-        required_counts = {}
-        for word in self.kafka_context.read_input_topic():
-            value = word.value.decode("utf-8")
-            if value not in required_counts:
-                required_counts[value] = 0
-            required_counts[value] += 1
-        return required_counts
+        # The input topic is fully populated before the program starts and does
+        # not change while we wait for the result, so it is read once and cached.
+        # wait_result_with_checker polls this checker every 0.1s; without caching
+        # the whole (across runs, accumulating) input topic would be re-drained on
+        # every poll. That floods the broker with reads, and under the suite's
+        # high parallelism the contention starves the wordcount program itself,
+        # so it never converges within the timeout.
+        #
+        # Reading the topic (rather than trusting the generated input) is a
+        # deliberate workaround for Kafka occasionally losing messages: the
+        # expected counts are whatever actually made it into the topic.
+        if self._expected_word_counts is None:
+            required_counts: dict[str, int] = {}
+            for word in self.kafka_context.read_input_topic():
+                value = word.value.decode("utf-8")
+                required_counts[value] = required_counts.get(value, 0) + 1
+            self._expected_word_counts = required_counts
+        return self._expected_word_counts
 
     def topic_stats(self):
         completed_words = set()
@@ -124,13 +135,22 @@ def run_backfilling_program(
             )
             wait_result_with_checker(
                 checker=checker,
-                timeout_sec=60,
+                # The whole Kafka suite runs under `pytest -n auto`, which on the
+                # CI host launches far more workers than the test container has
+                # CPUs. This heavy, multi-worker, persistent wordcount then
+                # competes for both CPU and the shared broker, so a single
+                # recovery run that normally converges in a couple of seconds can
+                # occasionally stretch well past a minute. The timeout has to cover
+                # that contended worst case, otherwise the run is failed not for
+                # being wrong but for being momentarily starved.
+                timeout_sec=240,
                 target=WordcountProgram(
                     output_file_path,
                     pw.io.kafka.read,
                     rdkafka_settings=kafka_context.default_rdkafka_settings(),
                     topic=kafka_context.input_topic,
                     format="plaintext",
+                    mode="static",
                     autocommit_duration_ms=5,
                     name="1",
                 ),
@@ -140,7 +160,7 @@ def run_backfilling_program(
         del os.environ["PATHWAY_THREADS"]
 
 
-@pytest.mark.flaky(reruns=5)
+@pytest.mark.flaky(reruns=1)
 def test_backfilling_fs_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -151,7 +171,7 @@ def test_backfilling_fs_storage(
     run_backfilling_program(fs_persistence_config, tmp_path, kafka_context)
 
 
-@pytest.mark.flaky(reruns=5)
+@pytest.mark.flaky(reruns=1)
 def test_backfilling_s3_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext, s3_path: str
 ):

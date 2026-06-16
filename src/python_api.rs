@@ -6170,9 +6170,6 @@ impl DataStorage {
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
 
         let topic = &self.message_queue_fixed_topic()?;
-        consumer
-            .subscribe(&[topic])
-            .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
 
         let total_partitions = Self::total_partitions_for_topic(&consumer, topic)?;
         let mut watermarks = Self::kafka_partition_watermarks(&consumer, topic, total_partitions)?;
@@ -6210,21 +6207,83 @@ impl DataStorage {
                 }
             }
         }
+
+        // Partitions are acquired differently depending on the mode:
+        //   * Streaming subscribes to the topic, so the consumer group rebalances
+        //     partitions across all workers and persists committed offsets for
+        //     recovery.
+        //   * Static performs a bounded, one-shot read. Going through the consumer
+        //     group there is both unnecessary and racy: a fresh group must
+        //     complete a JoinGroup/SyncGroup round-trip before the first fetch, and
+        //     under load that assignment intermittently fails to deliver within the
+        //     polling budget — the reader then finishes having read nothing. So we
+        //     assign this worker's shard of the partitions explicitly and start at
+        //     each partition's lower boundary. This talks straight to the partition
+        //     leaders, with no coordinator dependency.
+        // Number of workers that will actually run a reader. The engine only
+        // starts a reader on workers whose index is below this value (see
+        // `connector_table`'s `scope.index() < parallel_readers`), and it is the
+        // value returned at the end of this function.
+        let parallel_readers = std::cmp::min(
+            properties.max_parallel_readers(scope),
+            self.parallel_readers.unwrap_or(NO_PARALLEL_READERS_LIMIT),
+        );
+
+        let has_assigned_partitions = match self.mode {
+            ConnectorMode::Static => {
+                let worker_index = scope.worker_index();
+                // Static reads don't use a consumer group to spread partitions
+                // across workers, so we shard them by hand. Shard by the number
+                // of workers that actually read — `min(worker_count,
+                // parallel_readers)` — not by the raw worker count: the reader
+                // count can be smaller (an explicit `parallel_readers=` or a
+                // synchronization group), and sharding by the worker count would
+                // assign partitions to workers that never run a reader, silently
+                // dropping their data. Active readers are exactly the workers with
+                // index `0..n_readers`, so this modulo covers every partition.
+                let n_readers = std::cmp::min(scope.worker_count(), parallel_readers);
+                let mut tpl = TopicPartitionList::new();
+                for (partition_idx, watermark) in watermarks.iter().enumerate() {
+                    if partition_idx % n_readers != worker_index {
+                        continue;
+                    }
+                    let partition: i32 = partition_idx
+                        .try_into()
+                        .expect("kafka partition must fit 32-bit signed integer");
+                    let start_offset = seek_positions
+                        .get(&partition)
+                        .copied()
+                        .unwrap_or(KafkaOffset::Offset(watermark.low));
+                    tpl.add_partition_offset(topic, partition, start_offset)
+                        .expect("adding a partition to the assignment list must not fail");
+                }
+                consumer.assign(&tpl).map_err(|e| {
+                    PyIOError::new_err(format!("Assigning Kafka partitions failed: {e}"))
+                })?;
+                // The explicit assignment above already starts each partition at the
+                // right offset, so the lazy per-message seek used in streaming mode
+                // is not needed.
+                seek_positions.clear();
+                tpl.count() > 0
+            }
+            ConnectorMode::Streaming => {
+                consumer.subscribe(&[topic]).map_err(|e| {
+                    PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}"))
+                })?;
+                false
+            }
+        };
+
         let reader = KafkaReader::new(
             consumer,
             topic.clone(),
             seek_positions,
             watermarks,
             self.mode,
+            has_assigned_partitions,
         );
 
-        Ok((
-            Box::new(reader),
-            std::cmp::min(
-                properties.max_parallel_readers(scope),
-                self.parallel_readers.unwrap_or(NO_PARALLEL_READERS_LIMIT),
-            ),
-        ))
+        Ok((Box::new(reader), parallel_readers))
     }
 
     fn construct_python_reader(

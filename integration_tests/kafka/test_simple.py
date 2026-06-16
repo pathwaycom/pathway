@@ -1422,6 +1422,47 @@ def test_kafka_parallel_readers_zero_or_negative_is_rejected(kafka_context):
         ), f"Should not leak OverflowError text; got {exc_info.value!r}"
 
 
+@pytest.mark.flaky(reruns=3)
+def test_kafka_static_read_reads_all_partitions_when_parallel_readers_below_workers(
+    tmp_path, kafka_context, monkeypatch
+):
+    """A static read whose ``parallel_readers`` limit is below the worker count
+    must still read every partition. In static mode partitions are sharded by
+    hand across only the workers that actually run a reader; sharding by the raw
+    worker count instead would assign some partitions to workers that never run
+    a reader, silently dropping their messages."""
+
+    monkeypatch.setenv("PATHWAY_THREADS", "8")
+    kafka_context.set_input_topic_partitions(8)
+    kafka_context.fill([f"message_{i}" for i in range(400)])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        mode="static",
+        parallel_readers=2,
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    # Compare against what actually landed in the topic (not the generated
+    # input), so a message the producer dropped doesn't masquerade as a read
+    # loss. Any partition skipped by the reader would drop ~1/8 of the messages.
+    expected = {
+        message.value.decode("utf-8") for message in kafka_context.read_input_topic()
+    }
+    assert len(expected) > 350, "sanity: most produced messages should be in the topic"
+
+    seen = set()
+    with open(output_path) as f:
+        for row in f:
+            seen.add(json.loads(row)["data"])
+
+    assert seen == expected
+
+
 def test_kafka_autocommit_duration_ms_must_be_positive(kafka_context):
     """``autocommit_duration_ms`` is the maximum time between two commits, so
     it must be positive. Zero or negative values must be rejected up front

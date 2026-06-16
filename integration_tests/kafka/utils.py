@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import boto3
 import requests
-from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
+from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer, TopicPartition
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
 from rstream import AMQPMessage, Producer
@@ -162,21 +162,67 @@ class KafkaTestContext:
 
     def read_topic(self, topic, poll_timeout_ms: int = 1000) -> list[ConsumerRecord]:
         consumer = KafkaConsumer(
-            topic,
             auto_offset_reset="earliest",
             bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"],
+            enable_auto_commit=False,
+            # kafka-python defaults ``receive_message_max_bytes`` (the maximum
+            # frame it will accept) to 1 MB, while ``fetch_max_bytes`` defaults to
+            # 50 MB — so the consumer asks for up to 50 MB but rejects any fetch
+            # response larger than 1 MB with ``InvalidReceiveError: Invalid frame
+            # length``. Topics that hold more than ~1 MB (e.g. the backfilling
+            # input topic, which accumulates across runs) then become unreadable.
+            # Raise the accept limit to match the broker's allowance so whole-topic
+            # drains succeed.
+            receive_message_max_bytes=100_000_000,
         )
-        messages = []
-        while True:
-            poll_result = consumer.poll(poll_timeout_ms)
-            if not poll_result:
-                break
-            for topic_partition, new_messages in poll_result.items():
-                assert (
-                    topic_partition.topic == topic
-                ), "Poller returns messages from an unexpected topic"
-                messages += new_messages
-        return messages
+        try:
+            # Assign every partition explicitly and drain each one up to the end
+            # offset captured at the start, instead of subscribing and stopping
+            # on empty polls. Subscription needs a consumer-group rebalance before
+            # the first fetch; an early empty poll can then arrive before any
+            # partition is assigned, and breaking there under-reads the topic.
+            # With many partitions this makes callers that rebuild expected state
+            # from the topic (e.g. the backfilling wordcount checker) miss
+            # messages entirely. Reading to the per-partition end offset is
+            # deterministic and drains the topic completely.
+            deadline = time.monotonic() + 60.0
+            partitions = consumer.partitions_for_topic(topic)
+            while partitions is None and time.monotonic() < deadline:
+                partitions = consumer.partitions_for_topic(topic)
+            if not partitions:
+                return []
+            tps = [TopicPartition(topic, p) for p in partitions]
+            consumer.assign(tps)
+            consumer.seek_to_beginning(*tps)
+            beginning_offsets = consumer.beginning_offsets(tps)
+            end_offsets = consumer.end_offsets(tps)
+
+            # Completion is tracked by the offset of the last consumed message,
+            # not by ``consumer.position()``: after ``seek_to_beginning`` the
+            # latter blocks indefinitely resolving the pending offset reset. A
+            # partition is drained once a message at its last offset
+            # (``end_offset - 1``) has been read; partitions that hold no
+            # messages are already complete.
+            pending = {tp for tp in tps if end_offsets[tp] > beginning_offsets[tp]}
+
+            messages: list[ConsumerRecord] = []
+            # The deadline guards against a partition whose end offset is somehow
+            # never reached, so the test fails loudly instead of hanging forever.
+            while pending and time.monotonic() < deadline:
+                poll_result = consumer.poll(poll_timeout_ms)
+                for topic_partition, new_messages in poll_result.items():
+                    assert (
+                        topic_partition.topic == topic
+                    ), "Poller returns messages from an unexpected topic"
+                    messages += new_messages
+                    if (
+                        new_messages
+                        and new_messages[-1].offset >= end_offsets[topic_partition] - 1
+                    ):
+                        pending.discard(topic_partition)
+            return messages
+        finally:
+            consumer.close()
 
     def read_output_topic(
         self,
