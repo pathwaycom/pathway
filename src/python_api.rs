@@ -62,9 +62,9 @@ use pyo3::{intern, PyTypeInfo};
 use pyo3::{prelude::*, IntoPyObjectExt};
 use pyo3_log::ResetHandle;
 use questdb::ingress::Sender as QuestDBSender;
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::consumer::BaseConsumer;
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
-use rdkafka::{ClientConfig, Offset as KafkaOffset, TopicPartitionList};
+use rdkafka::ClientConfig;
 use rumqttc::{
     mqttbytes::QoS as MqttQoS, Client as MqttClient, Event as MqttEvent, MqttOptions,
     Packet as MqttPacket,
@@ -125,9 +125,9 @@ use crate::connectors::data_storage::{
     IcebergReader, KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader,
     MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter,
     ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
-    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, RdkafkaWatermark,
-    ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
-    TableWriterInitMode, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod,
+    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
+    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -162,7 +162,6 @@ use crate::persistence::input_snapshot::Event as SnapshotEvent;
 use crate::persistence::{IntoPersistentId, UniqueName};
 use crate::pipe::{pipe, ReaderType, WriterType};
 use crate::python_api::external_index_wrappers::PyExternalIndexFactory;
-use crate::timestamp::current_unix_timestamp_ms;
 
 use s3::creds::Credentials as AwsCredentials;
 
@@ -6068,220 +6067,44 @@ impl DataStorage {
         Ok((Box::new(storage), 1))
     }
 
-    /// Returns the total number of partitions for a Kafka topic
-    fn total_partitions_for_topic(consumer: &BaseConsumer, topic: &str) -> PyResult<usize> {
-        let metadata = consumer
-            .fetch_metadata(Some(topic), KafkaReader::default_timeout())
-            .map_err(|e| PyIOError::new_err(format!("Failed to fetch topic metadata: {e}")))?;
-        if let Some(topic) = metadata.topics().iter().find(|t| t.name() == topic) {
-            Ok(topic.partitions().len())
-        } else {
-            Err(PyIOError::new_err(format!("Topic '{topic}' not found")))
-        }
-    }
-
-    /// Returns an array of partition watermarks.
-    /// Used to handle cases where a later call to `offsets_for_times`
-    /// might return `KafkaOffset::End` for some partitions, allowing for graceful handling.
-    /// Also used in static mode to identify the boundaries of the data chunk that needs to be read.
-    fn kafka_partition_watermarks(
-        consumer: &BaseConsumer,
-        topic: &str,
-        total_partitions: usize,
-    ) -> PyResult<Vec<RdkafkaWatermark>> {
-        let mut next_used_offset_per_partition = Vec::with_capacity(total_partitions);
-        for partition_idx in 0..total_partitions {
-            let (start_offset, next_offset) = consumer
-                .fetch_watermarks(
-                    topic,
-                    partition_idx.try_into().unwrap(),
-                    KafkaReader::default_timeout(),
-                )
-                .map_err(|e| {
-                    PyIOError::new_err(format!(
-                        "Failed to fetch watermarks for ({topic}, {partition_idx}): {e}"
-                    ))
-                })?;
-            next_used_offset_per_partition.push(RdkafkaWatermark::new(start_offset, next_offset));
-        }
-        Ok(next_used_offset_per_partition)
-    }
-
-    fn kafka_seek_positions_for_timestamp(
-        consumer: &BaseConsumer,
-        topic: &str,
-        total_partitions: usize,
-        start_from_timestamp_ms: i64,
-        watermarks: &[RdkafkaWatermark],
-    ) -> PyResult<HashMap<i32, KafkaOffset>> {
-        let mut seek_positions = HashMap::new();
-        let mut tpl = TopicPartitionList::new();
-        for partition_idx in 0..total_partitions {
-            tpl.add_partition_offset(
-                topic,
-                partition_idx.try_into().unwrap(),
-                KafkaOffset::Offset(start_from_timestamp_ms),
-            )
-            .expect("Failed to add partition offset");
-        }
-
-        let offsets = consumer
-            .offsets_for_times(tpl, KafkaReader::default_timeout())
-            .map_err(|e| {
-                PyIOError::new_err(format!("Failed to fetch offsets for the timestamp: {e}"))
-            })?;
-
-        // We could have done a simple `consumer.assign` here, but it would damage the automatic consumer rebalance
-        // So we act differently: we pass the seek positions to consumer, and it seeks lazily
-        for element in offsets.elements() {
-            assert_eq!(element.topic(), topic);
-            let offset = match element.offset() {
-                KafkaOffset::Invalid => {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "rdkafka returned invalid offset, details: {offsets:?}"
-                    )))
-                }
-                KafkaOffset::End => {
-                    let partition_idx: usize = element.partition().try_into().unwrap();
-                    warn!("Partition {partition_idx} has no message with a timestamp >= {start_from_timestamp_ms}: the requested start is at or past the end of the partition (offset {}), so none of its already-written data will be read. In static mode this partition yields no rows; in streaming mode only messages produced after the start will be read.", watermarks[partition_idx].high);
-                    KafkaOffset::Offset(watermarks[partition_idx].high)
-                }
-                offset => offset,
-            };
-            info!(
-                "Adding a lazy seek position for ({topic}, {}) to ({:?})",
-                element.partition(),
-                offset
-            );
-            seek_positions.insert(element.partition(), offset);
-        }
-        Ok(seek_positions)
-    }
-
     fn construct_kafka_reader(
         &self,
         scope: &Scope,
         properties: &ConnectorProperties,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let client_config = self.kafka_client_config()?;
-
         let consumer: BaseConsumer = client_config
             .create()
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
+        let topic = self.message_queue_fixed_topic()?;
 
-        let topic = &self.message_queue_fixed_topic()?;
-
-        let total_partitions = Self::total_partitions_for_topic(&consumer, topic)?;
-        let mut watermarks = Self::kafka_partition_watermarks(&consumer, topic, total_partitions)?;
-
-        let mut seek_positions = HashMap::new();
-        if let Some(start_from_timestamp_ms) = self.start_from_timestamp_ms {
-            let current_timestamp = current_unix_timestamp_ms();
-            if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
-                warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
-            }
-            seek_positions = Self::kafka_seek_positions_for_timestamp(
-                &consumer,
-                topic,
-                total_partitions,
-                start_from_timestamp_ms,
-                &watermarks,
-            )?;
-            // The lazy seek only fires once the consumer actually receives a
-            // message. For a seek target at (or past) the partition's high
-            // watermark there's nothing to receive, so no commit ever happens
-            // and `static_read_has_finished` would loop until the polling
-            // budget runs out. Pre-advance the watermark's low bound to
-            // reflect the seek: the range below the seek is logically
-            // already consumed, and an empty resulting range marks the
-            // partition as "no messages" so static mode exits promptly.
-            for (&partition, offset) in &seek_positions {
-                if let KafkaOffset::Offset(offset_value) = offset {
-                    let partition_idx: usize = partition
-                        .try_into()
-                        .expect("kafka partition can't be negative");
-                    if partition_idx < watermarks.len() {
-                        let watermark = &mut watermarks[partition_idx];
-                        watermark.low = watermark.low.max(*offset_value);
-                    }
-                }
-            }
-        }
-
-        // Partitions are acquired differently depending on the mode:
-        //   * Streaming subscribes to the topic, so the consumer group rebalances
-        //     partitions across all workers and persists committed offsets for
-        //     recovery.
-        //   * Static performs a bounded, one-shot read. Going through the consumer
-        //     group there is both unnecessary and racy: a fresh group must
-        //     complete a JoinGroup/SyncGroup round-trip before the first fetch, and
-        //     under load that assignment intermittently fails to deliver within the
-        //     polling budget — the reader then finishes having read nothing. So we
-        //     assign this worker's shard of the partitions explicitly and start at
-        //     each partition's lower boundary. This talks straight to the partition
-        //     leaders, with no coordinator dependency.
-        // Number of workers that will actually run a reader. The engine only
-        // starts a reader on workers whose index is below this value (see
-        // `connector_table`'s `scope.index() < parallel_readers`), and it is the
-        // value returned at the end of this function.
+        // `parallel_readers` is the value returned to the engine, which only
+        // starts a reader on workers whose index is below it (see
+        // `connector_table`'s `scope.index() < parallel_readers`).
         let parallel_readers = std::cmp::min(
             properties.max_parallel_readers(scope),
             self.parallel_readers.unwrap_or(NO_PARALLEL_READERS_LIMIT),
         );
+        // The number of workers that actually run a reader is therefore
+        // `min(worker_count, parallel_readers)` — it can be below the worker
+        // count when `parallel_readers=` is set explicitly or a synchronization
+        // group caps it. Static reads shard partitions across exactly these
+        // readers; sharding by the raw worker count would assign partitions to
+        // workers that never run a reader, silently dropping their data.
+        let reader_count = std::cmp::min(scope.worker_count(), parallel_readers);
 
-        let has_assigned_partitions = match self.mode {
-            ConnectorMode::Static => {
-                let worker_index = scope.worker_index();
-                // Static reads don't use a consumer group to spread partitions
-                // across workers, so we shard them by hand. Shard by the number
-                // of workers that actually read — `min(worker_count,
-                // parallel_readers)` — not by the raw worker count: the reader
-                // count can be smaller (an explicit `parallel_readers=` or a
-                // synchronization group), and sharding by the worker count would
-                // assign partitions to workers that never run a reader, silently
-                // dropping their data. Active readers are exactly the workers with
-                // index `0..n_readers`, so this modulo covers every partition.
-                let n_readers = std::cmp::min(scope.worker_count(), parallel_readers);
-                let mut tpl = TopicPartitionList::new();
-                for (partition_idx, watermark) in watermarks.iter().enumerate() {
-                    if partition_idx % n_readers != worker_index {
-                        continue;
-                    }
-                    let partition: i32 = partition_idx
-                        .try_into()
-                        .expect("kafka partition must fit 32-bit signed integer");
-                    let start_offset = seek_positions
-                        .get(&partition)
-                        .copied()
-                        .unwrap_or(KafkaOffset::Offset(watermark.low));
-                    tpl.add_partition_offset(topic, partition, start_offset)
-                        .expect("adding a partition to the assignment list must not fail");
-                }
-                consumer.assign(&tpl).map_err(|e| {
-                    PyIOError::new_err(format!("Assigning Kafka partitions failed: {e}"))
-                })?;
-                // The explicit assignment above already starts each partition at the
-                // right offset, so the lazy per-message seek used in streaming mode
-                // is not needed.
-                seek_positions.clear();
-                tpl.count() > 0
-            }
-            ConnectorMode::Streaming => {
-                consumer.subscribe(&[topic]).map_err(|e| {
-                    PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}"))
-                })?;
-                false
-            }
-        };
-
-        let reader = KafkaReader::new(
+        // The Kafka-specific machinery (fetching partitions/watermarks, resolving
+        // timestamp seeks, sharding partitions and acquiring them) lives in
+        // `KafkaReader::build`.
+        let reader = KafkaReader::build(
             consumer,
-            topic.clone(),
-            seek_positions,
-            watermarks,
+            topic,
             self.mode,
-            has_assigned_partitions,
-        );
+            self.start_from_timestamp_ms,
+            scope.worker_index(),
+            reader_count,
+        )
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
         Ok((Box::new(reader), parallel_readers))
     }

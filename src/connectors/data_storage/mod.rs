@@ -21,7 +21,7 @@ pub mod scanner;
 pub mod sqlite;
 
 pub use file::FileWriter;
-pub use kafka::{KafkaReader, KafkaWriter, RdkafkaWatermark};
+pub use kafka::{KafkaReader, KafkaReaderError, KafkaWriter, RdkafkaWatermark};
 pub use mqtt::{MqttReader, MqttWriter, MQTT_CLIENT_MAX_CHANNEL_SIZE, MQTT_MAX_MESSAGES_IN_QUEUE};
 pub use null::NullWriter;
 pub use python::{PythonReader, PythonReaderBuilder};
