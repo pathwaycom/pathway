@@ -1453,7 +1453,7 @@ def test_kafka_static_read_reads_all_partitions_when_parallel_readers_below_work
     expected = {
         message.value.decode("utf-8") for message in kafka_context.read_input_topic()
     }
-    assert len(expected) > 350, "sanity: most produced messages should be in the topic"
+    assert len(expected) > 350, "most produced messages should be in the topic"
 
     seen = set()
     with open(output_path) as f:
