@@ -190,7 +190,6 @@ def test_iceberg_read_after_write(backend, tmp_path, s3_path):
         run_single_iteration(seq_number)
 
 
-@pytest.mark.flaky(reruns=5)
 @pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, GLUE_BACKEND_NAME])
 def test_iceberg_several_runs(backend, tmp_path, s3_path):
     input_path = tmp_path / "input.txt"
@@ -613,12 +612,14 @@ def _local_catalog():
 
 def _retry_catalog_op(op, *, attempts: int = 6, base_delay: float = 0.2):
     """Run a local-catalog operation, retrying transient server errors with
-    exponential backoff. The `tabulario/iceberg-rest` backend (a SQLite-backed
-    JDBC catalog) intermittently answers ``500 ServerError``
-    (`UncheckedSQLException: Unknown failure` / `Failed to get table ...`) when
-    many parallel test workers hit it at once. These are not schema problems —
-    the same request succeeds on retry — so we only swallow `ServerError` and
-    let every other exception (e.g. a genuinely invalid schema) propagate
+    exponential backoff. The `tabulario/iceberg-rest` catalog is backed by
+    Postgres (see ``iceberg-db`` in docker-compose-integration.yml), which
+    handles the parallel-worker commit load without the lock errors the default
+    in-memory SQLite backend used to throw. This retry remains as cheap
+    defense-in-depth against any rare ``500 ServerError`` blip (REST restart,
+    momentary connection hiccup): such errors are not schema problems — the
+    same request succeeds on retry — so we only swallow `ServerError` and let
+    every other exception (e.g. a genuinely invalid schema) propagate
     immediately.
 
     A mutation that answers 500 may nonetheless have committed server-side, so a

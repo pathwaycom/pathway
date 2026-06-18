@@ -28,8 +28,11 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::Catalog as IcebergCatalog;
-use iceberg::{Namespace, NamespaceIdent, TableCreation, TableIdent};
+use iceberg::{
+    ErrorKind as IcebergErrorKind, Namespace, NamespaceIdent, TableCreation, TableIdent,
+};
 use tokio::runtime::Runtime as TokioRuntime;
+use uuid::Uuid;
 
 use super::{
     columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
@@ -141,6 +144,16 @@ pub enum IcebergError {
 
     #[error("date value {value} doesn't fit into an Iceberg date column (i32 days since epoch)")]
     DateOutOfRange { value: String },
+}
+
+/// True when an iceberg commit error means the data file we tried to append is
+/// already referenced by the table. iceberg-rust raises this as
+/// `ErrorKind::DataInvalid` with a fixed message from `validate_duplicate_files`.
+/// During a commit retry it is not a failure: it proves a previous attempt's
+/// commit actually landed (even though it reported an error), so the write is
+/// already durable and the retry should stop and report success.
+fn iceberg_error_is_already_committed(e: &iceberg::Error) -> bool {
+    e.kind() == IcebergErrorKind::DataInvalid && e.message().contains("already referenced by table")
 }
 
 fn ensure_namespace(
@@ -644,7 +657,16 @@ impl IcebergBatchWriter {
     > {
         let location_generator = DefaultLocationGenerator::new(table.metadata().clone())?;
         let file_name_generator = DefaultFileNameGenerator::new(
-            format!("block-{}", current_unix_timestamp_ms()),
+            // Include a random uuid so two batches flushed within the same
+            // millisecond can never generate the same parquet path. The
+            // generator's own file counter resets to 0 for every writer (a
+            // fresh writer is built per batch), so the millisecond timestamp
+            // prefix alone is not unique under load: a collision makes a later
+            // batch write over — and then try to re-commit — the first batch's
+            // already-referenced data file path, which iceberg rejects with
+            // `DataInvalid => Cannot add files that are already referenced by
+            // table`.
+            format!("block-{}-{}", current_unix_timestamp_ms(), Uuid::new_v4()),
             None,
             iceberg::spec::DataFileFormat::Parquet,
         );
@@ -707,20 +729,32 @@ impl LakeBatchWriter for IcebergBatchWriter {
             //
             // The data file was written to storage once, before this loop,
             // and is immutable, so re-appending it on a fresh transaction is
-            // safe. Caveat: if a commit lands but its *reply* is lost on the
-            // wire, the next attempt reloads, doesn't see its effect in time,
-            // and appends the file again — one duplicate snapshot pointing
-            // at the same data file. Pathway's required primary key dedupes
-            // the duplicate rows downstream, so user-visible state stays
-            // correct; the table just carries one extra snapshot.
+            // safe. Caveat: a commit can land server-side while still
+            // reporting failure to us — its reply is lost on the wire, or the
+            // catalog answers 5xx *after* advancing the metadata pointer (the
+            // SQLite/JDBC `UncheckedSQLException` the iceberg-rest test catalog
+            // throws under parallel load is exactly this). On the next attempt
+            // the reload then sees our data file already referenced by the
+            // table, and iceberg refuses to add it again with
+            // `DataInvalid => Cannot add files that are already referenced by
+            // table`. That rejection is proof the write is already durable, so
+            // we treat it as success instead of letting it burn the retry
+            // budget and surface as a hard error. Because every data file path
+            // is unique (see the uuid in `create_writer_builder`), an
+            // "already referenced" verdict can only be the echo of this
+            // batch's own earlier, apparently-failed commit — never a
+            // collision with an unrelated write.
             execute_with_retries_async(
                 async || {
                     self.table = self.catalog.load_table(&self.table_ident).await?;
                     let tx = Transaction::new(&self.table);
                     let append_action = tx.fast_append().add_data_files(data_file.clone());
                     let tx = append_action.apply(tx)?;
-                    tx.commit(self.catalog.as_ref()).await?;
-                    Ok::<(), WriteError>(())
+                    match tx.commit(self.catalog.as_ref()).await {
+                        Ok(_) => Ok(()),
+                        Err(e) if iceberg_error_is_already_committed(&e) => Ok(()),
+                        Err(e) => Err(WriteError::from(e)),
+                    }
                 },
                 RetryConfig::default(),
                 MAX_CATALOG_RETRIES,
