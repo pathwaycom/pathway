@@ -1030,6 +1030,10 @@ def test_kafka_registry(tmp_path, kafka_context):
             data = json.loads(line)
             encoded_message = base64.b64decode(data["data"])
             kafka_context.send(message=(encoded_message, None), topic=additional_topic)
+    # Confirm delivery before the static read below, which snapshots the topic
+    # end offsets at startup: an unflushed send could land after that snapshot
+    # and be missed.
+    kafka_context.flush()
 
     class KeyTableSchema(pw.Schema):
         key: int = pw.column_definition(source_component="key")
@@ -2386,7 +2390,7 @@ def test_kafka_raw_with_metadata_populates_all_fields(
         [0, 255, 128, 10, 17]
     )  # deliberately non-UTF-8 to expose any plaintext shortcut
     kafka_context.send(("my-key", payload))
-    kafka_context._producer.flush()
+    kafka_context.flush()
 
     table = pw.io.kafka.read(
         rdkafka_settings=kafka_context.default_rdkafka_settings(),

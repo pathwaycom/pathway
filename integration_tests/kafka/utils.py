@@ -17,6 +17,8 @@ import requests
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer, TopicPartition
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
+from kafka.errors import KafkaError
+from kafka.producer.future import FutureRecordMetadata
 from rstream import AMQPMessage, Producer
 from rstream.exceptions import (
     ClientError,
@@ -104,6 +106,10 @@ class KafkaTestContext:
         self._input_topic = random_topic_name()
         self._output_topic = random_topic_name()
         self._created_topics: set[str] = set()
+        # Records produced by ``send`` whose delivery has not been confirmed
+        # yet. ``KafkaProducer.send`` is asynchronous; the per-record outcome
+        # lands on these futures, which ``flush`` then resolves (see ``flush``).
+        self._pending_sends: list[FutureRecordMetadata] = []
 
         self._create_topic(self.input_topic)
         self._create_topic(self.output_topic)
@@ -113,14 +119,67 @@ class KafkaTestContext:
         self._create_topic(topic_name)
         return topic_name
 
+    # Kafka topic creation and deletion are processed asynchronously by the
+    # controller and only then propagated to every broker's metadata cache.
+    # Returning before that has settled races: a producer can write into a
+    # topic the cluster does not fully know yet, and — worst of all — deleting
+    # and recreating a topic under the same name (set_input_topic_partitions)
+    # can have the create applied before the still-pending delete, so the late
+    # delete wipes the freshly created topic. Producers then write into a topic
+    # that silently vanishes and the test sees an empty topic. Waiting for each
+    # operation to settle in the cluster metadata makes the sequence
+    # deterministic.
+    _TOPIC_SETTLE_TIMEOUT = 60.0
+    _TOPIC_SETTLE_INTERVAL = 0.2
+
+    def _topic_partition_count(self, name: str) -> int | None:
+        """Number of partitions ``name`` currently has in the cluster metadata,
+        or ``None`` if the topic is absent."""
+        for topic in self._admin.describe_topics([name]):
+            # kafka-python keys the topic name as "name" (3.x) or "topic"
+            # (<=2.x); accept either so this works across client versions.
+            if topic.get("name", topic.get("topic")) != name:
+                continue
+            # A non-zero error code (e.g. 3, UNKNOWN_TOPIC_OR_PARTITION) or an
+            # empty partition list means the topic is not (yet) a live topic.
+            if topic.get("error_code", 0) != 0 or not topic.get("partitions"):
+                return None
+            return len(topic["partitions"])
+        return None
+
+    def _wait_for_topic_metadata(self, name: str, predicate, description: str) -> None:
+        deadline = time.monotonic() + self._TOPIC_SETTLE_TIMEOUT
+        while True:
+            try:
+                count: int | None = self._topic_partition_count(name)
+            except KafkaError:
+                # Only genuine broker/metadata errors are transient here (the
+                # cluster is still in flux); retry those. Programming errors
+                # (e.g. an unexpected response shape) are NOT swallowed — they
+                # propagate immediately instead of masquerading as a timeout.
+                count = -2  # sentinel: satisfies no predicate, keep polling
+            if count != -2 and predicate(count):
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"topic {name!r} {description}")
+            time.sleep(self._TOPIC_SETTLE_INTERVAL)
+
     def _create_topic(self, name: str, num_partitions: int = 1) -> None:
         self._admin.create_topics(
             [NewTopic(name=name, num_partitions=num_partitions, replication_factor=1)]
         )
         self._created_topics.add(name)
+        self._wait_for_topic_metadata(
+            name,
+            lambda count: count == num_partitions,
+            f"did not appear with {num_partitions} partition(s) in time",
+        )
 
     def _delete_topic(self, name: str) -> None:
         self._admin.delete_topics(topics=[name])
+        self._wait_for_topic_metadata(
+            name, lambda count: count is None, "was not deleted in time"
+        )
 
     def send(
         self,
@@ -140,12 +199,37 @@ class KafkaTestContext:
         if isinstance(value, str):
             value = value.encode()
 
-        self._producer.send(
-            topic,
-            key=key,
-            value=value,
-            headers=headers,
+        self._pending_sends.append(
+            self._producer.send(
+                topic,
+                key=key,
+                value=value,
+                headers=headers,
+            )
         )
+
+    # Generous upper bound on how long a single buffered record may take to be
+    # confirmed once flushed; only trips if a delivery wedges, so a test fails
+    # loudly instead of hanging.
+    _SEND_SETTLE_TIMEOUT = 60.0
+
+    def flush(self) -> None:
+        """Deliver every buffered record and surface any delivery failure.
+
+        ``KafkaProducer.send`` is asynchronous and ``KafkaProducer.flush`` only
+        waits for the in-flight batches to drain — it does *not* raise when a
+        record was permanently rejected (e.g. its topic disappeared). The error
+        sits unread on the per-record future, so a dropped message would
+        otherwise masquerade as silent data loss in whichever test produced it,
+        surfacing far away as a confusing "missing rows" assertion. Resolve
+        every future here so a failed delivery fails the test loudly, at the
+        point of production."""
+        self._producer.flush()
+        pending, self._pending_sends = self._pending_sends, []
+        for future in pending:
+            # Already flushed, so this resolves immediately; the timeout only
+            # guards against a future that somehow never completes.
+            future.get(timeout=self._SEND_SETTLE_TIMEOUT)
 
     def set_input_topic_partitions(self, num_partitions: int):
         self._delete_topic(self._input_topic)
@@ -158,7 +242,7 @@ class KafkaTestContext:
     ) -> None:
         for msg in messages:
             self.send(msg, headers=headers)
-        self._producer.flush()
+        self.flush()
 
     def read_topic(self, topic, poll_timeout_ms: int = 1000) -> list[ConsumerRecord]:
         consumer = KafkaConsumer(
