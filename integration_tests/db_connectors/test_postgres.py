@@ -19,6 +19,7 @@ from utils import (
     POSTGRES_SETTINGS,
     POSTGRES_WITH_TLS_SETTINGS,
     ColumnProperties,
+    RowCountChecker,
     SimpleObject,
     check_write_quotes_reserved_word_column_name,
     check_write_quotes_table_name_with_special_characters,
@@ -233,7 +234,14 @@ def test_init_wrong_mode(write_method):
 
 
 @pytest.mark.parametrize("write_method", [pw.io.postgres.write, write_snapshot(["a"])])
-def test_init_default_table_not_exists(write_method):
+def test_init_default_rejects_missing_table(write_method):
+    """``init_mode="default"`` issues no DDL and writes straight into the
+    user's pre-existing table. A missing destination must be rejected at
+    writer init with a clear "table does not exist" message — not surface
+    as an opaque ``db error`` from the binary-``COPY`` fast path failing to
+    resolve the destination column OIDs.
+    """
+
     class InputSchema(pw.Schema):
         a: str
         b: int
@@ -248,12 +256,12 @@ def test_init_default_table_not_exists(write_method):
         rows,
     )
 
-    with pytest.raises(api.EngineError):
-        write_method(
-            table,
-            postgres_settings=POSTGRES_SETTINGS,
-            table_name="non_existent_table",
-        )
+    write_method(
+        table,
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name="non_existent_table",
+    )
+    with pytest.raises(Exception, match=r"non_existent_table\" does not exist"):
         run()
 
 
@@ -4989,3 +4997,45 @@ def test_psql_augment_postgres_settings_injects_pathway_defaults():
     assert augmented["application_name"].startswith(
         "pathway:" + "x" * (63 - len("pathway:"))
     )
+
+
+def test_psql_copy_writer_ingests_500k_rows_within_30s(tmp_path, postgres):
+    """The Postgres writer must ingest a 500,000-row batch within 30 seconds.
+
+    A row-by-row INSERT path is round-trip-bound (~4k rows/s on a local server)
+    and cannot meet this budget; the binary-COPY path the writer now uses by
+    default streams the whole batch in bulk and clears it with large headroom.
+
+    The pipeline runs in a background process via ``wait_result_with_checker``,
+    which polls the row count and gives up at the 30s deadline -- so a slow or
+    broken writer fails the test at ~30s instead of blocking for the whole
+    (potentially unbounded) run.
+    """
+    n_rows = 500_000
+
+    class InputSchema(pw.Schema):
+        k: int
+        name: str
+        value: float
+        flag: bool
+
+    # A directory with one CSV file, read in streaming mode so the run process
+    # stays alive while we poll (and is terminated by the checker on success or
+    # timeout), rather than exiting and racing the count query.
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    with open(input_dir / "data.csv", "w") as f:
+        f.write("k,name,value,flag\n")
+        for i in range(n_rows):
+            f.write(f"{i},item_{i},{i * 0.5},{'True' if i % 2 else 'False'}\n")
+
+    with postgres.temporary_table(ddl_fmt=None) as table_name:
+        table = pw.io.csv.read(str(input_dir), schema=InputSchema)
+        pw.io.postgres.write(
+            table,
+            POSTGRES_SETTINGS,
+            table_name,
+            init_mode="replace",
+            max_batch_size=10_000,
+        )
+        wait_result_with_checker(RowCountChecker(n_rows, postgres, table_name), 30)

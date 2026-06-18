@@ -16,7 +16,9 @@ use pg_walstream::{
     CancellationToken, ChangeEvent, ColumnValue, EventType, LogicalReplicationStream,
     ReplicationSlotOptions, ReplicationStreamConfig, RetryConfig, RowData, StreamingMode,
 };
+use postgres::binary_copy::BinaryCopyInWriter;
 use postgres::types::ToSql;
+use postgres::types::Type as PgType;
 use postgres::Client as PsqlClient;
 use postgres::NoTls;
 use postgres_native_tls::MakeTlsConnector;
@@ -145,6 +147,15 @@ pub enum PostgresError {
          create it (CREATE SCHEMA \"{schema}\") or fix the schema_name parameter"
     )]
     SchemaDoesNotExist { schema: String },
+
+    #[error(
+        "destination table \"{schema}\".\"{table}\" does not exist. \
+         init_mode=\"default\" never issues DDL and requires the table to \
+         already exist; create it in PostgreSQL first, or use \
+         init_mode=\"create_if_not_exists\" / \"replace\" to have Pathway \
+         create it"
+    )]
+    WriterDestinationTableMissing { schema: String, table: String },
 
     #[error(
         "destination column \"{schema}\".\"{table}\".\"{column}\" has \
@@ -401,6 +412,141 @@ pub struct PsqlWriter {
     table_name: String,
     query: SqlQueryTemplate,
     legacy_mode: bool,
+    /// Precomputed column OIDs and SQL fragments for the binary `COPY`
+    /// path, so the per-flush hot path only streams rows. `Some` for
+    /// every normal write; `None` only in deprecated legacy snapshot
+    /// mode, which still appends `time`/`diff` and falls back to the
+    /// row-by-row INSERT loop.
+    copy_ctx: Option<CopyContext>,
+}
+
+/// Precomputed metadata for the binary-`COPY` fast path. Built once at
+/// writer construction so the per-flush path never re-derives column
+/// types or re-assembles SQL fragments.
+///
+/// Binary `COPY` serializes every value according to the *destination
+/// column's* on-the-wire type, so we resolve the real OIDs by preparing
+/// a zero-row `SELECT` against the target rather than guessing from the
+/// Pathway schema.
+struct CopyContext {
+    /// `"schema"."table"`, already quoted.
+    quoted_table: String,
+    /// Quoted, comma-joined list of the value columns (no `time`/`diff`).
+    value_field_list: String,
+    /// `COPY ... FROM STDIN (FORMAT binary)` for stream-of-changes mode.
+    stream_copy_sql: String,
+    /// OIDs for the columns streamed in stream-of-changes mode:
+    /// value columns followed by `time` and `diff`.
+    stream_types: Vec<PgType>,
+    /// OIDs for the value columns only (used by snapshot staging).
+    value_types: Vec<PgType>,
+    /// Primary-key column positions within `value_fields`, sorted — the
+    /// order shared with `SqlQueryTemplate::primary_key_fields`.
+    pk_indices: Vec<usize>,
+    /// Quoted primary-key column names in `pk_indices` order.
+    pk_cols: Vec<String>,
+    /// Quoted, comma-joined primary-key columns in `pk_indices` order.
+    pk_field_list: String,
+    /// OIDs of the primary-key columns in `pk_indices` order.
+    pk_types: Vec<PgType>,
+    /// Quoted, comma-joined `ON CONFLICT (...)` target columns.
+    conflict_target: String,
+    /// `SET col=EXCLUDED.col, ...` body for the upsert merge; empty when
+    /// every column is part of the primary key (→ `DO NOTHING`).
+    upsert_set: String,
+}
+
+impl CopyContext {
+    fn new(
+        client: &mut PsqlClient,
+        quoted_table: &str,
+        value_fields: &[ValueField],
+        key_field_names: Option<&[String]>,
+        snapshot_mode: bool,
+    ) -> Result<Self, PostgresError> {
+        let value_field_list = value_fields
+            .iter()
+            .map(|f| quote_identifier(&f.name))
+            .join(",");
+
+        // Resolve the destination column OIDs. For stream-of-changes we
+        // also need the `time`/`diff` columns; snapshot mode writes only
+        // the value columns into staging.
+        let (value_types, stream_types) = if snapshot_mode {
+            let stmt = client.prepare(&format!(
+                "SELECT {value_field_list} FROM {quoted_table} LIMIT 0"
+            ))?;
+            let value_types: Vec<PgType> =
+                stmt.columns().iter().map(|c| c.type_().clone()).collect();
+            (value_types, Vec::new())
+        } else {
+            let stmt = client.prepare(&format!(
+                "SELECT {value_field_list},time,diff FROM {quoted_table} LIMIT 0"
+            ))?;
+            let all_types: Vec<PgType> = stmt.columns().iter().map(|c| c.type_().clone()).collect();
+            let value_types = all_types[..value_fields.len()].to_vec();
+            (value_types, all_types)
+        };
+
+        let stream_copy_sql = format!(
+            "COPY {quoted_table} ({value_field_list},time,diff) FROM STDIN (FORMAT binary)"
+        );
+
+        // Primary-key bookkeeping for the snapshot merge. The names are
+        // already validated against `value_fields` upstream (Python
+        // rejects foreign references; the engine preflight checks the
+        // unique constraint), so `position` cannot be `None` here.
+        let mut pk_indices: Vec<usize> = key_field_names
+            .unwrap_or(&[])
+            .iter()
+            .map(|name| {
+                value_fields
+                    .iter()
+                    .position(|vf| vf.name == *name)
+                    .expect("primary_key column validated to exist in value_fields")
+            })
+            .collect();
+        pk_indices.sort_unstable();
+
+        let pk_cols: Vec<String> = pk_indices
+            .iter()
+            .map(|i| quote_identifier(&value_fields[*i].name))
+            .collect();
+        let pk_field_list = pk_cols.join(",");
+        let pk_types: Vec<PgType> = pk_indices.iter().map(|i| value_types[*i].clone()).collect();
+        let conflict_target = key_field_names
+            .unwrap_or(&[])
+            .iter()
+            .map(|name| quote_identifier(name))
+            .join(",");
+        let pk_name_set: HashSet<&str> = key_field_names
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let upsert_set = value_fields
+            .iter()
+            .filter(|f| !pk_name_set.contains(f.name.as_str()))
+            .map(|f| {
+                let q = quote_identifier(&f.name);
+                format!("{q}=EXCLUDED.{q}")
+            })
+            .join(",");
+
+        Ok(CopyContext {
+            quoted_table: quoted_table.to_string(),
+            value_field_list,
+            stream_copy_sql,
+            stream_types,
+            value_types,
+            pk_indices,
+            pk_cols,
+            pk_field_list,
+            pk_types,
+            conflict_target,
+            upsert_set,
+        })
+    }
 }
 
 mod to_sql {
@@ -963,6 +1109,180 @@ mod to_sql {
     }
 }
 
+/// Maps a raw driver error from a `COPY` step into
+/// `PostgresError::PsqlQueryFailed`, whose `Display` runs
+/// `format_error_chain` and therefore surfaces the wrapped root cause
+/// (e.g. `ArraySerializationError::JaggedArray`). `postgres::Error`'s
+/// own `Display` collapses a value-serialization failure to the opaque
+/// `"error serializing parameter N"`; without this wrapper the actual
+/// offending cause stays hidden behind the transparent `Postgres`
+/// variant.
+fn copy_step_err(query: &str) -> impl Fn(postgres::Error) -> WriteError + '_ {
+    move |error| {
+        PostgresError::PsqlQueryFailed {
+            query: query.to_string(),
+            error,
+        }
+        .into()
+    }
+}
+
+/// Flush a stream-of-changes batch through binary `COPY`. The whole
+/// buffer is appended to the target table in a single `COPY` stream
+/// (value columns plus the `time`/`diff` metadata), inside one
+/// transaction. This replaces one parameterized `INSERT` round-trip per
+/// row with a single bulk transfer.
+fn copy_flush_stream(
+    client: &mut PsqlClient,
+    ctx: &CopyContext,
+    buffer: &[FormatterContext],
+) -> Result<(), WriteError> {
+    let mut transaction = client.transaction()?;
+    {
+        let copy_sql = &ctx.stream_copy_sql;
+        let sink = transaction
+            .copy_in(copy_sql)
+            .map_err(copy_step_err(copy_sql))?;
+        let mut writer = BinaryCopyInWriter::new(sink, &ctx.stream_types);
+        for data in buffer {
+            // `time`/`diff` are serialized through the same `Value`
+            // `ToSql` impl as the row payload, adapting to whatever
+            // width the destination columns declare.
+            let diff = Value::Int(data.diff.try_into().unwrap());
+            let time = Value::Int(data.time.0.try_into().unwrap());
+            let mut row: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(data.values.len() + 2);
+            for v in &data.values {
+                row.push(v as &(dyn ToSql + Sync));
+            }
+            row.push(&time);
+            row.push(&diff);
+            writer.write(&row).map_err(copy_step_err(copy_sql))?;
+        }
+        writer.finish().map_err(copy_step_err(copy_sql))?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Flush a snapshot batch through binary `COPY` + a set-based merge.
+///
+/// Per batch, in one transaction:
+/// 1. retractions (`diff < 0`) are streamed into a temp table and the
+///    matching rows removed via a single `DELETE ... USING`;
+/// 2. additions (`diff > 0`) are streamed into a second temp table and
+///    merged with `INSERT ... SELECT DISTINCT ON (pk) ... ON CONFLICT
+///    (pk) DO UPDATE`.
+///
+/// Deletes are applied before upserts, which yields the correct final
+/// state for the usual snapshot update pattern (a key change arrives as
+/// retraction + addition of the same key). `DISTINCT ON (pk) ... ORDER
+/// BY pk, ctid DESC` collapses multiple additions of the same key within
+/// one batch to the most recent one, so the `ON CONFLICT` merge never
+/// touches a row twice.
+fn copy_flush_snapshot(
+    client: &mut PsqlClient,
+    ctx: &CopyContext,
+    buffer: &[FormatterContext],
+) -> Result<(), WriteError> {
+    let target = &ctx.quoted_table;
+    let mut transaction = client.transaction()?;
+
+    let has_deletes = buffer.iter().any(|d| d.diff < 0);
+    let has_inserts = buffer.iter().any(|d| d.diff > 0);
+
+    if has_deletes {
+        // Stage retraction keys. `... AS SELECT pk FROM target WITH NO
+        // DATA` mirrors the destination column types without copying the
+        // NOT NULL constraints on the columns we don't fill.
+        transaction.batch_execute(&format!(
+            "CREATE TEMP TABLE _pw_copy_del ON COMMIT DROP AS \
+             SELECT {} FROM {target} WITH NO DATA",
+            ctx.pk_field_list
+        ))?;
+        {
+            let copy_sql = format!(
+                "COPY _pw_copy_del ({}) FROM STDIN (FORMAT binary)",
+                ctx.pk_field_list
+            );
+            let sink = transaction
+                .copy_in(&copy_sql)
+                .map_err(copy_step_err(&copy_sql))?;
+            let mut writer = BinaryCopyInWriter::new(sink, &ctx.pk_types);
+            for data in buffer {
+                if data.diff >= 0 {
+                    continue;
+                }
+                let row: Vec<&(dyn ToSql + Sync)> = ctx
+                    .pk_indices
+                    .iter()
+                    .map(|i| &data.values[*i] as &(dyn ToSql + Sync))
+                    .collect();
+                writer.write(&row).map_err(copy_step_err(&copy_sql))?;
+            }
+            writer.finish().map_err(copy_step_err(&copy_sql))?;
+        }
+        let join_cond = ctx
+            .pk_cols
+            .iter()
+            .map(|c| format!("{target}.{c}=_pw_copy_del.{c}"))
+            .join(" AND ");
+        transaction.batch_execute(&format!(
+            "DELETE FROM {target} USING _pw_copy_del WHERE {join_cond}"
+        ))?;
+    }
+
+    if has_inserts {
+        // Stage additions with the destination value-column types but
+        // without its PRIMARY KEY / NOT NULL constraints, so duplicate
+        // keys within one batch can land here and be collapsed by the
+        // DISTINCT ON merge below.
+        transaction.batch_execute(&format!(
+            "CREATE TEMP TABLE _pw_copy_ins ON COMMIT DROP AS \
+             SELECT {} FROM {target} WITH NO DATA",
+            ctx.value_field_list
+        ))?;
+        {
+            let copy_sql = format!(
+                "COPY _pw_copy_ins ({}) FROM STDIN (FORMAT binary)",
+                ctx.value_field_list
+            );
+            let sink = transaction
+                .copy_in(&copy_sql)
+                .map_err(copy_step_err(&copy_sql))?;
+            let mut writer = BinaryCopyInWriter::new(sink, &ctx.value_types);
+            for data in buffer {
+                if data.diff <= 0 {
+                    continue;
+                }
+                let row: Vec<&(dyn ToSql + Sync)> = data
+                    .values
+                    .iter()
+                    .map(|v| v as &(dyn ToSql + Sync))
+                    .collect();
+                writer.write(&row).map_err(copy_step_err(&copy_sql))?;
+            }
+            writer.finish().map_err(copy_step_err(&copy_sql))?;
+        }
+        let conflict_action = if ctx.upsert_set.is_empty() {
+            "DO NOTHING".to_string()
+        } else {
+            format!("DO UPDATE SET {}", ctx.upsert_set)
+        };
+        transaction.batch_execute(&format!(
+            "INSERT INTO {target} ({cols}) \
+             SELECT DISTINCT ON ({pk}) {cols} FROM _pw_copy_ins ORDER BY {pk}, ctid DESC \
+             ON CONFLICT ({conflict}) {action}",
+            cols = ctx.value_field_list,
+            pk = ctx.pk_field_list,
+            conflict = ctx.conflict_target,
+            action = conflict_action,
+        ))?;
+    }
+
+    transaction.commit()?;
+    Ok(())
+}
+
 impl Writer for PsqlWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         self.buffer.push(data);
@@ -1046,44 +1366,56 @@ impl PsqlWriter {
             .as_mut()
             .expect("client populated by reconnect above");
 
-        let result = (|| -> Result<(), WriteError> {
-            let mut transaction = client.transaction()?;
-            for data in &buffer {
-                // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
-                let diff = Value::Int(data.diff.try_into().unwrap());
-                let time = Value::Int(data.time.0.try_into().unwrap());
-                let mut params: Vec<_> = data
-                    .values
-                    .iter()
-                    .map(|v| v as &(dyn ToSql + Sync))
-                    .collect();
-                let params = if self.snapshot_mode {
-                    if data.diff > 0 && self.legacy_mode {
+        let result = if let Some(ctx) = self.copy_ctx.as_ref() {
+            // Default binary-COPY path. Snapshot mode stages into a temp
+            // table and merges; stream-of-changes copies straight into
+            // the target.
+            if self.snapshot_mode {
+                copy_flush_snapshot(client, ctx, &buffer)
+            } else {
+                copy_flush_stream(client, ctx, &buffer)
+            }
+        } else {
+            // Fallback for deprecated legacy snapshot mode only.
+            (|| -> Result<(), WriteError> {
+                let mut transaction = client.transaction()?;
+                for data in &buffer {
+                    // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
+                    let diff = Value::Int(data.diff.try_into().unwrap());
+                    let time = Value::Int(data.time.0.try_into().unwrap());
+                    let mut params: Vec<_> = data
+                        .values
+                        .iter()
+                        .map(|v| v as &(dyn ToSql + Sync))
+                        .collect();
+                    let params = if self.snapshot_mode {
+                        if data.diff > 0 && self.legacy_mode {
+                            params.push(&time);
+                            params.push(&diff);
+                            params
+                        } else if data.diff > 0 && !self.legacy_mode {
+                            params
+                        } else {
+                            self.query.primary_key_fields(params)
+                        }
+                    } else {
                         params.push(&time);
                         params.push(&diff);
                         params
-                    } else if data.diff > 0 && !self.legacy_mode {
-                        params
-                    } else {
-                        self.query.primary_key_fields(params)
-                    }
-                } else {
-                    params.push(&time);
-                    params.push(&diff);
-                    params
-                };
+                    };
 
-                let query = self.query.build_query(data.diff);
-                transaction
-                    .execute(&query, params.as_slice())
-                    .map_err(|error| PostgresError::PsqlQueryFailed {
-                        query: query.clone(),
-                        error,
-                    })?;
-            }
-            transaction.commit()?;
-            Ok(())
-        })();
+                    let query = self.query.build_query(data.diff);
+                    transaction
+                        .execute(&query, params.as_slice())
+                        .map_err(|error| PostgresError::PsqlQueryFailed {
+                            query: query.clone(),
+                            error,
+                        })?;
+                }
+                transaction.commit()?;
+                Ok(())
+            })()
+        };
 
         if let Err(e) = result {
             // Drop the poisoned client so the next retry reconnects
@@ -1146,6 +1478,17 @@ impl PsqlWriter {
         // INSERT on init_mode=Default) fails with an opaque driver
         // error. Detect it up-front regardless of init_mode.
         Self::validate_destination_is_table_or_absent(&mut client, schema_name, table_name)?;
+
+        // `init_mode=Default` issues no DDL — it writes straight into the
+        // user's pre-existing table. If that table is absent, the binary
+        // `COPY` fast path can't resolve its column OIDs and the writer
+        // init panics the worker with an opaque `db error`. Reject a
+        // missing destination here so the user gets a clear, actionable
+        // message at pipeline start. `CreateIfNotExists` / `Replace`
+        // create the table themselves, so an absent table is fine there.
+        if matches!(init_mode, TableWriterInitMode::Default) {
+            Self::validate_destination_table_exists(&mut client, schema_name, table_name)?;
+        }
 
         // Preflights run whenever the table may already exist and
         // not be overwritten: `Default` (we never touch it) and
@@ -1260,6 +1603,23 @@ impl PsqlWriter {
             quote_identifier,
         )?;
 
+        // Binary-COPY is the default and only write path. Legacy
+        // snapshot mode (the deprecated `write_snapshot`, which still
+        // appends `time`/`diff` to the snapshot table) is the one
+        // exception: it is not supported here and falls back to the
+        // INSERT loop.
+        let copy_ctx = if legacy_mode {
+            None
+        } else {
+            Some(CopyContext::new(
+                &mut client,
+                &quoted_table_name,
+                value_fields,
+                key_field_names,
+                snapshot_mode,
+            )?)
+        };
+
         let PsqlConnectionConfig {
             connection_string,
             ssl_mode,
@@ -1276,6 +1636,7 @@ impl PsqlWriter {
             snapshot_mode,
             table_name: table_name.clone(),
             legacy_mode,
+            copy_ctx,
         };
 
         Ok(writer)
@@ -1434,6 +1795,33 @@ impl PsqlWriter {
                 schema: schema_name.to_string(),
                 table: table_name.to_string(),
                 kind,
+            });
+        }
+        Ok(())
+    }
+
+    /// Verifies that the destination table exists. Used for
+    /// `init_mode=Default`, which never issues DDL: without this check
+    /// the binary-`COPY` writer init fails to resolve the destination
+    /// column OIDs and surfaces an opaque `db error` instead of a
+    /// clear "table does not exist" message. `pg_class`/`pg_namespace`
+    /// are readable by every role.
+    fn validate_destination_table_exists(
+        client: &mut PsqlClient,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<(), PostgresError> {
+        let rows = client.query(
+            "SELECT 1
+             FROM pg_class c
+             JOIN pg_namespace n ON c.relnamespace = n.oid
+             WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p')",
+            &[&schema_name, &table_name],
+        )?;
+        if rows.is_empty() {
+            return Err(PostgresError::WriterDestinationTableMissing {
+                schema: schema_name.to_string(),
+                table: table_name.to_string(),
             });
         }
         Ok(())

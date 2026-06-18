@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.io.postgres.write` now streams each batch into PostgreSQL through the binary `COPY` protocol instead of issuing one `INSERT` per row, giving a large throughput improvement (up to ~100x) on bulk writes. Both output modes use it: stream-of-changes copies straight into the target, while snapshot mode stages each batch in a temporary table and merges it with a single set-based upsert/delete.
+
 ### Fixed
 - `pw.io.kafka.read` in `mode="static"` no longer intermittently reads zero rows (or fewer rows than were present) from a topic. The static reader subscribed to the topic and relied on a consumer-group rebalance to assign partitions before its first fetch; under load that assignment could fail to complete within the reader's polling budget, so the read finished having consumed nothing. The static reader now assigns its partitions explicitly and reads each up to the end offset captured at start-up, removing the consumer-group dependency entirely.
 
