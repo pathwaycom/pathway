@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use log::error;
 
 use crate::connectors::data_storage::scanner::{PosixLikeScanner, QueuedAction};
+use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::metadata::FileLikeMetadata;
 use crate::connectors::ReadError;
 use crate::persistence::cached_object_storage::CachedObjectStorage;
@@ -17,6 +18,7 @@ use glob::Pattern as GlobPattern;
 pub struct FilesystemScanner {
     path: GlobPattern,
     object_pattern: String,
+    shard_selector: ShardSelector,
 }
 
 impl PosixLikeScanner for FilesystemScanner {
@@ -67,11 +69,16 @@ impl PosixLikeScanner for FilesystemScanner {
 }
 
 impl FilesystemScanner {
-    pub fn new(path: &str, object_pattern: &str) -> Result<FilesystemScanner, ReadError> {
+    pub fn new(
+        path: &str,
+        object_pattern: &str,
+        shard_selector: ShardSelector,
+    ) -> Result<FilesystemScanner, ReadError> {
         let path_glob = GlobPattern::new(path)?;
         Ok(Self {
             path: path_glob,
             object_pattern: object_pattern.to_string(),
+            shard_selector,
         })
     }
 
@@ -107,6 +114,9 @@ impl FilesystemScanner {
         let mut result = Vec::new();
         for entry in self.get_matching_file_paths()? {
             let object_key = entry.as_os_str().as_bytes();
+            if !self.shard_selector.owns(object_key) {
+                continue;
+            }
             if cached_object_storage.contains_object(object_key) {
                 continue;
             }

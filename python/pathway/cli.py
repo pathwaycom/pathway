@@ -6,6 +6,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import venv
 from dataclasses import dataclass
@@ -125,6 +126,10 @@ def create_process_handles(
     env_common["PATHWAY_PROCESSES"] = str(processes)
     env_common["PATHWAY_RUN_ID"] = str(run_id)
     env_common["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
+    # Share a single start-up-batch timestamp across all processes of the run, so
+    # they agree on the timestamp of the initial snapshot (see the connector's
+    # `timestamp_at_start` handling).
+    env_common["PATHWAY_START_TIMESTAMP_MS"] = str(int(time.time() * 1000))
     if addresses is not None:
         _check_entitlements("multiple-machines")
         env_common["PATHWAY_ADDRESSES"] = addresses

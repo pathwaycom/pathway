@@ -18,6 +18,7 @@ use pathway_engine::connectors::data_format::{
     ParsedEvent, ParsedEventWithErrors, Parser, ValueFieldsWithErrors,
 };
 use pathway_engine::connectors::data_storage::scanner::FilesystemScanner;
+use pathway_engine::connectors::data_storage::sharding::ShardSelector;
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, DataEventType, ReadError, ReadMethod, ReadResult, Reader, ReaderBuilder,
     ReaderContext,
@@ -421,7 +422,7 @@ pub fn new_filesystem_reader(
     object_pattern: &str,
     is_persisted: bool,
 ) -> Result<PosixLikeReader, ReadError> {
-    let scanner = FilesystemScanner::new(path, object_pattern)?;
+    let scanner = FilesystemScanner::new(path, object_pattern, ShardSelector::new(0, 1))?;
     let tokenizer = BufReaderTokenizer::new(read_method);
     PosixLikeReader::new(
         Box::new(scanner),
@@ -439,7 +440,7 @@ pub fn new_csv_filesystem_reader(
     object_pattern: &str,
     is_persisted: bool,
 ) -> Result<PosixLikeReader, ReadError> {
-    let scanner = FilesystemScanner::new(path, object_pattern)?;
+    let scanner = FilesystemScanner::new(path, object_pattern, ShardSelector::new(0, 1))?;
     let tokenizer = CsvTokenizer::new(parser_builder);
     PosixLikeReader::new(
         Box::new(scanner),

@@ -151,6 +151,7 @@ where
         graph.terminate_on_error,
         graph.create_error_logger()?.into(),
         None,
+        1, // single reader: no start-up batch coordination needed
     );
     let state = connector.run(
         reader,

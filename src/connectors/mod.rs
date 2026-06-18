@@ -100,6 +100,19 @@ const MAX_PARSE_ERRORS_IN_LOG: usize = 128;
 pub struct Connector {
     commit_duration: Option<Duration>,
     current_timestamp: Timestamp,
+    // The timestamp shared by all workers for the very first ("start-up") batch.
+    // Every file present when the connector starts is committed at this single
+    // timestamp, so all parallel readers agree on one minibatch for the initial
+    // snapshot (see `advance_time` / the `FinishedSource` handling).
+    timestamp_at_start: Timestamp,
+    // Whether the start-up batch must be coordinated across readers. This is only
+    // meaningful when several readers run in parallel (each on its own wall clock):
+    // they must agree on the boundary of the initial snapshot. With a single reader
+    // there is nothing to coordinate, so we keep the plain wall-clock behavior —
+    // crucially, this is also the case whenever persistence is enabled, where the
+    // read always runs on one worker and recovery must stay byte-for-byte identical
+    // to the long-standing single-reader path.
+    coordinate_startup_batch: bool,
     num_columns: usize,
     current_frontier: OffsetAntichain,
     skip_all_errors: bool,
@@ -230,10 +243,13 @@ impl Connector {
         skip_all_errors: bool,
         error_logger: Rc<dyn LogError>,
         group: Option<ConnectorGroupAccessor>,
+        parallel_readers: usize,
     ) -> Self {
         Connector {
             commit_duration,
             current_timestamp: Timestamp(0), // default is 0 now. If changing, make sure it is even (required for alt-neu).
+            timestamp_at_start: Timestamp(0), // overwritten in `run` with the shared start timestamp.
+            coordinate_startup_batch: parallel_readers > 1,
             num_columns,
             current_frontier: OffsetAntichain::new(),
             skip_all_errors,
@@ -262,8 +278,14 @@ impl Connector {
     }
 
     fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
-        let new_timestamp = Timestamp::new_from_current_time();
+        self.advance_time_to(input_session, Timestamp::new_from_current_time())
+    }
 
+    fn advance_time_to(
+        &mut self,
+        input_session: &mut dyn InputAdaptor<Timestamp>,
+        new_timestamp: Timestamp,
+    ) -> Timestamp {
         let old_timestamp = self.current_timestamp;
         if self.current_timestamp < new_timestamp {
             self.current_timestamp = new_timestamp;
@@ -604,6 +626,7 @@ impl Connector {
         timestamp_at_start: Timestamp,
     ) -> Result<StartedConnectorState, EngineError> {
         assert_eq!(self.num_columns, parser.column_count());
+        self.timestamp_at_start = timestamp_at_start;
 
         let main_thread = thread::current();
         let (sender, receiver) = match max_backlog_size {
@@ -861,8 +884,23 @@ impl Connector {
                 ReadResult::Finished => {}
                 ReadResult::FinishedSource { commit_possibility } => {
                     *commit_allowed = commit_possibility.commit_allowed();
-                    let commit_needed =
-                        self.has_clock_advanced() || commit_possibility.commit_forced();
+                    // With several parallel readers, keep the start-up batch
+                    // together: while we are still at the shared `timestamp_at_start`,
+                    // don't let per-file wall-clock advances split the initial
+                    // snapshot across minibatches. Otherwise parallel readers, each
+                    // advancing on their own wall clock, would disagree on the
+                    // boundary and expose stateful operators (e.g. `iterate`) to
+                    // partial input. The batch is closed instead by the auto-commit
+                    // timer / source completion. Forced commits (synchronization
+                    // groups) still advance.
+                    //
+                    // With a single reader (always the case under persistence) there
+                    // is nothing to coordinate, so we keep the original wall-clock
+                    // behavior to leave the persisted recovery path unchanged.
+                    let in_startup_batch = self.coordinate_startup_batch
+                        && self.current_timestamp <= self.timestamp_at_start;
+                    let commit_needed = commit_possibility.commit_forced()
+                        || (!in_startup_batch && self.has_clock_advanced());
                     if *commit_allowed && commit_needed {
                         let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
                         self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
@@ -913,8 +951,29 @@ impl Connector {
                 self.current_frontier = restored_frontier;
 
                 if needs_time_advancement {
-                    let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                    self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
+                    if self.coordinate_startup_batch {
+                        // Advance to the shared `timestamp_at_start` (not each
+                        // worker's own wall clock), so every parallel reader opens
+                        // the start-up batch at the very same timestamp.
+                        let target = self.timestamp_at_start;
+                        let time_advanced = self.advance_time_to(ctx.input_session, target);
+                        ctx.connector_monitor.borrow_mut().commit();
+                        if let Some(snapshot_writer) = ctx.snapshot_writer {
+                            snapshot_writer
+                                .lock()
+                                .unwrap()
+                                .write(&SnapshotEvent::AdvanceTime(
+                                    time_advanced,
+                                    self.current_frontier.clone(),
+                                ));
+                        }
+                    } else {
+                        // Single reader (always the case under persistence): keep the
+                        // original wall-clock advancement so the persisted recovery
+                        // path is unchanged.
+                        let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
+                        self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
+                    }
                 }
                 info!(
                     "Realtime data starts from the time {:?}",

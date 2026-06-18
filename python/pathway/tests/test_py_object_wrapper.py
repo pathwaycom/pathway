@@ -289,9 +289,13 @@ def test_serialization(tmp_path: Path, serialization: str, port: int) -> None:
         def provide_information_on_failure(self) -> str:
             return str(self.error)
 
+    # Generous timeout: this is a 2-process run, so start-up (cluster set-up,
+    # per-worker readers) can take several seconds, especially under a loaded
+    # `-n` test run. On success the wait returns as soon as the processes finish,
+    # so the large bound only matters when something is genuinely wrong.
     wait_result_with_checker(
         Checker(),
-        5,
+        30,
         target=target,
         processes=2,
         first_port=port,

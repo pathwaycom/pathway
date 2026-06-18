@@ -18,6 +18,7 @@ pub mod python;
 pub mod questdb;
 pub mod rabbitmq;
 pub mod scanner;
+pub mod sharding;
 pub mod sqlite;
 
 pub use file::FileWriter;

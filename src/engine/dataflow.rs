@@ -3966,6 +3966,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 self.terminate_on_error,
                 self.create_error_logger()?.into(),
                 group,
+                parallel_readers,
             );
             let state = connector.run(
                 reader,

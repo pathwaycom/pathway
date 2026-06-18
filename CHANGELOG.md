@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Changed
+- `pw.io.fs.read` now reads in parallel when Pathway runs with several workers and persistence is not enabled. Each file is assigned to exactly one worker by a stable hash of its path, so the read scales with the number of workers instead of running on a single one. The assignment is deterministic across workers and processes, requiring no coordination between them. All files present at start-up are still delivered as a single minibatch at one shared timestamp across every worker, so stateful operators see the initial snapshot atomically rather than split across the parallel readers. When persistence is enabled, the read runs on a single worker to keep recovery exactly consistent.
 - `pw.io.postgres.write` now streams each batch into PostgreSQL through the binary `COPY` protocol instead of issuing one `INSERT` per row, giving a large throughput improvement (up to ~100x) on bulk writes. Both output modes use it: stream-of-changes copies straight into the target, while snapshot mode stages each batch in a temporary table and merges it with a single set-based upsert/delete.
 
 ### Fixed

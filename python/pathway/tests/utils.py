@@ -707,12 +707,16 @@ def wait_result_with_checker(
             if processes != 1:
                 assert first_port is not None
                 run_id = uuid.uuid4()
+                # Computed once in the parent and shared with every process, mirroring
+                # `pathway spawn`, so all processes agree on the start-up-batch timestamp.
+                start_timestamp_ms = str(int(time.time() * 1000))
 
                 def target_wrapped(process_id, *args, **kwargs):
                     os.environ["PATHWAY_PROCESSES"] = str(processes)
                     os.environ["PATHWAY_FIRST_PORT"] = str(first_port)
                     os.environ["PATHWAY_PROCESS_ID"] = str(process_id)
                     os.environ["PATHWAY_RUN_ID"] = str(run_id)
+                    os.environ["PATHWAY_START_TIMESTAMP_MS"] = start_timestamp_ms
                     target(*args, **kwargs)
 
                 for process_id in range(processes):
@@ -756,6 +760,12 @@ def wait_result_with_checker(
                     file=sys.stderr,
                 )
                 assert all(handle.exitcode == 0 for handle in handles)
+                # The processes have finished, so the output is now complete and
+                # final. Run one last authoritative check before giving up: a
+                # previous poll may have observed the output while it was still
+                # partial (e.g. one of several worker processes had not flushed
+                # its share yet), which would otherwise fail spuriously.
+                succeeded = checker()
                 break
 
         if not succeeded:

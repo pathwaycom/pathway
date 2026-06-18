@@ -120,6 +120,7 @@ use crate::connectors::data_storage::mssql::MssqlWriter;
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
+use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
     ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter,
     IcebergReader, KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader,
@@ -4192,7 +4193,17 @@ pub fn run_with_new_graph(
         }
     };
     let is_persisted = persistence_config.is_some();
-    let timestamp_at_start = Timestamp::new_from_current_time();
+    // All workers must agree on the timestamp of the initial ("start-up") batch.
+    // Within one process this is naturally shared, but separate processes of the
+    // same run each call `run` on their own, so the launcher (`pathway spawn`, the
+    // multiprocessing test harness, ...) passes a single value via the environment
+    // to keep every process consistent. Falls back to the local clock otherwise.
+    let timestamp_at_start = ::std::env::var("PATHWAY_START_TIMESTAMP_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or_else(Timestamp::new_from_current_time, |ms| {
+            Timestamp((ms / 2) * 2)
+        });
 
     let telemetry_config = EngineTelemetryConfig::create(
         &license,
@@ -6028,9 +6039,31 @@ impl DataStorage {
         scope: &Scope,
         data_format: &DataFormat,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let scanner = FilesystemScanner::new(self.path()?, &self.object_pattern).map_err(|e| {
-            PyIOError::new_err(format!("Failed to initialize Filesystem scanner: {e}"))
-        })?;
+        // Read in parallel: up to one reader per worker (capped like Kafka). Each
+        // worker handles the files whose path hashes to its index, so the
+        // filesystem read scales with the worker count instead of running on a
+        // single worker.
+        //
+        // When persistence is enabled we fall back to a single reader. Parallel
+        // readers persist their position under a shared `Empty` offset key; on
+        // recovery `ReconstructFrontier` merges every worker's frontier and those
+        // shared keys collapse into one, so workers restore to the wrong
+        // `cached_object_version` and the recovered state under-counts. Reading on
+        // a single worker keeps recovery exactly consistent. The parallel speed-up
+        // still applies to non-persisted (throughput) pipelines. Making parallel
+        // reads recover correctly (per-reader offset identity) is left as future
+        // work.
+        let n_readers = if scope.is_persisted {
+            1
+        } else {
+            scope.worker_count().min(NO_PARALLEL_READERS_LIMIT)
+        };
+        let scanner = FilesystemScanner::new(
+            self.path()?,
+            &self.object_pattern,
+            ShardSelector::new(scope.worker_index(), n_readers),
+        )
+        .map_err(|e| PyIOError::new_err(format!("Failed to initialize Filesystem scanner: {e}")))?;
         let storage = PosixLikeReader::new(
             Box::new(scanner),
             self.build_tokenizer_for_posix_like_read(data_format),
@@ -6039,7 +6072,7 @@ impl DataStorage {
             scope.is_persisted,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}")))?;
-        Ok((Box::new(storage), 1))
+        Ok((Box::new(storage), n_readers))
     }
 
     fn construct_s3_reader(
@@ -6574,8 +6607,7 @@ impl DataStorage {
             runtime,
             client,
             topic.clone(),
-            scope.worker_index(),
-            scope.worker_count(),
+            ShardSelector::new(scope.worker_index(), scope.worker_count()),
             refresh_duration,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Kinesis reader: {e}")))?;

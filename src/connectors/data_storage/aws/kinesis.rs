@@ -20,9 +20,9 @@ use aws_smithy_runtime_api::http::Response as AwsHttpResponse;
 use rand::rng;
 use rand::seq::SliceRandom;
 use tokio::runtime::Runtime as TokioRuntime;
-use xxhash_rust::xxh3::xxh3_64;
 
 use crate::connectors::data_format::FormatterContext;
+use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{MessageQueueTopic, ReaderContext};
 use crate::connectors::{OffsetKey, OffsetValue};
 use crate::connectors::{ReadError, ReadResult, Reader, StorageType, WriteError, Writer};
@@ -89,8 +89,7 @@ impl CachedShardIterator {
 }
 
 struct ShardSet {
-    worker_index: u64,
-    worker_count: u64,
+    shard_selector: ShardSelector,
     stream_name: String,
     last_updated_at: Instant,
     round_robin_duration: Duration,
@@ -102,16 +101,14 @@ struct ShardSet {
 
 impl ShardSet {
     fn new(
-        worker_index: u64,
-        worker_count: u64,
+        shard_selector: ShardSelector,
         stream_name: String,
         round_robin_duration: Duration,
         runtime: &TokioRuntime,
         client: &Client,
     ) -> Result<Self, Error> {
         let mut shard_set = Self {
-            worker_index,
-            worker_count,
+            shard_selector,
             stream_name,
             round_robin_duration,
             last_updated_at: Instant::now(),
@@ -146,9 +143,7 @@ impl ShardSet {
                     if self.exhausted_shards.contains(&shard.shard_id) {
                         continue;
                     }
-                    let assigned_worker_index =
-                        xxh3_64(shard.shard_id.as_bytes()) % self.worker_count;
-                    if assigned_worker_index != self.worker_index {
+                    if !self.shard_selector.owns(shard.shard_id.as_bytes()) {
                         continue;
                     }
                     shards.push(Shard {
@@ -269,14 +264,12 @@ impl KinesisReader {
         runtime: TokioRuntime,
         client: Client,
         stream_name: String,
-        worker_index: usize,
-        worker_count: usize,
+        shard_selector: ShardSelector,
         round_robin_duration: Duration,
     ) -> Result<Self, ReadError> {
         Ok(Self {
             operated_set: ShardSet::new(
-                worker_index as u64,
-                worker_count as u64,
+                shard_selector,
                 stream_name.clone(),
                 round_robin_duration,
                 &runtime,

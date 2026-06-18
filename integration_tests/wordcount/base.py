@@ -248,6 +248,12 @@ def start_pw_computation(
     run_args = command.split()
 
     run_id = uuid.uuid4()
+    # Computed once in the parent and shared with every process, mirroring
+    # `pathway spawn`, so all processes of the run agree on the start-up-batch
+    # timestamp. Without this each process would pick its own wall-clock value
+    # and the parallel readers would disagree on the boundary of the initial
+    # snapshot (see the connector's `timestamp_at_start` handling).
+    start_timestamp_ms = str(int(time.time() * 1000))
     process_handles = []
     for process_id in range(n_processes):
         env = os.environ.copy()
@@ -256,6 +262,7 @@ def start_pw_computation(
         env["PATHWAY_FIRST_PORT"] = str(first_port)
         env["PATHWAY_PROCESS_ID"] = str(process_id)
         env["PATHWAY_RUN_ID"] = str(run_id)
+        env["PATHWAY_START_TIMESTAMP_MS"] = start_timestamp_ms
         handle = subprocess.Popen(run_args, env=env)
         process_handles.append(handle)
 
