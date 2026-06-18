@@ -918,15 +918,10 @@ def test_mssql_read_static_no_persistence_with_partial_cdc_captured_columns(
         f"INSERT INTO [{table_name}] (id, name, uncaptured) VALUES (1, 'a', 7)"
     )
     # Enable CDC tracking only `id` and `name` — `uncaptured` is excluded.
-    mssql.execute_sql(
-        f"EXEC sys.sp_cdc_enable_table "
-        f"@source_schema=N'dbo', @source_name=N'{table_name}', "
-        f"@role_name=NULL, "
-        f"@captured_column_list=N'id,name'"
-    )
-    while mssql.cursor.nextset():
-        pass
-    mssql._tracked_cdc.add(table_name)
+    # Go through `enable_cdc` (deadlock-retry with jitter) rather than a bare
+    # `sp_cdc_enable_table`: under parallel CDC load the proc is regularly
+    # chosen as a 1205 deadlock victim, and a jitterless retry loses the race.
+    mssql.enable_cdc(table_name, captured_column_list="id,name")
 
     class InputSchema(pw.Schema):
         id: int = pw.column_definition(primary_key=True)
@@ -2471,14 +2466,9 @@ def test_mssql_read_rejects_multiple_capture_instances(mssql, tmp_path):
     inst1 = f"{table_name}_v1"
     inst2 = f"{table_name}_v2"
     for inst in (inst1, inst2):
-        mssql.execute_sql(
-            f"EXEC sys.sp_cdc_enable_table "
-            f"@source_schema=N'dbo', @source_name=N'{table_name}', "
-            f"@role_name=NULL, @capture_instance=N'{inst}'"
-        )
-        while mssql.cursor.nextset():
-            pass
-        mssql._tracked_cdc.add(table_name)
+        # Through `enable_cdc` for the deadlock-retry-with-jitter path — a bare
+        # `sp_cdc_enable_table` loses the 1205 race under parallel CDC load.
+        mssql.enable_cdc(table_name, capture_instance=inst)
 
     output_path = tmp_path / "output.jsonl"
     error_path = tmp_path / "error.log"

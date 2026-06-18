@@ -1,3 +1,4 @@
+import logging
 import pathlib
 
 import pytest
@@ -19,6 +20,32 @@ from utils import (
 
 DEFAULT_TEST_TIMEOUT_SECONDS = 600
 _DB_CONNECTORS_DIR = pathlib.Path(__file__).resolve().parent
+
+
+def _quiet_tiberius_logs() -> None:
+    """Silence the tiberius (SQL Server driver) per-connection WARN spam.
+
+    Every MSSQL connection makes the Rust ``tiberius`` crate emit two WARN
+    records — ``Trusting the server certificate without validation`` and
+    ``Turning TLS off after a login`` — which Pathway forwards to Python's
+    ``logging`` through ``pyo3_log`` under logger names like
+    ``tiberius.client.tls_stream.rustls_tls_stream``.  Across the whole MSSQL
+    suite (every test opens several connections, and the CDC readers reconnect
+    on each poll) these two lines dominate the captured output and bury the
+    genuinely useful diagnostics — the test failures and the real connector
+    errors.  We knowingly trust the cert and downgrade TLS in this test
+    harness, so the warnings carry no signal; raise the threshold to ERROR so
+    only real tiberius problems get through.
+
+    Set at import time, in the parent process, so the level is in place before
+    any connection is made and is inherited by the forked persistence / CDC
+    reader subprocesses (``multiprocessing`` uses ``fork`` here, so both the
+    Python ``logging`` config and ``pyo3_log``'s level cache carry over).
+    """
+    logging.getLogger("tiberius").setLevel(logging.ERROR)
+
+
+_quiet_tiberius_logs()
 
 
 def pytest_collection_modifyitems(config, items):

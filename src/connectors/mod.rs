@@ -42,6 +42,7 @@ use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
 use crate::persistence::tracker::{RequiredPersistenceMode, WorkerPersistentStorage};
 use crate::persistence::{PersistentId, SharedSnapshotWriter, UniqueName};
+use crate::retry::RetryConfig;
 
 use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
 use data_storage::{
@@ -377,9 +378,20 @@ impl Connector {
         let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
         let mut amt_send = 0;
         let mut consecutive_errors = 0;
+        // Backoff applied between failed `reader.read()` calls. This loop
+        // otherwise re-invokes `read()` immediately, so a reader stuck on a
+        // persistent error (its table was dropped, CDC was disabled, the
+        // server is unreachable, ...) would hot-spin: flooding the logs with
+        // the same error and reopening connections fast enough to exhaust the
+        // host's ephemeral source ports. Reusing `RetryConfig` gives the same
+        // jittered exponential backoff the per-operation retries use; it is
+        // reset after any successful read so an isolated error doesn't slow
+        // down steady reading.
+        let mut error_backoff = RetryConfig::default();
         loop {
             let row_read_result = reader.read();
             let finished = matches!(row_read_result, Ok(ReadResult::Finished));
+            let is_read_error = row_read_result.is_err();
 
             match row_read_result {
                 Ok(ReadResult::Data(reader_context, offset)) => {
@@ -455,7 +467,14 @@ impl Connector {
                     if consecutive_errors > reader.max_allowed_consecutive_errors() {
                         error_reporter.report(EngineError::ReaderFailed(Box::new(error)));
                     }
+                    // Pause before the loop retries `read()`, growing the delay
+                    // while errors persist (see `error_backoff` above).
+                    error_backoff.sleep_after_error();
                 }
+            }
+
+            if !is_read_error {
+                error_backoff = RetryConfig::default();
             }
 
             if finished {

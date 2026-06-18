@@ -1334,7 +1334,14 @@ class MssqlContext:
                         f"deadlock victim on attempt {attempt + 1}/"
                         f"{max_retries}, retrying: {e}"
                     )
-                    time.sleep(retry_delay * (1.25**attempt))
+                    # Jitter is essential here, not cosmetic: two workers
+                    # deadlocked against each other (or against the capture
+                    # agent) and retrying on the same deterministic schedule
+                    # keep colliding and re-deadlocking. A random component
+                    # desynchronizes their retries so one wins.
+                    time.sleep(
+                        retry_delay * (1.25**attempt) + random.uniform(0, retry_delay)
+                    )
                     continue
                 raise
         if last_exc is not None:
@@ -1417,9 +1424,34 @@ class MssqlContext:
             logging.warning(f"sp_cdc_enable_db raced with another worker: {e}")
 
     def enable_cdc(
-        self, table_name: str, max_retries: int = 10, retry_delay: float = 1.0
+        self,
+        table_name: str,
+        max_retries: int = 10,
+        retry_delay: float = 1.0,
+        captured_column_list: str | None = None,
+        capture_instance: str | None = None,
     ) -> None:
-        """Enable CDC on a table, retrying on deadlock (SQL Server error 1205)."""
+        """Enable CDC on a table, retrying on deadlock (SQL Server error 1205).
+
+        ``captured_column_list`` restricts capture to a subset of the table's
+        columns (``@captured_column_list``); ``capture_instance`` names the
+        capture instance (``@capture_instance``) so a single table can carry
+        more than one. Both default to SQL Server's behavior (all columns, a
+        single ``dbo_<table>`` instance).
+
+        Every caller must go through here rather than issuing
+        ``sp_cdc_enable_table`` by hand: under heavy xdist parallelism the proc
+        deadlocks on CDC system-table locks (error 22832/22834 wrapping a 1205
+        victim), and the retry below — crucially with random jitter so two
+        deadlocking workers don't keep retrying in lockstep — is what keeps the
+        CDC tests from flaking. A bare ``execute_sql`` retries without jitter
+        and loses the deadlock race against the capture agent.
+        """
+        extra = ""
+        if capture_instance is not None:
+            extra += f", @capture_instance=N'{capture_instance}'"
+        if captured_column_list is not None:
+            extra += f", @captured_column_list=N'{captured_column_list}'"
         for attempt in range(max_retries):
             try:
                 self.cursor.execute(
@@ -1427,6 +1459,7 @@ class MssqlContext:
                     f"@source_schema=N'dbo', "
                     f"@source_name=N'{table_name}', "
                     f"@role_name=NULL"
+                    f"{extra}"
                 )
                 # Drain any status rows the proc emitted.
                 while self.cursor.nextset():

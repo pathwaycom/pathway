@@ -42,6 +42,15 @@ class SumChecker:
         self.expected_sum = expected_sum
 
     def __call__(self) -> bool:
+        # The jsonlines writer creates the output file lazily, on the first
+        # committed batch — which for this test only happens after the
+        # streaming thread's initial 10 s sleep and the first Debezium event
+        # propagates. Until then the file simply doesn't exist yet; treat that
+        # as "not ready" and keep polling instead of crashing the checker with
+        # FileNotFoundError (the same way FileLinesNumberChecker /
+        # CsvLinesNumberChecker tolerate a missing file).
+        if not self.output_path.exists():
+            return False
         with open(self.output_path, "r") as f:
             try:
                 last_row = None
