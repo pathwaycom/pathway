@@ -1014,14 +1014,27 @@ struct FileScanTaskDescriptor {
     data_file_path: String,
     start: u64,
     length: u64,
+    // Paths of the merge-on-read delete files (positional / equality) that mask
+    // rows of this data-file split. Without them, a snapshot that adds only a
+    // delete file leaves `(data_file_path, start, length)` unchanged, so the
+    // plan diff would see "no change" and never retract the deleted rows. Sorted
+    // for a stable identity regardless of the order `plan_files` returns them.
+    delete_file_paths: Vec<String>,
 }
 
 impl FileScanTaskDescriptor {
     fn for_task(task: &FileScanTask) -> Self {
+        let mut delete_file_paths: Vec<String> = task
+            .deletes
+            .iter()
+            .map(|delete_file| delete_file.file_path.clone())
+            .collect();
+        delete_file_paths.sort_unstable();
         Self {
             data_file_path: task.data_file_path.clone(),
             start: task.start,
             length: task.length,
+            delete_file_paths,
         }
     }
 }
