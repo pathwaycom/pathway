@@ -21,10 +21,7 @@ from pathway.tests.utils import (
     wait_result_with_checker,
 )
 
-pytestmark = [
-    pytest.mark.xdist_group("mongodb"),
-    pytest.mark.flaky(reruns=2),
-]
+pytestmark = pytest.mark.xdist_group("mongodb")
 
 # ---------------------------------------------------------------------------
 # Script run inside a fresh subprocess for streaming persistence tests.

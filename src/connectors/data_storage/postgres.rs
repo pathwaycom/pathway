@@ -3558,11 +3558,27 @@ impl WalReader {
                             return Ok(parsed_events);
                         }
                     }
-                    Err(pg_walstream::ReplicationError::Cancelled(_)) => {
-                        info!("Cancelled, shutting down gracefully");
-                        return Ok(vec![PgEventAfterParsing::SimpleChange(Box::new(
-                            ReadResult::Finished,
-                        ))]);
+                    Err(e @ pg_walstream::ReplicationError::Cancelled(_)) => {
+                        // `next_event_with_retry` reports `Cancelled` for two very
+                        // different situations: our cancellation token firing, and
+                        // the server ending the logical-replication COPY stream
+                        // (`PQgetCopyData` returning -1, e.g. the walsender was
+                        // terminated under load). We never trigger `cancel_token`,
+                        // so in streaming mode this is always the latter — an
+                        // unrequested stream death, not end-of-data. Reporting
+                        // `ReadResult::Finished` here (as this used to) makes the
+                        // reader claim completion right after the snapshot and
+                        // silently drop every change that followed. Surface it as a
+                        // read error so the engine reports the failure instead of
+                        // finishing the pipeline with missing data. Only a genuine,
+                        // explicit cancellation is a graceful end of stream.
+                        if self.cancel_token.is_cancelled() {
+                            info!("Cancelled, shutting down gracefully");
+                            return Ok(vec![PgEventAfterParsing::SimpleChange(Box::new(
+                                ReadResult::Finished,
+                            ))]);
+                        }
+                        return Err(PostgresError::Replication(ReplicationError::from(e)).into());
                     }
                     Err(e) => {
                         return Err(PostgresError::Replication(ReplicationError::from(e)).into())

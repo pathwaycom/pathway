@@ -88,15 +88,19 @@ def test_scalar_type_roundtrip(
 def test_bytes_as_binary_vector(milvus):
     """bytes values are written to a BINARY_VECTOR field and read back correctly."""
     collection_name = milvus.generate_collection_name()
+
     # BINARY_VECTOR dim is the number of bits; 24 bits = 3 bytes.
-    schema = milvus.client.create_schema(auto_id=False, enable_dynamic_field=False)
-    schema.add_field("id", DataType.INT64, is_primary=True)
-    schema.add_field("vec", DataType.BINARY_VECTOR, dim=24)
-    index_params = milvus.client.prepare_index_params()
-    index_params.add_index("vec", metric_type="HAMMING", index_type="BIN_FLAT")
-    milvus.client.create_collection(
-        collection_name, schema=schema, index_params=index_params
-    )
+    def _create() -> None:
+        schema = milvus.client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("id", DataType.INT64, is_primary=True)
+        schema.add_field("vec", DataType.BINARY_VECTOR, dim=24)
+        index_params = milvus.client.prepare_index_params()
+        index_params.add_index("vec", metric_type="HAMMING", index_type="BIN_FLAT")
+        milvus.client.create_collection(
+            collection_name, schema=schema, index_params=index_params
+        )
+
+    milvus.create_collection_with_retry(_create)
 
     pw_schema = pw.schema_builder(
         {
@@ -127,19 +131,22 @@ def test_mixed_types(milvus):
     """A collection with multiple columns of different types round-trips correctly."""
     collection_name = milvus.generate_collection_name()
 
-    schema = milvus.client.create_schema(auto_id=False, enable_dynamic_field=False)
-    schema.add_field("id", DataType.INT64, is_primary=True)
-    schema.add_field("count", DataType.INT64)
-    schema.add_field("score", DataType.DOUBLE)
-    schema.add_field("label", DataType.VARCHAR, max_length=255)
-    schema.add_field("active", DataType.BOOL)
-    schema.add_field("meta", DataType.JSON)
-    schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=MILVUS_VECTOR_DIM)
-    index_params = milvus.client.prepare_index_params()
-    index_params.add_index("embedding", metric_type="COSINE", index_type="FLAT")
-    milvus.client.create_collection(
-        collection_name, schema=schema, index_params=index_params
-    )
+    def _create() -> None:
+        schema = milvus.client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("id", DataType.INT64, is_primary=True)
+        schema.add_field("count", DataType.INT64)
+        schema.add_field("score", DataType.DOUBLE)
+        schema.add_field("label", DataType.VARCHAR, max_length=255)
+        schema.add_field("active", DataType.BOOL)
+        schema.add_field("meta", DataType.JSON)
+        schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=MILVUS_VECTOR_DIM)
+        index_params = milvus.client.prepare_index_params()
+        index_params.add_index("embedding", metric_type="COSINE", index_type="FLAT")
+        milvus.client.create_collection(
+            collection_name, schema=schema, index_params=index_params
+        )
+
+    milvus.create_collection_with_retry(_create)
 
     pw_schema = pw.schema_builder(
         {

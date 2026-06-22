@@ -18,10 +18,7 @@ from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import ExceptionAwareThread, run, wait_result_with_checker
 
-pytestmark = [
-    pytest.mark.xdist_group("mongodb"),
-    pytest.mark.flaky(reruns=2),
-]
+pytestmark = pytest.mark.xdist_group("mongodb")
 
 
 class MongoDBRowCountChecker:
@@ -137,6 +134,17 @@ def _test_mongodb_streaming(
         )
 
     def streaming_target():
+        # Wait until the reader has delivered its initial snapshot to the output
+        # before inserting anything new. The MongoDB reader's change-stream
+        # catch-up only finishes once it sees consecutive empty getMores, which
+        # never happens while rows are being inserted concurrently — so starting
+        # these inserts before the snapshot lands can stall the reader's
+        # initialization indefinitely and nothing is ever delivered.
+        wait_result_with_checker(
+            MongoDBRowCountChecker(mongodb, output_table_name, len(items)),
+            60,
+            target=None,
+        )
         for index, row in enumerate(input_rows):
             wait_result_with_checker(
                 MongoDBRowCountChecker(

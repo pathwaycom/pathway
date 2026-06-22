@@ -58,7 +58,6 @@ def test_questdb_designated_timestamp_must_be_datetime():
         )
 
 
-@pytest.mark.flaky(reruns=5)  # No way to check that DB is ready to accept queries
 def test_questdb_serializes_complex_types_per_documentation(questdb):
     """The complex Pathway types are stored as the documentation describes:
     ``bytes`` as base64 strings, ``Duration`` as nanosecond longs, ``JSON`` as
@@ -112,7 +111,7 @@ def test_questdb_serializes_complex_types_per_documentation(questdb):
     )
 
     checker = EntryCountChecker(1, questdb, table_name=table_name, column_names=["bts"])
-    wait_result_with_checker(checker, 15)
+    wait_result_with_checker(checker, 30)
 
     rows = questdb.get_table_contents(table_name, ["bts", "dur", "j", "tup", "arr"])
     assert len(rows) == 1
@@ -127,7 +126,6 @@ def test_questdb_serializes_complex_types_per_documentation(questdb):
 @pytest.mark.parametrize(
     "designated_timestamp_policy", ["use_now", "use_pathway_time", "use_column"]
 )
-@pytest.mark.flaky(reruns=5)  # No way to check that DB is ready to accept queries
 def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
     class InputSchema(pw.Schema):
         name: str
@@ -181,7 +179,7 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
             checker = EntryCountChecker(
                 file_idx + 1, questdb, table_name=table_name, column_names=["name"]
             )
-            wait_result_with_checker(checker, 15, target=None)
+            wait_result_with_checker(checker, 30, target=None)
 
     table = pw.io.jsonlines.read(
         inputs_path, schema=InputSchema, autocommit_duration_ms=200
@@ -203,7 +201,7 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
     checker = EntryCountChecker(
         len(input_items), questdb, table_name=table_name, column_names=["name"]
     )
-    wait_result_with_checker(checker, 15)
+    wait_result_with_checker(checker, 30)
     table_reread = questdb.get_table_contents(
         table_name,
         ["name", "count", "price", "available"],

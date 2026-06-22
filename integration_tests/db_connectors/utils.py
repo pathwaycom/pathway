@@ -224,6 +224,122 @@ MSSQL_CONNECTION_STRING = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Cross-process concurrency caps for the database-backed test suites.
+#
+# Every suite here points 48 xdist workers at a *single* database container.
+# The per-suite `xdist_group(...)` marks are meant to land a suite on one
+# worker, but that mark is a no-op under the `worksteal`/`load` schedulers used
+# in practice (same caveat as the MySQL binlog lock below), so in reality
+# dozens of workers hammer one server at once. A few servers don't degrade
+# gracefully under that:
+#
+#   * SQL Server's CDC subsystem: every `sp_cdc_enable_table` fights the capture
+#     agent for system-table locks and the agent has to scan the log for each
+#     CDC-enabled table. Past a point the agent falls minutes behind and a whole
+#     batch of unrelated MSSQL tests trips its checker timeout at once (~20
+#     correlated failures while the server is pegged).
+#   * PostgreSQL logical replication: every streaming test opens a walsender on
+#     a temporary slot; under enough concurrent slots/connections the server
+#     occasionally terminates a freshly started walsender, which the reader now
+#     surfaces as an error (see `PsqlReader::get_next_records`) and the test
+#     fails.
+#
+# Bound how many tests of a given suite touch its server concurrently with a
+# counting semaphore: `N` lock files, and a test must grab any free one before
+# it talks to the server and releases it on teardown. The cap keeps real
+# parallelism (so the suite stays fast) while removing the overload that turns
+# into correlated failures. Lock files live in a host-shared tmp dir so the
+# bound holds across every xdist worker process. This treats the root cause
+# (too much concurrency against one server) rather than masking it with reruns.
+@contextmanager
+def db_concurrency_slot(name: str, max_concurrency: int, poll_interval: float = 0.1):
+    """Block until one of ``max_concurrency`` ``name`` slots is free, hold it
+    for the duration of the ``with`` body, then release it."""
+    paths = [
+        os.path.join(tempfile.gettempdir(), f"pw_{name}_slot_{i}.lock")
+        for i in range(max_concurrency)
+    ]
+    fds = [os.open(path, os.O_CREAT | os.O_RDWR, 0o666) for path in paths]
+    acquired: int | None = None
+    try:
+        while acquired is None:
+            for fd in fds:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = fd
+                    break
+                except OSError:
+                    continue
+            if acquired is None:
+                time.sleep(poll_interval)
+        yield
+    finally:
+        if acquired is not None:
+            fcntl.flock(acquired, fcntl.LOCK_UN)
+        for fd in fds:
+            os.close(fd)
+
+
+# SQL Server's CDC subsystem is the most contention-sensitive, so it gets the
+# tightest bound; PostgreSQL handles concurrent replication better, so its cap
+# is looser (it only needs to keep walsender churn below the level that trips
+# server-side terminations).
+MSSQL_MAX_CONCURRENCY = 8
+# Tightened: under maximum concurrency PostgreSQL occasionally terminates a
+# freshly-started walsender right after START_REPLICATION (the temporary slot
+# can't be resumed, so the reader errors). A tighter bound lowers how often that
+# happens. NOTE: this only reduces the frequency — it can't fully eliminate the
+# server-side behavior; a fully robust fix would need a resumable (non-temporary)
+# slot in the reader.
+POSTGRES_MAX_CONCURRENCY = 6
+# ClickHouse handles concurrent inserts well, so this is a generous bound — just
+# enough to keep the single container off the failure mode where a freshly
+# inserted block, acked over the native protocol, doesn't become visible to the
+# follow-up HTTP SELECT within the checker window under maximum concurrency.
+CLICKHOUSE_MAX_CONCURRENCY = 12
+# MongoDB streaming tests each open a change-stream (oplog tailing) cursor; this
+# is light insurance against the single-node replica set being overloaded. The
+# real flakiness fix is in the parsing test itself: it no longer inserts new
+# rows until the reader's initial snapshot has landed, so the change-stream
+# catch-up (which only settles on two empty getMores) can't be kept spinning by
+# concurrent inserts during reader startup.
+MONGODB_MAX_CONCURRENCY = 12
+# MySQL streaming tests tail the binary log; bound how many do so at once so the
+# server isn't saturated while a resume test races the binlog position.
+MYSQL_MAX_CONCURRENCY = 12
+
+
+@contextmanager
+def mssql_concurrency_slot():
+    with db_concurrency_slot("mssql", MSSQL_MAX_CONCURRENCY):
+        yield
+
+
+@contextmanager
+def postgres_concurrency_slot():
+    with db_concurrency_slot("postgres", POSTGRES_MAX_CONCURRENCY):
+        yield
+
+
+@contextmanager
+def clickhouse_concurrency_slot():
+    with db_concurrency_slot("clickhouse", CLICKHOUSE_MAX_CONCURRENCY):
+        yield
+
+
+@contextmanager
+def mongodb_concurrency_slot():
+    with db_concurrency_slot("mongodb", MONGODB_MAX_CONCURRENCY):
+        yield
+
+
+@contextmanager
+def mysql_concurrency_slot():
+    with db_concurrency_slot("mysql", MYSQL_MAX_CONCURRENCY):
+        yield
+
+
 def _connect_to_mysql(timeout_sec: float = 120.0):
     """Open a MySQL connection, waiting for the server to become reachable.
 
@@ -610,14 +726,36 @@ class PgvectorContext(WireProtocolSupporterContext):
 
 class QuestDBContext(WireProtocolSupporterContext):
 
-    def __init__(self):
-        super().__init__(
-            host=QUEST_DB_HOST,
-            port=QUEST_DB_WIRE_PORT,
-            database=QUEST_DB_NAME,
-            user=QUEST_DB_USER,
-            password=QUEST_DB_PASSWORD,
-        )
+    def __init__(self, timeout_sec: float = 60.0):
+        # QuestDB opens its PG-wire port before it can actually answer queries,
+        # so a bare connect against a just-started server can fail (or connect
+        # to a server that then rejects the first query). Poll connect +
+        # `SELECT 1` until it responds — this is the readiness check the
+        # `flaky` reruns used to stand in for ("No way to check that DB is
+        # ready to accept queries").
+        deadline = time.monotonic() + timeout_sec
+        delay = 0.25
+        while True:
+            try:
+                super().__init__(
+                    host=QUEST_DB_HOST,
+                    port=QUEST_DB_WIRE_PORT,
+                    database=QUEST_DB_NAME,
+                    user=QUEST_DB_USER,
+                    password=QUEST_DB_PASSWORD,
+                )
+                self.cursor.execute("SELECT 1")
+                self.cursor.fetchall()
+                return
+            except Exception:
+                try:
+                    self.connection.close()
+                except Exception:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 2.0)
 
 
 class ClickHouseContext:
@@ -733,25 +871,94 @@ def _make_milvus_client(uri: str):
     return MilvusClient(uri)
 
 
+def _is_milvus_transient_init_error(e: Exception) -> bool:
+    """Whether ``e`` is milvus-lite's embedded-server startup race.
+
+    The local milvus-lite server occasionally serves a ``create_collection``
+    before its storage layer finishes initializing, failing with
+    ``Assert "init_flag_ == true" => Mmap manager has not been init`` (segcore
+    error, code 2000). It's an internal milvus-lite race, not a Pathway issue,
+    and a freshly started server doesn't hit it — see
+    :meth:`MilvusContext._create_with_retry`.
+    """
+    text = str(e)
+    return "Mmap manager has not been init" in text or "init_flag_" in text
+
+
 class MilvusContext:
     def __init__(self, uri: str) -> None:
         from pymilvus import DataType
 
         self.uri = uri
         self._DataType = DataType
+        self._retry_counter = 0
         self.client = _make_milvus_client(uri)
+
+    def _restart_on_fresh_server(self) -> None:
+        """Drop the current milvus-lite client and start a brand-new embedded
+        server on a fresh ``.db`` path, so its storage layer initializes from
+        scratch. Used to recover from the startup race (the already-running
+        server that lost the race can't be re-initialized in place, so a new
+        one keyed on a new path is the way out)."""
+        try:
+            self.client.close()
+        except Exception:
+            pass
+        self._retry_counter += 1
+        suffix = f"_retry{self._retry_counter}"
+        self.uri = (
+            self.uri[:-3] + suffix + ".db"
+            if self.uri.endswith(".db")
+            else self.uri + suffix
+        )
+        self.client = _make_milvus_client(self.uri)
+
+    def create_collection_with_retry(self, build_and_create) -> None:
+        """Public entry point for tests that build a collection inline (their
+        own schema/index) rather than via :meth:`create_collection` /
+        :meth:`create_scalar_collection`. ``build_and_create`` takes no
+        arguments and must read ``self.client`` afresh each call (so a server
+        restart is picked up) — i.e. build the schema/index off
+        ``<ctx>.client`` and call ``<ctx>.client.create_collection(...)``. It is
+        retried through the same milvus-lite init-race recovery."""
+        self._create_with_retry(build_and_create)
+
+    def _create_with_retry(self, build_and_create, max_retries: int = 5) -> None:
+        """Run ``build_and_create`` (which builds a schema off ``self.client``
+        and calls ``create_collection``), retrying on milvus-lite's init race by
+        restarting the embedded server on a fresh path. The schema is rebuilt
+        each attempt because it is bound to the (now replaced) client."""
+        for attempt in range(max_retries):
+            try:
+                build_and_create()
+                return
+            except Exception as e:
+                if attempt < max_retries - 1 and _is_milvus_transient_init_error(e):
+                    logging.warning(
+                        f"milvus-lite init race on attempt {attempt + 1}/"
+                        f"{max_retries}; restarting embedded server: {e}"
+                    )
+                    self._restart_on_fresh_server()
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
 
     def create_collection(
         self, collection_name: str, *, dimension: int = MILVUS_VECTOR_DIM
     ) -> None:
-        schema = self.client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field("id", self._DataType.INT64, is_primary=True)
-        schema.add_field("vector", self._DataType.FLOAT_VECTOR, dim=dimension)
-        index_params = self.client.prepare_index_params()
-        index_params.add_index("vector", metric_type="COSINE", index_type="FLAT")
-        self.client.create_collection(
-            collection_name, schema=schema, index_params=index_params
-        )
+        def build_and_create() -> None:
+            schema = self.client.create_schema(
+                auto_id=False, enable_dynamic_field=False
+            )
+            schema.add_field("id", self._DataType.INT64, is_primary=True)
+            schema.add_field("vector", self._DataType.FLOAT_VECTOR, dim=dimension)
+            index_params = self.client.prepare_index_params()
+            index_params.add_index("vector", metric_type="COSINE", index_type="FLAT")
+            self.client.create_collection(
+                collection_name, schema=schema, index_params=index_params
+            )
+
+        self._create_with_retry(build_and_create)
 
     def create_scalar_collection(
         self, collection_name: str, value_type, **value_kwargs
@@ -763,15 +970,21 @@ class MilvusContext:
         ``VARCHAR``).  The ``vec`` field is always added so that the collection
         can be indexed.
         """
-        schema = self.client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field("id", self._DataType.INT64, is_primary=True)
-        schema.add_field("value", value_type, **value_kwargs)
-        schema.add_field("vec", self._DataType.FLOAT_VECTOR, dim=MILVUS_VECTOR_DIM)
-        index_params = self.client.prepare_index_params()
-        index_params.add_index("vec", metric_type="COSINE", index_type="FLAT")
-        self.client.create_collection(
-            collection_name, schema=schema, index_params=index_params
-        )
+
+        def build_and_create() -> None:
+            schema = self.client.create_schema(
+                auto_id=False, enable_dynamic_field=False
+            )
+            schema.add_field("id", self._DataType.INT64, is_primary=True)
+            schema.add_field("value", value_type, **value_kwargs)
+            schema.add_field("vec", self._DataType.FLOAT_VECTOR, dim=MILVUS_VECTOR_DIM)
+            index_params = self.client.prepare_index_params()
+            index_params.add_index("vec", metric_type="COSINE", index_type="FLAT")
+            self.client.create_collection(
+                collection_name, schema=schema, index_params=index_params
+            )
+
+        self._create_with_retry(build_and_create)
 
     def query_all(self, collection_name: str, output_fields: list[str]) -> list[dict]:
         # Empty filter requires a limit in Milvus 2.6+; use id >= 0 to fetch

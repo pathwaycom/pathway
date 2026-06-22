@@ -1709,7 +1709,6 @@ def _run_mssql_static_pipeline(
     assert p.exitcode == 0, f"static-mode worker exited with code {p.exitcode}"
 
 
-@pytest.mark.flaky(reruns=2)
 @pytest.mark.parametrize("mode", ["streaming", "static"])
 @pytest.mark.parametrize("plan", _MSSQL_CDC_PERSISTENCE_PLANS)
 def test_mssql_cdc_persistence(tmp_path, mssql, mode, plan):
@@ -1844,7 +1843,6 @@ def test_mssql_static_persistence_without_cdc_errors(tmp_path, mssql):
     ), f"expected CdcNotEnabledOnTable error, got:\n{error_text}"
 
 
-@pytest.mark.flaky(reruns=2)
 def test_mssql_cdc_expired_lsn(tmp_path, mssql):
     """A persisted LSN that predates the CDC retention window must surface
     a specific CdcLsnOutOfRetention error on restart so the user knows to

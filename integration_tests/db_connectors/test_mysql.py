@@ -1122,7 +1122,6 @@ def _sort_persistence_rows(rows: list[dict]) -> list[dict]:
     return sorted(rows, key=lambda r: (r["id"], r["value"], r["diff"]))
 
 
-@pytest.mark.flaky(reruns=2)
 def test_mysql_read_streaming_persistence(tmp_path, mysql):
     """Two-run binlog-position persistence test for streaming reads.
 
@@ -1195,7 +1194,6 @@ def test_mysql_read_streaming_persistence(tmp_path, mysql):
         ), run2
 
 
-@pytest.mark.flaky(reruns=2)
 def test_mysql_read_persistence_errors_when_binlog_purged(tmp_path, mysql):
     """Resuming from a position whose binary log has been purged must fail
     loudly, not silently re-snapshot.

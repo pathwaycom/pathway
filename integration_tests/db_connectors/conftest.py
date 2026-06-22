@@ -16,6 +16,11 @@ from utils import (
     PostgresContext,
     PostgresWithTlsContext,
     QuestDBContext,
+    clickhouse_concurrency_slot,
+    mongodb_concurrency_slot,
+    mssql_concurrency_slot,
+    mysql_concurrency_slot,
+    postgres_concurrency_slot,
 )
 
 DEFAULT_TEST_TIMEOUT_SECONDS = 600
@@ -72,7 +77,11 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def postgres():
-    return PostgresContext()
+    # Cap concurrent postgres tests so logical-replication walsender churn stays
+    # below the level that makes the server terminate freshly started walsenders
+    # under load. Held for the whole test (incl. the forked streaming reader).
+    with postgres_concurrency_slot():
+        yield PostgresContext()
 
 
 @pytest.fixture
@@ -102,7 +111,10 @@ def questdb():
 
 @pytest.fixture
 def clickhouse():
-    return ClickHouseContext()
+    # Cap concurrent clickhouse tests to keep the single container off the rare
+    # acked-but-not-visible insert window seen under maximum concurrency.
+    with clickhouse_concurrency_slot():
+        yield ClickHouseContext()
 
 
 @pytest.fixture(scope="session")
@@ -110,6 +122,21 @@ def mongodb():
     ctx = MongoDBContext()
     yield ctx
     ctx.client.close()
+
+
+@pytest.fixture(autouse=True)
+def _mongodb_concurrency_cap(request):
+    # The `mongodb` context is session-scoped (one shared client), so the
+    # per-test concurrency bound can't live on that fixture. Gate every test
+    # that uses `mongodb` here instead, so no more than a fixed number tail the
+    # oplog at once — this is what keeps the change-stream readers from timing
+    # out under load, the root the module-level `flaky` reruns used to paper
+    # over. Tests that don't touch mongodb pass through untouched.
+    if "mongodb" in request.fixturenames:
+        with mongodb_concurrency_slot():
+            yield
+    else:
+        yield
 
 
 @pytest.fixture
@@ -131,14 +158,19 @@ def dynamodb():
 
 @pytest.fixture
 def mysql():
-    ctx = MySQLContext()
-    try:
-        yield ctx
-    finally:
-        # Close promptly instead of waiting for garbage collection: under xdist
-        # the accumulated open connections otherwise exhaust the server's
-        # max_connections and surface as flaky "Too many connections" errors.
-        ctx.close()
+    # Cap concurrent mysql tests so binlog-tailing streaming tests aren't racing
+    # a saturated server (the binlog rwlock below only serializes the
+    # destructive purge test, not general load).
+    with mysql_concurrency_slot():
+        ctx = MySQLContext()
+        try:
+            yield ctx
+        finally:
+            # Close promptly instead of waiting for garbage collection: under
+            # xdist the accumulated open connections otherwise exhaust the
+            # server's max_connections and surface as flaky "Too many
+            # connections" errors.
+            ctx.close()
 
 
 _MSSQL_CAPTURE_JOB_CONFIGURED = False
@@ -146,6 +178,17 @@ _MSSQL_CAPTURE_JOB_CONFIGURED = False
 
 @pytest.fixture
 def mssql():
+    # Cap how many MSSQL tests hit the single SQL Server at once. The mark
+    # `xdist_group("mssql")` is a no-op under the `worksteal` scheduler, so
+    # without this every worker would pile onto the CDC subsystem and
+    # occasionally overload it into a cascade of correlated checker timeouts.
+    # Acquire the slot before connecting so the whole test (connect + CDC setup
+    # + body + cleanup) counts against the cap.
+    with mssql_concurrency_slot():
+        yield from _mssql_session()
+
+
+def _mssql_session():
     global _MSSQL_CAPTURE_JOB_CONFIGURED
     ctx = MssqlContext()
     # Guarantee the precondition every CDC test depends on: the database must
