@@ -88,10 +88,11 @@ def test_entitlement_requires_scale_license(caplog):
 
     for entitlement in SCALE_TIER_ENTITLEMENTS:
         expected_message = (
-            f'one of the features you used ["{entitlement.upper()}"] '
-            "requires upgrading your Pathway license.\n"
-            "For more information and to obtain your license key, "
-            "visit: https://pathway.com/get-license"
+            f'the feature(s) you used ["{entitlement.upper()}"] '
+            "require a Pathway license key, which is free.\n"
+            "Get one in seconds (sign up with GitHub or LinkedIn) at "
+            "https://pathway.com/framework/get-license, then set the "
+            "PATHWAY_LICENSE_KEY environment variable."
         )
         with pytest.raises(RuntimeError, match=re.escape(expected_message)):
             _check_entitlements(entitlement)
@@ -104,7 +105,7 @@ def test_monitoring_insufficient_license():
     with pytest.raises(
         api.EngineError,
         match=re.escape(
-            'one of the features you used ["MONITORING"] requires upgrading your Pathway license'
+            'the feature(s) you used ["MONITORING"] require a Pathway license key, which is free.'
         ),
     ):
         run_all()
@@ -142,7 +143,7 @@ def test_license_default_policy_insufficient_entitlements():
     with pytest.raises(
         RuntimeError,
         match=re.escape(
-            'one of the features you used ["XPACK-SPATIAL"] requires upgrading your Pathway license.'
+            'the feature(s) you used ["XPACK-SPATIAL"] require a Pathway license key, which is free.'
         ),
     ):
         _check_entitlements("xpack-spatial")

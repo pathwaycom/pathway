@@ -125,9 +125,9 @@ impl License {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
-    #[error("one of the features you used {0:?} requires upgrading your Pathway license.\nFor more information and to obtain your license key, visit: https://pathway.com/get-license/")]
+    #[error("the feature(s) you used {0:?} require a Pathway license key, which is free.\nGet one in seconds (sign up with GitHub or LinkedIn) at https://pathway.com/framework/get-license, then set the PATHWAY_LICENSE_KEY environment variable.")]
     InsufficientLicenseEntitlements(Vec<String>),
-    #[error("insufficient license.\nFor more information and to obtain your license key, visit: https://pathway.com/get-license/")]
+    #[error("insufficient Pathway license.\nGet a free license key (sign up with GitHub or LinkedIn) at https://pathway.com/framework/get-license, then set the PATHWAY_LICENSE_KEY environment variable.")]
     InsufficientLicense,
     #[error("offline license not allowed")]
     OfflineLicenseNotAllowed,

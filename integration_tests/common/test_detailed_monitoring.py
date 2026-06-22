@@ -16,7 +16,7 @@ def test_detailed_monitoring_insufficient_license(tmp_path: pathlib.Path):
         with pytest.raises(
             api.EngineError,
             match=re.escape(
-                'one of the features you used ["MONITORING"] requires upgrading your Pathway license'
+                'the feature(s) you used ["MONITORING"] require a Pathway license key, which is free.'
             ),
         ):
             run_all()

@@ -837,7 +837,7 @@ class SlideParser(pw.UDF):
     A class to parse PPTX and PDF slides using vision LLMs.
 
     Use of this class requires Pathway Live Data Framework Scale account.
-    Get your license `here <https://pathway.com/get-license>`_ to gain access.
+    Get your license `here <https://pathway.com/framework/get-license>`_ to gain access.
 
     Args:
         llm: LLM for parsing the image. Provided LLM should support image inputs. If not

@@ -142,7 +142,7 @@ def get_pathway_config() -> PathwayConfig:
 def set_license_key(key: str | None) -> None:
     """Sets Pathway Live Data Framework license key.
     License key can be obtained from the
-    `official website <https://pathway.com/get-license>`_.
+    `official website <https://pathway.com/framework/get-license>`_, free of charge.
 
     Args:
         key: The license key to be set. If None, any existing license key will be cleared.
