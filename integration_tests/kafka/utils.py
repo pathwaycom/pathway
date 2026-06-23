@@ -14,14 +14,20 @@ from uuid import uuid4
 
 import boto3
 import requests
+from botocore.exceptions import ConnectionError as BotoConnectionError
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer, TopicPartition
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
-from kafka.errors import KafkaError
+from kafka.errors import (
+    KafkaError,
+    TopicAlreadyExistsError,
+    UnknownTopicOrPartitionError,
+)
 from kafka.producer.future import FutureRecordMetadata
 from rstream import AMQPMessage, Producer
 from rstream.exceptions import (
     ClientError,
+    InternalError,
     LeaderNotAvailable,
     StreamAlreadyExists,
     StreamDoesNotExist,
@@ -31,6 +37,10 @@ from rstream.exceptions import (
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
 SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
+# How long to keep retrying a schema-registry request while the service is
+# still coming up (connection refused or a transient 5xx).
+SCHEMA_REGISTRY_READY_TIMEOUT = 60.0
+SCHEMA_REGISTRY_RETRY_INTERVAL = 0.5
 KINESIS_ENDPOINT_URL = "http://kinesis:4567"
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
@@ -76,10 +86,14 @@ RABBITMQ_SEND_TIMEOUT = 30
 #   * StreamNotAvailable — stream known to the coordinator, but its underlying
 #     resources aren't up yet (response_code 6);
 #   * LeaderNotAvailable — leader election still in progress (leader_ref 65535).
+#   * InternalError      — the stream coordinator hit an internal error while
+#     servicing the request (response_code 15); seen on create_stream while the
+#     broker is still warming up or under load, and clears on retry.
 RABBITMQ_TRANSIENT_ERRORS = (
     ConnectionError,
     TimeoutError,
     ClientError,
+    InternalError,
     StreamDoesNotExist,
     StreamNotAvailable,
     LeaderNotAvailable,
@@ -90,6 +104,34 @@ def random_topic_name():
     return f"integration-tests-{uuid4()}"
 
 
+# Like RABBITMQ_READY_TIMEOUT, but for Kafka: connecting to the broker and
+# creating/deleting topics can fail transiently while the cluster is still
+# settling at startup (no broker reachable yet, controller not elected, request
+# timed out). On a shared CI host every connector stack contends for the same
+# resources, so that window is generous on purpose.
+KAFKA_READY_TIMEOUT = 90.0
+KAFKA_RETRY_INTERVAL = 0.2
+
+
+def _kafka_retry(operation, deadline: float, *, ignore: tuple = ()):
+    """Run a Kafka admin/client call, retrying transient broker errors until the
+    deadline. ``ignore`` lists error types whose occurrence means the desired
+    end state is already reached (e.g. the topic already exists) — those return
+    quietly instead of being retried or raised. Every other ``KafkaError`` is
+    treated as transient: at startup these are connection/controller hiccups
+    that clear on their own (``NoBrokersAvailable``, ``NotControllerError``,
+    ``NodeNotReadyError``, ``RequestTimedOutError``)."""
+    while True:
+        try:
+            return operation()
+        except ignore:
+            return None
+        except KafkaError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(KAFKA_RETRY_INTERVAL)
+
+
 class KafkaTestContext:
     _producer: KafkaProducer
     _admin: KafkaAdminClient
@@ -97,11 +139,21 @@ class KafkaTestContext:
     _output_topic: str
 
     def __init__(self) -> None:
-        self._producer = KafkaProducer(
-            bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"]
+        # The constructors connect eagerly and raise NoBrokersAvailable (a
+        # KafkaError) if the broker is not reachable yet, which is transient at
+        # startup — retry until the broker accepts connections.
+        deadline = time.monotonic() + KAFKA_READY_TIMEOUT
+        self._producer = _kafka_retry(
+            lambda: KafkaProducer(
+                bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"]
+            ),
+            deadline,
         )
-        self._admin = KafkaAdminClient(
-            bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"],
+        self._admin = _kafka_retry(
+            lambda: KafkaAdminClient(
+                bootstrap_servers=KAFKA_SETTINGS["bootstrap_servers"],
+            ),
+            deadline,
         )
         self._input_topic = random_topic_name()
         self._output_topic = random_topic_name()
@@ -165,8 +217,23 @@ class KafkaTestContext:
             time.sleep(self._TOPIC_SETTLE_INTERVAL)
 
     def _create_topic(self, name: str, num_partitions: int = 1) -> None:
-        self._admin.create_topics(
-            [NewTopic(name=name, num_partitions=num_partitions, replication_factor=1)]
+        # The create request itself (not just the metadata settle below) can hit
+        # a transient controller error while the cluster is in flux; retry it. A
+        # topic that already exists (e.g. a retried create whose first response
+        # was lost) is the desired end state, so treat it as success.
+        deadline = time.monotonic() + KAFKA_READY_TIMEOUT
+        _kafka_retry(
+            lambda: self._admin.create_topics(
+                [
+                    NewTopic(
+                        name=name,
+                        num_partitions=num_partitions,
+                        replication_factor=1,
+                    )
+                ]
+            ),
+            deadline,
+            ignore=(TopicAlreadyExistsError,),
         )
         self._created_topics.add(name)
         self._wait_for_topic_metadata(
@@ -176,7 +243,14 @@ class KafkaTestContext:
         )
 
     def _delete_topic(self, name: str) -> None:
-        self._admin.delete_topics(topics=[name])
+        # As with create, retry transient controller errors. A topic that is
+        # already gone is the desired end state.
+        deadline = time.monotonic() + KAFKA_READY_TIMEOUT
+        _kafka_retry(
+            lambda: self._admin.delete_topics(topics=[name]),
+            deadline,
+            ignore=(UnknownTopicOrPartitionError,),
+        )
         self._wait_for_topic_metadata(
             name, lambda count: count is None, "was not deleted in time"
         )
@@ -383,6 +457,13 @@ class KinesisShard:
 class KinesisTestContext:
     stream_name: str
 
+    # Same idea as the Kafka/RabbitMQ timeouts: the Kinesis endpoint may not
+    # accept connections the instant the container starts, and CreateStream can
+    # be throttled (LimitExceededException) when several streams are created at
+    # once. Both clear on their own, so retry until the deadline.
+    _READY_TIMEOUT = 90.0
+    _RETRY_INTERVAL = 0.5
+
     def __init__(self, stream_name: str | None = None) -> None:
         self.stream_name = stream_name or str(uuid4())
         self.kinesis = boto3.client(
@@ -392,13 +473,34 @@ class KinesisTestContext:
             aws_access_key_id="placeholder",
             aws_secret_access_key="placeholder",
         )
-        self.kinesis.create_stream(StreamName=self.stream_name, ShardCount=1)
-        self._wait_stream_to_activate()
+        self._create_stream(shard_count=1)
 
     def recreate(self, shard_count: int) -> None:
         self.stream_name = str(uuid4())
-        self.kinesis.create_stream(StreamName=self.stream_name, ShardCount=shard_count)
-        self._wait_stream_to_activate()
+        self._create_stream(shard_count=shard_count)
+
+    def _create_stream(self, shard_count: int) -> None:
+        # CreateStream and the activation wait can both transiently fail while
+        # the endpoint is starting up or throttling concurrent creates; retry
+        # until the deadline. A stream that already exists is the desired end
+        # state (a retried create whose first response was lost).
+        deadline = time.monotonic() + self._READY_TIMEOUT
+        while True:
+            try:
+                self.kinesis.create_stream(
+                    StreamName=self.stream_name, ShardCount=shard_count
+                )
+                break
+            except self.kinesis.exceptions.ResourceInUseException:
+                break
+            except (
+                BotoConnectionError,
+                self.kinesis.exceptions.LimitExceededException,
+            ):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(self._RETRY_INTERVAL)
+        self._wait_stream_to_activate(deadline)
 
     def send_record(self, record: KinesisRecord) -> None:
         self.kinesis.put_record(
@@ -441,7 +543,14 @@ class KinesisTestContext:
         )
 
         for _ in range(100):
-            shards = self.list_shards_and_statuses()
+            try:
+                shards = self.list_shards_and_statuses()
+            except (
+                BotoConnectionError,
+                self.kinesis.exceptions.ResourceNotFoundException,
+            ):
+                time.sleep(1.0)
+                continue
             shard_count_as_expected = len(shards) == n_expected_shards_after_split
             source_shard_status_is_updated = False
             for new_shard in shards:
@@ -465,7 +574,14 @@ class KinesisTestContext:
         )
 
         for _ in range(100):
-            shards = self.list_shards_and_statuses()
+            try:
+                shards = self.list_shards_and_statuses()
+            except (
+                BotoConnectionError,
+                self.kinesis.exceptions.ResourceNotFoundException,
+            ):
+                time.sleep(1.0)
+                continue
             shard_count_as_expected = len(shards) == n_expected_shards_after_split
             shard_1_status_is_updated = False
             shard_2_status_is_updated = False
@@ -503,15 +619,29 @@ class KinesisTestContext:
 
         return result
 
-    def _wait_stream_to_activate(self) -> None:
+    def _wait_stream_to_activate(self, deadline: float | None = None) -> None:
+        if deadline is None:
+            deadline = time.monotonic() + self._READY_TIMEOUT
         stream_status = None
-        for _ in range(100):
-            desc = self.kinesis.describe_stream(StreamName=self.stream_name)
-            stream_status = desc["StreamDescription"]["StreamStatus"]
+        while True:
+            try:
+                desc = self.kinesis.describe_stream(StreamName=self.stream_name)
+                stream_status = desc["StreamDescription"]["StreamStatus"]
+            except (
+                BotoConnectionError,
+                self.kinesis.exceptions.ResourceNotFoundException,
+            ):
+                # The stream's metadata is not visible yet right after creation;
+                # keep polling rather than failing.
+                stream_status = None
             if stream_status == "ACTIVE":
-                break
-            time.sleep(1)
-        assert stream_status == "ACTIVE"
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Kinesis stream {self.stream_name!r} did not become ACTIVE "
+                    f"in time (last status: {stream_status})"
+                )
+            time.sleep(self._RETRY_INTERVAL)
 
 
 def create_schema_in_registry(
@@ -533,15 +663,28 @@ def create_schema_in_registry(
         "additionalProperties": False,
     }
     payload = {"schemaType": "JSON", "schema": json.dumps(schema_basic)}
-    response = requests.post(
-        f"{SCHEMA_REGISTRY_BASE_ROUTE}/subjects/{schema_subject}/versions",
-        headers={
-            "Content-Type": "application/vnd.schemaregistry.v1+json",
-        },
-        json=payload,
-    )
-    response.raise_for_status()
-    return schema_subject
+    # The schema-registry container may still be starting (connection refused)
+    # or briefly returning 5xx while it comes up; both are transient, so retry
+    # until the deadline. A 4xx is a real client error and is raised at once.
+    deadline = time.monotonic() + SCHEMA_REGISTRY_READY_TIMEOUT
+    while True:
+        try:
+            response = requests.post(
+                f"{SCHEMA_REGISTRY_BASE_ROUTE}/subjects/{schema_subject}/versions",
+                headers={
+                    "Content-Type": "application/vnd.schemaregistry.v1+json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            return schema_subject
+        except requests.HTTPError:
+            if response.status_code < 500 or time.monotonic() >= deadline:
+                raise
+        except (requests.ConnectionError, requests.Timeout):
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(SCHEMA_REGISTRY_RETRY_INTERVAL)
 
 
 def check_keys_in_file(

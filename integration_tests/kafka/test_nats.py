@@ -2,9 +2,12 @@ import asyncio
 import json
 import pathlib
 import threading
+import time
 from types import TracebackType
 from uuid import uuid4
 
+import nats.errors
+import nats.js.errors
 import pytest
 from nats.aio.client import Client as NATS
 
@@ -20,6 +23,26 @@ from .utils import check_keys_in_file
 
 NATS_SERVER_URI = "nats://nats:4222/"
 JETSTREAM_SERVER_URI = "nats://nats-js:4222/"
+
+# How long to keep retrying transient NATS errors while the server (and its
+# JetStream subsystem) come up. Like the other connector stacks, a TCP refusal
+# or a "no responders"/503 from JetStream right after startup clears on its own.
+NATS_READY_TIMEOUT = 90.0
+NATS_RETRY_INTERVAL = 0.2
+
+# Transient NATS errors that clear on retry at startup / under load:
+#   * OSError              — TCP connection refused/reset before the server is up;
+#   * nats.errors.Error    — base of NoServersError, TimeoutError,
+#     ConnectionClosedError, NoRespondersError, ... (connection-level blips);
+#   * nats.js.errors.APIError — JetStream API errors; the transient ones are
+#     ServiceUnavailableError (503) and ServerError (500) while JetStream warms
+#     up. NotFoundError/BadRequestError are handled explicitly before this tuple
+#     is reached, so only the transient API errors fall through here.
+NATS_TRANSIENT_ERRORS = (
+    OSError,
+    nats.errors.Error,
+    nats.js.errors.APIError,
+)
 
 
 class JetStreamManager:
@@ -45,8 +68,23 @@ class JetStreamManager:
         fut.result()
 
     async def _connect_to_nats_server(self) -> None:
-        self._nats = NATS()
-        await self._nats.connect(servers=[self.server])
+        # connect() raises (NoServersError / connection refused) if the server
+        # is not accepting connections yet, which is transient at startup. A
+        # half-started client can't be reused, so retry with a fresh one.
+        deadline = time.monotonic() + NATS_READY_TIMEOUT
+        while True:
+            self._nats = NATS()
+            try:
+                await self._nats.connect(servers=[self.server])
+                break
+            except NATS_TRANSIENT_ERRORS:
+                try:
+                    await self._nats.close()
+                except Exception:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(NATS_RETRY_INTERVAL)
         self._jetstream = self._nats.jetstream()
 
     def __enter__(self):
@@ -67,14 +105,37 @@ class JetStreamManager:
         self._thread.join()
 
     async def _ensure_stream(self):
-        try:
-            await self._jetstream.stream_info(self.stream_name)
-        except Exception:
-            await self._jetstream.add_stream(
-                name=self.stream_name,
-                subjects=self.subjects,
-                storage=self.storage,
-            )
+        # stream_info raising NotFoundError is the normal "stream absent, create
+        # it" signal; any other error here (or from add_stream) is a transient
+        # JetStream-still-warming-up condition that clears on retry. A stream
+        # that already exists (BadRequestError on a retried add) is the desired
+        # end state.
+        deadline = time.monotonic() + NATS_READY_TIMEOUT
+        while True:
+            try:
+                await self._jetstream.stream_info(self.stream_name)
+                return
+            except nats.js.errors.NotFoundError:
+                pass
+            except NATS_TRANSIENT_ERRORS:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(NATS_RETRY_INTERVAL)
+                continue
+
+            try:
+                await self._jetstream.add_stream(
+                    name=self.stream_name,
+                    subjects=self.subjects,
+                    storage=self.storage,
+                )
+                return
+            except nats.js.errors.BadRequestError:
+                return
+            except NATS_TRANSIENT_ERRORS:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(NATS_RETRY_INTERVAL)
 
     async def _cleanup(self):
         try:
