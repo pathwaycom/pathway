@@ -264,7 +264,14 @@ impl InnerSchemaField {
 }
 
 fn prepare_plaintext_string(bytes: &[u8]) -> PrepareStringResult {
-    Ok(from_utf8(bytes)?.trim().to_string())
+    Ok(prepare_plaintext_str(bytes)?.to_string())
+}
+
+/// Like [`prepare_plaintext_string`], but borrows from the input instead of
+/// allocating a fresh `String`. Used on hot parsing paths where the trimmed
+/// text is consumed immediately.
+pub(crate) fn prepare_plaintext_str(bytes: &[u8]) -> Result<&str, ParseError> {
+    Ok(from_utf8(bytes)?.trim())
 }
 
 pub trait Parser: Send {
@@ -884,30 +891,26 @@ fn values_by_names_from_json(
             } else {
                 Ok(Value::None)
             }
-        } else {
-            let value_specified_in_json = payload.get(value_field).is_some();
-
-            if value_specified_in_json {
-                parse_value_from_json(&payload[&value_field], dtype).ok_or_else(|| {
-                    ParseError::FailedToParseFromJson {
-                        field_name: value_field.clone(),
-                        payload: payload[&value_field].clone(),
-                        type_: dtype.clone(),
-                    }
-                    .into()
-                })
-            } else if let Some(default) = default_value {
-                Ok(default.clone())
-            } else if field_absence_is_error {
-                Err(ParseError::FailedToExtractJsonField {
+        } else if let Some(found_value) = payload.get(value_field) {
+            parse_value_from_json(found_value, dtype).ok_or_else(|| {
+                ParseError::FailedToParseFromJson {
                     field_name: value_field.clone(),
-                    path: None,
-                    payload: payload.clone(),
+                    payload: found_value.clone(),
+                    type_: dtype.clone(),
                 }
-                .into())
-            } else {
-                Ok(Value::None)
+                .into()
+            })
+        } else if let Some(default) = default_value {
+            Ok(default.clone())
+        } else if field_absence_is_error {
+            Err(ParseError::FailedToExtractJsonField {
+                field_name: value_field.clone(),
+                path: None,
+                payload: payload.clone(),
             }
+            .into())
+        } else {
+            Ok(Value::None)
         };
         parsed_values.push(value);
     }
