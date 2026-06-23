@@ -4,7 +4,9 @@ use std::clone::Clone;
 use std::collections::HashMap;
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Bson, Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{
+    Bson, CsvRecord, Diff, Empty, KeyValue, RawBytes, TokenizedEntries,
+};
 use crate::connectors::{DataEventType, ReaderContext, SessionType};
 use crate::engine::Result;
 
@@ -163,7 +165,7 @@ impl Parser for DebeziumMessageParser {
                 };
                 (key, value)
             }
-            Diff(_) | TokenizedEntries(_, _) | Empty | Bson(_) => {
+            Diff(_) | TokenizedEntries(_, _) | CsvRecord(..) | Empty | Bson(_) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
         };

@@ -216,6 +216,11 @@ impl Display for MessageQueueTopic {
 pub enum ReaderContext {
     RawBytes(DataEventType, Vec<u8>),
     TokenizedEntries(DataEventType, Vec<String>),
+    // A single CSV row, kept as the `csv` crate's `StringRecord`. The parser
+    // reads field slices directly out of it, avoiding the intermediate
+    // `Vec<String>` (and the per-field allocation) that `TokenizedEntries`
+    // requires.
+    CsvRecord(DataEventType, csv::StringRecord),
     KeyValue((Option<Vec<u8>>, Option<Vec<u8>>)),
     Diff((DataEventType, Option<Vec<Value>>, ValuesMap)),
     Bson((DataEventType, String, BsonDocument)),
@@ -240,6 +245,10 @@ impl ReaderContext {
         tokenized_entries: Vec<String>,
     ) -> ReaderContext {
         ReaderContext::TokenizedEntries(event, tokenized_entries)
+    }
+
+    pub fn from_csv_record(event: DataEventType, record: csv::StringRecord) -> ReaderContext {
+        ReaderContext::CsvRecord(event, record)
     }
 
     pub fn from_key_value(key: Option<Vec<u8>>, value: Option<Vec<u8>>) -> ReaderContext {

@@ -3,7 +3,9 @@
 use std::clone::Clone;
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Bson, Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{
+    Bson, CsvRecord, Diff, Empty, KeyValue, RawBytes, TokenizedEntries,
+};
 use crate::connectors::{DataEventType, ReaderContext, SessionType};
 use crate::engine::error::DynResult;
 use crate::engine::{Key, Result, Timestamp, Value};
@@ -114,7 +116,7 @@ impl Parser for IdentityParser {
                     Ok(None),
                 )
             }
-            Diff(_) | TokenizedEntries(_, _) | Bson(_) => {
+            Diff(_) | TokenizedEntries(_, _) | CsvRecord(..) | Bson(_) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
             }
             Empty => return Ok(vec![]),

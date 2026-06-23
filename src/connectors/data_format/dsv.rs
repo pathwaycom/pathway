@@ -4,7 +4,9 @@ use std::clone::Clone;
 use std::collections::HashMap;
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Bson, Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{
+    Bson, CsvRecord, Diff, Empty, KeyValue, RawBytes, TokenizedEntries,
+};
 use crate::connectors::{DataEventType, ReaderContext};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::{Key, Result, Timestamp, Value};
@@ -13,10 +15,9 @@ use base64::Engine;
 use serde_json::Value as JsonValue;
 
 use super::{
-    create_bincoded_value, ensure_all_fields_in_schema, parse_with_type, prepare_plaintext_string,
-    serialize_value_to_json, Formatter, FormatterContext, FormatterError, InnerSchemaField,
-    ParseError, ParseResult, ParsedEventWithErrors, Parser, ValueFieldsWithErrors, COMMIT_LITERAL,
-    METADATA_FIELD_NAME,
+    create_bincoded_value, ensure_all_fields_in_schema, parse_with_type, serialize_value_to_json,
+    Formatter, FormatterContext, FormatterError, InnerSchemaField, ParseError, ParseResult,
+    ParsedEventWithErrors, Parser, ValueFieldsWithErrors, COMMIT_LITERAL, METADATA_FIELD_NAME,
 };
 
 pub struct DsvSettings {
@@ -62,6 +63,11 @@ pub struct DsvParser {
     key_column_indices: Option<Vec<DsvColumnIndex>>,
     value_column_indices: Vec<DsvColumnIndex>,
     dsv_header_read: bool,
+    // Smallest number of tokens a data row must contain so that every column
+    // index referenced by the schema is present. Computed once when the header
+    // is read, so the per-row check is a single comparison instead of a scan
+    // over all requested indices.
+    min_tokens_in_row: usize,
 }
 
 impl DsvParser {
@@ -82,6 +88,7 @@ impl DsvParser {
             key_column_indices: None,
             value_column_indices: Vec::new(),
             dsv_header_read: false,
+            min_tokens_in_row: 0,
         })
     }
 
@@ -143,13 +150,27 @@ impl DsvParser {
             &self.schema,
         )?;
 
+        self.min_tokens_in_row = self
+            .key_column_indices
+            .iter()
+            .flatten()
+            .chain(self.value_column_indices.iter())
+            .filter_map(|index| match index {
+                DsvColumnIndex::IndexWithSchema(index, _) => Some(*index + 1),
+                DsvColumnIndex::Metadata => None,
+            })
+            .max()
+            .unwrap_or(0);
+
         self.header = tokenized_entries.to_vec();
         self.dsv_header_read = true;
         Ok(())
     }
 
     fn parse_bytes_simple(&mut self, event: DataEventType, raw_bytes: &[u8]) -> ParseResult {
-        let line = prepare_plaintext_string(raw_bytes)?;
+        // Borrow the line straight out of `raw_bytes` instead of allocating an
+        // owned, trimmed `String` only to split it apart again.
+        let line = std::str::from_utf8(raw_bytes)?.trim();
 
         if line.is_empty() {
             return Ok(Vec::new());
@@ -159,24 +180,20 @@ impl DsvParser {
             return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
         }
 
-        let tokens: Vec<String> = line
-            .split(self.settings.separator)
-            .map(std::string::ToString::to_string)
-            .collect();
-        self.parse_tokenized_entries(event, &tokens)
+        let tokens: Vec<&str> = line.split(self.settings.separator).collect();
+        self.parse_tokens(event, tokens.len(), |index| tokens[index])
     }
 
-    fn values_by_indices(
+    fn values_by_indices<'a>(
         &self,
-        tokens: &[String],
+        get_token: impl Fn(usize) -> &'a str,
         indices: &[DsvColumnIndex],
-        header: &[String],
     ) -> ValueFieldsWithErrors {
         let mut parsed_tokens = Vec::with_capacity(indices.len());
         for index in indices {
             let token = match index {
                 DsvColumnIndex::IndexWithSchema(index, schema_item) => {
-                    parse_with_type(&tokens[*index], schema_item, &header[*index])
+                    parse_with_type(get_token(*index), schema_item, &self.header[*index])
                 }
                 DsvColumnIndex::Metadata => Ok(self.metadata_column_value.clone()),
             };
@@ -185,49 +202,55 @@ impl DsvParser {
         parsed_tokens
     }
 
-    fn parse_tokenized_entries(&mut self, event: DataEventType, tokens: &[String]) -> ParseResult {
-        if tokens.len() == 1 {
-            let line = &tokens[0];
-            if line == COMMIT_LITERAL {
-                return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
-            }
+    /// Parse a single tokenized row, reading individual tokens lazily via
+    /// `get_token`. This lets callers feed tokens straight from a borrowed
+    /// source (e.g. a `csv::StringRecord`) without first materializing an
+    /// intermediate `Vec<String>`.
+    fn parse_tokens<'a>(
+        &mut self,
+        event: DataEventType,
+        token_count: usize,
+        get_token: impl Fn(usize) -> &'a str + Copy,
+    ) -> ParseResult {
+        if token_count == 1 && get_token(0) == COMMIT_LITERAL {
+            return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
         }
 
         if !self.dsv_header_read {
-            self.parse_dsv_header(tokens)?;
+            let header: Vec<String> = (0..token_count)
+                .map(|index| get_token(index).to_string())
+                .collect();
+            self.parse_dsv_header(&header)?;
             return Ok(Vec::new());
         }
 
-        let mut line_has_enough_tokens = true;
-        if let Some(indices) = &self.key_column_indices {
-            for index in indices {
-                if let DsvColumnIndex::IndexWithSchema(index, _) = index {
-                    line_has_enough_tokens &= index < &tokens.len();
-                }
-            }
+        if token_count < self.min_tokens_in_row {
+            return Err(ParseError::UnexpectedNumberOfCsvTokens(token_count).into());
         }
-        for index in &self.value_column_indices {
-            if let DsvColumnIndex::IndexWithSchema(index, _) = index {
-                line_has_enough_tokens &= index < &tokens.len();
-            }
-        }
-        if line_has_enough_tokens {
-            let key = match &self.key_column_indices {
-                Some(indices) => Some(
-                    self.values_by_indices(tokens, indices, &self.header)
-                        .into_iter()
-                        .collect(),
-                ),
-                None => None,
-            };
-            let parsed_tokens =
-                self.values_by_indices(tokens, &self.value_column_indices, &self.header);
-            let parsed_entry =
-                ParsedEventWithErrors::new(self.session_type(), event, key, parsed_tokens);
-            Ok(vec![parsed_entry])
-        } else {
-            Err(ParseError::UnexpectedNumberOfCsvTokens(tokens.len()).into())
-        }
+
+        let key = self.key_column_indices.as_ref().map(|indices| {
+            self.values_by_indices(get_token, indices)
+                .into_iter()
+                .collect()
+        });
+        let parsed_tokens = self.values_by_indices(get_token, &self.value_column_indices);
+        let parsed_entry =
+            ParsedEventWithErrors::new(self.session_type(), event, key, parsed_tokens);
+        Ok(vec![parsed_entry])
+    }
+
+    fn parse_tokenized_entries(&mut self, event: DataEventType, tokens: &[String]) -> ParseResult {
+        self.parse_tokens(event, tokens.len(), |index| tokens[index].as_str())
+    }
+
+    fn parse_csv_record(
+        &mut self,
+        event: DataEventType,
+        record: &csv::StringRecord,
+    ) -> ParseResult {
+        self.parse_tokens(event, record.len(), |index| {
+            record.get(index).unwrap_or_default()
+        })
     }
 }
 
@@ -238,6 +261,7 @@ impl Parser for DsvParser {
             TokenizedEntries(event, tokenized_entries) => {
                 self.parse_tokenized_entries(*event, tokenized_entries)
             }
+            CsvRecord(event, record) => self.parse_csv_record(*event, record),
             KeyValue((_key, value)) => match value {
                 Some(bytes) => self.parse_bytes_simple(DataEventType::Insert, bytes), // In Kafka we only have additions now
                 None => Err(ParseError::EmptyKafkaPayload.into()),
@@ -276,18 +300,32 @@ impl DsvFormatter {
         }
     }
 
-    fn format_csv_row(tokens: Vec<String>, separator: u8) -> Result<Vec<u8>, FormatterError> {
-        let mut writer = csv::WriterBuilder::new()
-            .delimiter(separator)
-            .terminator(csv::Terminator::Any(0)) // There is no option for not having a row terminator
-            .quote_style(csv::QuoteStyle::Always)
-            .from_writer(Vec::new());
-        writer.write_record(tokens)?;
-        let mut formatted = writer
-            .into_inner()
-            .expect("csv::Writer::into_inner can't fail for Vec<u8> as an underlying writer");
-        formatted.pop(); // Remove the row terminator character
-        Ok(formatted)
+    fn format_csv_row(tokens: &[String], separator: u8) -> Vec<u8> {
+        // Mirrors `csv`'s `QuoteStyle::Always` with the default double-quote
+        // escaping: every field is wrapped in double quotes and any embedded
+        // double quote is doubled. Doing it by hand avoids constructing a
+        // `csv::Writer` (with its internal buffers) for every single row.
+        let escaped_len: usize = tokens
+            .iter()
+            .map(|token| token.len() + token.matches('"').count())
+            .sum();
+        let mut out = Vec::with_capacity(escaped_len + 3 * tokens.len());
+        for (column, token) in tokens.iter().enumerate() {
+            if column > 0 {
+                out.push(separator);
+            }
+            out.push(b'"');
+            let bytes = token.as_bytes();
+            let mut copied_until = 0;
+            for (quote_pos, _) in token.match_indices('"') {
+                out.extend_from_slice(&bytes[copied_until..quote_pos]);
+                out.extend_from_slice(b"\"\"");
+                copied_until = quote_pos + 1;
+            }
+            out.extend_from_slice(&bytes[copied_until..]);
+            out.push(b'"');
+        }
+        out
     }
 }
 
@@ -321,7 +359,7 @@ impl Formatter for DsvFormatter {
                     SPECIAL_FIELD_DIFF.to_string(),
                 ])
                 .collect();
-            payloads.push(Self::format_csv_row(header, separator)?);
+            payloads.push(Self::format_csv_row(&header, separator));
             self.dsv_header_written = true;
         }
 
@@ -344,7 +382,7 @@ impl Formatter for DsvFormatter {
             .into_iter()
             .chain([format!("{time}").to_string(), format!("{diff}").to_string()])
             .collect();
-        payloads.push(Self::format_csv_row(line, separator)?);
+        payloads.push(Self::format_csv_row(&line, separator));
 
         Ok(FormatterContext::new(
             payloads,

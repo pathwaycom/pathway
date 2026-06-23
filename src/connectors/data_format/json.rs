@@ -7,7 +7,9 @@ use std::fmt;
 use std::iter::zip;
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Bson, Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{
+    Bson, CsvRecord, Diff, Empty, KeyValue, RawBytes, TokenizedEntries,
+};
 use crate::connectors::{DataEventType, ReaderContext, SessionType};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::DynResult;
@@ -404,7 +406,7 @@ impl Parser for JsonLinesParser {
                     key.as_deref().unwrap_or_default(),
                     value.as_deref().unwrap_or_default(),
                 ),
-                Diff(_) | TokenizedEntries(..) | Bson(_) => {
+                Diff(_) | TokenizedEntries(..) | CsvRecord(..) | Bson(_) => {
                     return Err(ParseError::UnsupportedReaderContext.into());
                 }
                 Empty => return Ok(vec![]),

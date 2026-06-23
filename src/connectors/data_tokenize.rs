@@ -58,14 +58,11 @@ impl Tokenize for CsvTokenizer {
         if let Some(ref mut csv_reader) = self.csv_reader {
             let mut current_record = csv::StringRecord::new();
             if csv_reader.read_record(&mut current_record)? {
+                // Hand the record over as-is: the parser reads field slices out
+                // of it directly, so there is no point converting it into a
+                // throwaway `Vec<String>` first.
                 Ok(Some((
-                    ReaderContext::from_tokenized_entries(
-                        self.current_event_type,
-                        current_record
-                            .iter()
-                            .map(std::string::ToString::to_string)
-                            .collect(),
-                    ),
+                    ReaderContext::from_csv_record(self.current_event_type, current_record),
                     csv_reader.position().byte(),
                 )))
             } else {
