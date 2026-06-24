@@ -801,8 +801,8 @@ pub enum WriteError {
     #[error("unsupported type: {0:?}")]
     UnsupportedType(Type),
 
-    #[error("elasticsearch client error: {0:?}")]
-    Elasticsearch(::elasticsearch::Error),
+    #[error(transparent)]
+    ElasticSearch(#[from] ElasticSearchError),
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),

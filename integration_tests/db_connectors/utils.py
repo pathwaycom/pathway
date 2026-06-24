@@ -1285,6 +1285,23 @@ class ElasticsearchContext:
         response.raise_for_status()
         return response.json()["count"]
 
+    def max_content_length(self) -> int:
+        """The cluster's smallest ``http.max_content_length`` (in bytes).
+
+        Elasticsearch rejects any HTTP body larger than this with
+        ``413 Request Entity Too Large``. Read live from the node info so a test
+        sizing a batch against the limit stays correct even if the cluster is
+        configured with a non-default value.
+        """
+        response = self._request(
+            "GET", "/_nodes/http", params={"filter_path": "nodes.*.http"}
+        )
+        response.raise_for_status()
+        nodes = response.json()["nodes"]
+        return min(
+            node["http"]["max_content_length_in_bytes"] for node in nodes.values()
+        )
+
     def delete_index(self, index_name: str) -> None:
         self._request("DELETE", f"/{index_name}", params={"ignore_unavailable": "true"})
 

@@ -374,6 +374,64 @@ def test_elasticsearch_static_read_delivers_all_rows(tmp_path, elasticsearch):
     assert delivered == expected
 
 
+def test_elasticsearch_write_splits_batch_larger_than_max_content_length(
+    tmp_path, elasticsearch
+):
+    """A minibatch whose serialized ``_bulk`` body would exceed the cluster's
+    ``http.max_content_length`` is split across several bulk requests, so every row
+    is indexed instead of the whole write failing with ``413 Request Entity Too
+    Large``. Reading a large file line by line and writing it to Elasticsearch in a
+    single static run pushes the entire input through one minibatch, which is the
+    case that overflows the limit before the fix.
+    """
+    index_name = elasticsearch.generate_index_name()
+    # ``payload`` is stored but not indexed: the test only needs the documents to
+    # be large and to land in the index, not to be searchable, and skipping the
+    # analysis of hundreds of megabytes of text keeps the write fast.
+    elasticsearch.create_index(
+        index_name,
+        {
+            "doc_id": {"type": "keyword"},
+            "ts": {"type": "long"},
+            "payload": {"type": "text", "index": False},
+        },
+    )
+
+    # Size the input off the live limit so a single un-split bulk request would be
+    # rejected: ~1.4x the cap, spread over rows large enough to keep the row count
+    # (and JSON-formatting overhead) small.
+    max_content_length = elasticsearch.max_content_length()
+    payload_size = 700_000
+    blob = "x" * payload_size
+    n_rows = (max_content_length + max_content_length // 2) // payload_size
+
+    input_path = tmp_path / "big_input.jsonl"
+    with open(input_path, "w") as f:
+        for i in range(n_rows):
+            f.write(
+                json.dumps({"doc_id": f"d{i}", "ts": 1000 + i, "payload": blob}) + "\n"
+            )
+
+    class InputSchema(pw.Schema):
+        doc_id: str
+        ts: int
+        payload: str
+
+    G.clear()
+    table = pw.io.fs.read(
+        str(input_path), format="json", schema=InputSchema, mode="static"
+    )
+    pw.io.elasticsearch.write(
+        table=table,
+        host=ELASTICSEARCH_URL,
+        auth=pw.io.elasticsearch.ElasticSearchAuth.basic("admin", "admin"),
+        index_name=index_name,
+    )
+    run()
+
+    assert elasticsearch.document_count(index_name) == n_rows
+
+
 @pytest.mark.parametrize(
     ("make_documents", "read_batch_size"),
     [

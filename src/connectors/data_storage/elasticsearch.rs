@@ -12,16 +12,19 @@ use crate::connectors::data_storage::polling::{
 use crate::connectors::data_storage::{ConnectorMode, ReadError, StorageType};
 use crate::connectors::offset::OffsetKey;
 use crate::connectors::{WriteError, Writer};
+use crate::retry::{execute_with_retries_async, RetryConfig};
 
 use elasticsearch::indices::IndicesGetMappingParts;
+use elasticsearch::nodes::{NodesInfoParts, NodesStatsParts};
 use elasticsearch::{BulkParts, Elasticsearch, SearchParts};
 use log::warn;
 use serde_json::{json, Value as JsonValue};
 use tokio::runtime::Runtime as TokioRuntime;
 
-/// Errors specific to the Elasticsearch input connector. Exposed to the engine
-/// through a single transparent [`ReadError::ElasticSearch`](crate::connectors::ReadError)
-/// variant so `?` works directly on these results inside the reader.
+/// Errors specific to the Elasticsearch connector. Exposed to the engine through
+/// single transparent [`ReadError::ElasticSearch`](crate::connectors::ReadError)
+/// and [`WriteError::ElasticSearch`](crate::connectors::WriteError) variants so
+/// `?` works directly on these results inside the reader and writer.
 #[derive(Debug, thiserror::Error)]
 pub enum ElasticSearchError {
     #[error(transparent)]
@@ -37,6 +40,17 @@ pub enum ElasticSearchError {
         "the timestamp column {column:?} must hold an integer (e.g. epoch milliseconds), got {value}"
     )]
     InvalidTimestamp { column: String, value: String },
+
+    #[error(
+        "ElasticSearch bulk indexing into {index_name:?} still failed for {failed_count} \
+         document(s) with retriable errors after {retries} retries: {reasons}"
+    )]
+    BulkRetriesExhausted {
+        index_name: String,
+        failed_count: usize,
+        retries: usize,
+        reasons: String,
+    },
 }
 
 /// Maximum number of hits requested in a single `search` call. Elasticsearch
@@ -509,13 +523,155 @@ pub fn build_elasticsearch_reader(
     ))
 }
 
+/// The action line prepended before every document in the NDJSON `_bulk` body.
+/// Each buffered document is two NDJSON lines: this action line, then the
+/// document itself.
+const BULK_ACTION_LINE: &[u8] = b"{\"index\": {}}";
+
+/// `http.max_content_length` assumed when the live value cannot be read from the
+/// cluster. This matches Elasticsearch's own default (100 MB); a bulk request
+/// larger than this is rejected with `413 Request Entity Too Large`, so the
+/// writer splits its buffer to stay under it.
+const DEFAULT_MAX_CONTENT_LENGTH: usize = 100 * 1024 * 1024;
+
+/// `indexing_pressure.memory.limit` assumed when the live value cannot be read
+/// from the cluster. Elasticsearch defaults this to 10% of the JVM heap; 50 MB
+/// corresponds to a small (~512 MB-heap) node, so it is a safe conservative
+/// fallback — a real cluster almost always reports a larger value, lifting the
+/// cap accordingly.
+const DEFAULT_INDEXING_PRESSURE_LIMIT: usize = 50 * 1024 * 1024;
+
+/// Fraction (numerator/denominator) of `http.max_content_length` a single bulk
+/// request is allowed to fill. The headroom absorbs the small difference between
+/// the NDJSON body bytes we measure and whatever the server counts toward the
+/// limit, so a request never tips over the hard cap on a rounding error.
+const BATCH_BYTE_BUDGET_NUM: usize = 9;
+const BATCH_BYTE_BUDGET_DEN: usize = 10;
+
+/// How many times the start-up limit probes are retried (with backoff) before
+/// giving up and falling back to a default. These run once at construction, so a
+/// few attempts cheaply ride out a transient blip (a node briefly unreachable,
+/// the cluster still forming) without making a degraded cluster wait long.
+const LIMIT_PROBE_RETRIES: usize = 3;
+
+/// How many times a bulk request is retried (with backoff) when it — or some of
+/// its documents — fail with a *transient* error. Only work that the server
+/// reports as not yet applied is resent, so a retry never duplicates a document.
+const BULK_WRITE_RETRIES: usize = 4;
+
+/// HTTP status codes (whether the whole bulk request was rejected, or an
+/// individual document failed inside an otherwise-`200` response) that the writer
+/// retries.
+///
+/// Both are back-pressure / transient-unavailability signals that Elasticsearch
+/// raises *before* applying the affected operation, so the document is known not
+/// to have been indexed and resending it cannot duplicate it. Deterministic
+/// failures (`400` bad document, `401`/`403` auth, `404` missing index, `413`
+/// single oversized document) are never retried — they would fail identically —
+/// and ambiguous transport/gateway failures (a lost response, a proxy `502`/`504`)
+/// are not retried either, since the request may have been applied and resending
+/// it could duplicate data (this connector does not assign document ids, so a
+/// resend is not idempotent).
+fn is_retriable_bulk_status(status: u16) -> bool {
+    matches!(status, 429 | 503)
+}
+
+/// Number of bytes a single buffered document contributes to the NDJSON `_bulk`
+/// body: the action line and the document, each followed by a newline (the
+/// `elasticsearch` client's newline-delimited body writer appends a `\n` after
+/// every line).
+fn bulk_entry_byte_size(payload_len: usize) -> usize {
+    BULK_ACTION_LINE.len() + 1 + payload_len + 1
+}
+
+/// Read `http.max_content_length` (in bytes) from the cluster's node info.
+///
+/// Each node enforces its own limit on the size of an inbound HTTP body; the
+/// smallest one is returned so a bulk request fits whichever node handles it.
+/// Fails if the node info cannot be fetched, parsed, or contains no node
+/// reporting the limit — the caller falls back to [`DEFAULT_MAX_CONTENT_LENGTH`]
+/// in that case.
+async fn fetch_max_content_length(client: &Elasticsearch) -> Result<usize, ElasticSearchError> {
+    let response = client
+        .nodes()
+        .info(NodesInfoParts::Metric(&["http"]))
+        .send()
+        .await?
+        .error_for_status_code()?;
+    let payload: JsonValue = response.json().await?;
+    let nodes = payload["nodes"].as_object().ok_or_else(|| {
+        ElasticSearchError::MalformedResponse(
+            "missing 'nodes' object in node info response".to_string(),
+        )
+    })?;
+    let mut limit: Option<usize> = None;
+    for node in nodes.values() {
+        if let Some(value) = node["http"]["max_content_length_in_bytes"].as_u64() {
+            let value = usize::try_from(value).unwrap_or(usize::MAX);
+            limit = Some(limit.map_or(value, |current| current.min(value)));
+        }
+    }
+    limit.ok_or_else(|| {
+        ElasticSearchError::MalformedResponse(
+            "no node reported http.max_content_length_in_bytes".to_string(),
+        )
+    })
+}
+
+/// Read `indexing_pressure.memory.limit` (in bytes) from the cluster's node
+/// stats.
+///
+/// Independently of the HTTP body limit, Elasticsearch rejects a bulk request
+/// with `429 Too Many Requests` once the in-flight indexing memory it would use
+/// (counted on both the coordinating and the primary node) exceeds this limit,
+/// which defaults to 10% of the JVM heap. The smallest limit across nodes is
+/// returned so a request fits whichever node coordinates or holds the primary
+/// shard. Fails (so the caller falls back to [`DEFAULT_INDEXING_PRESSURE_LIMIT`])
+/// if the stats cannot be fetched, parsed, or report no limit.
+async fn fetch_indexing_pressure_limit(
+    client: &Elasticsearch,
+) -> Result<usize, ElasticSearchError> {
+    let response = client
+        .nodes()
+        .stats(NodesStatsParts::Metric(&["indexing_pressure"]))
+        .send()
+        .await?
+        .error_for_status_code()?;
+    let payload: JsonValue = response.json().await?;
+    let nodes = payload["nodes"].as_object().ok_or_else(|| {
+        ElasticSearchError::MalformedResponse(
+            "missing 'nodes' object in node stats response".to_string(),
+        )
+    })?;
+    let mut limit: Option<usize> = None;
+    for node in nodes.values() {
+        if let Some(value) = node["indexing_pressure"]["memory"]["limit_in_bytes"].as_u64() {
+            let value = usize::try_from(value).unwrap_or(usize::MAX);
+            limit = Some(limit.map_or(value, |current| current.min(value)));
+        }
+    }
+    limit.ok_or_else(|| {
+        ElasticSearchError::MalformedResponse(
+            "no node reported indexing_pressure.memory.limit_in_bytes".to_string(),
+        )
+    })
+}
+
 pub struct ElasticSearchWriter {
     runtime: TokioRuntime,
     client: Elasticsearch,
     index_name: String,
     max_batch_size: Option<usize>,
+    // Upper bound on the size (in bytes) of a single bulk request body, kept
+    // safely below the cluster's `http.max_content_length` so the server never
+    // rejects a batch as too large.
+    max_batch_bytes: usize,
 
     docs_buffer: Vec<Vec<u8>>,
+    // Running size of the NDJSON body the buffered documents would serialize to,
+    // tracked incrementally so the byte budget can be checked without re-scanning
+    // the buffer on every write.
+    docs_buffer_bytes: usize,
 }
 
 impl ElasticSearchWriter {
@@ -524,26 +680,168 @@ impl ElasticSearchWriter {
         index_name: String,
         max_batch_size: Option<usize>,
     ) -> Result<Self, WriteError> {
+        let runtime = create_async_tokio_runtime()?;
+        // Discover the two server-side limits that bound a single bulk request
+        // once at construction. Either being unreadable falls back to a
+        // conservative documented default rather than failing the connector — an
+        // over-large batch is still avoided.
+        //
+        // `http.max_content_length` is the hard cap on the HTTP body (a larger
+        // request is rejected with 413). `indexing_pressure.memory.limit` is the
+        // in-flight indexing memory a request may use before it is rejected with
+        // 429; a bulk of B bytes counts against it on both the coordinating and
+        // the primary node (~2·B at the peak), so a request must stay below half
+        // of it. The batch is bounded by whichever limit is hit first.
+        // A transient error (a slow or briefly-unreachable node) is retried with
+        // backoff before falling back, so a momentary hiccup at start-up does not
+        // needlessly drop the connector onto the conservative default for the
+        // whole run.
+        let max_content_length = match runtime.block_on(async {
+            execute_with_retries_async(
+                async || fetch_max_content_length(&client).await,
+                RetryConfig::default(),
+                LIMIT_PROBE_RETRIES,
+            )
+            .await
+        }) {
+            Ok(limit) => limit,
+            Err(error) => {
+                warn!(
+                    "Could not read Elasticsearch http.max_content_length (using the \
+                     {DEFAULT_MAX_CONTENT_LENGTH}-byte default to bound bulk request size): {error}"
+                );
+                DEFAULT_MAX_CONTENT_LENGTH
+            }
+        };
+        let indexing_pressure_limit = match runtime.block_on(async {
+            execute_with_retries_async(
+                async || fetch_indexing_pressure_limit(&client).await,
+                RetryConfig::default(),
+                LIMIT_PROBE_RETRIES,
+            )
+            .await
+        }) {
+            Ok(limit) => limit,
+            Err(error) => {
+                warn!(
+                    "Could not read Elasticsearch indexing_pressure.memory.limit (using the \
+                     {DEFAULT_INDEXING_PRESSURE_LIMIT}-byte default to bound bulk request size): \
+                     {error}"
+                );
+                DEFAULT_INDEXING_PRESSURE_LIMIT
+            }
+        };
+        let content_length_budget =
+            (max_content_length / BATCH_BYTE_BUDGET_DEN).saturating_mul(BATCH_BYTE_BUDGET_NUM);
+        let indexing_pressure_budget = indexing_pressure_limit / 2;
+        let max_batch_bytes = content_length_budget.min(indexing_pressure_budget).max(1);
         Ok(ElasticSearchWriter {
-            runtime: create_async_tokio_runtime()?,
+            runtime,
             client,
             index_name,
             max_batch_size,
+            max_batch_bytes,
             docs_buffer: Vec::new(),
+            docs_buffer_bytes: 0,
         })
+    }
+}
+
+/// The per-document outcome of a bulk response whose body reported `errors: true`.
+#[derive(Default)]
+struct BulkItemFailures {
+    /// The NDJSON lines (action line followed by document, as stored in the send
+    /// buffer) of the documents that failed with a retriable status and should be
+    /// resent. Empty when nothing is worth retrying.
+    retriable_docs: Vec<Vec<u8>>,
+    /// Reasons for the retriable failures, for diagnostics if the retries run out.
+    retriable_reasons: Vec<String>,
+    /// Reasons for documents that failed deterministically; these are not retried.
+    permanent_reasons: Vec<String>,
+}
+
+/// Inspect a `200`-but-`errors: true` bulk response and split the failed
+/// documents into those worth retrying and those that failed permanently.
+///
+/// `sent` is the flat NDJSON buffer that produced the request: document `i`
+/// occupies `sent[2*i]` (its action line) and `sent[2*i + 1]` (its body), in the
+/// same order as `items` in the response. Successful items are skipped, so only
+/// the still-unwritten documents are carried into the next attempt — a retry
+/// therefore never resends an already-indexed document.
+fn classify_bulk_item_failures(payload: &JsonValue, sent: &[Vec<u8>]) -> BulkItemFailures {
+    let mut failures = BulkItemFailures::default();
+    let Some(items) = payload["items"].as_array() else {
+        return failures;
+    };
+    for (index, item) in items.iter().enumerate() {
+        // Each item is a single-key object keyed by the action (`index`), whose
+        // value carries the per-document `status` and, on failure, an `error`.
+        let Some(result) = item.as_object().and_then(|object| object.values().next()) else {
+            continue;
+        };
+        let status = result["status"].as_u64().unwrap_or(0);
+        if (200..300).contains(&status) {
+            continue;
+        }
+        let reason = result["error"]["reason"]
+            .as_str()
+            .unwrap_or("unknown error");
+        let reason = format!("status {status}: {reason}");
+        #[allow(clippy::cast_possible_truncation)]
+        if is_retriable_bulk_status(status as u16) {
+            if let (Some(action), Some(document)) = (sent.get(2 * index), sent.get(2 * index + 1)) {
+                failures.retriable_docs.push(action.clone());
+                failures.retriable_docs.push(document.clone());
+                failures.retriable_reasons.push(reason);
+            }
+        } else {
+            failures.permanent_reasons.push(reason);
+        }
+    }
+    failures
+}
+
+/// Join failure reasons into a short, bounded summary for a log line or error.
+fn summarize_failure_reasons(reasons: &[String]) -> String {
+    const MAX_SHOWN: usize = 5;
+    let shown = reasons
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    if reasons.len() > MAX_SHOWN {
+        format!("{shown}; … and {} more", reasons.len() - MAX_SHOWN)
+    } else {
+        shown
     }
 }
 
 impl Writer for ElasticSearchWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         for payload in data.payloads {
-            self.docs_buffer.push(b"{\"index\": {}}".to_vec());
-            self.docs_buffer.push(payload.into_raw_bytes()?);
-        }
+            let payload = payload.into_raw_bytes()?;
+            let entry_bytes = bulk_entry_byte_size(payload.len());
 
-        if let Some(max_batch_size) = self.max_batch_size {
-            if self.docs_buffer.len() / 2 >= max_batch_size {
+            // Flush the buffered documents before this one would push the bulk
+            // request body over the size the server accepts. A document larger
+            // than the whole budget cannot be split, so it is still buffered and
+            // sent on its own; flushing first at least keeps every other request
+            // valid instead of failing the entire batch.
+            if !self.docs_buffer.is_empty()
+                && self.docs_buffer_bytes + entry_bytes > self.max_batch_bytes
+            {
                 self.flush(true)?;
+            }
+
+            self.docs_buffer.push(BULK_ACTION_LINE.to_vec());
+            self.docs_buffer.push(payload);
+            self.docs_buffer_bytes += entry_bytes;
+
+            if let Some(max_batch_size) = self.max_batch_size {
+                if self.docs_buffer.len() / 2 >= max_batch_size {
+                    self.flush(true)?;
+                }
             }
         }
 
@@ -554,18 +852,73 @@ impl Writer for ElasticSearchWriter {
         if self.docs_buffer.is_empty() {
             return Ok(());
         }
-        self.runtime.block_on(async {
-            self.client
-                .bulk(BulkParts::Index(&self.index_name))
-                .body(take(&mut self.docs_buffer))
-                .send()
-                .await
-                .map_err(WriteError::Elasticsearch)?
-                .error_for_status_code()
-                .map_err(WriteError::Elasticsearch)?;
+        self.docs_buffer_bytes = 0;
+        // The set of documents still to write, narrowing on each retry to only the
+        // ones the server reported as not yet applied. Borrowed by reference into
+        // the request body so retrying re-sends without copying the payloads.
+        let mut remaining = take(&mut self.docs_buffer);
+        let result: Result<(), ElasticSearchError> = self.runtime.block_on(async {
+            let mut retry_config = RetryConfig::default();
+            let mut retries_left = BULK_WRITE_RETRIES;
+            loop {
+                let body: Vec<&[u8]> = remaining.iter().map(Vec::as_slice).collect();
+                let response = self
+                    .client
+                    .bulk(BulkParts::Index(&self.index_name))
+                    .body(body)
+                    .send()
+                    .await?;
 
-            Ok(())
-        })
+                if response.status_code().is_success() {
+                    let payload: JsonValue = response.json().await?;
+                    if !payload["errors"].as_bool().unwrap_or(false) {
+                        return Ok(());
+                    }
+                    let failures = classify_bulk_item_failures(&payload, &remaining);
+                    if !failures.permanent_reasons.is_empty() {
+                        // These documents would fail identically on every retry,
+                        // so retrying (or failing the whole run, which would
+                        // re-send the batch on recovery and loop forever) cannot
+                        // help. Report them and move on with the rest.
+                        warn!(
+                            "ElasticSearch index {:?}: dropped {} document(s) rejected with \
+                             non-retriable errors: {}",
+                            self.index_name,
+                            failures.permanent_reasons.len(),
+                            summarize_failure_reasons(&failures.permanent_reasons),
+                        );
+                    }
+                    if failures.retriable_docs.is_empty() {
+                        return Ok(());
+                    }
+                    if retries_left == 0 {
+                        return Err(ElasticSearchError::BulkRetriesExhausted {
+                            index_name: self.index_name.clone(),
+                            failed_count: failures.retriable_docs.len() / 2,
+                            retries: BULK_WRITE_RETRIES,
+                            reasons: summarize_failure_reasons(&failures.retriable_reasons),
+                        });
+                    }
+                    remaining = failures.retriable_docs;
+                } else {
+                    let status = response.status_code().as_u16();
+                    if !is_retriable_bulk_status(status) || retries_left == 0 {
+                        // Non-retriable rejection, or out of retries. The whole
+                        // request was refused before indexing, so nothing was
+                        // written; surface the server's error.
+                        response.error_for_status_code()?;
+                        unreachable!("error_for_status_code returns Err on a non-success status");
+                    }
+                    // Retriable top-level rejection: the batch was refused
+                    // wholesale, so `remaining` is unchanged and re-sending it
+                    // duplicates nothing.
+                }
+
+                retries_left -= 1;
+                retry_config.sleep_after_error_async().await;
+            }
+        });
+        result.map_err(WriteError::from)
     }
 
     fn name(&self) -> String {
