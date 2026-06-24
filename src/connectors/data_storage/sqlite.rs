@@ -29,10 +29,20 @@ use crate::python_api::ValueField;
 
 use rusqlite::params_from_iter;
 use rusqlite::types::{ToSqlOutput, Value as SqliteOwnedValue, ValueRef as SqliteValue};
-use rusqlite::Connection as SqliteConnection;
+use rusqlite::{Connection as SqliteConnection, TransactionBehavior};
 use serde_json::Value as JsonValue;
 
 const SQLITE_DATA_VERSION_PRAGMA: &str = "data_version";
+
+/// How long a writer waits for the database file's write lock before
+/// giving up with `database is locked`. `SQLite` permits only one writer
+/// per database *file* (not per table), so two sinks writing to the same
+/// file — or, before the single-worker routing, several workers of one
+/// sink — contend for it. With a busy timeout a blocked writer sleeps and
+/// retries instead of failing immediately, letting the writers take turns.
+/// It only needs to outlast a single peer transaction; generous because a
+/// large batch committed in one transaction can hold the lock for a while.
+const WRITER_BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Values of the `hidden` field returned by `PRAGMA table_xinfo` (see
 /// <https://www.sqlite.org/pragma.html#pragma_table_xinfo>). `rusqlite`
@@ -1282,6 +1292,11 @@ impl SqliteWriter {
         } = table_ctx;
         let value_fields = value_fields.as_slice();
         let key_field_names = key_field_names.as_deref();
+        // Wait for the file's write lock rather than failing instantly with
+        // `database is locked` when another writer holds it (a second sink
+        // pointed at the same file, or — historically — a concurrent worker).
+        // Applies to the init DDL below as well as later flushes.
+        connection.busy_timeout(WRITER_BUSY_TIMEOUT)?;
         // The shared SQL builders (`TableWriterInitMode::initialize` and
         // `SqlQueryTemplate::new`) interpolate identifiers unquoted, which
         // is the right thing for dialects that use backticks / square
@@ -1618,7 +1633,14 @@ impl Writer for SqliteWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let tx = self.connection.transaction()?;
+        // `IMMEDIATE` acquires the write lock up front instead of on the
+        // first write statement. Our transaction only writes (no read
+        // first), so this is safe and lets the busy timeout apply at BEGIN,
+        // sidestepping the lock-upgrade deadlock a DEFERRED read-then-write
+        // transaction could hit between two writers.
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for ctx in self.buffer.drain(..) {
             let storage: Vec<SqliteOwnedValue> = ctx
                 .values
@@ -1660,6 +1682,17 @@ impl Writer for SqliteWriter {
     }
 
     fn single_threaded(&self) -> bool {
-        self.snapshot_mode
+        // SQLite is an embedded, single-file database that allows only one
+        // writer to a database file at a time: each worker opens its own
+        // connection, and a second concurrent write fails with SQLITE_BUSY
+        // ("database is locked"). With multiple workers that aborts the run
+        // after some workers have already committed their share, leaving the
+        // destination table with a partial, non-deterministic subset of rows.
+        // Both output modes are therefore funneled onto a single worker.
+        // This costs no real write throughput — SQLite cannot write in
+        // parallel regardless — and makes the output complete and
+        // deterministic. (Snapshot mode already relied on this; stream of
+        // changes now does too.)
+        true
     }
 }

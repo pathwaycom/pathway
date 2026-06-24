@@ -339,6 +339,74 @@ def test_sqlite_snapshot_write(tmp_path: pathlib.Path):
     ]
 
 
+@pytest.mark.parametrize("output_table_type", ["stream_of_changes", "snapshot"])
+def test_sqlite_write_preserves_all_rows_with_multiple_workers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, output_table_type
+):
+    """Writing with several workers must persist every row. SQLite allows
+    only one writer per database file, so when each worker writes its own
+    shard concurrently the second write fails with SQLITE_BUSY ("database
+    is locked"), aborting the run after some workers have already committed
+    and leaving the table with a partial subset. The writer therefore
+    funnels all output onto a single worker; the destination must end up
+    with exactly the rows the pipeline produced, regardless of worker count
+    and output mode.
+    """
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+    database_path = tmp_path / "many_workers.db"
+
+    n_rows = 2000
+    rows = "\n".join(f"{i} | {i}" for i in range(n_rows))
+    table = pw.debug.table_from_markdown("key | value\n" + rows)
+
+    write_kwargs: dict = {"init_mode": "create_if_not_exists"}
+    if output_table_type == "snapshot":
+        write_kwargs["output_table_type"] = "snapshot"
+        write_kwargs["primary_key"] = [table.key]
+    pw.io.sqlite.write(table, database_path, "data", **write_kwargs)
+    run_all()
+
+    connection = sqlite3.connect(database_path)
+    count = connection.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+    keys = {row[0] for row in connection.execute("SELECT key FROM data")}
+    connection.close()
+
+    assert count == n_rows
+    assert keys == set(range(n_rows))
+
+
+def test_sqlite_write_two_tables_same_file_both_complete(tmp_path: pathlib.Path):
+    """Two writers targeting different tables in the *same* database file
+    must both persist all their rows. SQLite locks at the file level, not
+    the table level, so the two independent sinks (each its own connection
+    and output thread) contend for one write lock — even on a single
+    worker. Without the writers waiting for the lock, one would fail with
+    `database is locked` and abort the run after the other had committed,
+    leaving its table empty. Both tables must end up complete.
+    """
+    database_path = tmp_path / "two_tables.db"
+    n_rows = 2000
+    rows = "\n".join(f"{i} | {i}" for i in range(n_rows))
+    table_a = pw.debug.table_from_markdown("key | value\n" + rows)
+    table_b = pw.debug.table_from_markdown("key | value\n" + rows)
+
+    pw.io.sqlite.write(
+        table_a, database_path, "table_a", init_mode="create_if_not_exists"
+    )
+    pw.io.sqlite.write(
+        table_b, database_path, "table_b", init_mode="create_if_not_exists"
+    )
+    run_all()
+
+    connection = sqlite3.connect(database_path)
+    count_a = connection.execute("SELECT COUNT(*) FROM table_a").fetchone()[0]
+    count_b = connection.execute("SELECT COUNT(*) FROM table_b").fetchone()[0]
+    connection.close()
+
+    assert count_a == n_rows
+    assert count_b == n_rows
+
+
 @pytest.mark.parametrize("init_mode", ["default", "create_if_not_exists", "replace"])
 def test_sqlite_write_init_mode(tmp_path: pathlib.Path, init_mode):
     """Each ``init_mode`` must pre-stage the destination table in the
