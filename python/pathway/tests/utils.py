@@ -98,6 +98,14 @@ only_with_license_key = functools.partial(
 
 AIRBYTE_FAKER_CONNECTION_REL_PATH = "connections/faker.yaml"
 
+# After the writer processes exit, a sink whose query visibility is asynchronous
+# (QuestDB WAL apply, Elasticsearch refresh, DynamoDB eventual consistency, ...)
+# may not expose the just-written rows immediately. Keep polling the checker for
+# up to this many seconds before giving up, instead of relying on a single
+# post-exit check. Five seconds is several times the worst-case default settling
+# lag of the systems we test against.
+POST_EXIT_GRACE_PERIOD_SEC = 5.0
+
 
 def skip_on_multiple_workers() -> None:
     if os.environ.get("PATHWAY_THREADS", "1") != "1":
@@ -760,12 +768,22 @@ def wait_result_with_checker(
                     file=sys.stderr,
                 )
                 assert all(handle.exitcode == 0 for handle in handles)
-                # The processes have finished, so the output is now complete and
-                # final. Run one last authoritative check before giving up: a
-                # previous poll may have observed the output while it was still
-                # partial (e.g. one of several worker processes had not flushed
-                # its share yet), which would otherwise fail spuriously.
-                succeeded = checker()
+                # The processes have finished, so everything they were going to
+                # write has been handed off to the sink. But for a sink whose
+                # query visibility is asynchronous (QuestDB WAL apply,
+                # Elasticsearch refresh, DynamoDB eventual consistency, ...) the
+                # just-written rows may not be queryable yet, and a previous poll
+                # may also have observed only a partial output (e.g. one worker
+                # had not flushed its share). Rather than give up after a single
+                # check, keep polling at the caller's `step` for a short grace
+                # period so such settling lag is not a source of spurious
+                # failures.
+                grace_deadline = time.monotonic() + POST_EXIT_GRACE_PERIOD_SEC
+                while True:
+                    succeeded = checker()
+                    if succeeded or time.monotonic() >= grace_deadline:
+                        break
+                    time.sleep(step)
                 break
 
         if not succeeded:
