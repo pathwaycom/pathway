@@ -755,6 +755,77 @@ def write(
     ...     output_table_type="snapshot",
     ...     primary_key=[t.pet],
     ... )
+
+    **Indexing vectors with pgvector.** Columns holding one-dimensional float
+    arrays (``np.ndarray``) are written natively into `pgvector
+    <https://github.com/pgvector/pgvector>`_ columns: declare the destination
+    column as ``vector(n)`` (single precision) or ``halfvec(n)`` (half
+    precision), sized to the embedding dimension ``n``, and the array is
+    serialized straight into it over the binary ``COPY`` protocol. The ``vector``
+    extension must be enabled (``CREATE EXTENSION vector``) and the column must
+    already have the pgvector type — ``init_mode`` auto-creation maps an
+    ``np.ndarray`` to a plain PostgreSQL ``ARRAY``, not to a pgvector type, so
+    create the column yourself.
+
+    Suppose you embed incoming documents and store the embeddings in a
+    pgvector-backed table to serve similarity search. The embeddings are
+    produced as:
+
+    >>> import numpy as np
+    >>> documents = pw.debug.table_from_markdown(
+    ...     '''
+    ...     doc_id
+    ...     1
+    ...     2
+    ...     3
+    ...     '''
+    ... )
+    >>> @pw.udf
+    ... def embed(doc_id: int) -> np.ndarray:
+    ...     return np.ones(3) * doc_id
+    >>> embeddings = documents.select(pw.this.doc_id, vector=embed(pw.this.doc_id))
+
+    When the collection is **append-only** — embeddings are only ever added —
+    use ``"stream_of_changes"`` so every new vector is appended to the index.
+    The destination table carries the embedding column plus the ``time`` /
+    ``diff`` bookkeeping columns:
+
+    .. code-block:: sql
+
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE TABLE document_embeddings (
+            doc_id BIGINT,
+            vector VECTOR(3),
+            time BIGINT NOT NULL,
+            diff SMALLINT NOT NULL
+        );
+
+    >>> pw.io.postgres.write(
+    ...     embeddings,
+    ...     connection_string_parts,
+    ...     "document_embeddings",
+    ... )
+
+    When documents come and go — a document leaving the collection must drop its
+    vector from the index, and a re-embedded document must replace it — use
+    ``"snapshot"`` keyed by the document id, so the table always mirrors the
+    current set of embeddings (no ``time`` / ``diff`` columns are added):
+
+    .. code-block:: sql
+
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE TABLE document_index (
+            doc_id BIGINT PRIMARY KEY,
+            vector VECTOR(3)
+        );
+
+    >>> pw.io.postgres.write(
+    ...     embeddings,
+    ...     connection_string_parts,
+    ...     "document_index",
+    ...     output_table_type="snapshot",
+    ...     primary_key=[embeddings.doc_id],
+    ... )
     """
 
     postgres_settings = _augment_postgres_settings(postgres_settings, name)
