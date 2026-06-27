@@ -51,6 +51,7 @@ _ENGINE_TO_OPENAPI_FORMAT = {
 # Which column in schema corresponds to the payload when the
 # input format for the endpoint is 'raw'
 QUERY_SCHEMA_COLUMN = "query"
+_MAX_JSON_PAYLOAD_SIZE = 1 * 1024 * 1024  # 1 MB limit for JSON request payloads
 
 
 class _LoggingContext:
@@ -671,6 +672,14 @@ class RestServerSubject(ServerSubject):
             payload = {QUERY_SCHEMA_COLUMN: await request.text()}
         elif self._format == "custom":
             try:
+                if (
+                    request.content_length is not None
+                    and request.content_length > _MAX_JSON_PAYLOAD_SIZE
+                ):
+                    raise web.HTTPRequestEntityTooLarge(
+                        max_size=_MAX_JSON_PAYLOAD_SIZE,
+                        actual_size=request.content_length,
+                    )
                 payload = await request.json()
             except json.decoder.JSONDecodeError:
                 payload = {}
