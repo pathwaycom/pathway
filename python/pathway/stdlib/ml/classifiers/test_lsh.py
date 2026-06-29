@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 
@@ -10,6 +12,7 @@ from pathway.debug import table_to_pandas
 from pathway.tests.utils import T, assert_table_equality_wo_index_types
 
 from ._clustering_via_lsh import clustering_via_lsh
+from ._knn_lsh import _globmatch
 from ._lsh import generate_cosine_lsh_bucketer, generate_euclidean_lsh_bucketer, lsh
 
 
@@ -104,3 +107,18 @@ def test_clustering_via_lsh():
         (3, 4, 5),
         (6, 7),
     }
+
+
+def test_globmatch_performance():
+    # A payload that would cause exponential O(2^N) time complexity without memoization
+    pattern = "/".join(["**"] * 25 + ["x"])
+    path = "/".join(["a"] * 25 + ["y"])
+
+    start_time = time.time()
+    result = _globmatch(pattern, path)
+    duration = time.time() - start_time
+
+    assert result is False
+    # The memoized version runs in O(N*M) and should complete in < 0.05 seconds.
+    # Without memoization, this test would hang indefinitely.
+    assert duration < 0.5, f"ReDoS regression: globmatch took {duration}s"
