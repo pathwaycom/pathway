@@ -201,7 +201,7 @@ def test_bedrock_call_args(model_id, call_arg):
 
 @pytest.mark.asyncio
 async def test_bedrock_dynamic_args_routing():
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     llm = llms.BedrockChat(model_id="anthropic.claude-3", region_name="us-east-1")
 
@@ -210,8 +210,13 @@ async def test_bedrock_dynamic_args_routing():
         return_value={"output": {"message": {"content": [{"text": "mocked"}]}}}
     )
 
-    mock_session = AsyncMock()
-    mock_session.client.return_value.__aenter__.return_value = mock_client
+    # Explicit async context manager returned by session.client(...)
+    mock_client_cm = AsyncMock()
+    mock_client_cm.__aenter__.return_value = mock_client
+    mock_client_cm.__aexit__.return_value = None
+
+    mock_session = MagicMock()
+    mock_session.client.return_value = mock_client_cm
 
     with patch.object(llm, "_session", mock_session):
         await llm.__wrapped__(
