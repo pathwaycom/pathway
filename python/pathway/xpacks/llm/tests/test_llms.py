@@ -183,7 +183,7 @@ def test_bedrock_empty_init_kwargs():
     assert llm.model is None
 
 
-BEDROCK_VALID_ARGS = ["max_tokens", "temperature", "top_p", "stop_sequences"]
+BEDROCK_VALID_ARGS = ["max_tokens", "temperature", "top_p", "stop_sequences", "top_k"]
 BEDROCK_INVALID_ARGS = ["made_up_arg", "logit_bias"]
 
 
@@ -197,3 +197,30 @@ def test_bedrock_call_args(model_id, call_arg):
 
     # BedrockChat always returns based on supported_args, model_id doesn't affect it
     assert llm._accepts_call_arg(call_arg) is (call_arg in BEDROCK_VALID_ARGS)
+
+
+@pytest.mark.asyncio
+async def test_bedrock_dynamic_args_routing():
+    from unittest.mock import AsyncMock, patch
+
+    llm = llms.BedrockChat(model_id="anthropic.claude-3", region_name="us-east-1")
+
+    mock_client = AsyncMock()
+    mock_client.converse = AsyncMock(
+        return_value={"output": {"message": {"content": [{"text": "mocked"}]}}}
+    )
+
+    mock_session = AsyncMock()
+    mock_session.client.return_value.__aenter__.return_value = mock_client
+
+    with patch.object(llm, "_session", mock_session):
+        await llm.__wrapped__(
+            [{"role": "user", "content": "hi"}], top_k=250, temperature=0.7
+        )
+
+    mock_client.converse.assert_called_once()
+    call_kwargs = mock_client.converse.call_args.kwargs
+
+    assert call_kwargs["inferenceConfig"]["temperature"] == 0.7
+    assert "additionalModelRequestFields" in call_kwargs
+    assert call_kwargs["additionalModelRequestFields"]["top_k"] == 250
