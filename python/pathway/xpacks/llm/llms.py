@@ -818,6 +818,9 @@ class BedrockChat(BaseChat):
     ROLE_SYSTEM = "system"
     _SUPPORTED_ROLES = {ROLE_USER, ROLE_ASSISTANT, ROLE_SYSTEM}
 
+    # Arguments specific to certain models (sent via additionalModelRequestFields)
+    _MODEL_SPECIFIC_ARGS = {"top_k"}
+
     @staticmethod
     def _convert_messages_to_bedrock_format(messages: list[dict]) -> list[dict]:
         """Convert OpenAI-style messages to AWS Bedrock Converse API format."""
@@ -971,6 +974,15 @@ class BedrockChat(BaseChat):
                 "inferenceConfig": inference_config,
             }
 
+            # Extract model-specific parameters (like top_k) into additionalModelRequestFields
+            additional_fields = {}
+            for arg in self._MODEL_SPECIFIC_ARGS:
+                if arg in kwargs:
+                    additional_fields[arg] = kwargs.pop(arg)
+
+            if additional_fields:
+                converse_kwargs["additionalModelRequestFields"] = additional_fields
+
             if system_prompts:
                 converse_kwargs["system"] = system_prompts
 
@@ -1024,8 +1036,7 @@ class BedrockChat(BaseChat):
             "temperature",
             "top_p",
             "stop_sequences",
-            "top_k",  # Some models support this
-        }
+        }.union(self._MODEL_SPECIFIC_ARGS)
         return arg_name in supported_args
 
 
