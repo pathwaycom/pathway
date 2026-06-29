@@ -745,3 +745,16 @@ def test_docstore_metadata_post_processor():
     (query_result,) = val.as_list()  # extract the single match
     assert isinstance(query_result, dict)
     assert query_result["metadata"]["id"] == 1
+
+
+def test_get_jmespath_filter_structural_integrity():
+    from pathway.xpacks.llm.document_store import _get_jmespath_filter
+
+    f = _get_jmespath_filter.__wrapped__
+
+    assert f("tenant == 'A'", "*.pdf") == "(tenant == 'A') && globmatch('*.pdf', path)"
+
+    # Injection containment check
+    malicious_input = "x', path) || true"
+    with pytest.raises(ValueError, match="Invalid characters detected"):
+        f("tenant == 'A'", malicious_input)

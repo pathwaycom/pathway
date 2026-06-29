@@ -6,6 +6,7 @@ The document store reads source documents and build a vector index over them, an
 multiple methods for querying.
 """
 import json
+import re
 import warnings
 from collections.abc import Callable, Sequence
 from enum import Enum
@@ -39,6 +40,11 @@ def _get_jmespath_filter(metadata_filter: str, filepath_globpattern: str) -> str
         )
         ret_parts.append(f"({metadata_filter})")
     if filepath_globpattern:
+        if not re.match(r"^[a-zA-Z0-9_\-\*\?\.\/\\ ]+$", filepath_globpattern):
+            raise ValueError(
+                "Invalid characters detected in filepath glob pattern. "
+                "Structural sequence manipulation characters are rejected."
+            )
         ret_parts.append(f"globmatch('{filepath_globpattern}', path)")
     if ret_parts:
         return " && ".join(ret_parts)
