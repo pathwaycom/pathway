@@ -795,6 +795,7 @@ class BedrockChat(BaseChat):
         max_tokens: Maximum number of tokens to generate. Defaults to ``1024``.
         temperature: Sampling temperature (``0.0`` to ``1.0``).
         top_p: Top-p sampling parameter.
+        top_k: Top-k sampling parameter (supported by Anthropic models).
         stop_sequences: List of sequences that will stop generation.
 
     Example:
