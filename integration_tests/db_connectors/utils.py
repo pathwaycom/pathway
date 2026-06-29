@@ -847,6 +847,46 @@ class ClickHouseContext:
 MILVUS_VECTOR_DIM = 3
 
 
+def _is_milvus_transient_connect_error(e: Exception) -> bool:
+    """Whether ``e`` is milvus-lite's embedded-server connection race.
+
+    milvus-lite reports its local server as started as soon as the server
+    process is alive, *before* the server's local socket actually accepts
+    connections. The first client therefore races the socket coming up, and a
+    client that loses the race fails with a ``server unavailable`` /
+    ``connect failed`` error. Under heavy test parallelism the socket can take
+    a few seconds to appear, so this is retried in
+    :func:`_connect_milvus_client_with_retry`.
+    """
+    text = str(e)
+    return (
+        "Fail connecting to server" in text
+        or "server unavailable" in text
+        or "failed to connect to all addresses" in text
+        or "No such file or directory" in text
+    )
+
+
+def _connect_milvus_client_with_retry(uri: str, *, timeout: float = 30.0):
+    """Create a ``MilvusClient`` for ``uri``, retrying while a freshly started
+    milvus-lite embedded server brings its local socket up (see
+    :func:`_is_milvus_transient_connect_error`). Non-transient errors are raised
+    immediately."""
+    from pymilvus import MilvusClient
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return MilvusClient(uri)
+        except Exception as e:
+            if (
+                not _is_milvus_transient_connect_error(e)
+                or time.monotonic() >= deadline
+            ):
+                raise
+            time.sleep(0.25)
+
+
 def _make_milvus_client(uri: str):
     """Create a MilvusClient for the given URI.
 
@@ -854,8 +894,6 @@ def _make_milvus_client(uri: str):
     Unix-domain-socket address is not forwarded to the gRPC handler.  See
     ``pathway.io.milvus._make_client`` for the full explanation.
     """
-    from pymilvus import MilvusClient
-
     if uri.endswith(".db"):
         try:
             from milvus_lite.server_manager import server_manager_instance
@@ -865,10 +903,10 @@ def _make_milvus_client(uri: str):
                 raise RuntimeError(
                     f"milvus-lite failed to start a local server for: {uri}"
                 )
-            return MilvusClient(uds_uri)
+            return _connect_milvus_client_with_retry(uds_uri)
         except ImportError:
             pass
-    return MilvusClient(uri)
+    return _connect_milvus_client_with_retry(uri)
 
 
 def _is_milvus_transient_init_error(e: Exception) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Iterable
 
 import numpy as np
@@ -52,6 +53,44 @@ def _prepare_row(row: dict) -> dict:
     return result
 
 
+def _is_milvus_transient_connect_error(e: Exception) -> bool:
+    """Whether ``e`` is a local milvus-lite embedded-server connection race.
+
+    milvus-lite reports its local server as started as soon as the server
+    process is alive, before the server's local socket actually accepts
+    connections. The first client therefore races the socket coming up, and a
+    client that loses the race fails with a ``server unavailable`` /
+    ``connect failed`` error. The socket can take a few seconds to appear when
+    many local databases start at once, so this is retried in
+    :func:`_connect_with_retry`.
+    """
+    text = str(e)
+    return (
+        "Fail connecting to server" in text
+        or "server unavailable" in text
+        or "failed to connect to all addresses" in text
+        or "No such file or directory" in text
+    )
+
+
+def _connect_with_retry(MilvusClient, uri: str, *, timeout: float = 30.0):
+    """Create a ``MilvusClient`` for ``uri``, retrying while a freshly started
+    local milvus-lite server brings its socket up (see
+    :func:`_is_milvus_transient_connect_error`). Non-transient errors are raised
+    immediately."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return MilvusClient(uri)
+        except Exception as e:
+            if (
+                not _is_milvus_transient_connect_error(e)
+                or time.monotonic() >= deadline
+            ):
+                raise
+            time.sleep(0.25)
+
+
 def _make_client(MilvusClient, uri: str):
     """Create a MilvusClient, working around a pymilvus 2.6.x bug.
 
@@ -63,6 +102,9 @@ def _make_client(MilvusClient, uri: str):
     connection hangs.  Passing ``address=`` as an explicit keyword argument
     causes it to flow through ``handler_kwargs`` directly into
     ``GrpcHandler.__init__``, where ``kwargs.get("address")`` picks it up.
+
+    A freshly started local server may not be accepting connections yet, so the
+    client is created through :func:`_connect_with_retry`.
     """
     if uri.endswith(".db"):
         with optional_imports("milvus"):
@@ -73,9 +115,9 @@ def _make_client(MilvusClient, uri: str):
                 raise RuntimeError(
                     f"milvus-lite failed to start a local server for: {uri}"
                 )
-            return MilvusClient(uds_uri)
+            return _connect_with_retry(MilvusClient, uds_uri)
 
-    return MilvusClient(uri)
+    return _connect_with_retry(MilvusClient, uri)
 
 
 @check_arg_types
