@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Promoted `TwelveLabsVideoParser` and `MarengoEmbedder` out of the Video RAG example template and into the native `pathway.xpacks.llm` core library. You can now build Video RAG applications directly in Pathway by installing `pip install pathway[twelvelabs]`.
+
 ### Changed
 - `pw.io.mongodb.write` now distributes writes across all workers when Pathway runs with several workers (`pathway spawn -n N`), so write throughput scales with the worker count up to the capacity of the target MongoDB/Atlas deployment. Each document is still written by a single worker, so the result is identical to a single-worker run. Output that requests a global `sort_by` order continues to run on a single worker, since that is required to preserve the order.
 - `pw.io.fs.read` now reads in parallel when Pathway runs with several workers and persistence is not enabled. Each file is assigned to exactly one worker by a stable hash of its path, so the read scales with the number of workers instead of running on a single one. The assignment is deterministic across workers and processes, requiring no coordination between them. All files present at start-up are still delivered as a single minibatch at one shared timestamp across every worker, so stateful operators see the initial snapshot atomically rather than split across the parallel readers. When persistence is enabled, the read runs on a single worker to keep recovery exactly consistent.

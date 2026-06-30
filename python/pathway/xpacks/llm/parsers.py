@@ -1363,3 +1363,170 @@ class AudioParser(pw.UDF):
         )
         text = getattr(transcript, "text", str(transcript))
         return [(text, {})]
+
+
+DEFAULT_PEGASUS_MODEL = "pegasus1.5"
+DEFAULT_PROMPT = (
+    "Describe this video in detail. Summarize what happens, who and what appears, "
+    "the setting, any spoken or on-screen text, and the overall topic. "
+    "Write the description so it can be used to answer questions about the video."
+)
+
+
+def _resolve_twelvelabs_api_key(api_key: str | None) -> str:
+    import os
+
+    key = api_key or os.environ.get("TWELVELABS_API_KEY")
+    if not key:
+        raise ValueError(
+            "TwelveLabs API key is missing. Pass `api_key=...` or set the "
+            "`TWELVELABS_API_KEY` environment variable."
+        )
+    return key
+
+
+def _build_twelvelabs_client(api_key: str | None):
+    try:
+        from twelvelabs import TwelveLabs
+    except ImportError as e:
+        raise ImportError(
+            "The `twelvelabs` package is required to use the TwelveLabs components. "
+            "Install it with `pip install pathway[twelvelabs]`."
+        ) from e
+    return TwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))
+
+
+class TwelveLabsVideoParser(pw.UDF):
+    """Parse videos into text using the TwelveLabs Pegasus model.
+
+    The parser uploads the incoming video bytes to TwelveLabs as an asset, waits
+    for the asset to be ready, and then asks Pegasus to produce a textual
+    description of the video using ``prompt``. The returned text is suitable for
+    chunking, embedding and indexing by the standard Pathway RAG components.
+
+    By default the uploaded asset is deleted once the analysis finishes (even if
+    the analysis fails), so repeated runs do not flood the TwelveLabs asset list.
+    Set ``delete_assets=False`` to keep the assets around for reuse or
+    inspection; in that case the emitted ``twelvelabs_asset_id`` metadata refers
+    to a live, retrievable asset.
+
+    Args:
+        prompt: Instruction sent to Pegasus describing what to extract from the
+            video. Defaults to a generic, RAG-oriented description prompt.
+        model: Pegasus model name. Defaults to ``"pegasus1.5"``.
+        api_key: TwelveLabs API key. If ``None``, the SDK reads it from the
+            ``TWELVELABS_API_KEY`` environment variable.
+        max_tokens: Maximum number of tokens Pegasus may generate. Defaults to 2048.
+        temperature: Sampling temperature for Pegasus. Defaults to ``None`` (SDK default).
+        asset_poll_interval: Seconds between asset-readiness checks. Defaults to 5.
+        asset_timeout: Maximum number of seconds to wait for an uploaded asset to
+            become ready before raising. Defaults to 600.
+        delete_assets: If ``True`` (the default), the uploaded asset is deleted
+            after the analysis completes, so repeated runs do not accumulate
+            assets in your TwelveLabs account. When ``True``, the emitted
+            ``twelvelabs_asset_id`` metadata is omitted because the asset no
+            longer exists. Set to ``False`` to keep assets (e.g. for reuse or
+            debugging), in which case the id is included in the metadata.
+        cache_strategy: Pathway caching strategy. To enable caching, pass a valid
+            :py:class:`~pathway.udfs.CacheStrategy`. Defaults to ``None``.
+
+    Example:
+
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.parsers import TwelveLabsVideoParser  # doctest: +SKIP
+    >>> parser = TwelveLabsVideoParser()  # doctest: +SKIP
+    """
+
+    def __init__(
+        self,
+        prompt: str = DEFAULT_PROMPT,
+        model: str = DEFAULT_PEGASUS_MODEL,
+        api_key: str | None = None,
+        max_tokens: int = 2048,
+        temperature: float | None = None,
+        asset_poll_interval: float = 5.0,
+        asset_timeout: float = 600.0,
+        delete_assets: bool = True,
+        cache_strategy: udfs.CacheStrategy | None = None,
+    ):
+        super().__init__(cache_strategy=cache_strategy)
+        self.prompt = prompt
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.asset_poll_interval = asset_poll_interval
+        self.asset_timeout = asset_timeout
+        self.delete_assets = delete_assets
+        self._api_key = api_key
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = _build_twelvelabs_client(self._api_key)
+        return self._client
+
+    def _upload_asset(self, contents: bytes) -> str:
+        """Upload video bytes and return the asset id once it is ready."""
+        import time
+
+        asset = self.client.assets.create(
+            method="direct", file=("video.mp4", contents), filename="video.mp4"
+        )
+        deadline = time.monotonic() + self.asset_timeout
+        while asset.status not in ("ready", "failed"):
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"TwelveLabs asset {asset.id} was not ready after "
+                    f"{self.asset_timeout}s (last status: {asset.status})."
+                )
+            time.sleep(self.asset_poll_interval)
+            asset = self.client.assets.retrieve(asset.id)
+        if asset.status == "failed":
+            raise RuntimeError(f"TwelveLabs asset {asset.id} failed to process.")
+        return asset.id
+
+    def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
+        from twelvelabs.types.video_context import VideoContext_AssetId
+
+        asset_id = self._upload_asset(contents)
+        try:
+            logger.info("Analyzing TwelveLabs asset %s with Pegasus...", asset_id)
+            analyze_kwargs: dict = dict(
+                model_name=self.model,
+                video=VideoContext_AssetId(asset_id=asset_id),
+                prompt=self.prompt,
+                max_tokens=self.max_tokens,
+            )
+            if self.temperature is not None:
+                analyze_kwargs["temperature"] = self.temperature
+            response = self.client.analyze(**analyze_kwargs)
+            text = response.data or ""
+        finally:
+            if self.delete_assets:
+                # Remove the per-run asset so repeated runs do not flood the
+                # TwelveLabs asset list. Best-effort: a cleanup failure must not
+                # mask the analysis result (or an analysis error above).
+                try:
+                    self.client.assets.delete(asset_id)
+                except Exception:  # noqa: BLE001
+                    logger.warning("Failed to delete TwelveLabs asset %s.", asset_id)
+        # When the asset has been deleted the id no longer resolves, so only
+        # surface it in the metadata when the asset is kept around.
+        metadata = {} if self.delete_assets else {"twelvelabs_asset_id": asset_id}
+        return [(text, metadata)]
+
+    def __call__(self, contents: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """Parse the video document.
+
+        Args:
+            contents: Column with the raw bytes of each video.
+
+        Returns:
+            A column with a list of ``(text, metadata)`` pairs for each video.
+            When ``delete_assets=False`` the metadata records the TwelveLabs
+            ``twelvelabs_asset_id`` used for the analysis; with the default
+            ``delete_assets=True`` the asset is removed afterwards and the id is
+            omitted (it would no longer resolve).
+        """
+        return super().__call__(contents, **kwargs)
