@@ -5,6 +5,7 @@ import pytest
 from utils import (
     MYSQL_DB_HOST,
     MYSQL_LOCAL_INFILE_DB_HOST,
+    AtlasContext,
     ClickHouseContext,
     DebeziumContext,
     DynamoDBContext,
@@ -122,6 +123,17 @@ def clickhouse():
 @pytest.fixture(scope="session")
 def mongodb():
     ctx = MongoDBContext()
+    yield ctx
+    ctx.client.close()
+
+
+@pytest.fixture(scope="session")
+def atlas():
+    # One shared client against the `mongodb-atlas` compose service for the whole
+    # session, mirroring the `mongodb` fixture above. The Atlas Local image is
+    # heavy (it runs both mongod and the mongot search process), so the tests are
+    # also pinned to a single xdist worker via `xdist_group("mongodb_atlas")`.
+    ctx = AtlasContext()
     yield ctx
     ctx.client.close()
 

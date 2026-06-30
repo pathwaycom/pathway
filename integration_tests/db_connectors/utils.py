@@ -18,6 +18,7 @@ import psycopg2
 import pymssql
 import requests
 from pymongo import MongoClient
+from pymongo.operations import SearchIndexModel
 
 import pathway as pw
 from pathway.internals import api, dtype
@@ -107,6 +108,18 @@ CLICKHOUSE_CONNECTION_STRING = (
 MONGODB_HOST_WITH_PORT = "mongodb:27017"
 MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
+
+# Atlas Local runs as its own compose service (the ``mongodb/mongodb-atlas-local``
+# image), separate from the plain ``mongo`` service above: it is the only MongoDB
+# image that ships the ``mongot`` search process, so ``$vectorSearch`` works in CI
+# without a cloud Atlas account. ``directConnection=true`` talks straight to the
+# single node instead of going through replica-set/SRV topology discovery.
+MONGODB_ATLAS_HOST_WITH_PORT = "mongodb-atlas:27017"
+MONGODB_ATLAS_CONNECTION_STRING = (
+    f"mongodb://{MONGODB_ATLAS_HOST_WITH_PORT}/?directConnection=true"
+)
+MONGODB_ATLAS_BASE_NAME = "pathway_atlas_tests"
+MONGODB_ATLAS_VECTOR_DIM = 736
 
 ELASTICSEARCH_HOST = "elasticsearch"
 ELASTICSEARCH_PORT = 9200
@@ -1119,6 +1132,109 @@ class MongoDBContext:
         db = self.client[MONGODB_BASE_NAME]
         collection = db[collection_name]
         collection.delete_one(filter)
+
+
+class AtlasContext:
+    """Helper for the ``mongodb-atlas`` compose service (MongoDB Atlas Local).
+
+    Wraps a ``pymongo`` client pointed at the in-network ``mongodb-atlas``
+    service. That service runs the ``mongodb/mongodb-atlas-local`` image, the
+    only MongoDB image that ships the ``mongot`` search process, so the
+    Atlas-specific ``$vectorSearch`` aggregation works against it directly —
+    no cloud Atlas account, and no per-test ``docker run`` from inside the
+    tests. The vector-search index is created through the regular driver
+    (``createSearchIndexes``), which is why these helpers use ``pymongo``
+    rather than any connector code.
+    """
+
+    INDEX_READY_TIMEOUT_S = 180
+
+    def __init__(self):
+        self.connection_string = MONGODB_ATLAS_CONNECTION_STRING
+        self.client: MongoClient = MongoClient(MONGODB_ATLAS_CONNECTION_STRING)
+
+    def collection_name(self) -> str:
+        return f"vec_{uuid.uuid4().hex}"
+
+    def collection(self, name: str):
+        return self.client[MONGODB_ATLAS_BASE_NAME][name]
+
+    def documents(self, name: str) -> list[dict]:
+        return list(self.collection(name).find({}))
+
+    def create_vector_index(
+        self,
+        collection: str,
+        *,
+        path: str = "embedding",
+        dimensions: int = MONGODB_ATLAS_VECTOR_DIM,
+        similarity: str = "cosine",
+        index_name: str = "pw_vector_index",
+    ) -> str:
+        """Create an Atlas Vector Search index and block until it is queryable.
+
+        This is the only Atlas-specific step. It mirrors what a user would run
+        once after pointing ``pw.io.mongodb.write`` at their Atlas collection.
+        """
+        model = SearchIndexModel(
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": path,
+                        "numDimensions": dimensions,
+                        "similarity": similarity,
+                    }
+                ]
+            },
+            name=index_name,
+            type="vectorSearch",
+        )
+        self.collection(collection).create_search_index(model)
+        self._wait_index_queryable(collection, index_name)
+        return index_name
+
+    def _wait_index_queryable(self, collection: str, index_name: str) -> None:
+        deadline = time.monotonic() + self.INDEX_READY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            for idx in self.collection(collection).list_search_indexes():
+                if idx.get("name") == index_name and idx.get("queryable"):
+                    return
+            time.sleep(2)
+        raise TimeoutError(
+            f"vector search index {index_name!r} did not become queryable "
+            f"within {self.INDEX_READY_TIMEOUT_S}s"
+        )
+
+    def vector_search(
+        self,
+        collection: str,
+        query_vector,
+        *,
+        index_name: str = "pw_vector_index",
+        path: str = "embedding",
+        limit: int = 3,
+        num_candidates: int = 100,
+    ) -> list[dict]:
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": index_name,
+                    "path": path,
+                    "queryVector": [float(x) for x in query_vector],
+                    "numCandidates": num_candidates,
+                    "limit": limit,
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "doc_id": 1,
+                    "score": {"$meta": "vectorSearchScore"},
+                }
+            },
+        ]
+        return list(self.collection(collection).aggregate(pipeline))
 
 
 class DebeziumContext:

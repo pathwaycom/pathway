@@ -3785,10 +3785,15 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
+        // Whether the output requests a global within-minibatch order. A writer
+        // that needs a single worker to honor that order (e.g. MongoDB) reads
+        // this when deciding `single_threaded()`; writers that don't care ignore it.
+        let sorted_output = sort_by_indices.is_some();
         let sink_impl = data_sink.borrow().construct_writer(
             py,
             &data_format.borrow(),
             self_.borrow().license.as_ref(),
+            sorted_output,
         )?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
 
@@ -7057,7 +7062,7 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
-    fn construct_mongodb_writer(&self) -> PyResult<Box<dyn Writer>> {
+    fn construct_mongodb_writer(&self, sorted_output: bool) -> PyResult<Box<dyn Writer>> {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
             .map_err(|e| PyIOError::new_err(format!("Failed to connect to MongoDB: {e}")))?;
@@ -7071,6 +7076,7 @@ impl DataStorage {
             collection,
             self.max_batch_size,
             self.snapshot_maintenance_on_output,
+            sorted_output,
         );
         Ok(Box::new(writer))
     }
@@ -7303,6 +7309,7 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
         license: Option<&License>,
+        sorted_output: bool,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_writer(),
@@ -7310,7 +7317,7 @@ impl DataStorage {
             "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py, license),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
-            "mongodb" => self.construct_mongodb_writer(),
+            "mongodb" => self.construct_mongodb_writer(sorted_output),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
