@@ -131,14 +131,29 @@ KAFKA_SETTINGS = {
 DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
 MYSQL_DB_HOST = "mysql"
+# A second, otherwise-identical MySQL booted with `--local-infile=ON`. The
+# `mysql` host keeps the image default (`local_infile=OFF`), so the connector's
+# startup probe selects the multi-row INSERT fallback there and the LOAD DATA
+# LOCAL INFILE fast path here. Tests parametrize over both to cover both write
+# strategies. See the service definition in docker-compose-integration.yml.
+MYSQL_LOCAL_INFILE_DB_HOST = "mysql-local-infile"
 MYSQL_DB_PORT = 3306
 MYSQL_DB_NAME = "testdb"
 MYSQL_DB_USER = "testuser"
 MYSQL_DB_PASSWORD = "testpass"
 MYSQL_DB_ROOT_PASSWORD = "rootpass"
-MYSQL_CONNECTION_STRING = (
-    f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
-    + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+
+
+def mysql_connection_string(host: str = MYSQL_DB_HOST) -> str:
+    return (
+        f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
+        + f"@{host}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+    )
+
+
+MYSQL_CONNECTION_STRING = mysql_connection_string()
+MYSQL_LOCAL_INFILE_CONNECTION_STRING = mysql_connection_string(
+    MYSQL_LOCAL_INFILE_DB_HOST
 )
 
 # ---------------------------------------------------------------------------
@@ -340,7 +355,7 @@ def mysql_concurrency_slot():
         yield
 
 
-def _connect_to_mysql(timeout_sec: float = 120.0):
+def _connect_to_mysql(host: str = MYSQL_DB_HOST, timeout_sec: float = 120.0):
     """Open a MySQL connection, waiting for the server to become reachable.
 
     The official ``mysql`` Docker image briefly runs a socket-only temporary
@@ -357,7 +372,7 @@ def _connect_to_mysql(timeout_sec: float = 120.0):
     while True:
         try:
             return mysql.connector.connect(
-                host=MYSQL_DB_HOST,
+                host=host,
                 port=MYSQL_DB_PORT,
                 database=MYSQL_DB_NAME,
                 user=MYSQL_DB_USER,
@@ -1351,8 +1366,10 @@ class ElasticsearchContext:
 
 
 class MySQLContext:
-    def __init__(self):
-        self.connection = _connect_to_mysql()
+    def __init__(self, host: str = MYSQL_DB_HOST):
+        self.host = host
+        self.connection_string = mysql_connection_string(host)
+        self.connection = _connect_to_mysql(host)
         self.cursor = self.connection.cursor()
 
     def close(self) -> None:
@@ -1463,7 +1480,7 @@ class MySQLContext:
         from every streaming test).
         """
         root_connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
+            host=self.host,
             port=MYSQL_DB_PORT,
             user="root",
             password=MYSQL_DB_ROOT_PASSWORD,
@@ -1487,7 +1504,7 @@ class MySQLContext:
         hold. Non-result statements simply return an empty list.
         """
         root_connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
+            host=self.host,
             port=MYSQL_DB_PORT,
             user="root",
             password=MYSQL_DB_ROOT_PASSWORD,

@@ -3,6 +3,8 @@ import pathlib
 
 import pytest
 from utils import (
+    MYSQL_DB_HOST,
+    MYSQL_LOCAL_INFILE_DB_HOST,
     ClickHouseContext,
     DebeziumContext,
     DynamoDBContext,
@@ -170,6 +172,24 @@ def mysql():
             # xdist the accumulated open connections otherwise exhaust the
             # server's max_connections and surface as flaky "Too many
             # connections" errors.
+            ctx.close()
+
+
+@pytest.fixture(
+    params=[MYSQL_DB_HOST, MYSQL_LOCAL_INFILE_DB_HOST],
+    ids=["local_infile_off", "local_infile_on"],
+)
+def mysql_either_strategy(request):
+    """A ``MySQLContext`` against each of the two servers, so a parametrized test
+    runs once per write strategy: the default server (``local_infile=OFF``) drives
+    the multi-row INSERT fallback, the ``--local-infile=ON`` server drives the
+    LOAD DATA LOCAL INFILE fast path. ``ctx.connection_string`` points at the
+    matching server."""
+    with mysql_concurrency_slot():
+        ctx = MySQLContext(host=request.param)
+        try:
+            yield ctx
+        finally:
             ctx.close()
 
 
