@@ -961,6 +961,7 @@ class DataStorage:
         schema_name: str | None = None,
         with_metadata: bool = False,
         mysql_server_id: int | None = None,
+        pinecone_params: PineconeParams | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 
@@ -1003,6 +1004,17 @@ class ElasticSearchAuth:
 
 class ElasticSearchParams:
     def __init__(self, *args, **kwargs): ...
+
+class PineconeParams:
+    def __init__(
+        self,
+        api_key: str,
+        index_name: str,
+        vector_index: int,
+        metadata_indices: list[int],
+        namespace: str = ...,
+        control_host: str | None = None,
+    ) -> None: ...
 
 class ElasticSearchReaderParams:
     def __init__(self, *args, **kwargs): ...

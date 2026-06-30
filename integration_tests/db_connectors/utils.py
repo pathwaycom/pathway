@@ -336,6 +336,24 @@ MONGODB_MAX_CONCURRENCY = 12
 # MySQL streaming tests tail the binary log; bound how many do so at once so the
 # server isn't saturated while a resume test races the binlog position.
 MYSQL_MAX_CONCURRENCY = 12
+# Every ElasticSearch test creates its own index(es) on a single ES node with a
+# small (512 MB) heap. Under the full suite (dozens of xdist workers, the host
+# CPU saturated by every other connector's engine work) the node falls behind:
+# index creation backs up the master's pending-task queue and freshly created
+# primary shards stay INITIALIZING. A write that arrives before its primary is
+# active fails with ``503 ... primary shard is not active`` once the bulk's
+# one-minute wait elapses, which the engine surfaces as a hard error. Capping how
+# many ES tests hit the node at once keeps that backlog short so primaries
+# activate promptly (verified: at a starved node uncapped concurrency 503s while
+# a cap of 8 lands every write). ``create_index`` additionally waits for the
+# primary to be active before returning, as belt-and-suspenders for the race.
+ELASTICSEARCH_MAX_CONCURRENCY = 8
+
+
+@contextmanager
+def elasticsearch_concurrency_slot():
+    with db_concurrency_slot("elasticsearch", ELASTICSEARCH_MAX_CONCURRENCY):
+        yield
 
 
 @contextmanager
@@ -1379,15 +1397,62 @@ class ElasticsearchContext:
         # Track the index up-front so cleanup runs even if a retried create
         # actually succeeded server-side before a read timeout surfaced.
         self._created_indices.append(index_name)
-        response = self._request("PUT", f"/{index_name}", json={"mappings": mappings})
+        # `wait_for_active_shards=1` makes the create wait for the primary shard
+        # to be active before returning (see `_wait_for_index_active` for why).
+        response = self._request(
+            "PUT",
+            f"/{index_name}",
+            json={"mappings": mappings},
+            params={"wait_for_active_shards": 1},
+        )
         # A create that timed out after succeeding, then retried, comes back as
         # "already exists" — treat that as success.
         if response.status_code == 400 and (
             "resource_already_exists_exception" in response.text
         ):
+            self._wait_for_index_active(index_name)
             return index_name
         response.raise_for_status()
+        self._wait_for_index_active(index_name)
         return index_name
+
+    def _wait_for_index_active(self, index_name: str, timeout: float = 120.0) -> None:
+        """Block until the index's primary shard is active.
+
+        A successful ``PUT /<index>`` only means the index exists in cluster
+        state; its primary shard may still be ``INITIALIZING``. Writing to it
+        before the primary is active fails the bulk request with
+        ``503 ... primary shard is not active`` — which the connector surfaces as
+        an engine error after exhausting its retries. Under a busy single-node
+        cluster (the whole db-connectors suite hammering one ES container) shard
+        allocation lags far enough behind index creation that the write loses
+        this race. ``wait_for_active_shards`` on create covers the common case,
+        but its own timeout can elapse under load, so poll cluster health here
+        with a generous deadline as the actual guarantee.
+
+        On a single node the default replica stays ``UNASSIGNED`` (health never
+        reaches ``green``), so ``yellow`` is the success state — it means exactly
+        "primary active".
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            response = self._request(
+                "GET",
+                f"/_cluster/health/{index_name}",
+                params={"wait_for_status": "yellow", "timeout": "10s"},
+            )
+            if response.status_code == 200:
+                body = response.json()
+                if not body.get("timed_out", True) and body.get("status") in (
+                    "yellow",
+                    "green",
+                ):
+                    return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Elasticsearch index {index_name!r} primary shard did not "
+                    f"become active within {timeout}s (last health: {response.text})"
+                )
 
     def refresh(self, index_name: str) -> None:
         self._request("POST", f"/{index_name}/_refresh")
@@ -2452,3 +2517,124 @@ def check_write_quotes_reserved_word_column_name(
             db_context.execute_sql(f"DROP TABLE IF EXISTS {table_name}")
         except Exception:
             pass
+
+
+PINECONE_VECTOR_DIM = 3
+
+
+def _pinecone_plaintext_host(host: str) -> str:
+    """Rewrite a Pinecone host to a plaintext ``http://`` URL.
+
+    Pinecone Local advertises its per-index hosts with an ``https://`` scheme even
+    though it only serves plaintext HTTP, so the scheme has to be forced down to
+    ``http://`` before connecting to the data plane.
+    """
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix) :]
+            break
+    return "http://" + host
+
+
+class PineconeContext:
+    """Test helper around a `Pinecone Local <https://docs.pinecone.io/guides/operations/local-development>`_ instance.
+
+    The control-plane host defaults to ``http://localhost:5080`` and can be
+    pointed at the in-network service name via the ``PINECONE_HOST`` environment
+    variable (set to the compose service name when running under docker-compose).
+    """
+
+    def __init__(self) -> None:
+        from pinecone import Pinecone, ServerlessSpec
+
+        self._ServerlessSpec = ServerlessSpec
+        self.pinecone_host = os.environ.get("PINECONE_HOST", "localhost")
+        self.control_host = f"http://{self.pinecone_host}:5080"
+        self.api_key = "pclocal"
+        self.client = Pinecone(api_key=self.api_key, host=self.control_host)
+        self._created: list[str] = []
+        self._wait_until_control_ready()
+
+    def _wait_until_control_ready(self, timeout: float = 60.0) -> None:
+        # The emulator image is distroless, so it can't expose a docker
+        # healthcheck; poll the control plane until it answers instead.
+        deadline = time.time() + timeout
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                self.client.list_indexes()
+                return
+            except Exception as e:  # connection refused while still starting up
+                last_error = e
+                time.sleep(0.5)
+        raise RuntimeError(
+            f"Pinecone Local control plane at {self.control_host} did not become "
+            f"ready within {timeout}s"
+        ) from last_error
+
+    def generate_index_name(self) -> str:
+        # Pinecone index names must be lowercase alphanumeric or hyphens.
+        return f"pw-test-{uuid.uuid4().hex[:12]}"
+
+    def create_index(
+        self, index_name: str, *, dimension: int = PINECONE_VECTOR_DIM
+    ) -> None:
+        self.client.create_index(
+            name=index_name,
+            dimension=dimension,
+            metric="cosine",
+            spec=self._ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+        self._created.append(index_name)
+        self._wait_until_ready(index_name)
+
+    def _wait_until_ready(self, index_name: str, timeout: float = 30.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            desc = self.client.describe_index(index_name)
+            if desc.host and getattr(desc.status, "ready", True):
+                return
+            time.sleep(0.5)
+
+    def _data_index(self, index_name: str):
+        raw_host = self.client.describe_index(index_name).host
+        assert raw_host, f"Pinecone index {index_name!r} has no data-plane host yet"
+        host = _pinecone_plaintext_host(raw_host)
+        return self.client.Index(host=host)
+
+    def count(self, index_name: str, namespace: str = "") -> int:
+        stats = self._data_index(index_name).describe_index_stats()
+        return stats.total_vector_count
+
+    def fetch(self, index_name: str, ids: list, namespace: str = "") -> dict[str, dict]:
+        res = self._data_index(index_name).fetch(
+            ids=[str(i) for i in ids], namespace=namespace
+        )
+        return {
+            key: {
+                "values": [round(float(x), 4) for x in vec.values],
+                "metadata": dict(vec.metadata) if vec.metadata else {},
+            }
+            for key, vec in res.vectors.items()
+        }
+
+    def wait_for_count(
+        self, index_name: str, expected: int, namespace: str = "", timeout: float = 60.0
+    ) -> int:
+        """Poll until the index holds ``expected`` vectors (Pinecone is eventually
+        consistent, so writes are not immediately visible). Returns the final
+        observed count, which the caller asserts on."""
+        deadline = time.time() + timeout
+        count = self.count(index_name, namespace)
+        while count != expected and time.time() < deadline:
+            time.sleep(0.5)
+            count = self.count(index_name, namespace)
+        return count
+
+    def cleanup(self) -> None:
+        for index_name in self._created:
+            try:
+                self.client.delete_index(index_name)
+            except Exception:
+                pass
+        self._created.clear()

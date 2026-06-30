@@ -119,6 +119,7 @@ use crate::connectors::data_storage::elasticsearch::build_elasticsearch_reader;
 use crate::connectors::data_storage::mssql::MssqlWriter;
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
+use crate::connectors::data_storage::pinecone::PineconeWriter;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
@@ -4593,6 +4594,39 @@ impl ElasticSearchAuth {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
+pub struct PineconeParams {
+    api_key: String,
+    control_host: Option<String>,
+    index_name: String,
+    namespace: String,
+    vector_index: usize,
+    metadata_indices: Vec<usize>,
+}
+
+#[pymethods]
+impl PineconeParams {
+    #[new]
+    #[pyo3(signature = (api_key, index_name, vector_index, metadata_indices, namespace=String::new(), control_host=None))]
+    fn new(
+        api_key: String,
+        index_name: String,
+        vector_index: usize,
+        metadata_indices: Vec<usize>,
+        namespace: String,
+        control_host: Option<String>,
+    ) -> Self {
+        PineconeParams {
+            api_key,
+            control_host,
+            index_name,
+            namespace,
+            vector_index,
+            metadata_indices,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
 #[derive(Debug)]
 pub struct ElasticSearchParams {
     host: String,
@@ -4829,6 +4863,7 @@ pub struct DataStorage {
     schema_name: Option<String>,
     with_metadata: bool,
     mysql_server_id: Option<i64>,
+    pinecone_params: Option<Arc<Py<PineconeParams>>>,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5393,6 +5428,7 @@ impl DataStorage {
         schema_name = None,
         with_metadata = false,
         mysql_server_id = None,
+        pinecone_params = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5441,6 +5477,7 @@ impl DataStorage {
         schema_name: Option<String>,
         with_metadata: bool,
         mysql_server_id: Option<i64>,
+        pinecone_params: Option<Py<PineconeParams>>,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -5506,6 +5543,7 @@ impl DataStorage {
             schema_name,
             with_metadata,
             mysql_server_id,
+            pinecone_params: pinecone_params.map(Into::into),
         })
     }
 
@@ -7330,10 +7368,45 @@ impl DataStorage {
             "mssql" => self.construct_mssql_writer(py, data_format, license),
             "mysql" => self.construct_mysql_writer(py, data_format, license),
             "sqlite" => self.construct_sqlite_writer(py, data_format),
+            "pinecone" => self.construct_pinecone_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
         }
+    }
+
+    fn construct_pinecone_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["pinecone"])?;
+        }
+        let params_py: &Py<PineconeParams> = self
+            .pinecone_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("For Pinecone output, pinecone_params must be specified")
+            })?
+            .borrow();
+        let params = params_py.get();
+        // `key_field_index` is None when the user did not pass a primary_key; the
+        // writer then uses the row's internal key as the Pinecone record id.
+        let writer = PineconeWriter::new(
+            params.api_key.clone(),
+            params.control_host.clone(),
+            &params.index_name,
+            params.namespace.clone(),
+            data_format.value_fields_vec(py),
+            self.key_field_index,
+            params.vector_index,
+            params.metadata_indices.clone(),
+            self.max_batch_size,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Pinecone writer: {e}")))?;
+        Ok(Box::new(writer))
     }
 }
 
@@ -7962,6 +8035,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<PineconeParams>()?;
     m.add_class::<ElasticSearchReaderParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
     m.add_class::<CsvParserSettings>()?;
