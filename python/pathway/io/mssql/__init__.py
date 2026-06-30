@@ -297,6 +297,15 @@ def write(
     Compatible with all MSSQL versions on Linux (SQL Server 2017, 2019, 2022,
     and Azure SQL Edge). Uses pure Rust TDS implementation — no ODBC drivers required.
 
+    Writes use SQL Server's native bulk-load protocol (``INSERT BULK``): each
+    minibatch is streamed to the server in a single bulk transfer instead of
+    row-by-row ``INSERT`` statements. In **stream of changes** mode the rows are
+    bulk-loaded straight into the target table when possible; otherwise (and
+    always in **snapshot** mode) they are bulk-loaded into a temporary staging
+    table and applied to the target with one set-based ``INSERT`` / ``MERGE`` /
+    ``DELETE``. Throughput scales with minibatch size, so larger
+    ``max_batch_size`` values (or fewer, larger commits) write faster.
+
     Args:
         table: Table to be written.
         connection_string: ADO.NET-style connection string for the MSSQL database.
@@ -305,7 +314,8 @@ def write(
         schema_name: Name of the database schema containing the table. Defaults to
             ``"dbo"``, which is the default schema in MSSQL.
         max_batch_size: Maximum number of entries allowed to be committed within a
-            single transaction.
+            single transaction. Larger values mean fewer, larger bulk transfers
+            and therefore higher write throughput.
         init_mode: ``"default"``: The default initialization mode;
             ``"create_if_not_exists"``: creates the table if it does not exist;
             ``"replace"``: drops and recreates the table.

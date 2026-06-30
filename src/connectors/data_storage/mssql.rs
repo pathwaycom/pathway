@@ -2,12 +2,13 @@
 
 use log::info;
 use std::borrow::Cow;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::mem::take;
 
 use chrono::Timelike;
 use hex;
-use tiberius::{Client, ColumnData, Config, Query};
+use tiberius::{Client, ColumnData, Config, IntoSql, TokenRow};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime as TokioRuntime;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -1710,15 +1711,44 @@ pub struct MssqlWriter {
     max_batch_size: Option<usize>,
     buffer: Vec<FormatterContext>,
     snapshot_mode: bool,
+    // Fast path for stream-of-changes: bulk-load directly into the destination
+    // table, skipping the staging table and the `INSERT … SELECT` second pass.
+    // Enabled only when it is provably safe (see `MssqlWriter::new`): we created
+    // the table this run (`init_mode = replace`, so the updateable columns are
+    // exactly our value columns + `time` + `diff`, in order, with no identity /
+    // computed columns), every column name is usable unquoted in tiberius'
+    // bulk-load header, and there is no `DateTimeUtc` column (tiberius emits a
+    // scale-less `datetimeoffset` header that mismatches the `(6)` destination
+    // column).  Otherwise the staging path is used.
+    stream_direct: bool,
     table_name: String,
     query_template: SqlQueryTemplate,
-    // For snapshot mode, we need a custom MERGE statement
-    merge_query: Option<String>,
-    // Types for every value field in schema order — used for typed NULL binding.
+    // Pre-built once and reused on every flush: the per-flush staging-table DDL
+    // and the set-based apply statement for each path.  The staging tables use
+    // synthetic column names (`[c0]`, `[c1]`, …) rather than the destination's
+    // column names: tiberius' bulk-load header emits column names *unquoted*,
+    // so a reserved-word destination column (e.g. `key`) would otherwise break
+    // the `INSERT BULK` statement.  The apply statements map the synthetic
+    // staging columns back to the real (bracket-quoted) destination columns.
+    stream_stage_ddl: String,
+    stream_apply_sql: String,
+    ins_stage_ddl: String,
+    merge_apply_sql: String,
+    del_stage_ddl: String,
+    delete_apply_sql: String,
+    // Types for every value field in schema order — used to build bulk rows.
     value_field_types: Vec<Type>,
-    // Types for PK fields in PK order — used for typed NULL binding in deletes.
+    // Types for PK fields in PK order — used to build bulk rows for deletes.
     pk_field_types: Vec<Type>,
 }
+
+/// Names of the per-session temporary staging tables fed by the native
+/// `INSERT BULK` path before each set-based apply statement.  They are
+/// dropped-if-exists and recreated on every flush; an errored flush drops the
+/// connection (and with it the temp tables) so stale state can never leak.
+const STAGE_STREAM: &str = "#pw_bulk_stream";
+const STAGE_INS: &str = "#pw_bulk_ins";
+const STAGE_DEL: &str = "#pw_bulk_del";
 
 impl MssqlWriter {
     /// Verify the destination table exists.  Used for `TableWriterInitMode::Default`,
@@ -2056,7 +2086,7 @@ impl MssqlWriter {
         // (when the table already existed) the destination's columns might
         // not match — validate before any data is sent.
         let preflight_columns = !matches!(mode, TableWriterInitMode::Replace);
-        let client = execute_with_retries_if(
+        let mut client = execute_with_retries_if(
             || {
                 runtime.block_on(async {
                     let mut client = connect_mssql(&config)
@@ -2121,12 +2151,6 @@ impl MssqlWriter {
             MAX_MSSQL_RETRIES,
         )?;
 
-        let merge_query = if snapshot_mode {
-            key_field_names.map(|keys| build_merge_query(&full_table_name, value_fields, keys))
-        } else {
-            None
-        };
-
         let query_template = SqlQueryTemplate::new(
             snapshot_mode,
             &full_table_name,
@@ -2139,8 +2163,9 @@ impl MssqlWriter {
         )?;
 
         let value_field_types: Vec<Type> = value_fields.iter().map(|f| f.type_.clone()).collect();
-        let pk_field_types: Vec<Type> = key_field_names
-            .unwrap_or(&[])
+        let value_field_names: Vec<String> = value_fields.iter().map(|f| f.name.clone()).collect();
+        let pk_field_names: Vec<String> = key_field_names.unwrap_or(&[]).to_vec();
+        let pk_field_types: Vec<Type> = pk_field_names
             .iter()
             .filter_map(|k| {
                 value_fields
@@ -2150,6 +2175,43 @@ impl MssqlWriter {
             })
             .collect();
 
+        // --- Stream-of-changes: bulk-load every row (value columns + the
+        // `time` / `diff` metadata) into a staging table, then a single
+        // set-based INSERT … SELECT into the destination. ---
+        let (stream_stage_ddl, stream_apply_sql) = Self::build_stream_statements(
+            &full_table_name,
+            &value_field_names,
+            &value_field_types,
+        )?;
+
+        // --- Snapshot: bulk-load additions / retraction keys into staging
+        // tables, then one set-based MERGE / DELETE.  Only built when a primary
+        // key is configured (it always is in snapshot mode). ---
+        let (ins_stage_ddl, merge_apply_sql, del_stage_ddl, delete_apply_sql) = if snapshot_mode {
+            Self::build_snapshot_statements(
+                &full_table_name,
+                &value_field_names,
+                &value_field_types,
+                &pk_field_names,
+                &pk_field_types,
+            )?
+        } else {
+            (String::new(), String::new(), String::new(), String::new())
+        };
+
+        // Decide whether stream-of-changes can bulk-load straight into the
+        // destination (fast path) or must go through a staging table.  Direct
+        // bulk is sound only when we created the table this run (so its
+        // updateable columns are exactly our value columns + `time` + `diff`,
+        // in order, with no identity/computed columns), no column needs
+        // bracket-quoting (tiberius' bulk header omits quotes), and there is no
+        // `DateTimeUtc` column (tiberius' scale-less `datetimeoffset` header
+        // would mismatch the destination's `DATETIMEOFFSET(6)`).
+        let stream_direct = !snapshot_mode
+            && matches!(mode, TableWriterInitMode::Replace)
+            && !value_field_types.iter().any(Self::contains_datetimeutc)
+            && Self::probe_unquoted_names_safe(&runtime, &mut client, &value_field_names);
+
         Ok(MssqlWriter {
             runtime,
             config,
@@ -2157,12 +2219,188 @@ impl MssqlWriter {
             max_batch_size,
             buffer: Vec::new(),
             snapshot_mode,
+            stream_direct,
             table_name: full_table_name,
             query_template,
-            merge_query,
+            stream_stage_ddl,
+            stream_apply_sql,
+            ins_stage_ddl,
+            merge_apply_sql,
+            del_stage_ddl,
+            delete_apply_sql,
             value_field_types,
             pk_field_types,
         })
+    }
+
+    /// Synthetic, always-safe staging column reference for position `i`.
+    fn stage_col(i: usize) -> String {
+        format!("[c{i}]")
+    }
+
+    /// Whether a type is (or wraps) `DateTimeUtc`.  Such columns force the
+    /// staging path: tiberius writes a scale-less `datetimeoffset` in its
+    /// bulk-load header, which the server reads at scale 7 and rejects against
+    /// a `DATETIMEOFFSET(6)` destination column (error 4875).
+    fn contains_datetimeutc(type_: &Type) -> bool {
+        match type_ {
+            Type::DateTimeUtc => true,
+            Type::Optional(inner) => Self::contains_datetimeutc(inner),
+            _ => false,
+        }
+    }
+
+    /// Ask the server whether the destination's column names can appear
+    /// *unquoted* in tiberius' `INSERT BULK` header (it emits them without
+    /// brackets, so a reserved word like `key` would break the statement).
+    /// We create and immediately drop a throwaway temp table whose columns use
+    /// the bare names — letting SQL Server be the authority instead of carrying
+    /// a hand-maintained keyword list.  Any error → not safe → caller uses the
+    /// staging path.  `time` / `diff` are appended because the destination
+    /// always carries them in stream mode.
+    fn probe_unquoted_names_safe(
+        runtime: &TokioRuntime,
+        client: &mut MssqlClient,
+        value_names: &[String],
+    ) -> bool {
+        let mut cols: Vec<String> = value_names.iter().map(|n| format!("{n} INT")).collect();
+        cols.push("time INT".to_string());
+        cols.push("diff INT".to_string());
+        let sql = format!(
+            "CREATE TABLE #pw_name_probe ({}); DROP TABLE #pw_name_probe;",
+            cols.join(", ")
+        );
+        runtime.block_on(async { simple_exec(client, &sql).await.is_ok() })
+    }
+
+    /// CREATE-TABLE column definitions (synthetic names, nullable) for a list of
+    /// types.  `is_nested = true` in [`Self::staging_data_type`] drops the NOT
+    /// NULL suffix so Pathway `Optional` fields can carry NULL through the bulk
+    /// load; the destination's own constraints are enforced by the apply.
+    fn stage_coldefs(types: &[Type]) -> Result<Vec<String>, WriteError> {
+        types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                Self::staging_data_type(t).map(|sql| format!("{} {sql}", Self::stage_col(i)))
+            })
+            .collect()
+    }
+
+    /// Build the staging DDL and the `INSERT … SELECT` apply statement for the
+    /// stream-of-changes path.
+    fn build_stream_statements(
+        target: &str,
+        value_names: &[String],
+        value_types: &[Type],
+    ) -> Result<(String, String), WriteError> {
+        let n = value_names.len();
+        let mut coldefs = Self::stage_coldefs(value_types)?;
+        coldefs.push(format!("{} BIGINT", Self::stage_col(n))); // time
+        coldefs.push(format!("{} SMALLINT", Self::stage_col(n + 1))); // diff
+        let ddl = build_stage_ddl(STAGE_STREAM, &coldefs);
+
+        let mut target_cols: Vec<String> =
+            value_names.iter().map(|n| quote_identifier(n)).collect();
+        target_cols.push("[time]".to_string());
+        target_cols.push("[diff]".to_string());
+        let source_cols: Vec<String> = (0..n + 2).map(Self::stage_col).collect();
+        let apply = format!(
+            "INSERT INTO {target} ({}) SELECT {} FROM {STAGE_STREAM};",
+            target_cols.join(", "),
+            source_cols.join(", "),
+        );
+        Ok((ddl, apply))
+    }
+
+    /// Build the staging DDL and set-based apply statements for the snapshot
+    /// upsert (`MERGE` from `STAGE_INS`) and delete (`DELETE … JOIN STAGE_DEL`)
+    /// paths.  Returns `(ins_ddl, merge_sql, del_ddl, delete_sql)`.
+    fn build_snapshot_statements(
+        target: &str,
+        value_names: &[String],
+        value_types: &[Type],
+        pk_names: &[String],
+        pk_types: &[Type],
+    ) -> Result<(String, String, String, String), WriteError> {
+        // Staging additions mirror the value columns (synthetic names c0..cN).
+        let ins_ddl = build_stage_ddl(STAGE_INS, &Self::stage_coldefs(value_types)?);
+
+        // Index of each value column, by name, so PK / non-key columns can be
+        // referenced as `source.[c{index}]`.
+        let index_of = |name: &str| value_names.iter().position(|n| n == name);
+
+        let on_clause = pk_names
+            .iter()
+            .map(|k| {
+                let idx = index_of(k).expect("snapshot PK must be a value column");
+                format!(
+                    "target.{} = source.{}",
+                    quote_identifier(k),
+                    Self::stage_col(idx)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+
+        let update_set = value_names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !pk_names.contains(n))
+            .map(|(j, n)| {
+                format!(
+                    "target.{} = source.{}",
+                    quote_identifier(n),
+                    Self::stage_col(j)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let insert_cols = value_names
+            .iter()
+            .map(|n| quote_identifier(n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_vals = (0..value_names.len())
+            .map(|j| format!("source.{}", Self::stage_col(j)))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // When every column is part of the primary key there is nothing to
+        // update on a match — a matching row is already identical.
+        let when_matched = if update_set.is_empty() {
+            String::new()
+        } else {
+            format!("WHEN MATCHED THEN UPDATE SET {update_set} ")
+        };
+        let merge_sql = format!(
+            "MERGE INTO {target} AS target \
+             USING {STAGE_INS} AS source \
+             ON {on_clause} \
+             {when_matched}\
+             WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals});"
+        );
+
+        // Staging retraction keys (synthetic names c0..cM in PK order).
+        let del_ddl = build_stage_ddl(STAGE_DEL, &Self::stage_coldefs(pk_types)?);
+        let del_join = pk_names
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                format!(
+                    "target.{} = src.{}",
+                    quote_identifier(k),
+                    Self::stage_col(i)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let delete_sql = format!(
+            "DELETE target FROM {target} AS target INNER JOIN {STAGE_DEL} AS src ON {del_join};"
+        );
+
+        Ok((ins_ddl, merge_sql, del_ddl, delete_sql))
     }
 
     fn build_create_table_query(
@@ -2221,6 +2459,23 @@ impl MssqlWriter {
         String::new()
     }
 
+    /// SQL type for a per-flush bulk-load staging column.  Mirrors the nullable
+    /// form of [`Self::mssql_data_type`], except `DateTimeUtc` is staged as
+    /// `DATETIMEOFFSET(7)` instead of `(6)`: tiberius' bulk-load path writes a
+    /// scale-less `datetimeoffset` in its `INSERT BULK` header (unlike
+    /// `datetime2(n)`, which carries its scale), so SQL Server reads the column
+    /// at its default scale of 7.  A staging column declared at any other scale
+    /// makes the server reject the bulk column attribute (error 4875).  The
+    /// set-based apply then converts to the destination's `DATETIMEOFFSET(6)`,
+    /// which is lossless because Pathway timestamps are microsecond-precision.
+    fn staging_data_type(type_: &Type) -> Result<String, WriteError> {
+        match type_ {
+            Type::DateTimeUtc => Ok("DATETIMEOFFSET(7)".to_string()),
+            Type::Optional(inner) => Self::staging_data_type(inner),
+            other => Self::mssql_data_type(other, true, false),
+        }
+    }
+
     fn mssql_data_type(type_: &Type, is_nested: bool, is_key: bool) -> Result<String, WriteError> {
         let not_null_suffix = if is_nested { "" } else { " NOT NULL" };
         Ok(match type_ {
@@ -2261,190 +2516,311 @@ impl MssqlWriter {
         })
     }
 
-    fn bind_null_for_type(query: &mut Query<'_>, dtype: &Type) {
-        match dtype {
-            Type::Bool => query.bind(Option::<bool>::None),
-            Type::Int | Type::Duration => query.bind(Option::<i64>::None),
-            Type::Float => query.bind(Option::<f64>::None),
-            Type::Bytes | Type::PyObjectWrapper => query.bind(Option::<Vec<u8>>::None),
-            Type::DateTimeNaive => query.bind(Option::<chrono::NaiveDateTime>::None),
-            Type::DateTimeUtc => {
-                query.bind(Option::<chrono::DateTime<chrono::FixedOffset>>::None);
-            }
-            Type::Optional(inner) => Self::bind_null_for_type(query, inner),
-            // String, Pointer, Json, Tuple, List, Array, and any unknown type
-            _ => query.bind(Option::<String>::None),
+    /// Build one bulk-load `TokenRow` from a slice of Pathway values and their
+    /// types, in column order.  The produced [`ColumnData`] variants match the
+    /// types of the staging table created by [`Self::mssql_data_type`].
+    fn build_token_row(values: &[Value], types: &[Type]) -> Result<TokenRow<'static>, WriteError> {
+        let mut row = TokenRow::with_capacity(values.len());
+        for (value, dtype) in values.iter().zip(types.iter()) {
+            row.push(value_to_column_data(value, dtype)?);
         }
+        Ok(row)
     }
 
-    fn bind_value(query: &mut Query<'_>, value: &Value, dtype: &Type) -> Result<(), WriteError> {
-        match value {
-            Value::None => {
-                Self::bind_null_for_type(query, dtype);
+    /// Build, outside any async context, the bulk-load step for the
+    /// **stream-of-changes** path: every buffered row plus its `time` / `diff`
+    /// metadata.  Uses the direct fast path (bulk straight into the
+    /// destination) when [`Self::stream_direct`] is set, otherwise the staging
+    /// path whose DDL / apply statements were pre-built at construction time.
+    fn plan_stream(&self, buffer: &[FormatterContext]) -> Result<BulkStep, WriteError> {
+        let mut rows = Vec::with_capacity(buffer.len());
+        for data in buffer {
+            let mut row = Self::build_token_row(&data.values, &self.value_field_types)?;
+            row.push(ColumnData::I64(Some(data.time.0.cast_signed())));
+            #[allow(clippy::cast_possible_truncation)]
+            row.push(ColumnData::I16(Some(data.diff as i16)));
+            rows.push(row);
+        }
+        Ok(if self.stream_direct {
+            BulkStep {
+                stage_ddl: None,
+                table: self.table_name.clone(),
+                rows,
+                apply_sql: None,
             }
-            Value::Bool(b) => query.bind(*b),
-            Value::Int(i) => query.bind(*i),
-            Value::Float(f) => {
-                let f: f64 = (*f).into();
-                query.bind(f);
+        } else {
+            BulkStep {
+                stage_ddl: Some(self.stream_stage_ddl.clone()),
+                table: STAGE_STREAM.to_string(),
+                rows,
+                apply_sql: Some(self.stream_apply_sql.clone()),
             }
-            Value::Pointer(p) => query.bind(p.to_string()),
-            Value::String(s) => query.bind(s.to_string()),
-            Value::Bytes(b) => query.bind(b.to_vec()),
-            Value::DateTimeNaive(dt) => {
-                let ndt: chrono::NaiveDateTime = dt.as_chrono_datetime();
-                query.bind(ndt);
+        })
+    }
+
+    /// Build the bulk-load rows for the snapshot **delete** path: the primary
+    /// keys of all retractions, staged and removed with a single set-based
+    /// `DELETE … JOIN`.
+    fn plan_snapshot_deletes(
+        &self,
+        buffer: &[FormatterContext],
+    ) -> Result<Option<BulkStep>, WriteError> {
+        let mut rows = Vec::new();
+        for data in buffer {
+            if data.diff >= 0 {
+                continue;
             }
-            Value::DateTimeUtc(dt) => {
-                let ndt: chrono::NaiveDateTime = dt.as_chrono_datetime();
-                let utc_dt: chrono::DateTime<chrono::FixedOffset> =
-                    chrono::DateTime::from_naive_utc_and_offset(
-                        ndt,
-                        chrono::FixedOffset::east_opt(0).unwrap(),
-                    );
-                query.bind(utc_dt);
+            let pk_values = self.query_template.primary_key_fields(data.values.clone());
+            rows.push(Self::build_token_row(&pk_values, &self.pk_field_types)?);
+        }
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(BulkStep {
+            stage_ddl: Some(self.del_stage_ddl.clone()),
+            table: STAGE_DEL.to_string(),
+            rows,
+            apply_sql: Some(self.delete_apply_sql.clone()),
+        }))
+    }
+
+    /// Build the bulk-load rows for the snapshot **upsert** path: additions are
+    /// de-duplicated by primary key (last write wins, mirroring the Postgres
+    /// `DISTINCT ON … ORDER BY ctid DESC`), staged, and merged with a single
+    /// set-based `MERGE`.  De-duplicating in Rust keeps each PK unique in the
+    /// staging table, so the `MERGE` can never hit "the same row more than once".
+    fn plan_snapshot_inserts(
+        &self,
+        buffer: &[FormatterContext],
+    ) -> Result<Option<BulkStep>, WriteError> {
+        // Keep the latest addition per primary key, preserving first-seen order.
+        let mut order: Vec<usize> = Vec::new();
+        let mut position: HashMap<Vec<Value>, usize> = HashMap::new();
+        for (i, data) in buffer.iter().enumerate() {
+            if data.diff <= 0 {
+                continue;
             }
-            Value::Duration(d) => query.bind(d.microseconds()),
-            Value::Json(j) => query.bind(j.to_string()),
-            Value::PyObjectWrapper(_) => {
-                let bytes = bincode::serialize(value).map_err(|e| *e)?;
-                query.bind(bytes);
-            }
-            Value::Tuple(_) | Value::IntArray(_) | Value::FloatArray(_) => {
-                let json_val = crate::connectors::data_format::serialize_value_to_json(value)
-                    .map_err(WriteError::from)?;
-                query.bind(json_val.to_string());
-            }
-            Value::Error | Value::Pending => {
-                return Err(WriteError::from(
-                    crate::connectors::data_format::FormatterError::ValueNonSerializable(
-                        value.kind(),
-                        "MSSQL",
-                    ),
-                ))
+            let pk = self.query_template.primary_key_fields(data.values.clone());
+            match position.entry(pk) {
+                Entry::Occupied(e) => order[*e.get()] = i,
+                Entry::Vacant(e) => {
+                    e.insert(order.len());
+                    order.push(i);
+                }
             }
         }
-        Ok(())
+        if order.is_empty() {
+            return Ok(None);
+        }
+
+        let mut rows = Vec::with_capacity(order.len());
+        for &i in &order {
+            rows.push(Self::build_token_row(
+                &buffer[i].values,
+                &self.value_field_types,
+            )?);
+        }
+        Ok(Some(BulkStep {
+            stage_ddl: Some(self.ins_stage_ddl.clone()),
+            table: STAGE_INS.to_string(),
+            rows,
+            apply_sql: Some(self.merge_apply_sql.clone()),
+        }))
     }
 
     fn flush_impl(&mut self) -> Result<(), WriteError> {
-        struct PreparedRow {
-            query_str: String,
-            values: Vec<Value>,
-            value_types: Vec<Type>,
-            time: u64,
-            diff: isize,
-            is_delete: bool,
-        }
-
         let buffer = take(&mut self.buffer);
-        let snapshot_mode = self.snapshot_mode;
-        let merge_query = self.merge_query.clone();
         let config = self.config.clone();
-        let value_field_types = self.value_field_types.clone();
-        let pk_field_types = self.pk_field_types.clone();
 
-        // Pre-build query strings and extract PK values outside async block
+        // Build the staging DDL, bulk-load rows and set-based apply statements
+        // before touching the connection — none of this performs I/O, and it
+        // keeps the async block free of any borrow of `self`.  Snapshot applies
+        // deletes before upserts, matching the Postgres snapshot writer.
+        let steps: Vec<BulkStep> = if self.snapshot_mode {
+            [
+                self.plan_snapshot_deletes(&buffer)?,
+                self.plan_snapshot_inserts(&buffer)?,
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
+        } else {
+            vec![self.plan_stream(&buffer)?]
+        };
 
-        let mut prepared: Vec<PreparedRow> = Vec::with_capacity(buffer.len());
-        for data in &buffer {
-            if snapshot_mode && data.diff > 0 {
-                let query_str = if let Some(ref merge_q) = merge_query {
-                    build_merge_query_parameterized(merge_q, data.values.len())
-                } else {
-                    self.query_template.build_query(data.diff)
+        let taken_client = self.client.take();
+        let (result, client_back): (Result<(), WriteError>, Option<MssqlClient>) =
+            self.runtime.block_on(async move {
+                let mut client = match taken_client {
+                    Some(c) => c,
+                    None => match connect_mssql(&config).await {
+                        Ok(c) => c,
+                        Err(e) => return (Err(WriteError::Mssql(classify_mssql_error(e))), None),
+                    },
                 };
-                prepared.push(PreparedRow {
-                    query_str,
-                    values: data.values.clone(),
-                    value_types: value_field_types.clone(),
-                    time: data.time.0,
-                    diff: data.diff,
-                    is_delete: false,
-                });
-            } else if snapshot_mode && data.diff < 0 {
-                let pk_values = self.query_template.primary_key_fields(data.values.clone());
-                let query_str = self.query_template.build_query(-1);
-                prepared.push(PreparedRow {
-                    query_str,
-                    values: pk_values,
-                    value_types: pk_field_types.clone(),
-                    time: data.time.0,
-                    diff: data.diff,
-                    is_delete: true,
-                });
-            } else {
-                let query_str = self.query_template.build_query(data.diff);
-                prepared.push(PreparedRow {
-                    query_str,
-                    values: data.values.clone(),
-                    value_types: value_field_types.clone(),
-                    time: data.time.0,
-                    diff: data.diff,
-                    is_delete: false,
-                });
-            }
-        }
-
-        // Take client out of self so we can pass it into the async block
-        let mut client_opt = self.client.take();
-
-        let result = self.runtime.block_on(async {
-            // Reconnect if needed
-            if client_opt.is_none() {
-                let c = connect_mssql(&config)
-                    .await
-                    .map_err(|e| WriteError::Mssql(classify_mssql_error(e)))?;
-                client_opt = Some(c);
-            }
-            let client = client_opt.as_mut().unwrap();
-
-            // Execute all statements in a transaction
-            client
-                .simple_query("BEGIN TRANSACTION")
-                .await
-                .map_err(mssql_write_err)?
-                .into_results()
-                .await
-                .map_err(mssql_write_err)?;
-
-            for row in &prepared {
-                let mut query = Query::new(row.query_str.clone());
-                for (val, dtype) in row.values.iter().zip(row.value_types.iter()) {
-                    Self::bind_value(&mut query, val, dtype)?;
+                let outcome = bulk_flush(&mut client, steps).await;
+                match outcome {
+                    Ok(()) => (Ok(()), Some(client)),
+                    // Drop the connection on error so the next flush reconnects
+                    // with a clean session (and fresh, empty temp tables).
+                    Err(e) => (Err(e), None),
                 }
-                // For stream-of-changes (non-snapshot, non-delete), append time and diff
-                if !snapshot_mode && !row.is_delete {
-                    query.bind(row.time.cast_signed());
-                    #[allow(clippy::cast_possible_truncation)]
-                    query.bind(row.diff as i32);
-                }
-                query.execute(client).await.map_err(mssql_write_err)?;
-            }
-
-            client
-                .simple_query("COMMIT TRANSACTION")
-                .await
-                .map_err(mssql_write_err)?
-                .into_results()
-                .await
-                .map_err(mssql_write_err)?;
-
-            Ok::<_, WriteError>(())
-        });
+            });
 
         if result.is_err() {
-            // Drop the connection on error so we reconnect on next flush.
-            // Restore the buffer so that retries have data to send.
             self.client = None;
+            // Restore the buffer so that retries have data to send.
             self.buffer = buffer;
         } else {
-            // Put the client back
-            self.client = client_opt;
+            self.client = client_back;
         }
 
         result
     }
+}
+
+/// One bulk-load step within a flush transaction.
+struct BulkStep {
+    /// `CREATE TABLE` for a temp staging table, or `None` to bulk straight into
+    /// the destination (the stream-of-changes fast path).
+    stage_ddl: Option<String>,
+    /// Table the rows are bulk-loaded into: a staging table, or the destination.
+    table: String,
+    rows: Vec<TokenRow<'static>>,
+    /// Set-based statement that moves the staged rows into the destination
+    /// (`INSERT … SELECT` / `MERGE` / `DELETE`), or `None` when the rows were
+    /// bulk-loaded straight into the destination and nothing else is needed.
+    apply_sql: Option<String>,
+}
+
+/// Run every step of one flush inside a single transaction: optionally
+/// (re)create the staging table, bulk-load the rows via the native `INSERT
+/// BULK` protocol, then optionally run the set-based apply statement.
+async fn bulk_flush(client: &mut MssqlClient, steps: Vec<BulkStep>) -> Result<(), WriteError> {
+    simple_exec(client, "BEGIN TRANSACTION").await?;
+    for step in steps {
+        let BulkStep {
+            stage_ddl,
+            table,
+            rows,
+            apply_sql,
+        } = step;
+        if let Some(ddl) = &stage_ddl {
+            simple_exec(client, ddl).await?;
+        }
+        bulk_send(client, &table, rows).await?;
+        if let Some(apply) = &apply_sql {
+            simple_exec(client, apply).await?;
+        }
+    }
+    simple_exec(client, "COMMIT TRANSACTION").await?;
+    Ok(())
+}
+
+/// Bulk-load `rows` into `table` via tiberius' native `INSERT BULK` protocol.
+async fn bulk_send(
+    client: &mut MssqlClient,
+    table: &str,
+    rows: Vec<TokenRow<'static>>,
+) -> Result<(), WriteError> {
+    let mut request = client.bulk_insert(table).await.map_err(mssql_write_err)?;
+    for row in rows {
+        request.send(row).await.map_err(mssql_write_err)?;
+    }
+    request.finalize().await.map_err(mssql_write_err)?;
+    Ok(())
+}
+
+/// Run a statement that returns no rows of interest, draining its result set.
+async fn simple_exec(client: &mut MssqlClient, query: &str) -> Result<(), WriteError> {
+    client
+        .simple_query(query)
+        .await
+        .map_err(mssql_write_err)?
+        .into_results()
+        .await
+        .map_err(mssql_write_err)?;
+    Ok(())
+}
+
+/// `IF OBJECT_ID('tempdb..#x') IS NOT NULL DROP TABLE #x; CREATE TABLE #x (...)`.
+/// The drop-if-exists guard makes the per-flush (re)creation idempotent even if
+/// a prior temp table somehow survived on the session.
+fn build_stage_ddl(stage_name: &str, coldefs: &[String]) -> String {
+    format!(
+        "IF OBJECT_ID('tempdb..{stage_name}') IS NOT NULL DROP TABLE {stage_name}; \
+         CREATE TABLE {stage_name} ({});",
+        coldefs.join(", ")
+    )
+}
+
+/// Map a Pathway type to the tiberius `ColumnData` NULL variant whose wire type
+/// matches the staging column produced by [`MssqlWriter::mssql_data_type`].
+fn null_column_data(dtype: &Type) -> ColumnData<'static> {
+    match dtype {
+        Type::Bool => ColumnData::Bit(None),
+        Type::Int | Type::Duration => ColumnData::I64(None),
+        Type::Float => ColumnData::F64(None),
+        Type::Bytes | Type::PyObjectWrapper => ColumnData::Binary(None),
+        Type::DateTimeNaive => ColumnData::DateTime2(None),
+        Type::DateTimeUtc => ColumnData::DateTimeOffset(None),
+        Type::Optional(inner) => null_column_data(inner),
+        // String, Pointer, Json, Tuple, List, Array, and any unknown type → NVARCHAR
+        _ => ColumnData::String(None),
+    }
+}
+
+/// Convert a Pathway `Value` to an owned tiberius `ColumnData` for the native
+/// bulk-load path.  Mirrors the old `bind_value` RPC binding exactly, so the
+/// data written by `INSERT BULK` is byte-for-byte what the row-by-row `INSERT`
+/// path produced.  tiberius rescales `DateTime2` / `DateTimeOffset` to the
+/// staging column's declared scale during encoding, so the scale-7 values
+/// produced here land correctly in the `DATETIME2(6)` staging columns.
+fn value_to_column_data(value: &Value, dtype: &Type) -> Result<ColumnData<'static>, WriteError> {
+    Ok(match value {
+        Value::None => null_column_data(dtype),
+        Value::Bool(b) => (*b).into_sql(),
+        Value::Int(i) => (*i).into_sql(),
+        Value::Float(f) => {
+            let f: f64 = (*f).into();
+            f.into_sql()
+        }
+        Value::Pointer(p) => p.to_string().into_sql(),
+        Value::String(s) => s.to_string().into_sql(),
+        Value::Bytes(b) => b.to_vec().into_sql(),
+        Value::DateTimeNaive(dt) => {
+            let ndt: chrono::NaiveDateTime = dt.as_chrono_datetime();
+            ndt.into_sql()
+        }
+        Value::DateTimeUtc(dt) => {
+            let ndt: chrono::NaiveDateTime = dt.as_chrono_datetime();
+            let utc_dt: chrono::DateTime<chrono::FixedOffset> =
+                chrono::DateTime::from_naive_utc_and_offset(
+                    ndt,
+                    chrono::FixedOffset::east_opt(0).unwrap(),
+                );
+            utc_dt.into_sql()
+        }
+        Value::Duration(d) => d.microseconds().into_sql(),
+        Value::Json(j) => j.to_string().into_sql(),
+        Value::PyObjectWrapper(_) => {
+            let bytes = bincode::serialize(value).map_err(|e| *e)?;
+            bytes.into_sql()
+        }
+        Value::Tuple(_) | Value::IntArray(_) | Value::FloatArray(_) => {
+            let json_val = crate::connectors::data_format::serialize_value_to_json(value)
+                .map_err(WriteError::from)?;
+            json_val.to_string().into_sql()
+        }
+        Value::Error | Value::Pending => {
+            return Err(WriteError::from(
+                crate::connectors::data_format::FormatterError::ValueNonSerializable(
+                    value.kind(),
+                    "MSSQL",
+                ),
+            ))
+        }
+    })
 }
 
 impl Writer for MssqlWriter {
@@ -2547,72 +2923,4 @@ fn mssql_read_err(e: tiberius::error::Error) -> ReadError {
 #[allow(clippy::needless_pass_by_value)]
 fn mssql_write_err(e: tiberius::error::Error) -> WriteError {
     WriteError::Mssql(classify_mssql_error(e))
-}
-
-/// Build a MERGE statement template for snapshot upserts with @P placeholders.
-fn build_merge_query(
-    table_name: &str,
-    value_fields: &[ValueField],
-    key_field_names: &[String],
-) -> String {
-    let field_names: Vec<&str> = value_fields.iter().map(|f| f.name.as_str()).collect();
-    let source_cols = field_names
-        .iter()
-        .map(|n| quote_identifier(n))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let on_clause = key_field_names
-        .iter()
-        .map(|k| {
-            let q = quote_identifier(k);
-            format!("target.{q} = source.{q}")
-        })
-        .collect::<Vec<_>>()
-        .join(" AND ");
-
-    let update_set = value_fields
-        .iter()
-        .filter(|f| !key_field_names.contains(&f.name))
-        .map(|f| {
-            let q = quote_identifier(&f.name);
-            format!("target.{q} = source.{q}")
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let insert_cols = field_names
-        .iter()
-        .map(|n| quote_identifier(n))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let insert_source = field_names
-        .iter()
-        .map(|n| format!("source.{}", quote_identifier(n)))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    // When all fields are primary keys there are no non-key columns to update.
-    // In that case omit the WHEN MATCHED branch: a matching row is already identical.
-    let when_matched = if update_set.is_empty() {
-        String::new()
-    } else {
-        format!("WHEN MATCHED THEN UPDATE SET {update_set} ")
-    };
-
-    // Template: {PARAMS} will be replaced with actual @P placeholders at execution time
-    format!(
-        "MERGE INTO {table_name} AS target \
-         USING (SELECT {{PARAMS}}) AS source ({source_cols}) \
-         ON {on_clause} \
-         {when_matched}\
-         WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_source});"
-    )
-}
-
-/// Replace {{PARAMS}} in a MERGE template with @P1, @P2, ... placeholders.
-fn build_merge_query_parameterized(merge_template: &str, param_count: usize) -> String {
-    let params: Vec<String> = (1..=param_count).map(|i| format!("@P{i}")).collect();
-    let params_str = params.join(", ");
-    merge_template.replace("{PARAMS}", &params_str)
 }
