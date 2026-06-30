@@ -4824,6 +4824,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         let iterated_input: Vec<LegacyTable> = iterated.clone();
         let iterated_with_universe_input: Vec<LegacyTable> = iterated_with_universe.clone();
 
+        // Snapshot of the loaded T=0 state keyed by the ORIGINAL input column
+        // handles (before `filter_upstream_t0_for_iterate` remaps them). Used in
+        // Phase 5 to re-anchor the input columns at T=0.
+        let original_persisted_values: HashMap<ColumnHandle, Collection<S, (Key, Value)>> =
+            snaps.persisted_values.clone();
+
         // Phase 2: filter T=0 from upstream input to prevent double entries
         // when chained with another iterate.
         self.filter_upstream_t0_for_iterate(
@@ -4907,7 +4913,77 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             snaps.keys_writers,
         )?;
 
+        // Phase 5: re-anchor the input columns' persisted state at T=0.
+        self.reanchor_input_columns_t0(
+            &iterated_input,
+            &iterated_with_universe_input,
+            &original_persisted_values,
+        );
+
         Ok((result, result_with_universe))
+    }
+
+    /// Re-anchor the persisted state of `iterate`'s input columns at T=0.
+    ///
+    /// Iterate's INPUT comes from an operator (e.g. a persisted reduce) whose
+    /// output already has T=0 stripped (`filter_out_persisted`). The ITERATED
+    /// output columns re-introduce T=0 via the snapshot injected in
+    /// `BeforeIterate`, so for an old row they hold the persisted value at T=0.
+    /// But non-iterated, pass-through columns of the iterate output are stored
+    /// as references to these INPUT columns, which still lack T=0. A downstream
+    /// multi-column materialization then joins a T=0-anchored iterated column
+    /// with a T=0-stripped pass-through column; for an old row where only the
+    /// iterated column changes at T>0, the join can't reconstruct the row and
+    /// drops it. Concatenating the loaded snapshot back (at T=0) onto the input
+    /// columns makes the pass-through references T=0-consistent. The iterative
+    /// loop is unaffected: it ran on the separate T=0-filtered copies produced
+    /// by `filter_upstream_t0_for_iterate`, so no double T=0 is introduced.
+    ///
+    /// `original_persisted_values` is keyed by the ORIGINAL input column handles
+    /// (cloned before `filter_upstream_t0_for_iterate` remaps them) and is empty
+    /// unless operator persistence is enabled, in which case this is a no-op.
+    fn reanchor_input_columns_t0(
+        &mut self,
+        iterated_input: &[LegacyTable],
+        iterated_with_universe_input: &[LegacyTable],
+        original_persisted_values: &HashMap<ColumnHandle, Collection<S, (Key, Value)>>,
+    ) {
+        if original_persisted_values.is_empty() {
+            return;
+        }
+        let mut anchored_handles: HashSet<ColumnHandle> = HashSet::new();
+        for (_univ_handle, col_handles) in iterated_input
+            .iter()
+            .chain(iterated_with_universe_input.iter())
+        {
+            for col_handle in col_handles {
+                if !anchored_handles.insert(*col_handle) {
+                    continue; // already re-anchored (handle shared across tables)
+                }
+                let Some(snapshot) = original_persisted_values.get(col_handle) else {
+                    continue;
+                };
+                let Some(column) = self.columns.get(*col_handle) else {
+                    continue;
+                };
+                // Strip any existing T=0 from the input before re-adding the
+                // snapshot, so that when the input is itself another iterate's
+                // output (which already carries T=0) we don't double it.
+                let anchored = column
+                    .values()
+                    .deref()
+                    .inner
+                    .filter(|(_data, time, _diff)| !time.is_from_persistence())
+                    .as_collection()
+                    .concat(snapshot);
+                let universe = column.universe;
+                let properties = column.properties.clone();
+                if let Some(column) = self.columns.get_mut(*col_handle) {
+                    *column =
+                        Column::from_collection(universe, anchored).with_properties(properties);
+                }
+            }
+        }
     }
 
     fn error_log(
