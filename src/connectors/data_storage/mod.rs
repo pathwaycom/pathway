@@ -17,6 +17,7 @@ pub mod pinecone;
 pub mod polling;
 pub mod postgres;
 pub mod python;
+pub mod qdrant;
 pub mod questdb;
 pub mod rabbitmq;
 pub mod scanner;
@@ -29,6 +30,7 @@ pub use kafka::{KafkaReader, KafkaReaderError, KafkaWriter, RdkafkaWatermark};
 pub use mqtt::{MqttReader, MqttWriter, MQTT_CLIENT_MAX_CHANNEL_SIZE, MQTT_MAX_MESSAGES_IN_QUEUE};
 pub use null::NullWriter;
 pub use python::{PythonReader, PythonReaderBuilder};
+pub use qdrant::QdrantWriter;
 pub use questdb::{QuestDBAtColumnPolicy, QuestDBWriter};
 
 pub use self::clickhouse::{ClickHouseError, ClickHouseWriter};
@@ -296,6 +298,7 @@ pub enum ReadResult {
 }
 
 use crate::connectors::data_storage::mongodb::MongoDbError;
+use crate::connectors::data_storage::qdrant::QdrantWriteError;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -821,6 +824,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     MongoDB(#[from] MongoDbError),
+
+    #[error(transparent)]
+    Qdrant(#[from] QdrantWriteError),
 
     #[error(transparent)]
     Mssql(#[from] MssqlError),

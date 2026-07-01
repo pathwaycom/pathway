@@ -127,9 +127,10 @@ use crate::connectors::data_storage::{
     ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader, KafkaWriter, LakeWriter,
     MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader,
     NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType,
-    PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter,
-    ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
+    PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader,
+    RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
     TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -242,6 +243,7 @@ async fn build_rabbitmq_environment(
 }
 
 use crate::connectors::data_storage::rabbitmq::probe_last_offset;
+use crate::external_integration::qdrant_integration::build_qdrant_client;
 
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
@@ -4595,6 +4597,43 @@ impl ElasticSearchAuth {
     }
 }
 
+/// Connection and layout parameters for the Qdrant output connector. Carried as
+/// one [`DataStorage`] field so the giant storage constructor stays untouched:
+/// the URL and (optional) API key locate the instance, `collection_name` names
+/// the target, `vector_field_index` says which value column holds the point
+/// vector (all other columns become the point payload), and `batch_size` bounds
+/// the number of points sent per upsert/delete request.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct QdrantParams {
+    url: String,
+    collection_name: String,
+    api_key: Option<String>,
+    vector_field_index: usize,
+    batch_size: usize,
+}
+
+#[pymethods]
+impl QdrantParams {
+    #[new]
+    #[pyo3(signature = (url, collection_name, vector_field_index, api_key = None, batch_size = 256))]
+    fn new(
+        url: String,
+        collection_name: String,
+        vector_field_index: usize,
+        api_key: Option<String>,
+        batch_size: usize,
+    ) -> Self {
+        QdrantParams {
+            url,
+            collection_name,
+            api_key,
+            vector_field_index,
+            batch_size,
+        }
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct PineconeParams {
     api_key: String,
@@ -4916,6 +4955,7 @@ pub struct DataStorage {
     schema_name: Option<String>,
     with_metadata: bool,
     mysql_server_id: Option<i64>,
+    qdrant_params: Option<Arc<Py<QdrantParams>>>,
     pinecone_params: Option<Arc<Py<PineconeParams>>>,
 }
 
@@ -5482,6 +5522,7 @@ impl DataStorage {
         schema_name = None,
         with_metadata = false,
         mysql_server_id = None,
+        qdrant_params = None,
         pinecone_params = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -5532,6 +5573,7 @@ impl DataStorage {
         schema_name: Option<String>,
         with_metadata: bool,
         mysql_server_id: Option<i64>,
+        qdrant_params: Option<Py<QdrantParams>>,
         pinecone_params: Option<Py<PineconeParams>>,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
@@ -5599,6 +5641,7 @@ impl DataStorage {
             schema_name,
             with_metadata,
             mysql_server_id,
+            qdrant_params: qdrant_params.map(Into::into),
             pinecone_params: pinecone_params.map(Into::into),
         })
     }
@@ -7280,6 +7323,41 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_qdrant_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["qdrant"])?;
+        }
+
+        let qdrant_params_py: &Py<_> = self
+            .qdrant_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("For Qdrant output, qdrant_params section must be specified")
+            })?
+            .borrow();
+        let qdrant_params = qdrant_params_py.get();
+
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let client = build_qdrant_client(&qdrant_params.url, qdrant_params.api_key.clone())
+            .map_err(|e| PyIOError::new_err(format!("Failed to connect to Qdrant: {e}")))?;
+
+        let writer = QdrantWriter::new(
+            runtime,
+            client,
+            qdrant_params.collection_name.clone(),
+            data_format.value_fields_vec(py),
+            qdrant_params.vector_field_index,
+            qdrant_params.batch_size,
+        );
+        Ok(Box::new(writer))
+    }
+
     fn construct_mqtt_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.path()?;
         let topic = self.message_queue_topic()?;
@@ -7519,6 +7597,7 @@ impl DataStorage {
             "weaviate" => self.construct_weaviate_writer(py, data_format, license),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
             "mongodb" => self.construct_mongodb_writer(sorted_output),
+            "qdrant" => self.construct_qdrant_writer(py, data_format, license),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
@@ -8208,6 +8287,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PineconeParams>()?;
     m.add_class::<ElasticSearchReaderParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
+    m.add_class::<QdrantParams>()?;
     m.add_class::<CsvParserSettings>()?;
     m.add_class::<ValueField>()?;
     m.add_class::<DataStorage>()?;

@@ -19,6 +19,7 @@ from utils import (
     PineconeContext,
     PostgresContext,
     PostgresWithTlsContext,
+    QdrantContext,
     QuestDBContext,
     WeaviateContext,
     clickhouse_concurrency_slot,
@@ -278,6 +279,17 @@ def _mssql_session():
 @pytest.fixture
 def milvus(tmp_path):
     ctx = MilvusContext(str(tmp_path / "milvus.db"))
+    yield ctx
+    ctx.close()
+
+
+@pytest.fixture
+def qdrant():
+    import os
+
+    grpc_url = os.environ.get("QDRANT_URL", "http://qdrant:6334")
+    rest_url = os.environ.get("QDRANT_REST_URL", "http://qdrant:6333")
+    ctx = QdrantContext(grpc_url, rest_url)
     yield ctx
     ctx.close()
 

@@ -182,12 +182,13 @@ def write(
     .. code-block:: text
 
         SELECT * FROM accounts;
-        ┌────────────┬─────────┐
-        │ account_id │ balance │
-        ├────────────┼─────────┤
-        │     1      │  100.0  │
-        │     2      │  250.0  │
-        └────────────┴─────────┘
+        +------------+---------+
+        | account_id | balance |
+        |   int64    | double  |
+        +------------+---------+
+        |          1 |   100.0 |
+        |          2 |   250.0 |
+        +------------+---------+
 
     As a final example, a table of document chunks together with their embeddings
     is persisted into a DuckDB file for retrieval (RAG). ``list[float]`` columns

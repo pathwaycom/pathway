@@ -962,6 +962,7 @@ class DataStorage:
         schema_name: str | None = None,
         with_metadata: bool = False,
         mysql_server_id: int | None = None,
+        qdrant_params: QdrantParams | None = None,
         pinecone_params: PineconeParams | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
@@ -1005,6 +1006,16 @@ class ElasticSearchAuth:
 
 class ElasticSearchParams:
     def __init__(self, *args, **kwargs): ...
+
+class QdrantParams:
+    def __init__(
+        self,
+        url: str,
+        collection_name: str,
+        vector_field_index: int,
+        api_key: str | None = None,
+        batch_size: int = 256,
+    ) -> None: ...
 
 class WeaviateParams:
     def __init__(self, *args, **kwargs): ...

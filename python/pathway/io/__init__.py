@@ -34,6 +34,7 @@ from pathway.io import (
     pubsub,
     pyfilesystem,
     python,
+    qdrant,
     questdb,
     rabbitmq,
     redpanda,
@@ -101,5 +102,6 @@ __all__ = [
     "SynchronizedColumn",
     "TLSSettings",
     "leann",
+    "qdrant",
     "weaviate",
 ]

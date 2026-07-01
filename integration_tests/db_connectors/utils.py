@@ -358,12 +358,6 @@ ELASTICSEARCH_MAX_CONCURRENCY = 8
 
 
 @contextmanager
-def elasticsearch_concurrency_slot():
-    with db_concurrency_slot("elasticsearch", ELASTICSEARCH_MAX_CONCURRENCY):
-        yield
-
-
-@contextmanager
 def mssql_concurrency_slot():
     with db_concurrency_slot("mssql", MSSQL_MAX_CONCURRENCY):
         yield
@@ -390,6 +384,12 @@ def mongodb_concurrency_slot():
 @contextmanager
 def mysql_concurrency_slot():
     with db_concurrency_slot("mysql", MYSQL_MAX_CONCURRENCY):
+        yield
+
+
+@contextmanager
+def elasticsearch_concurrency_slot():
+    with db_concurrency_slot("elasticsearch", ELASTICSEARCH_MAX_CONCURRENCY):
         yield
 
 
@@ -1091,6 +1091,87 @@ class MilvusContext:
         return f"milvus_{uuid.uuid4().hex[:12]}"
 
     def close(self) -> None:
+        self.client.close()
+
+
+QDRANT_VECTOR_DIM = 3
+
+
+class QdrantContext:
+    def __init__(self, grpc_url: str, rest_url: str) -> None:
+        from qdrant_client import QdrantClient
+
+        # The native connector talks to Qdrant over gRPC, so the URL handed to
+        # ``pw.io.qdrant.write`` points at the gRPC port. The verification client
+        # below is the Python client, which uses the REST port.
+        self.url = grpc_url
+        self.client = QdrantClient(url=rest_url)
+        # Names handed out by ``generate_collection_name`` so the fixture can
+        # drop them on teardown. A Qdrant node keeps every collection's RocksDB
+        # files open, so leaking collections across the (parallel) suite would
+        # eventually exhaust the container's file descriptors and fail
+        # create_collection — delete each test's collections instead.
+        self._collections: list[str] = []
+
+    def create_collection(
+        self, collection_name: str, *, dimension: int = QDRANT_VECTOR_DIM, distance=None
+    ) -> None:
+        """Create a collection with the given vector dimension and distance.
+
+        Defaults to Euclidean distance so that stored vectors are returned
+        verbatim — Qdrant normalizes vectors when the collection uses Cosine
+        distance, which would break exact vector comparisons in the tests.
+        """
+        from qdrant_client.models import Distance, VectorParams
+
+        self.client.create_collection(
+            collection_name,
+            vectors_config=VectorParams(
+                size=dimension, distance=distance or Distance.EUCLID
+            ),
+        )
+
+    def query_all(
+        self, collection_name: str, *, with_vectors: bool = True
+    ) -> list[dict]:
+        """Return every point as its payload, with the vector added under
+        ``"vector"``.
+
+        The Qdrant point id is the connector-generated UUID derived from the
+        Pathway row key, so it is not asserted on directly; the row's own
+        identifier columns live in the payload.
+        """
+        points, _ = self.client.scroll(
+            collection_name,
+            limit=100000,
+            with_payload=True,
+            with_vectors=with_vectors,
+        )
+        result = []
+        for point in points:
+            row: dict = dict(point.payload or {})
+            if with_vectors and point.vector is not None:
+                row["vector"] = list(point.vector)
+            result.append(row)
+        return result
+
+    def count(self, collection_name: str) -> int:
+        return self.client.count(collection_name, exact=True).count
+
+    def generate_collection_name(self) -> str:
+        name = f"qdrant_{uuid.uuid4().hex[:12]}"
+        self._collections.append(name)
+        return name
+
+    def close(self) -> None:
+        # Drop every collection the test touched (whether created directly or
+        # auto-created by the connector) before closing, so collections do not
+        # accumulate on the shared Qdrant container.
+        for collection_name in self._collections:
+            try:
+                self.client.delete_collection(collection_name)
+            except Exception:
+                pass
         self.client.close()
 
 
