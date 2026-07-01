@@ -20,6 +20,7 @@ from utils import (
     PostgresContext,
     PostgresWithTlsContext,
     QuestDBContext,
+    WeaviateContext,
     clickhouse_concurrency_slot,
     elasticsearch_concurrency_slot,
     mongodb_concurrency_slot,
@@ -279,3 +280,10 @@ def milvus(tmp_path):
     ctx = MilvusContext(str(tmp_path / "milvus.db"))
     yield ctx
     ctx.close()
+
+
+@pytest.fixture
+def weaviate():
+    ctx = WeaviateContext()
+    yield ctx
+    ctx.cleanup()

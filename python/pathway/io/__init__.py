@@ -39,6 +39,7 @@ from pathway.io import (
     s3,
     slack,
     sqlite,
+    weaviate,
 )
 from pathway.io._subscribe import (
     OnChangeCallback,
@@ -98,4 +99,5 @@ __all__ = [
     "SynchronizedColumn",
     "TLSSettings",
     "leann",
+    "weaviate",
 ]

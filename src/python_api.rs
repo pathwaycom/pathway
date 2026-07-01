@@ -128,8 +128,8 @@ use crate::connectors::data_storage::{
     MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter,
     ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
     QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
-    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WeaviateWriter,
+    WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -4628,6 +4628,56 @@ impl PineconeParams {
 
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Debug)]
+pub struct WeaviateParams {
+    url: String,
+    collection_name: String,
+    pk_field: String,
+    vector_field: Option<String>,
+    api_key: Option<String>,
+    headers: HashMap<String, String>,
+    batch_size: usize,
+    concurrency: usize,
+}
+
+#[pymethods]
+impl WeaviateParams {
+    #[new]
+    #[pyo3(signature = (
+        url,
+        collection_name,
+        pk_field,
+        vector_field = None,
+        api_key = None,
+        headers = None,
+        batch_size = 100,
+        concurrency = 8,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        url: String,
+        collection_name: String,
+        pk_field: String,
+        vector_field: Option<String>,
+        api_key: Option<String>,
+        headers: Option<HashMap<String, String>>,
+        batch_size: usize,
+        concurrency: usize,
+    ) -> Self {
+        WeaviateParams {
+            url,
+            collection_name,
+            pk_field,
+            vector_field,
+            api_key,
+            headers: headers.unwrap_or_default(),
+            batch_size,
+            concurrency,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
 pub struct ElasticSearchParams {
     host: String,
     index_name: String,
@@ -4831,6 +4881,7 @@ pub struct DataStorage {
     aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
     elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
     elasticsearch_reader_params: Option<Arc<Py<ElasticSearchReaderParams>>>,
+    weaviate_params: Option<Arc<Py<WeaviateParams>>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Arc<Py<PythonSubject>>>,
     unique_name: Option<UniqueName>,
@@ -5396,6 +5447,7 @@ impl DataStorage {
         aws_s3_settings = None,
         elasticsearch_params = None,
         elasticsearch_reader_params = None,
+        weaviate_params = None,
         parallel_readers = None,
         python_subject = None,
         unique_name = None,
@@ -5445,6 +5497,7 @@ impl DataStorage {
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         elasticsearch_reader_params: Option<Py<ElasticSearchReaderParams>>,
+        weaviate_params: Option<Py<WeaviateParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
         unique_name: Option<UniqueName>,
@@ -5511,6 +5564,7 @@ impl DataStorage {
             aws_s3_settings: aws_s3_settings.map(Into::into),
             elasticsearch_params: elasticsearch_params.map(Into::into),
             elasticsearch_reader_params: elasticsearch_reader_params.map(Into::into),
+            weaviate_params: weaviate_params.map(Into::into),
             parallel_readers,
             python_subject: python_subject.map(Into::into),
             unique_name,
@@ -6942,6 +6996,72 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_weaviate_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["weaviate"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .weaviate_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Weaviate output, weaviate_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+
+        let field_names = data_format.value_field_names(py);
+        let pk_index = field_names
+            .iter()
+            .position(|name| name == &params.pk_field)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "primary key field {:?} not found among the output columns",
+                    params.pk_field
+                ))
+            })?;
+        let vector_index = match &params.vector_field {
+            Some(vector_field) => Some(
+                field_names
+                    .iter()
+                    .position(|name| name == vector_field)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "vector field {vector_field:?} not found among the output columns"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let property_fields: Vec<(String, usize)> = field_names
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != pk_index && Some(*index) != vector_index)
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+
+        let writer = WeaviateWriter::new(
+            &params.url,
+            params.collection_name.clone(),
+            pk_index,
+            vector_index,
+            property_fields,
+            params.api_key.as_deref(),
+            &params.headers,
+            params.batch_size,
+            params.concurrency,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Weaviate writer: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_deltalake_writer(
         &self,
         py: pyo3::Python,
@@ -7354,6 +7474,7 @@ impl DataStorage {
             "kafka" => self.construct_kafka_writer(),
             "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py, license),
+            "weaviate" => self.construct_weaviate_writer(py, data_format, license),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
             "mongodb" => self.construct_mongodb_writer(sorted_output),
             "null" => Ok(Box::new(NullWriter::new())),
@@ -8035,6 +8156,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<WeaviateParams>()?;
     m.add_class::<PineconeParams>()?;
     m.add_class::<ElasticSearchReaderParams>()?;
     m.add_class::<ElasticSearchAuth>()?;

@@ -120,7 +120,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 tonic = { version = "0.13.1", features = ["tls-native-roots"] }
 typetag = "0.2.21"
 usearch = "2.15.3"
-uuid = { version = "1.17.0", features = ["v4"] }
+uuid = { version = "1.17.0", features = ["v4", "v5"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]
