@@ -1,6 +1,7 @@
 // Copyright © 2026 Pathway
 
 pub mod aws;
+pub mod chroma;
 pub mod clickhouse;
 pub mod data_lake;
 pub mod duckdb;
@@ -33,6 +34,7 @@ pub use python::{PythonReader, PythonReaderBuilder};
 pub use qdrant::QdrantWriter;
 pub use questdb::{QuestDBAtColumnPolicy, QuestDBWriter};
 
+pub use self::chroma::{ChromaError, ChromaWriter};
 pub use self::clickhouse::{ClickHouseError, ClickHouseWriter};
 
 use s3::error::S3Error;
@@ -797,6 +799,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     ClickHouse(#[from] ClickHouseError),
+
+    #[error(transparent)]
+    Chroma(#[from] ChromaError),
 
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),

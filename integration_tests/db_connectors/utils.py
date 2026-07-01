@@ -8,7 +8,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, cast, get_args, get_origin
 
 import boto3
 import mysql.connector
@@ -1092,6 +1092,101 @@ class MilvusContext:
 
     def close(self) -> None:
         self.client.close()
+
+
+# Host/port of the Chroma server. The defaults match the ``chroma`` service in
+# docker-compose; both are env-overridable so the suite can also run against a
+# Chroma container published on localhost without editing this file.
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "chroma")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
+
+
+class ChromaContext:
+    """Test helper talking to a Chroma server over its HTTP API.
+
+    ``host``/``port`` are what the tests pass to ``pw.io.chroma.write``. The
+    constructor polls the server's heartbeat with bounded backoff before
+    returning: the container's TCP healthcheck flips as soon as the socket is
+    open, which can be a moment before the API actually answers, so this is the
+    same readiness pattern :class:`QuestDBContext` uses.
+    """
+
+    def __init__(
+        self,
+        host: str = CHROMA_HOST,
+        port: int = CHROMA_PORT,
+        timeout_sec: float = 60.0,
+    ) -> None:
+        import chromadb
+
+        self.host = host
+        self.port = port
+        deadline = time.monotonic() + timeout_sec
+        delay = 0.25
+        while True:
+            try:
+                self.client = chromadb.HttpClient(host=host, port=port)
+                self.client.heartbeat()
+                return
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 2.0)
+
+    def generate_collection_name(self) -> str:
+        return f"chroma_{uuid.uuid4().hex[:12]}"
+
+    def create_collection(self, collection_name: str) -> None:
+        self.client.create_collection(collection_name)
+
+    def delete_collection(self, collection_name: str) -> None:
+        try:
+            self.client.delete_collection(collection_name)
+        except Exception as e:
+            logging.warning(f"Failed to drop Chroma collection {collection_name}: {e}")
+
+    def count(self, collection_name: str) -> int:
+        return self.client.get_collection(collection_name).count()
+
+    def query_all(
+        self,
+        collection_name: str,
+        include: tuple[str, ...] = ("embeddings", "documents", "metadatas"),
+    ) -> list[dict]:
+        """Return every record as a list of dicts keyed ``id``/``embedding``/
+        ``document``/``metadata``, sorted by id.
+
+        Embeddings come back from Chroma as ``numpy.ndarray`` (float32); they are
+        converted to plain ``list[float]`` so callers can compare against the
+        values they wrote.
+        """
+        collection = self.client.get_collection(collection_name)
+        # ``include`` is a Chroma Literal union and ``GetResult`` is a TypedDict
+        # whose optional fields are typed ``... | None``; cast to a plain dict so
+        # the by-index access below type-checks.
+        result: dict = cast(dict, collection.get(include=cast(Any, list(include))))
+        rows = []
+        for index, id_ in enumerate(result["ids"]):
+            row: dict[str, Any] = {"id": id_}
+            if result.get("embeddings") is not None:
+                row["embedding"] = [float(x) for x in result["embeddings"][index]]
+            if result.get("documents") is not None:
+                row["document"] = result["documents"][index]
+            if result.get("metadatas") is not None:
+                row["metadata"] = result["metadatas"][index]
+            rows.append(row)
+        rows.sort(key=lambda r: r["id"])
+        return rows
+
+    def close(self) -> None:
+        # chromadb.HttpClient holds no socket of its own to close; clearing the
+        # process-wide client cache keeps repeated fixtures from accumulating
+        # identity-cached clients across the run.
+        try:
+            self.client.clear_system_cache()
+        except Exception:
+            pass
 
 
 QDRANT_VECTOR_DIM = 3

@@ -6,6 +6,7 @@ from utils import (
     MYSQL_DB_HOST,
     MYSQL_LOCAL_INFILE_DB_HOST,
     AtlasContext,
+    ChromaContext,
     ClickHouseContext,
     DebeziumContext,
     DynamoDBContext,
@@ -279,6 +280,13 @@ def _mssql_session():
 @pytest.fixture
 def milvus(tmp_path):
     ctx = MilvusContext(str(tmp_path / "milvus.db"))
+    yield ctx
+    ctx.close()
+
+
+@pytest.fixture
+def chroma():
+    ctx = ChromaContext()
     yield ctx
     ctx.close()
 

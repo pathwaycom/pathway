@@ -929,6 +929,7 @@ class DataStorage:
         aws_s3_settings: AwsS3Settings | None = None,
         elasticsearch_params: ElasticSearchParams | None = None,
         elasticsearch_reader_params: ElasticSearchReaderParams | None = None,
+        chroma_params: ChromaParams | None = None,
         weaviate_params: WeaviateParams | None = None,
         parallel_readers: int | None = None,
         python_subject: PythonSubject | None = None,
@@ -1005,6 +1006,9 @@ class ElasticSearchAuth:
     def __init__(self, *args, **kwargs): ...
 
 class ElasticSearchParams:
+    def __init__(self, *args, **kwargs): ...
+
+class ChromaParams:
     def __init__(self, *args, **kwargs): ...
 
 class QdrantParams:

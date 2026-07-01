@@ -123,14 +123,13 @@ use crate::connectors::data_storage::pinecone::PineconeWriter;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
-    ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
+    ChromaWriter, ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
     ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader, KafkaWriter, LakeWriter,
     MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader,
     NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType,
     PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader,
     RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
     TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
-
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -4759,6 +4758,58 @@ impl ElasticSearchParams {
     }
 }
 
+/// Connection and column-mapping parameters for the Chroma output connector.
+/// The role fields are column *names*; the writer resolves them to indices
+/// against the data format's value fields when it is constructed.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct ChromaParams {
+    host: String,
+    port: u16,
+    ssl: bool,
+    headers: Option<HashMap<String, String>>,
+    tenant: String,
+    database: String,
+    collection_name: String,
+    primary_key_field: Option<String>,
+    embedding_field: String,
+    document_field: Option<String>,
+    metadata_fields: Vec<String>,
+}
+
+#[pymethods]
+impl ChromaParams {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        host: String,
+        port: u16,
+        ssl: bool,
+        headers: Option<HashMap<String, String>>,
+        tenant: String,
+        database: String,
+        collection_name: String,
+        primary_key_field: Option<String>,
+        embedding_field: String,
+        document_field: Option<String>,
+        metadata_fields: Vec<String>,
+    ) -> Self {
+        ChromaParams {
+            host,
+            port,
+            ssl,
+            headers,
+            tenant,
+            database,
+            collection_name,
+            primary_key_field,
+            embedding_field,
+            document_field,
+            metadata_fields,
+        }
+    }
+}
+
 /// Polling parameters for the Elasticsearch input connector. Carried alongside
 /// the shared [`ElasticSearchParams`] (host / index / auth) so the generalized
 /// polling reader knows which columns drive the watermark and how often to poll.
@@ -4922,6 +4973,7 @@ pub struct DataStorage {
     aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
     elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
     elasticsearch_reader_params: Option<Arc<Py<ElasticSearchReaderParams>>>,
+    chroma_params: Option<Arc<Py<ChromaParams>>>,
     weaviate_params: Option<Arc<Py<WeaviateParams>>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Arc<Py<PythonSubject>>>,
@@ -5489,6 +5541,7 @@ impl DataStorage {
         aws_s3_settings = None,
         elasticsearch_params = None,
         elasticsearch_reader_params = None,
+        chroma_params = None,
         weaviate_params = None,
         parallel_readers = None,
         python_subject = None,
@@ -5540,6 +5593,7 @@ impl DataStorage {
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         elasticsearch_reader_params: Option<Py<ElasticSearchReaderParams>>,
+        chroma_params: Option<Py<ChromaParams>>,
         weaviate_params: Option<Py<WeaviateParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
@@ -5608,6 +5662,7 @@ impl DataStorage {
             aws_s3_settings: aws_s3_settings.map(Into::into),
             elasticsearch_params: elasticsearch_params.map(Into::into),
             elasticsearch_reader_params: elasticsearch_reader_params.map(Into::into),
+            chroma_params: chroma_params.map(Into::into),
             weaviate_params: weaviate_params.map(Into::into),
             parallel_readers,
             python_subject: python_subject.map(Into::into),
@@ -7076,6 +7131,73 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_chroma_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["chromadb"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .chroma_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Chroma output, the chroma_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+
+        // Resolve the role column names to their positions in the value fields
+        // the writer receives at runtime, so it can index straight into them.
+        let field_names = data_format.value_field_names(py);
+        let index_of = |role: &str, name: &str| -> PyResult<usize> {
+            field_names
+                .iter()
+                .position(|field| field == name)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "Chroma {role} column {name:?} is not present in the table"
+                    ))
+                })
+        };
+        let primary_key_index = match &params.primary_key_field {
+            Some(name) => Some(index_of("primary_key", name)?),
+            None => None,
+        };
+        let embedding_index = index_of("embedding", &params.embedding_field)?;
+        let document_index = match &params.document_field {
+            Some(name) => Some(index_of("document", name)?),
+            None => None,
+        };
+        let metadata_indices = params
+            .metadata_fields
+            .iter()
+            .map(|name| index_of("metadata", name))
+            .collect::<PyResult<Vec<usize>>>()?;
+
+        let writer = ChromaWriter::new(
+            &params.host,
+            params.port,
+            params.ssl,
+            params.headers.clone(),
+            &params.tenant,
+            &params.database,
+            params.collection_name.clone(),
+            field_names,
+            primary_key_index,
+            embedding_index,
+            document_index,
+            metadata_indices,
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to create Chroma writer: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_weaviate_writer(
         &self,
         py: pyo3::Python,
@@ -7594,6 +7716,7 @@ impl DataStorage {
             "kafka" => self.construct_kafka_writer(),
             "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py, license),
+            "chroma" => self.construct_chroma_writer(py, data_format, license),
             "weaviate" => self.construct_weaviate_writer(py, data_format, license),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
             "mongodb" => self.construct_mongodb_writer(sorted_output),
@@ -8283,6 +8406,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<ChromaParams>()?;
     m.add_class::<WeaviateParams>()?;
     m.add_class::<PineconeParams>()?;
     m.add_class::<ElasticSearchReaderParams>()?;
