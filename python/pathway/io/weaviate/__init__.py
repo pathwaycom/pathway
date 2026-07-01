@@ -19,7 +19,7 @@ def write(
     table: Table,
     collection_name: str,
     *,
-    primary_key: ColumnReference,
+    primary_key: ColumnReference | None = None,
     vector: ColumnReference | None = None,
     http_host: str = "localhost",
     http_port: int = 8080,
@@ -31,57 +31,22 @@ def write(
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
-    """**This connector is available when using one of the following licenses only:**
-    `Pathway Live Data Framework Scale, Pathway Live Data Framework Enterprise </pricing>`_.
-
-    Writes a Pathway Live Data Framework table to a `Weaviate <https://weaviate.io/>`_
+    """Writes a Pathway Live Data Framework table to a `Weaviate <https://weaviate.io/>`_
     collection.
 
-    Each row addition (``diff = 1``) is sent to Weaviate as an upsert and each row
-    deletion (``diff = -1``) is sent as a delete. Weaviate identifies every object
-    by a UUID; the connector derives that UUID deterministically from the value of
-    the ``primary_key`` column (the same way ``weaviate.util.generate_uuid5`` does,
-    i.e. ``uuid5(NAMESPACE_DNS, str(key))``), so re-writing a row with the same key
-    replaces the existing object instead of creating a duplicate. The ``primary_key``
-    column is **not** stored as a property — its value is encoded in the object's
-    UUID, so the row for a key ``k`` can always be fetched with
-    ``collection.query.fetch_object_by_id(generate_uuid5(k))``. This also lets the
-    primary key be named ``id`` (the natural choice), which Weaviate otherwise
-    reserves and forbids as a property name. The column must belong to ``table``;
-    passing a column from a different table raises a ``ValueError``.
-
-    If ``vector`` is given, that column is sent to Weaviate as the object's vector
-    embedding and is **not** stored as a property. When it is omitted, objects are
-    written without an explicit vector — appropriate when the target collection has
-    a vectorizer module configured to compute embeddings server-side. The column
-    must belong to ``table``; passing a column from a different table raises a
-    ``ValueError``.
-
-    Every remaining column becomes an object property. Weaviate reserves the
-    property names ``id`` and ``vector``; a column with either name that is neither
-    the ``primary_key`` nor the ``vector`` column raises a ``ValueError`` at call
-    time. See the connector documentation for how each Pathway type is stored as a
-    Weaviate property.
-
-    The connector keeps the target collection in sync with the Pathway table:
-    inserts and updates upsert objects, and deletions remove the corresponding
-    objects. It does not create or alter the collection's schema or vector index —
-    the collection must already exist, with a configuration compatible with the
-    written objects (e.g. a vector index of the right dimension, or a vectorizer
-    module if ``vector`` is omitted).
-
-    When the pipeline runs with several workers (``pathway spawn -n``), the rows are
-    written concurrently — each worker writes its own share of the table — so write
-    throughput grows with the number of workers (up to the limits of the target
-    Weaviate deployment). ``batch_size`` groups objects per write and ``concurrency``
-    bounds how many such writes proceed in parallel per worker.
+    Each row addition (``diff = 1``) upserts an object and each row deletion
+    (``diff = -1``) removes it, keeping the collection in sync with the table. The
+    target collection must already exist. See the connector documentation for how
+    objects are identified, how each Pathway type is stored, and how to authenticate.
 
     Args:
         table: The table to write.
         collection_name: Name of the Weaviate collection to write to. It must
             already exist.
-        primary_key: A column reference (e.g. ``table.doc_id``) whose values are
-            used to derive each object's UUID. The column must belong to ``table``.
+        primary_key: An optional column reference (e.g. ``table.doc_id``) whose
+            values are used to derive each object's UUID; the column is not stored
+            as a property. When omitted, the UUID is derived from the row's internal
+            Pathway key. The column must belong to ``table``.
         vector: An optional column reference (e.g. ``table.embedding``) holding the
             vector embedding for each object. When given, that column is written as
             the object's vector and not as a property. The column must belong to
@@ -92,12 +57,8 @@ def write(
         api_key: An optional API key used to authenticate with Weaviate.
         headers: Optional additional headers sent with every request, e.g.
             ``{"X-OpenAI-Api-Key": "..."}`` to authorize a server-side vectorizer.
-        batch_size: Number of objects grouped together per write. Larger values
-            reduce per-write overhead; the connector keeps each write within
-            Weaviate's request-size limit.
+        batch_size: Number of objects grouped together per write.
         concurrency: Maximum number of writes performed in parallel per worker.
-            Higher values increase throughput until the Weaviate deployment
-            saturates.
         name: A unique name for the connector. If provided, this name will be used
             in logs and monitoring dashboards.
         sort_by: If specified, the output within each mini-batch will be sorted in
@@ -151,7 +112,7 @@ def write(
     """
     _check_entitlements("weaviate")
 
-    if primary_key._table is not table:
+    if primary_key is not None and primary_key._table is not table:
         raise ValueError(
             f"primary_key column {primary_key._name!r} does not belong to the "
             f"provided table. Pass a column reference from the same table, "
@@ -164,7 +125,7 @@ def write(
             f"e.g. vector=table.{vector._name}."
         )
 
-    pk = primary_key._name
+    pk = primary_key._name if primary_key is not None else None
     vector_field = vector._name if vector is not None else None
 
     # Weaviate reserves "id" and "vector" as object-level keys and rejects them as

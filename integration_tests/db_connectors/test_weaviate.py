@@ -341,6 +341,57 @@ def test_write_primary_key_wrong_table_raises(weaviate):
         )
 
 
+def test_write_vector_with_non_finite_value_raises(weaviate):
+    """A vector containing a non-finite component (NaN/Inf) must fail with a clear
+    error rather than being silently stored with that component replaced by 0.0
+    (JSON has no NaN/Inf, so a naive serialization would corrupt the embedding)."""
+    collection_name = weaviate.generate_collection_name()
+    weaviate.create_collection(collection_name)
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, [(1, [1.0, float("nan"), 3.0])])
+    pw.io.weaviate.write(
+        table,
+        collection_name=collection_name,
+        primary_key=table.id,
+        vector=table.vector,
+        **_connection_kwargs(weaviate),
+    )
+    with pytest.raises(Exception, match="(?i)finite|nan"):
+        run()
+    # The corrupted object must not have been written.
+    assert weaviate.count(collection_name) == 0
+
+
+def test_write_nonexistent_collection_raises(weaviate):
+    """Writing to a collection that does not exist must fail with a clear error
+    naming the collection, rather than silently letting Weaviate auto-create a
+    differently-configured collection (a typo in ``collection_name`` would
+    otherwise route data into a phantom collection unnoticed)."""
+    collection_name = weaviate.generate_collection_name()  # deliberately not created
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, [(1, [1.0, 2.0, 3.0])])
+    pw.io.weaviate.write(
+        table,
+        collection_name=collection_name,
+        primary_key=table.id,
+        vector=table.vector,
+        **_connection_kwargs(weaviate),
+    )
+    weaviate._created_collections.append(collection_name)  # clean up if auto-created
+    with pytest.raises(Exception, match=collection_name):
+        run()
+
+
 def test_write_vector_wrong_table_raises(weaviate):
     """Passing a vector column from a different table raises a clear ValueError."""
     collection_name = weaviate.generate_collection_name()

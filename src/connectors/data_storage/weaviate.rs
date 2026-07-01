@@ -6,7 +6,7 @@ use std::mem::take;
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{serialize_value_to_json, FormatterContext};
 use crate::connectors::{WriteError, Writer};
-use crate::engine::Value;
+use crate::engine::{Key, Value};
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
@@ -45,11 +45,23 @@ pub enum WeaviateError {
     #[error("Weaviate batch delete from collection {collection:?} failed for {failed} object(s)")]
     BatchDelete { collection: String, failed: usize },
 
+    #[error(
+        "Weaviate collection {0:?} does not exist; create it before writing \
+         (the connector never creates or alters collections)"
+    )]
+    CollectionNotFound(String),
+
     #[error("Weaviate response is malformed: {0}")]
     MalformedResponse(String),
 
     #[error("the vector column {0:?} must contain a 1-D array of numbers")]
     InvalidVector(String),
+
+    #[error(
+        "the vector column {0:?} contains a non-finite value (NaN or infinity), \
+         which cannot be stored in Weaviate"
+    )]
+    NonFiniteVector(String),
 }
 
 /// Native Weaviate output connector.
@@ -62,14 +74,18 @@ pub enum WeaviateError {
 /// requests in flight at once. Deletions (`diff < 0`) are issued as batch
 /// delete-by-id requests using a `ContainsAny` filter.
 ///
-/// The UUID is derived from the primary-key value exactly as
-/// `weaviate.util.generate_uuid5` does: `uuid5(NAMESPACE_DNS, str(pk))`.
+/// When a primary-key column is given, the UUID is derived from its value
+/// exactly as `weaviate.util.generate_uuid5` does: `uuid5(NAMESPACE_DNS,
+/// str(pk))`. Otherwise it is derived from the row's internal Pathway key.
 pub struct WeaviateWriter {
     runtime: TokioRuntime,
     client: HttpClient,
     batch_url: String,
     collection: String,
-    pk_index: usize,
+    // Position of the primary-key column in `FormatterContext::values`. When
+    // `None`, the object UUID is derived from the row's internal Pathway key
+    // instead of an explicit column.
+    pk_index: Option<usize>,
     vector_index: Option<usize>,
     // (property name, position in FormatterContext::values), excluding the
     // primary-key and vector columns.
@@ -87,7 +103,7 @@ impl WeaviateWriter {
     pub fn new(
         base_url: &str,
         collection: String,
-        pk_index: usize,
+        pk_index: Option<usize>,
         vector_index: Option<usize>,
         property_fields: Vec<(String, usize)>,
         api_key: Option<&str>,
@@ -117,7 +133,23 @@ impl WeaviateWriter {
             .build()
             .map_err(WeaviateError::Http)?;
 
-        let batch_url = format!("{}/v1/batch/objects", base_url.trim_end_matches('/'));
+        let base_url = base_url.trim_end_matches('/');
+        let batch_url = format!("{base_url}/v1/batch/objects");
+
+        // Fail fast if the target collection is missing: with Weaviate's
+        // auto-schema a write to a non-existent collection would otherwise
+        // silently create a differently-configured one, so a typo in
+        // `collection_name` would route data into a phantom collection unnoticed.
+        let schema_url = format!("{base_url}/v1/schema/{collection}");
+        runtime.block_on(async {
+            let response = client.get(&schema_url).send().await?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(WeaviateError::CollectionNotFound(collection.clone()));
+            }
+            response.error_for_status()?;
+            Ok::<(), WeaviateError>(())
+        })?;
+
         Ok(Self {
             runtime,
             client,
@@ -175,6 +207,12 @@ fn value_to_uuid(value: &Value) -> Result<String, WriteError> {
     Ok(Uuid::new_v5(&Uuid::NAMESPACE_DNS, name.as_bytes()).to_string())
 }
 
+// Used when no primary-key column is given: the object UUID is derived from the
+// row's internal Pathway key, so re-writing the same row still upserts in place.
+fn key_to_uuid(key: Key) -> String {
+    Uuid::new_v5(&Uuid::NAMESPACE_DNS, key.to_string().as_bytes()).to_string()
+}
+
 // Vector components are embedding coordinates; the i64 -> f64 cast for an
 // integer-typed vector is intentional and the values are far inside f64's exact
 // integer range in practice.
@@ -189,12 +227,22 @@ fn scalar_f64(value: &Value, vector_index: usize) -> Result<f64, WeaviateError> 
 
 #[allow(clippy::cast_precision_loss)]
 fn value_to_vector(value: &Value, vector_index: usize) -> Result<Vec<f64>, WeaviateError> {
-    match value {
-        Value::Tuple(items) => items.iter().map(|v| scalar_f64(v, vector_index)).collect(),
-        Value::FloatArray(array) => Ok(array.iter().copied().collect()),
-        Value::IntArray(array) => Ok(array.iter().map(|x| *x as f64).collect()),
-        _ => Err(WeaviateError::InvalidVector(vector_index.to_string())),
+    let vector: Vec<f64> = match value {
+        Value::Tuple(items) => items
+            .iter()
+            .map(|v| scalar_f64(v, vector_index))
+            .collect::<Result<_, _>>()?,
+        Value::FloatArray(array) => array.iter().copied().collect(),
+        Value::IntArray(array) => array.iter().map(|x| *x as f64).collect(),
+        _ => return Err(WeaviateError::InvalidVector(vector_index.to_string())),
+    };
+    // JSON has no NaN/infinity, so a non-finite component would otherwise be
+    // serialized as `null` and silently read back as 0.0 — corrupting the
+    // embedding. Reject it with a clear error instead.
+    if vector.iter().any(|x| !x.is_finite()) {
+        return Err(WeaviateError::NonFiniteVector(vector_index.to_string()));
     }
+    Ok(vector)
 }
 
 async fn insert_chunk(
@@ -276,7 +324,10 @@ async fn delete_chunk(
 
 impl Writer for WeaviateWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let uuid = value_to_uuid(&data.values[self.pk_index])?;
+        let uuid = match self.pk_index {
+            Some(pk_index) => value_to_uuid(&data.values[pk_index])?,
+            None => key_to_uuid(data.key),
+        };
         if data.diff > 0 {
             let object = self.build_object(&uuid, &data.values)?;
             self.deletes.remove(&uuid);

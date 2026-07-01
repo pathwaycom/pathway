@@ -4633,7 +4633,7 @@ impl PineconeParams {
 pub struct WeaviateParams {
     url: String,
     collection_name: String,
-    pk_field: String,
+    pk_field: Option<String>,
     vector_field: Option<String>,
     api_key: Option<String>,
     headers: HashMap<String, String>,
@@ -4647,7 +4647,7 @@ impl WeaviateParams {
     #[pyo3(signature = (
         url,
         collection_name,
-        pk_field,
+        pk_field = None,
         vector_field = None,
         api_key = None,
         headers = None,
@@ -4658,7 +4658,7 @@ impl WeaviateParams {
     fn new(
         url: String,
         collection_name: String,
-        pk_field: String,
+        pk_field: Option<String>,
         vector_field: Option<String>,
         api_key: Option<String>,
         headers: Option<HashMap<String, String>>,
@@ -7055,15 +7055,19 @@ impl DataStorage {
         let params = params_py.get();
 
         let field_names = data_format.value_field_names(py);
-        let pk_index = field_names
-            .iter()
-            .position(|name| name == &params.pk_field)
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "primary key field {:?} not found among the output columns",
-                    params.pk_field
-                ))
-            })?;
+        let pk_index = match &params.pk_field {
+            Some(pk_field) => Some(
+                field_names
+                    .iter()
+                    .position(|name| name == pk_field)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "primary key field {pk_field:?} not found among the output columns"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
         let vector_index = match &params.vector_field {
             Some(vector_field) => Some(
                 field_names
@@ -7080,7 +7084,7 @@ impl DataStorage {
         let property_fields: Vec<(String, usize)> = field_names
             .iter()
             .enumerate()
-            .filter(|(index, _)| *index != pk_index && Some(*index) != vector_index)
+            .filter(|(index, _)| Some(*index) != pk_index && Some(*index) != vector_index)
             .map(|(index, name)| (name.clone(), index))
             .collect();
 
