@@ -4894,6 +4894,24 @@ impl PyDeltaOptimizerRule {
     }
 }
 
+// The maximum size of an MQTT control packet allowed by the protocol
+// (`268_435_455` bytes, i.e. 256 MiB - 1). `rumqttc` defaults both the incoming
+// and outgoing packet size limits to a mere 10 KiB, which fails the pipeline on
+// perfectly valid larger payloads.
+const MQTT_MAX_PACKET_SIZE_BYTES: usize = 268_435_455;
+
+// Raise `rumqttc`'s 10 KiB incoming/outgoing packet size limits to the MQTT
+// protocol maximum, so that ordinary payloads larger than 10 KiB are transported
+// instead of crashing the connector. If the user pinned a packet size explicitly
+// in the connection URI, their choice is respected and left untouched.
+fn relax_mqtt_packet_size_limits(options: &mut MqttOptions, uri: &str) {
+    if !uri.contains("max_incoming_packet_size_bytes")
+        && !uri.contains("max_outgoing_packet_size_bytes")
+    {
+        options.set_max_packet_size(MQTT_MAX_PACKET_SIZE_BYTES, MQTT_MAX_PACKET_SIZE_BYTES);
+    }
+}
+
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen, name = "MqttSettings")]
 pub struct MqttSettings {
@@ -6782,11 +6800,12 @@ impl DataStorage {
         let uri = self.path()?;
         let settings = self.mqtt_settings()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
-        let connection_options = MqttOptions::parse_url(uri)
+        let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        relax_mqtt_packet_size_limits(&mut connection_options, uri);
         let (client, mut connection) =
             MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
-        client.subscribe(topic, settings.qos).map_err(|e| {
+        client.subscribe(topic.clone(), settings.qos).map_err(|e| {
             PyIOError::new_err(format!(
                 "Failed to establish connection with MQTT broker: {e}"
             ))
@@ -6809,7 +6828,10 @@ impl DataStorage {
             }
         }
 
-        Ok((Box::new(MqttReader::new(connection)), 1))
+        Ok((
+            Box::new(MqttReader::new(client, connection, topic, settings.qos)),
+            1,
+        ))
     }
 
     fn construct_kinesis_reader(
@@ -7484,8 +7506,9 @@ impl DataStorage {
         let uri = self.path()?;
         let topic = self.message_queue_topic()?;
         let settings = self.mqtt_settings()?;
-        let connection_options = MqttOptions::parse_url(uri)
+        let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        relax_mqtt_packet_size_limits(&mut connection_options, uri);
         let (client, eventloop) = MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
         let writer = MqttWriter::new(client, eventloop, topic, settings.qos, settings.retain);
         Ok(Box::new(writer))

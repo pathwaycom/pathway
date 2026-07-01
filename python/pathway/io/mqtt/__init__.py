@@ -127,6 +127,8 @@ def read(
     As a result, you will have a table with three columns: ``"user_id"``, ``"username"``, and
     ``"phone"``. The ``"user_id"`` column will also act as the primary key for the Pathway Live Data Framework table.
     """
+    if topic == "":
+        raise ValueError("The MQTT topic to read from must not be empty.")
 
     data_storage = api.DataStorage(
         storage_type="mqtt",
@@ -274,6 +276,15 @@ def write(
     ...     format="json",
     ... )
     """
+    if isinstance(topic, str):
+        if topic == "":
+            raise ValueError("The MQTT topic to publish to must not be empty.")
+        if "+" in topic or "#" in topic:
+            raise ValueError(
+                "The MQTT topic to publish to must not contain the wildcard characters "
+                f"'+' or '#' (got {topic!r}); wildcards are only allowed when reading "
+                "(subscribing)."
+            )
     output_format = MessageQueueOutputFormat.construct(
         table,
         format=format,

@@ -779,6 +779,12 @@ pub enum WriteError {
     #[error(transparent)]
     MqttPoll(#[from] MqttConnectionError),
 
+    #[error(
+        "the MQTT broker kept the connection alive but did not confirm delivery of {0} in-flight \
+         message(s); giving up to avoid blocking the pipeline indefinitely"
+    )]
+    MqttDeliveryConfirmationTimeout(usize),
+
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
 
