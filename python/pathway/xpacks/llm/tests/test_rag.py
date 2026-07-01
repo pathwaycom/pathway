@@ -99,6 +99,49 @@ def test_base_rag():
     )
 
 
+def test_base_rag_query_transformer_is_used_for_retrieval():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQuestionAnswerer(
+        IdentityMockChat(),
+        vector_server,
+        prompt_template=_prompt_template,
+        query_transformer=lambda query: "bar" if query == "foo" else query,
+        search_topk=1,
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", False),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+
+    casted_table = answer_output.select(
+        result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"])
+    )
+
+    assert_table_equality(
+        casted_table,
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt3.5,bar
+            """
+        ),
+    )
+
+
 def test_rag_app_set_prompt():
     prompt_template = "Answer the question. Context: {context}\nQuestion: {query}"
 
@@ -130,6 +173,26 @@ def test_rag_app_set_udf_prompt():
     assert isinstance(rag_app.prompt_udf, pw.UDF)
 
     assert _unwrap_udf(rag_app.prompt_udf)(query=" ", context=" ")
+
+
+def test_rag_app_set_callable_query_transformer():
+    def query_transformer(query: str) -> str:
+        return f"search {query}"
+
+    rag_app = create_rag_app(query_transformer=query_transformer)
+
+    assert isinstance(rag_app.query_transformer, pw.UDF)
+    assert _unwrap_udf(rag_app.query_transformer)("question") == "search question"
+
+
+def test_rag_app_set_udf_query_transformer():
+    @pw.udf
+    def query_transformer(query: str) -> str:
+        return f"search {query}"
+
+    rag_app = create_rag_app(query_transformer=query_transformer)
+
+    assert rag_app.query_transformer is query_transformer
 
 
 @pytest.mark.parametrize(
