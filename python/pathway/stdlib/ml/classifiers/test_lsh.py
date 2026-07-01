@@ -119,6 +119,6 @@ def test_globmatch_performance():
     duration = time.time() - start_time
 
     assert result is False
-    # The memoized version runs in O(N*M) and should complete in < 0.05 seconds.
+    # The memoized version runs in O(N*M) and should complete in < 0.5 seconds.
     # Without memoization, this test would hang indefinitely.
     assert duration < 0.5, f"ReDoS regression: globmatch took {duration}s"
