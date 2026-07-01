@@ -123,13 +123,13 @@ use crate::connectors::data_storage::pinecone::PineconeWriter;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
-    ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter,
-    IcebergReader, KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader,
-    MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter,
-    ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
-    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WeaviateWriter,
-    WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
+    ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader, KafkaWriter, LakeWriter,
+    MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader,
+    NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType,
+    PythonReaderBuilder, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter,
+    ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
+    TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -3786,6 +3786,7 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
+        let worker_index = self_.borrow().worker_index();
         // Whether the output requests a global within-minibatch order. A writer
         // that needs a single worker to honor that order (e.g. MongoDB) reads
         // this when deciding `single_threaded()`; writers that don't care ignore it.
@@ -3794,6 +3795,7 @@ impl Scope {
             py,
             &data_format.borrow(),
             self_.borrow().license.as_ref(),
+            worker_index,
             sorted_output,
         )?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
@@ -6314,6 +6316,41 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_duckdb_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+        needs_initialization: bool,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["duckdb"])?;
+        }
+        // The connection is opened lazily by the writer on first use, not here:
+        // DuckDB takes an exclusive file lock, and this constructor runs on
+        // every engine worker, so opening eagerly would make all but one fail.
+        let path = self.path()?.to_string();
+        let table_name = self.table_name.clone().ok_or_else(|| {
+            PyValueError::new_err("For DuckDB connector, table_name should be specified")
+        })?;
+        let table_ctx = TableContext::new(
+            "",
+            &table_name,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+        );
+        let writer = DuckDbWriter::new(
+            path,
+            table_ctx,
+            self.snapshot_maintenance_on_output,
+            self.table_writer_init_mode,
+            self.max_batch_size,
+            needs_initialization,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Unable to initialize DuckDB table: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_mssql_reader(
         &self,
         py: pyo3::Python,
@@ -7467,6 +7504,7 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
         license: Option<&License>,
+        worker_index: usize,
         sorted_output: bool,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
@@ -7489,6 +7527,12 @@ impl DataStorage {
             "mssql" => self.construct_mssql_writer(py, data_format, license),
             "mysql" => self.construct_mysql_writer(py, data_format, license),
             "sqlite" => self.construct_sqlite_writer(py, data_format),
+            "duckdb" => {
+                // Only the output-owning worker (index 0) creates/replaces the
+                // destination table on an empty output; the rest must not contend
+                // for DuckDB's exclusive file lock.
+                self.construct_duckdb_writer(py, data_format, license, worker_index == 0)
+            }
             "pinecone" => self.construct_pinecone_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"

@@ -120,6 +120,7 @@ tests = [
     "kafka-python >= 2.0.2",
     "python-magic",
     "pathway[all]",
+    "duckdb >= 1.0.0",
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
     "fpdf",

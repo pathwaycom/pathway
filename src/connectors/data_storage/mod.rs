@@ -3,6 +3,7 @@
 pub mod aws;
 pub mod clickhouse;
 pub mod data_lake;
+pub mod duckdb;
 pub mod elasticsearch;
 pub mod file;
 pub mod kafka;
@@ -86,6 +87,7 @@ use serde::{Deserialize, Serialize};
 pub use self::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
 pub use self::data_lake::iceberg::{IcebergError, IcebergReader};
 pub use self::data_lake::LakeWriter;
+pub use self::duckdb::{DuckDbError, DuckDbWriter};
 pub use self::elasticsearch::{ElasticSearchError, ElasticSearchReader, ElasticSearchWriter};
 pub use self::mongodb::{MongoReader, MongoWriter};
 pub use self::mssql::{MssqlError, MssqlReader};
@@ -829,6 +831,9 @@ pub enum WriteError {
     #[error(transparent)]
     Sqlite(#[from] SqliteError),
 
+    #[error(transparent)]
+    DuckDB(#[from] DuckDbError),
+
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
 
@@ -874,6 +879,14 @@ pub enum WriteError {
 impl From<::mongodb::error::Error> for WriteError {
     fn from(e: ::mongodb::error::Error) -> Self {
         WriteError::MongoDB(MongoDbError::Driver(e))
+    }
+}
+
+// Allow `?` on raw `duckdb::Error` in functions returning `Result<_, WriteError>`.
+// Routes through `DuckDbError::Driver` so the full chain is `WriteError::DuckDB`.
+impl From<::duckdb::Error> for WriteError {
+    fn from(e: ::duckdb::Error) -> Self {
+        WriteError::DuckDB(DuckDbError::Driver(e))
     }
 }
 
