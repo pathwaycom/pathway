@@ -21,6 +21,7 @@ pub mod rabbitmq;
 pub mod scanner;
 pub mod sharding;
 pub mod sqlite;
+pub mod weaviate;
 
 pub use file::FileWriter;
 pub use kafka::{KafkaReader, KafkaReaderError, KafkaWriter, RdkafkaWatermark};
@@ -98,6 +99,7 @@ pub use self::postgres::{
 };
 pub use self::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
 pub use self::sqlite::{SqliteError, SqliteReader, SqliteWriter};
+pub use self::weaviate::{WeaviateError, WeaviateWriter};
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -805,6 +807,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     ElasticSearch(#[from] ElasticSearchError),
+
+    #[error(transparent)]
+    Weaviate(#[from] WeaviateError),
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),

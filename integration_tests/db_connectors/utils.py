@@ -125,6 +125,13 @@ ELASTICSEARCH_HOST = "elasticsearch"
 ELASTICSEARCH_PORT = 9200
 ELASTICSEARCH_URL = f"http://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"
 
+# Defaults match the compose service name; override via env vars to point the
+# tests at a locally port-proxied Weaviate (see the module docstring).
+WEAVIATE_HOST = os.environ.get("WEAVIATE_HOST", "weaviate")
+WEAVIATE_HTTP_PORT = int(os.environ.get("WEAVIATE_PORT", "8080"))
+WEAVIATE_GRPC_PORT = int(os.environ.get("WEAVIATE_GRPC_PORT", "50051"))
+WEAVIATE_VECTOR_DIM = 3
+
 
 def elasticsearch_now_ms() -> int:
     # The Elasticsearch reader requires a numeric timestamp column and watermarks
@@ -1084,6 +1091,97 @@ class MilvusContext:
         return f"milvus_{uuid.uuid4().hex[:12]}"
 
     def close(self) -> None:
+        self.client.close()
+
+
+class WeaviateContext:
+    """Minimal Weaviate helper for the output-connector tests.
+
+    Connects to a running Weaviate over its REST + gRPC endpoints. Each test
+    creates a uniquely named collection (Weaviate class names must start with a
+    capital letter) configured with the ``none`` vectorizer so the vectors the
+    connector sends are stored verbatim rather than recomputed server-side. The
+    vector dimension is not pinned at creation time — Weaviate fixes it from the
+    first object written — so :meth:`create_collection` ignores the ``dimension``
+    argument it accepts for parity with the other vector-store contexts.
+    """
+
+    def __init__(
+        self,
+        host: str = WEAVIATE_HOST,
+        http_port: int = WEAVIATE_HTTP_PORT,
+        grpc_port: int = WEAVIATE_GRPC_PORT,
+    ) -> None:
+        self.host = host
+        self.http_port = http_port
+        self.grpc_port = grpc_port
+        self._created_collections: list[str] = []
+        self.client = self._connect()
+
+    def _connect(self):
+        import weaviate
+
+        return weaviate.connect_to_custom(
+            http_host=self.host,
+            http_port=self.http_port,
+            http_secure=False,
+            grpc_host=self.host,
+            grpc_port=self.grpc_port,
+            grpc_secure=False,
+        )
+
+    def create_collection(
+        self, collection_name: str, *, dimension: int = WEAVIATE_VECTOR_DIM
+    ) -> None:
+        from weaviate.classes.config import Configure
+
+        # No explicit properties: the primary key is encoded in the object UUID
+        # (Weaviate reserves the "id" property name), and any other property the
+        # connector writes is added by Weaviate's auto-schema on first insert.
+        self._created_collections.append(collection_name)
+        self.client.collections.create(
+            collection_name,
+            vectorizer_config=Configure.Vectorizer.none(),
+        )
+
+    def query_all(
+        self, collection_name: str, *, include_vector: bool = True
+    ) -> list[dict]:
+        """Return every object as a dict of its properties plus its ``"uuid"``.
+
+        The primary key is not stored as a property — it is encoded in the object
+        UUID — so the UUID (as a string) is included for identity checks. When
+        ``include_vector`` is set, the vector is included under ``"vector"``.
+        """
+        collection = self.client.collections.get(collection_name)
+        results = []
+        for obj in collection.iterator(include_vector=include_vector):
+            row = dict(obj.properties)
+            row["uuid"] = str(obj.uuid)
+            if include_vector:
+                row["vector"] = list(obj.vector["default"])
+            results.append(row)
+        return results
+
+    def count(self, collection_name: str) -> int:
+        collection = self.client.collections.get(collection_name)
+        return collection.aggregate.over_all(total_count=True).total_count
+
+    def property_types(self, collection_name: str) -> dict[str, str]:
+        """Return the Weaviate-inferred data type (as a string) of each property."""
+        config = self.client.collections.get(collection_name).config.get()
+        return {prop.name: prop.data_type.value for prop in config.properties}
+
+    def generate_collection_name(self) -> str:
+        return f"Pwtest{uuid.uuid4().hex[:12]}"
+
+    def cleanup(self) -> None:
+        for collection_name in self._created_collections:
+            try:
+                self.client.collections.delete(collection_name)
+            except Exception:
+                pass
+        self._created_collections = []
         self.client.close()
 
 
