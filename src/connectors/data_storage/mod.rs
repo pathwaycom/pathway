@@ -12,6 +12,7 @@ pub mod mssql;
 pub mod mysql;
 pub mod nats;
 pub mod null;
+pub mod pinecone;
 pub mod polling;
 pub mod postgres;
 pub mod python;
@@ -90,6 +91,7 @@ pub use self::mssql::{MssqlError, MssqlReader};
 pub use self::mysql::{MysqlError, MysqlReader, MysqlReaderError};
 pub use self::nats::NatsReader;
 pub use self::nats::NatsWriter;
+pub use self::pinecone::{PineconeError, PineconeWriter};
 pub use self::polling::{LiveState, PolledRow, PollingDataSource, PollingReader};
 pub use self::postgres::{
     PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
@@ -857,6 +859,9 @@ pub enum WriteError {
 
     #[error("primary key field names must be specified for a snapshot mode")]
     EmptyKeyFieldsForSnapshot,
+
+    #[error(transparent)]
+    Pinecone(#[from] PineconeError),
 }
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, WriteError>`.

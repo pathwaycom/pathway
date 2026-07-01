@@ -16,10 +16,12 @@ from utils import (
     MySQLContext,
     NeonContext,
     PgvectorContext,
+    PineconeContext,
     PostgresContext,
     PostgresWithTlsContext,
     QuestDBContext,
     clickhouse_concurrency_slot,
+    elasticsearch_concurrency_slot,
     mongodb_concurrency_slot,
     mssql_concurrency_slot,
     mysql_concurrency_slot,
@@ -98,6 +100,16 @@ def pgvector():
 
 
 @pytest.fixture
+def pinecone():
+    # Each test gets a fresh control-plane client and drops every index it
+    # created on teardown, since Pinecone Local does not persist across tests
+    # but a single emulator instance is shared by the whole suite.
+    ctx = PineconeContext()
+    yield ctx
+    ctx.cleanup()
+
+
+@pytest.fixture
 def neon():
     # ``NeonContext`` is a context manager: on exit it drops every table the
     # test created so nothing survives the run, whatever the verdict — Neon
@@ -155,9 +167,13 @@ def _mongodb_concurrency_cap(request):
 
 @pytest.fixture
 def elasticsearch():
-    ctx = ElasticsearchContext()
-    yield ctx
-    ctx.cleanup()
+    # Bound how many ES tests hammer the single, small-heap ES node at once so
+    # newly created indices' primary shards activate before writes arrive (see
+    # ELASTICSEARCH_MAX_CONCURRENCY).
+    with elasticsearch_concurrency_slot():
+        ctx = ElasticsearchContext()
+        yield ctx
+        ctx.cleanup()
 
 
 @pytest.fixture
