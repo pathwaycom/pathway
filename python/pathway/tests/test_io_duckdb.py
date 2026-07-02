@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import datetime
+import json
+import multiprocessing
+import os
 import pathlib
+import time
 
 import numpy as np
 import pytest
 
 import pathway as pw
-from pathway.tests.utils import only_with_license_key, run
+from pathway.tests.utils import (
+    ExceptionAwareThread,
+    needs_multiprocessing_fork,
+    only_with_license_key,
+    run,
+    wait_result_with_checker,
+    write_lines,
+)
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -779,6 +790,340 @@ def test_list_float_column(tmp_path: pathlib.Path):
     con = _connect(db_path)
     rows = con.execute("SELECT text, embedding FROM vecs ORDER BY text").fetchall()
     assert rows == [("a", [1.0, 2.0, 3.0]), ("b", [4.0, 5.0, 6.0])]
+
+
+# --------------------------------------------------------------------------- #
+# detach_between_batches
+# --------------------------------------------------------------------------- #
+
+
+def _read_only_row_count(db_path: str, table_name: str) -> int | None:
+    """One read-only probe of the database, the way an external serving process
+    would query it: a short-lived ``read_only`` connection. Returns the row
+    count, or ``None`` when the probe loses the race for the file lock (or the
+    file/table does not exist yet) — callers retry."""
+    try:
+        con = duckdb.connect(db_path, read_only=True)
+    except duckdb.Error:
+        return None
+    try:
+        return con.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0]
+    except duckdb.Error:
+        return None
+    finally:
+        con.close()
+
+
+@only_with_license_key
+def test_detach_rejects_in_memory_database():
+    table = pw.debug.table_from_markdown(
+        """
+        value
+        1
+        """
+    )
+    with pytest.raises(ValueError, match="in-memory"):
+        pw.io.duckdb.write(
+            table,
+            table_name="t",
+            database=":memory:",
+            detach_between_batches=True,
+        )
+
+
+@only_with_license_key
+def test_detach_with_replace_accumulates_across_batches(tmp_path: pathlib.Path):
+    """With ``detach_between_batches=True`` the writer closes and reopens the
+    database around every flush. ``init_mode="replace"`` must still run only
+    once, on the first open — if it re-ran on each reopen, every batch would drop
+    and recreate the table, keeping only the last batch's rows.
+    ``max_batch_size=1`` forces a flush (and hence a close/reopen cycle) per
+    row."""
+    db_path = str(tmp_path / "out.duckdb")
+    table = pw.debug.table_from_markdown(
+        """
+          | key | value | __time__
+        1 | a   | 1     | 2
+        2 | b   | 2     | 4
+        3 | c   | 3     | 6
+        4 | d   | 4     | 8
+        """
+    )
+    pw.io.duckdb.write(
+        table,
+        table_name="t",
+        database=db_path,
+        init_mode="replace",
+        detach_between_batches=True,
+        max_batch_size=1,
+    )
+    run()
+
+    con = _connect(db_path)
+    rows = con.execute("SELECT key, value FROM t ORDER BY key").fetchall()
+    assert rows == [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+
+
+@only_with_license_key
+def test_detach_snapshot_across_batches(tmp_path: pathlib.Path):
+    """Snapshot mode with detaching: upserts and deletions spread across several
+    minibatches (each flushed through its own open/close cycle thanks to
+    ``max_batch_size=1``) must produce exactly the same final state as the
+    non-detaching mode, and ``init_mode="replace"`` must not wipe earlier
+    batches."""
+    db_path = str(tmp_path / "snap.duckdb")
+    table = pw.debug.table_from_markdown(
+        """
+          | key | value | __time__ | __diff__
+        1 | a   | 1     | 2        | 1
+        2 | b   | 2     | 2        | 1
+        3 | a   | 1     | 4        | -1
+        4 | a   | 9     | 4        | 1
+        5 | b   | 2     | 6        | -1
+        """
+    )
+    pw.io.duckdb.write(
+        table,
+        table_name="state",
+        database=db_path,
+        output_table_type="snapshot",
+        primary_key=[table.key],
+        init_mode="replace",
+        detach_between_batches=True,
+        max_batch_size=1,
+    )
+    run()
+
+    con = _connect(db_path)
+    rows = con.execute("SELECT key, value FROM state ORDER BY key").fetchall()
+    assert rows == [("a", 9)]
+
+
+@only_with_license_key
+@needs_multiprocessing_fork
+def test_detach_allows_concurrent_readonly_reader(tmp_path: pathlib.Path):
+    """The headline scenario: while a streaming pipeline with
+    ``detach_between_batches=True`` runs in a separate process, this process
+    polls the database with short-lived read-only connections (retrying on lock
+    contention) and reads committed rows in the gaps between batches. The input
+    stream deliberately continues only after a read-only probe has seen the
+    first batch, proving the reads happen mid-run, not after the writer is
+    done."""
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    db_path = str(tmp_path / "out.duckdb")
+    first_batch = list(range(5))
+    second_batch = list(range(5, 10))
+
+    class InputSchema(pw.Schema):
+        value: int
+
+    table = pw.io.jsonlines.read(
+        inputs_path,
+        schema=InputSchema,
+        mode="streaming",
+        autocommit_duration_ms=100,
+    )
+    pw.io.duckdb.write(
+        table,
+        table_name="t",
+        database=db_path,
+        init_mode="create_if_not_exists",
+        detach_between_batches=True,
+    )
+
+    def stream_inputs():
+        write_lines(
+            inputs_path / "one.jsonl",
+            [json.dumps({"value": value}) for value in first_batch],
+        )
+        # Hold the second batch back until a read-only reader in this (parent)
+        # process has actually seen the first one committed.
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if _read_only_row_count(db_path, "t") == len(first_batch):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(
+                "no read-only connection managed to read the first batch while "
+                "the detaching writer was streaming"
+            )
+        write_lines(
+            inputs_path / "two.jsonl",
+            [json.dumps({"value": value}) for value in second_batch],
+        )
+
+    stream_thread = ExceptionAwareThread(target=stream_inputs, daemon=True)
+    stream_thread.start()
+    total = len(first_batch) + len(second_batch)
+    wait_result_with_checker(
+        lambda: _read_only_row_count(db_path, "t") == total,
+        30,
+    )
+    stream_thread.join()
+
+
+@only_with_license_key
+@needs_multiprocessing_fork
+def test_default_mode_keeps_file_locked_while_running(tmp_path: pathlib.Path):
+    """Guardrail for the default behavior: with ``detach_between_batches=False``
+    the writer holds the database open for the whole run, so every read-only
+    connection attempt from another process must keep failing with a lock error
+    while the pipeline is alive. A regression that silently released the lock in
+    default mode would make these probes succeed."""
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    db_path = str(tmp_path / "out.duckdb")
+    write_lines(
+        inputs_path / "one.jsonl",
+        [json.dumps({"value": value}) for value in range(5)],
+    )
+
+    class InputSchema(pw.Schema):
+        value: int
+
+    table = pw.io.jsonlines.read(
+        inputs_path,
+        schema=InputSchema,
+        mode="streaming",
+        autocommit_duration_ms=100,
+    )
+    pw.io.duckdb.write(
+        table,
+        table_name="t",
+        database=db_path,
+        init_mode="create_if_not_exists",
+    )
+
+    pathway_process = multiprocessing.Process(target=run)
+    pathway_process.start()
+    try:
+        # The writer creates the database file when it opens it, so the file
+        # showing up means the (lazily-opened, held) connection exists.
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and not os.path.exists(db_path):
+            time.sleep(0.05)
+        assert os.path.exists(db_path), "the writer never opened the database"
+
+        errors = []
+        for _ in range(20):
+            try:
+                con = duckdb.connect(db_path, read_only=True)
+                con.close()
+                pytest.fail(
+                    "a read-only connection succeeded while the default-mode "
+                    "writer was supposed to hold the file lock"
+                )
+            except duckdb.Error as e:
+                errors.append(str(e))
+            time.sleep(0.1)
+        assert any("lock" in error.lower() for error in errors)
+    finally:
+        pathway_process.terminate()
+        pathway_process.join()
+
+
+@only_with_license_key
+def test_two_detach_writers_same_file(tmp_path: pathlib.Path):
+    """Two detaching writers targeting the *same* database file in one run must
+    share the process-wide database instance: neither clobbers the other's table
+    even though both keep dropping and re-acquiring their connections
+    (``max_batch_size=1`` forces a cycle per row)."""
+    db_path = str(tmp_path / "multi.duckdb")
+
+    alpha = pw.debug.table_from_markdown(
+        """
+          | x | __time__
+        1 | 1 | 2
+        2 | 2 | 4
+        3 | 3 | 6
+        """
+    )
+    beta = pw.debug.table_from_markdown(
+        """
+          | y     | __time__
+        1 | hello | 2
+        2 | world | 4
+        """
+    )
+    pw.io.duckdb.write(
+        alpha,
+        table_name="alpha",
+        database=db_path,
+        init_mode="replace",
+        detach_between_batches=True,
+        max_batch_size=1,
+    )
+    pw.io.duckdb.write(
+        beta,
+        table_name="beta",
+        database=db_path,
+        init_mode="replace",
+        detach_between_batches=True,
+        max_batch_size=1,
+    )
+    run()
+
+    con = _connect(db_path)
+    assert con.execute("SELECT x FROM alpha ORDER BY x").fetchall() == [
+        (1,),
+        (2,),
+        (3,),
+    ]
+    assert con.execute("SELECT y FROM beta ORDER BY y").fetchall() == [
+        ("hello",),
+        ("world",),
+    ]
+
+
+@only_with_license_key
+def test_detach_equivalent_to_default_mode(tmp_path: pathlib.Path):
+    """The same input written with detaching on and off must produce identical
+    final table contents, in both output table types. The pairs run within one
+    ``pw.run()``, so even the ``time`` column of the stream-of-changes tables
+    must match exactly."""
+    table = pw.debug.table_from_markdown(
+        """
+          | key | value | __time__ | __diff__
+        1 | a   | 1     | 2        | 1
+        2 | b   | 2     | 2        | 1
+        3 | a   | 1     | 4        | -1
+        4 | a   | 9     | 4        | 1
+        5 | c   | 3     | 6        | 1
+        """
+    )
+    databases = {
+        "stream_detach": str(tmp_path / "stream_detach.duckdb"),
+        "stream_hold": str(tmp_path / "stream_hold.duckdb"),
+        "snapshot_detach": str(tmp_path / "snapshot_detach.duckdb"),
+        "snapshot_hold": str(tmp_path / "snapshot_hold.duckdb"),
+    }
+    for kind, db_path in databases.items():
+        snapshot = kind.startswith("snapshot")
+        pw.io.duckdb.write(
+            table,
+            table_name="t",
+            database=db_path,
+            output_table_type="snapshot" if snapshot else "stream_of_changes",
+            primary_key=[table.key] if snapshot else None,
+            init_mode="replace",
+            detach_between_batches=kind.endswith("detach"),
+            max_batch_size=1,
+        )
+    run()
+
+    def fetch(db_path: str, query: str):
+        return _connect(db_path).execute(query).fetchall()
+
+    stream_query = "SELECT key, value, time, diff FROM t ORDER BY time, diff, key"
+    assert fetch(databases["stream_detach"], stream_query) == fetch(
+        databases["stream_hold"], stream_query
+    )
+    snapshot_query = "SELECT key, value FROM t ORDER BY key"
+    assert fetch(databases["snapshot_detach"], snapshot_query) == fetch(
+        databases["snapshot_hold"], snapshot_query
+    )
 
 
 # --------------------------------------------------------------------------- #

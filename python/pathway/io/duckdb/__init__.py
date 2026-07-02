@@ -48,6 +48,7 @@ def write(
     init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     output_table_type: Literal["stream_of_changes", "snapshot"] = "stream_of_changes",
     primary_key: list[ColumnReference] | None = None,
+    detach_between_batches: bool = False,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
@@ -98,11 +99,28 @@ def write(
     ``list_inner_product``); this makes the resulting table usable as a vector store
     for retrieval in a RAG pipeline.
 
-    DuckDB is an embedded, single-file database — a file can be opened read-write by
-    only one process at a time. All writes for a single ``pw.io.duckdb.write`` run
-    on one worker even when Pathway runs with several workers; DuckDB serializes
-    writes to a file regardless, so this costs no throughput while keeping the
-    output complete and deterministic.
+    DuckDB is an embedded, single-file database: a database file may be held
+    read-write by one process or read-only by several processes, never both at
+    once. The connector offers two ways to live with that constraint, selected
+    with ``detach_between_batches``. With the default ``False`` the writer opens
+    the database once and holds it until the pipeline terminates — the lowest
+    overhead, but no other process can open the file (even read-only) while the
+    pipeline runs. With ``True`` the writer opens the database for each minibatch
+    commit and fully closes it right after, checkpointing the WAL and releasing
+    the OS file lock in the gaps between batches — so a separate process (for
+    example a query server) can read committed data from the file while the
+    pipeline keeps running. Readers can still race a flush, so they should open
+    short-lived read-only connections and retry briefly on a lock error; the
+    writer behaves symmetrically and retries acquiring the lock with a backoff
+    (starting at 10 ms, doubling up to 1 s) for up to 30 seconds before failing.
+    Detaching costs a per-batch file open plus a WAL checkpoint — typically
+    milliseconds for local files — so with sub-second minibatches consider a
+    larger ``autocommit_duration_ms``. Since an in-memory database is dropped
+    when its last connection closes, ``detach_between_batches=True`` together
+    with ``database=":memory:"`` is rejected. All writes for a single
+    ``pw.io.duckdb.write`` run on one worker even when Pathway runs with several
+    workers; DuckDB serializes writes to a file regardless, so this costs no
+    throughput while keeping the output complete and deterministic.
 
     Args:
         table: The table to write.
@@ -121,6 +139,13 @@ def write(
         primary_key: One or more columns of ``table`` that form the primary key in
             the destination table. Required for snapshot mode and forbidden
             otherwise.
+        detach_between_batches: If ``True``, the writer closes the database after
+            every minibatch commit and reopens it for the next one, releasing the
+            OS file lock in between so other processes can query the file with
+            short-lived read-only connections while the pipeline runs (see above
+            for the reader/writer retry semantics and the per-batch reopen cost).
+            The default ``False`` keeps the database open for the whole run.
+            Incompatible with ``database=":memory:"``.
         name: A unique name for the connector. If provided, this name will be used
             in logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based
@@ -247,6 +272,16 @@ def write(
     database_str = fspath(database)
     _reject_directory_path(database_str)
 
+    if detach_between_batches and database_str == IN_MEMORY_DATABASE:
+        # An in-memory database ceases to exist when its last connection closes,
+        # so detaching after every batch would silently drop all written data.
+        raise ValueError(
+            'detach_between_batches=True cannot be used with database=":memory:": '
+            "an in-memory DuckDB database is dropped when its last connection "
+            "closes, so all data would be lost after every batch. Use an on-disk "
+            "database file instead."
+        )
+
     value_fields = _format_output_value_fields(table)
 
     # DuckDB matches identifiers case-insensitively, so two schema columns whose
@@ -338,6 +373,7 @@ def write(
         table_writer_init_mode=init_mode_from_str(init_mode),
         max_batch_size=max_batch_size,
         snapshot_maintenance_on_output=is_snapshot_mode,
+        detach_between_batches=detach_between_batches,
     )
     data_format = api.DataFormat(
         format_type="identity",

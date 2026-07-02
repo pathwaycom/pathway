@@ -2,11 +2,14 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use duckdb::types::{TimeUnit, Value as DuckValue};
 pub use duckdb::Error as DuckDbDriverError;
 use duckdb::{appender_params_from_iter, params_from_iter, Connection as DuckConnection};
 use itertools::Itertools;
+use log::warn;
 use serde_json::{json, Value as JsonValue};
 
 use crate::connectors::data_format::{create_bincoded_value, FormatterContext};
@@ -111,6 +114,34 @@ pub enum DuckDbError {
         columns: Vec<String>,
     },
 
+    /// A detaching writer (`detach_between_batches=True`) could not re-acquire
+    /// the database file within the retry budget because another process kept
+    /// holding a conflicting lock the whole time.
+    #[error(
+        "could not lock DuckDB database file {path:?} within {timeout_secs} seconds: \
+         a conflicting lock is held by another process. DuckDB allows either one \
+         read-write process or several read-only processes per database file, never \
+         both — make sure concurrent readers use short-lived read-only connections \
+         (and retry on lock contention) and that no other writer process holds the \
+         file open. Last error: {source}"
+    )]
+    DatabaseLocked {
+        path: String,
+        timeout_secs: u64,
+        source: DuckDbDriverError,
+    },
+
+    /// `detach_between_batches=True` with an in-memory database: the database
+    /// ceases to exist when its last connection closes, so detaching after every
+    /// batch would silently drop all data. The Python side rejects this at
+    /// `write()` time; this variant is the engine-side guard.
+    #[error(
+        "detach_between_batches cannot be used with an in-memory DuckDB database: \
+         an in-memory database is dropped when its last connection closes, so all \
+         data would be lost after every batch. Use an on-disk database file instead."
+    )]
+    DetachOnInMemoryDatabase,
+
     /// An array value has more (or fewer) dimensions than the destination column
     /// was created with. A column typed only as `np.ndarray` carries no
     /// dimensionality, so the writer creates a 1-D `DOUBLE[]` list; a value with a
@@ -177,6 +208,31 @@ fn open_shared_connection(
     let working = anchor.lock().unwrap().try_clone()?;
     Ok((working, anchor))
 }
+
+/// Retry schedule for a detaching writer re-acquiring the database file: a
+/// momentarily-connected read-only reader holds a conflicting lock, so start
+/// with a short delay ([`LOCK_RETRY_INITIAL_DELAY`]), double it up to
+/// [`LOCK_RETRY_MAX_DELAY`], and give up after [`LOCK_RETRY_TOTAL`] — long
+/// enough to ride out any well-behaved reader, short enough that a stuck
+/// foreign process surfaces as a clear error rather than a silent stall.
+const LOCK_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(10);
+const LOCK_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+const LOCK_RETRY_TOTAL: Duration = Duration::from_secs(30);
+
+/// The `IO Error` message `DuckDB` produces when another process holds a
+/// conflicting lock on the database file. Used to tell retryable lock
+/// contention apart from permanent open failures (bad path, corrupt file, …).
+fn is_lock_contention(error: &DuckDbDriverError) -> bool {
+    error.to_string().contains("Could not set lock on file")
+}
+
+/// Count of writers per path that hold their connection for the whole run
+/// (`detach_between_batches=False`). A detaching writer targeting the same path
+/// consults this to warn that the file lock will never actually be released
+/// between its batches — the shared instance in [`OPEN_DATABASES`] stays alive
+/// as long as any holding writer keeps its anchor.
+static HOLDING_WRITERS: LazyLock<Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// How the writer turns buffered changes into SQL, fixed at construction.
 enum WritePlan {
@@ -260,9 +316,27 @@ pub struct DuckDbWriter {
     /// instance (see [`OPEN_DATABASES`]). `None` for `:memory:` and before the
     /// connection is opened.
     db_anchor: Option<Arc<Mutex<DuckConnection>>>,
+    /// When `true`, the writer closes its connection (and drops its `db_anchor`)
+    /// after every flush and re-opens the database on the next one, releasing
+    /// the OS file lock between minibatches so other processes can read the file
+    /// with short-lived read-only connections.
+    detach_between_batches: bool,
+    /// Whether the init-mode DDL and the destination preflight have already run.
+    /// Tracked independently of the connection: a detaching writer re-opens the
+    /// database on every flush, and re-running `init_mode="replace"` there would
+    /// drop and recreate the table each minibatch, silently discarding all
+    /// previously written data.
+    initialized: bool,
+    /// Whether this (non-detaching) writer has registered itself in
+    /// [`HOLDING_WRITERS`], so `Drop` knows to deregister it.
+    registered_as_holder: bool,
+    /// A detaching writer warns at most once that a holding writer on the same
+    /// path pins the shared instance, so the file lock is never released.
+    warned_mixed_hold: bool,
 }
 
 impl DuckDbWriter {
+    #[allow(clippy::fn_params_excessive_bools)]
     pub fn new(
         path: String,
         table_ctx: TableContext,
@@ -270,7 +344,15 @@ impl DuckDbWriter {
         init_mode: TableWriterInitMode,
         max_batch_size: Option<usize>,
         needs_initialization: bool,
+        detach_between_batches: bool,
     ) -> Result<Self, WriteError> {
+        // An in-memory database is dropped when its last connection closes, so a
+        // detaching writer would silently lose all data after every batch. The
+        // Python bridge rejects this combination at `write()` time; this is the
+        // engine-side guard.
+        if detach_between_batches && path == ":memory:" {
+            return Err(DuckDbError::DetachOnInMemoryDatabase.into());
+        }
         // `TableContext::schema_name` is for connectors with a schema concept
         // (PostgreSQL, SQL Server); DuckDB has none here, so the Python bridge
         // sets it to an empty string and it is ignored.
@@ -315,10 +397,19 @@ impl DuckDbWriter {
             connection: None,
             needs_initialization,
             db_anchor: None,
+            detach_between_batches,
+            initialized: false,
+            registered_as_holder: false,
+            warned_mixed_hold: false,
         })
     }
 
-    /// Open the database file and run the init-mode DDL, once, on first use.
+    /// Open the database file if no connection is currently held, and run the
+    /// init-mode DDL and the destination preflight on the first open only. A
+    /// non-detaching writer opens once and keeps the connection for its whole
+    /// lifetime; a detaching writer re-enters here on every flush, skipping the
+    /// initialization (re-running `init_mode="replace"` would wipe the data
+    /// written by earlier minibatches).
     fn ensure_connection(&mut self) -> Result<(), WriteError> {
         if self.connection.is_some() {
             return Ok(());
@@ -328,29 +419,103 @@ impl DuckDbWriter {
         } else {
             // Share a single instance per file path so several writers targeting
             // the same database don't clobber each other's tables.
-            let (working, anchor) = open_shared_connection(&self.path)?;
+            let (working, anchor) = if self.detach_between_batches {
+                // A concurrent read-only reader may momentarily hold the file
+                // lock — that is the point of detaching — so ride it out with a
+                // bounded backoff instead of failing the flush on first contact.
+                self.open_shared_connection_with_retry()?
+            } else {
+                open_shared_connection(&self.path)?
+            };
             self.db_anchor = Some(anchor);
+            if !self.detach_between_batches && !self.registered_as_holder {
+                *HOLDING_WRITERS
+                    .lock()
+                    .unwrap()
+                    .entry(self.path.clone())
+                    .or_insert(0) += 1;
+                self.registered_as_holder = true;
+            }
             working
         };
-        // Apply the requested init mode (create / replace). The shared builder
-        // appends `time`/`diff` to the CREATE only in stream-of-changes mode,
-        // and a `PRIMARY KEY (...)` when key fields are given — required so
-        // snapshot-mode `INSERT ... ON CONFLICT` has a constraint to target.
-        self.init_mode.initialize(
-            &self.quoted_table_name,
-            &self.value_fields,
-            self.key_field_names.as_deref(),
-            !self.snapshot_mode,
-            |query| {
-                connection.execute_batch(query)?;
-                Ok(())
-            },
-            duckdb_data_type,
-            quote_duckdb_identifier,
-        )?;
-        self.validate_destination(&connection)?;
+        if !self.initialized {
+            // Apply the requested init mode (create / replace). The shared builder
+            // appends `time`/`diff` to the CREATE only in stream-of-changes mode,
+            // and a `PRIMARY KEY (...)` when key fields are given — required so
+            // snapshot-mode `INSERT ... ON CONFLICT` has a constraint to target.
+            self.init_mode.initialize(
+                &self.quoted_table_name,
+                &self.value_fields,
+                self.key_field_names.as_deref(),
+                !self.snapshot_mode,
+                |query| {
+                    connection.execute_batch(query)?;
+                    Ok(())
+                },
+                duckdb_data_type,
+                quote_duckdb_identifier,
+            )?;
+            self.validate_destination(&connection)?;
+            self.initialized = true;
+        }
         self.connection = Some(connection);
         Ok(())
+    }
+
+    /// [`open_shared_connection`] with exponential backoff on lock contention,
+    /// used by a detaching writer to re-acquire the database file: a read-only
+    /// reader from another process may be connected right now, holding a
+    /// conflicting lock that it will release shortly. Non-lock errors (bad path,
+    /// corrupt file, …) fail immediately.
+    fn open_shared_connection_with_retry(
+        &self,
+    ) -> Result<(DuckConnection, Arc<Mutex<DuckConnection>>), WriteError> {
+        let started = Instant::now();
+        let mut delay = LOCK_RETRY_INITIAL_DELAY;
+        loop {
+            match open_shared_connection(&self.path) {
+                Err(WriteError::DuckDB(DuckDbError::Driver(error)))
+                    if is_lock_contention(&error) =>
+                {
+                    if started.elapsed() + delay > LOCK_RETRY_TOTAL {
+                        return Err(DuckDbError::DatabaseLocked {
+                            path: self.path.clone(),
+                            timeout_secs: LOCK_RETRY_TOTAL.as_secs(),
+                            source: error,
+                        }
+                        .into());
+                    }
+                    sleep(delay);
+                    delay = (delay * 2).min(LOCK_RETRY_MAX_DELAY);
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// Drop the working connection and the shared-instance anchor, closing the
+    /// database (and thereby checkpointing the WAL and releasing the OS file
+    /// lock) once no other writer in this process holds the instance. Warns —
+    /// once — when a non-detaching writer targets the same path: its anchor pins
+    /// the instance, so detaching never actually releases the lock.
+    fn release_connection(&mut self) {
+        self.connection = None;
+        self.db_anchor = None;
+        if !self.warned_mixed_hold
+            && HOLDING_WRITERS
+                .lock()
+                .unwrap()
+                .get(&self.path)
+                .is_some_and(|&count| count > 0)
+        {
+            warn!(
+                "DuckDB writer for table {:?} uses detach_between_batches=True, but \
+                 another writer holds database {:?} open for the whole run; the file \
+                 lock will not be released between batches until that writer finishes.",
+                self.table_name, self.path
+            );
+            self.warned_mixed_hold = true;
+        }
     }
 
     /// Preflight the destination table once the connection is open: reject views,
@@ -567,14 +732,50 @@ impl Writer for DuckDbWriter {
     }
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
+        let result = self.flush_inner();
+        // A detaching writer releases the file lock after every flush — also on
+        // a failed one, so an error propagating out of the flush never leaks a
+        // held lock that would linger until the process exits.
+        if self.detach_between_batches {
+            self.release_connection();
+        }
+        result
+    }
+
+    fn name(&self) -> String {
+        format!("DuckDB({})", self.table_name)
+    }
+
+    fn single_threaded(&self) -> bool {
+        // DuckDB is an embedded, single-file analytical database that takes an
+        // exclusive lock on the database file: it may be opened read-write by
+        // only one connection at a time. Funneling the sink onto one worker
+        // (combined with the lazy open in `ensure_connection`, so only the
+        // worker that receives data opens the file) keeps that invariant. This
+        // costs no real write throughput — DuckDB serializes writes to a file
+        // regardless — and makes the output complete and deterministic.
+        // Snapshot mode additionally needs single-threading for correct
+        // UPSERT/DELETE ordering.
+        true
+    }
+}
+
+impl DuckDbWriter {
+    fn flush_inner(&mut self) -> Result<(), WriteError> {
         // Open the file and run the init-mode DDL even with nothing buffered, so
         // an empty output still creates/replaces the destination table. Only the
         // single output-owning worker (index 0) does this — other workers never
         // receive data and must not contend for DuckDB's exclusive file lock.
         // Restricted to the modes that own table creation: "default" makes no
         // schema changes, so an empty output leaves the database untouched as
-        // before (it still validates lazily once data arrives).
-        if self.needs_initialization && self.init_mode != TableWriterInitMode::Default {
+        // before (it still validates lazily once data arrives). Once the
+        // initialization has run, an empty flush needs no connection at all — in
+        // particular a detaching writer must not re-open (and re-lock) the file
+        // on every idle minibatch.
+        if self.needs_initialization
+            && !self.initialized
+            && self.init_mode != TableWriterInitMode::Default
+        {
             self.ensure_connection()?;
         }
         if self.buffer.is_empty() {
@@ -650,22 +851,21 @@ impl Writer for DuckDbWriter {
         tx.commit()?;
         Ok(())
     }
+}
 
-    fn name(&self) -> String {
-        format!("DuckDB({})", self.table_name)
-    }
-
-    fn single_threaded(&self) -> bool {
-        // DuckDB is an embedded, single-file analytical database that takes an
-        // exclusive lock on the database file: it may be opened read-write by
-        // only one connection at a time. Funneling the sink onto one worker
-        // (combined with the lazy open in `ensure_connection`, so only the
-        // worker that receives data opens the file) keeps that invariant. This
-        // costs no real write throughput — DuckDB serializes writes to a file
-        // regardless — and makes the output complete and deterministic.
-        // Snapshot mode additionally needs single-threading for correct
-        // UPSERT/DELETE ordering.
-        true
+/// Deregister a holding writer from [`HOLDING_WRITERS`], so a detaching writer
+/// that outlives it stops warning about a lock that is no longer pinned.
+impl Drop for DuckDbWriter {
+    fn drop(&mut self) {
+        if self.registered_as_holder {
+            let mut holders = HOLDING_WRITERS.lock().unwrap();
+            if let Some(count) = holders.get_mut(&self.path) {
+                *count -= 1;
+                if *count == 0 {
+                    holders.remove(&self.path);
+                }
+            }
+        }
     }
 }
 

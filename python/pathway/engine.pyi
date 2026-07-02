@@ -965,6 +965,7 @@ class DataStorage:
         mysql_server_id: int | None = None,
         qdrant_params: QdrantParams | None = None,
         pinecone_params: PineconeParams | None = None,
+        detach_between_batches: bool = False,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

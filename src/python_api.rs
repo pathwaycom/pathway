@@ -5027,6 +5027,7 @@ pub struct DataStorage {
     mysql_server_id: Option<i64>,
     qdrant_params: Option<Arc<Py<QdrantParams>>>,
     pinecone_params: Option<Arc<Py<PineconeParams>>>,
+    detach_between_batches: bool,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5595,6 +5596,7 @@ impl DataStorage {
         mysql_server_id = None,
         qdrant_params = None,
         pinecone_params = None,
+        detach_between_batches = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5647,6 +5649,7 @@ impl DataStorage {
         mysql_server_id: Option<i64>,
         qdrant_params: Option<Py<QdrantParams>>,
         pinecone_params: Option<Py<PineconeParams>>,
+        detach_between_batches: bool,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -5716,6 +5719,7 @@ impl DataStorage {
             mysql_server_id,
             qdrant_params: qdrant_params.map(Into::into),
             pinecone_params: pinecone_params.map(Into::into),
+            detach_between_batches,
         })
     }
 
@@ -6463,6 +6467,7 @@ impl DataStorage {
             self.table_writer_init_mode,
             self.max_batch_size,
             needs_initialization,
+            self.detach_between_batches,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Unable to initialize DuckDB table: {e}")))?;
         Ok(Box::new(writer))
