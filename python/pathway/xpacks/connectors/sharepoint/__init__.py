@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 
 import pathway as pw
 from pathway.internals import api
@@ -22,7 +23,7 @@ from pathway.optional_import import optional_imports
 with optional_imports("xpack-sharepoint"):
     from office365.sharepoint.client_context import ClientContext
 
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlparse
 
 
@@ -90,6 +91,7 @@ class _SharePointScanner:
         stored_metadata: dict[str, _SharePointEntryMeta],
         object_size_limit: int | None = None,
         common_metadata: dict[str, Any] = {},
+        only_metadata: bool = False,
     ):
         self._context = context
         self._root_path = root_path
@@ -97,6 +99,7 @@ class _SharePointScanner:
         self._stored_metadata = stored_metadata
         self._object_size_limit = object_size_limit
         self.common_metadata = common_metadata
+        self._only_metadata = only_metadata
 
     def _is_changed(self, metadata):
         return self._stored_metadata.get(metadata.path) != metadata
@@ -125,7 +128,11 @@ class _SharePointScanner:
                     f"{metadata.size} exceeds the limit {self._object_size_limit}"
                 )
             if self._is_changed(metadata):
-                if size_limit_exceeded:
+                if self._only_metadata:
+                    # The contents are never fetched: a synthetic payload is used
+                    # only to trigger a change inside the UpsertSession.
+                    content = uuid.uuid4().bytes
+                elif size_limit_exceeded:
                     content = b""
                 else:
                     content = file.get_content().execute_query_retry().value
@@ -154,6 +161,7 @@ class _SharePointSubject(ConnectorSubject):
         recursive,
         object_size_limit,
         max_failed_attempts_in_row,
+        only_metadata=False,
     ):
         _check_entitlements("xpack-sharepoint")
         super().__init__(datasource_name="sharepoint")
@@ -166,6 +174,7 @@ class _SharePointSubject(ConnectorSubject):
         self._object_size_limit = object_size_limit
         self._stored_metadata = {}
         self._max_failed_attempts_in_row = max_failed_attempts_in_row
+        self._only_metadata = only_metadata
 
     @property
     def _session_type(self) -> api.SessionType:
@@ -195,6 +204,7 @@ class _SharePointSubject(ConnectorSubject):
                     self._stored_metadata,
                     self._object_size_limit,
                     common_metadata={"base_url": f"{_url.scheme}://{_url.netloc}"},
+                    only_metadata=self._only_metadata,
                 )
                 diff = scanner.get_snapshot_diff()
                 n_failed_attempts_in_row = 0
@@ -261,6 +271,7 @@ def read(
     thumbprint: str,
     root_path: str,
     mode: str = "streaming",
+    format: Literal["binary", "only_metadata"] = "binary",
     recursive: bool = True,
     object_size_limit: int | None = None,
     with_metadata: bool = False,
@@ -271,6 +282,10 @@ def read(
     Requires a valid Pathway Live Data Framework Scale license key.
 
     It will return a table with single column `data` containing each file in a binary format.
+
+    Note that if you only need to monitor changes in the given directory, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only the ``_metadata``
+    column, and no time or traffic will be spent on downloading the files' contents.
 
     Args:
         url: URL of the SharePoint site including the path to the site. For example: \
@@ -288,6 +303,10 @@ read;
 updates, deletions and new files every `refresh_interval` seconds. "static" mode will \
 only consider the available data and ingest all of it in one commit. The default value \
 is "streaming";
+        format: The format of the resulting table. Can be either ``"binary"``, which \
+corresponds to a table with a ``data`` column containing each file's contents, or \
+``"only_metadata"``, which corresponds to a table that has only the ``_metadata`` column \
+with the objects' metadata, without downloading the objects themselves;
         recursive: If set to True, the connector will scan the nested directories. \
 Otherwise it will only process files that are placed in the specified directory;
         object_size_limit: Maximum size (in bytes) of a file that will be processed by \
@@ -362,15 +381,20 @@ you can configure the connector this way:
         cert_path=cert_path,
     )
 
+    only_provide_metadata = format == "only_metadata"
     subject = _SharePointSubject(
         context_wrapper=context_wrapper,
         root_path=root_path,
         refresh_interval=refresh_interval,
         mode=mode,
-        with_metadata=with_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
         recursive=recursive,
         object_size_limit=object_size_limit,
         max_failed_attempts_in_row=max_failed_attempts_in_row,
+        only_metadata=only_provide_metadata,
     )
 
-    return pw.io.python.read(subject, format="binary")
+    table = pw.io.python.read(subject, format="binary")
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table

@@ -2893,6 +2893,36 @@ def test_pyfilesystem_simple(tmp_path: pathlib.Path):
     assert paths == set(["projects/a.txt", "projects/b.txt"])
 
 
+def test_pyfilesystem_only_metadata(tmp_path: pathlib.Path):
+    zip_path = (
+        pathlib.Path("/".join(__file__.split("/")[:-1])) / "data" / "pyfs-testdata.zip"
+    )
+    output_path = tmp_path / "output.txt"
+
+    with open_fs("zip://" + str(zip_path)) as source:
+        table = pw.io.pyfilesystem.read(
+            source,
+            mode="static",
+            format="only_metadata",
+        )
+        pw.io.jsonlines.write(table, output_path)
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    paths = set()
+    names = set()
+    with open(output_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            # Only the metadata is reported; the file contents are never read.
+            assert data.keys() == {"_metadata", "time", "diff"}
+            metadata = data["_metadata"]
+            paths.add(metadata["path"])
+            names.add(metadata["name"])
+
+    assert names == set(["a.txt", "b.txt"])
+    assert paths == set(["projects/a.txt", "projects/b.txt"])
+
+
 @needs_multiprocessing_fork
 def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs"

@@ -70,6 +70,7 @@ pub struct S3Scanner {
     bucket: S3Bucket,
     objects_prefix: String,
     object_pattern: GlobPattern,
+    only_provide_metadata: bool,
     pending_modification_download_tasks: Vec<FileLikeMetadata>,
     pending_modifications: HashMap<String, Vec<u8>>,
     downloader_pool: ThreadPool,
@@ -139,6 +140,21 @@ impl PosixLikeScanner for S3Scanner {
             }
         }
 
+        // When only the metadata is requested, the object contents are never read.
+        // The pending tasks already carry the full `FileLikeMetadata` obtained from
+        // the bucket listing, so the actions can be emitted straight away without
+        // spending a single network request on downloading the bodies.
+        if self.only_provide_metadata {
+            for task in self.pending_modification_download_tasks.drain(..) {
+                if cached_object_storage.contains_object(task.path.as_bytes()) {
+                    result.push(QueuedAction::Update(task.path.as_bytes().into(), task));
+                } else {
+                    result.push(QueuedAction::Read(task.path.as_bytes().into(), task));
+                }
+            }
+            return Ok(result);
+        }
+
         let mut bulk_for_download = Vec::new();
         let mut total_bulk_size = 0;
         while let Some(pending_task) = self.pending_modification_download_tasks.pop_if(|task| {
@@ -195,6 +211,7 @@ impl S3Scanner {
         object_pattern: impl Into<String>,
         downloader_threads_count: usize,
         is_polling_enabled: bool,
+        only_provide_metadata: bool,
     ) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
         let object_pattern = object_pattern.into();
@@ -216,6 +233,7 @@ impl S3Scanner {
             bucket,
             objects_prefix,
             object_pattern: GlobPattern::new(&object_pattern)?,
+            only_provide_metadata,
             downloader_pool: ThreadPoolBuilder::new()
                 .num_threads(downloader_threads_count)
                 .build()

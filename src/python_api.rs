@@ -6302,6 +6302,7 @@ impl DataStorage {
             self.object_pattern.clone(),
             self.downloader_threads_count()?,
             self.mode.is_polling_enabled(),
+            self.only_provide_metadata,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize S3 scanner: {e}")))?;
         let storage = PosixLikeReader::new(

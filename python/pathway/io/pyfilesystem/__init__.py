@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Literal
 
@@ -26,7 +27,15 @@ class _PyFilesystemUpdate:
 class _PyFilesystemSubject(ConnectorSubject):
 
     def __init__(
-        self, source, *, path, mode, refresh_interval, with_metadata, **kwargs
+        self,
+        source,
+        *,
+        path,
+        mode,
+        refresh_interval,
+        with_metadata,
+        only_metadata=False,
+        **kwargs,
     ):
         super().__init__(datasource_name="pyfilesystem", **kwargs)
         self.source = source
@@ -34,6 +43,7 @@ class _PyFilesystemSubject(ConnectorSubject):
         self.mode = mode
         self.refresh_interval = refresh_interval
         self.with_metadata = with_metadata
+        self.only_metadata = only_metadata
         self.stored_modify_times = {}
 
     def run(self):
@@ -45,19 +55,22 @@ class _PyFilesystemSubject(ConnectorSubject):
 
             update = self._get_snapshot_update()
             for changed_path in update.changed_paths:
-                try:
-                    with self.source.open(changed_path) as file:
-                        data = file.read()
-                except FileNotFoundError:
-                    logging.exception(
-                        f"Failed to read file from {changed_path}. "
-                        "Most likely it was deleted between the change "
-                        "tracking and file read"
-                    )
-                    update.deleted_paths.append(changed_path)
-                    continue
-
-                data = data.encode("utf-8")
+                if self.only_metadata:
+                    # The contents are never read: a synthetic payload is used
+                    # only to trigger a change inside the UpsertSession.
+                    data = uuid.uuid4().bytes
+                else:
+                    try:
+                        with self.source.open(changed_path) as file:
+                            data = file.read().encode("utf-8")
+                    except FileNotFoundError:
+                        logging.exception(
+                            f"Failed to read file from {changed_path}. "
+                            "Most likely it was deleted between the change "
+                            "tracking and file read"
+                        )
+                        update.deleted_paths.append(changed_path)
+                        continue
 
                 provided_metadata = None
                 if self.with_metadata:
@@ -149,6 +162,7 @@ def read(
     path: str = "",
     refresh_interval: float = 30,
     mode: Literal["streaming", "static"] = "streaming",
+    format: Literal["binary", "only_metadata"] = "binary",
     with_metadata: bool = False,
     name: str | None = None,
     max_backlog_size: int | None = None,
@@ -160,6 +174,10 @@ def read(
     format. If the ``with_metadata`` option is specified, it also attaches a column
     ``_metadata`` containing the metadata of the objects read.
 
+    Note that if you only need to monitor changes in the given source, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only the ``_metadata``
+    column, and no time or resources will be spent on reading the files' contents.
+
     Args:
         source: PyFilesystem source.
         path: Path inside the PyFilesystem source to process. All files within this
@@ -169,6 +187,11 @@ def read(
             updates, deletions, and new files every ``refresh_interval`` seconds. "static" mode will
             only consider the available data and ingest all of it in one commit.
             The default value is "streaming".
+        format: the format of the resulting table. Can be either ``"binary"``, which
+            corresponds to a table with a ``data`` column containing each file's contents,
+            or ``"only_metadata"``, which corresponds to a table that has only the
+            ``_metadata`` column with the objects' metadata, without reading the objects
+            themselves.
         refresh_interval: time in seconds between scans. Applicable if the mode is
             set to "streaming".
         with_metadata: when set to True, the connector will add column
@@ -219,15 +242,17 @@ def read(
     >>> table = pw.io.pyfilesystem.read(source)  # doctest: +SKIP
     """
 
+    only_provide_metadata = format == "only_metadata"
     subject = _PyFilesystemSubject(
         source=source,
         path=path,
         mode=mode,
         refresh_interval=refresh_interval,
-        with_metadata=with_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
+        only_metadata=only_provide_metadata,
     )
 
-    return python_connector_read(
+    table = python_connector_read(
         subject,
         format="binary",
         autocommit_duration_ms=None,
@@ -235,3 +260,6 @@ def read(
         max_backlog_size=max_backlog_size,
         _stacklevel=5,
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table
