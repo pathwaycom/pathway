@@ -1,8 +1,10 @@
 // Copyright © 2026 Pathway
 
 pub mod aws;
+pub mod chroma;
 pub mod clickhouse;
 pub mod data_lake;
+pub mod duckdb;
 pub mod elasticsearch;
 pub mod file;
 pub mod kafka;
@@ -12,22 +14,27 @@ pub mod mssql;
 pub mod mysql;
 pub mod nats;
 pub mod null;
+pub mod pinecone;
 pub mod polling;
 pub mod postgres;
 pub mod python;
+pub mod qdrant;
 pub mod questdb;
 pub mod rabbitmq;
 pub mod scanner;
 pub mod sharding;
 pub mod sqlite;
+pub mod weaviate;
 
 pub use file::FileWriter;
 pub use kafka::{KafkaReader, KafkaReaderError, KafkaWriter, RdkafkaWatermark};
 pub use mqtt::{MqttReader, MqttWriter, MQTT_CLIENT_MAX_CHANNEL_SIZE, MQTT_MAX_MESSAGES_IN_QUEUE};
 pub use null::NullWriter;
 pub use python::{PythonReader, PythonReaderBuilder};
+pub use qdrant::QdrantWriter;
 pub use questdb::{QuestDBAtColumnPolicy, QuestDBWriter};
 
+pub use self::chroma::{ChromaError, ChromaWriter};
 pub use self::clickhouse::{ClickHouseError, ClickHouseWriter};
 
 use s3::error::S3Error;
@@ -84,18 +91,21 @@ use serde::{Deserialize, Serialize};
 pub use self::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
 pub use self::data_lake::iceberg::{IcebergError, IcebergReader};
 pub use self::data_lake::LakeWriter;
+pub use self::duckdb::{DuckDbError, DuckDbWriter};
 pub use self::elasticsearch::{ElasticSearchError, ElasticSearchReader, ElasticSearchWriter};
 pub use self::mongodb::{MongoReader, MongoWriter};
 pub use self::mssql::{MssqlError, MssqlReader};
 pub use self::mysql::{MysqlError, MysqlReader, MysqlReaderError};
 pub use self::nats::NatsReader;
 pub use self::nats::NatsWriter;
+pub use self::pinecone::{PineconeError, PineconeWriter};
 pub use self::polling::{LiveState, PolledRow, PollingDataSource, PollingReader};
 pub use self::postgres::{
     PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
 pub use self::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
 pub use self::sqlite::{SqliteError, SqliteReader, SqliteWriter};
+pub use self::weaviate::{WeaviateError, WeaviateWriter};
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -290,6 +300,7 @@ pub enum ReadResult {
 }
 
 use crate::connectors::data_storage::mongodb::MongoDbError;
+use crate::connectors::data_storage::qdrant::QdrantWriteError;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -768,6 +779,12 @@ pub enum WriteError {
     #[error(transparent)]
     MqttPoll(#[from] MqttConnectionError),
 
+    #[error(
+        "the MQTT broker kept the connection alive but did not confirm delivery of {0} in-flight \
+         message(s); giving up to avoid blocking the pipeline indefinitely"
+    )]
+    MqttDeliveryConfirmationTimeout(usize),
+
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
 
@@ -789,6 +806,9 @@ pub enum WriteError {
     #[error(transparent)]
     ClickHouse(#[from] ClickHouseError),
 
+    #[error(transparent)]
+    Chroma(#[from] ChromaError),
+
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),
 
@@ -805,6 +825,9 @@ pub enum WriteError {
     ElasticSearch(#[from] ElasticSearchError),
 
     #[error(transparent)]
+    Weaviate(#[from] WeaviateError),
+
+    #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
     #[error(transparent)]
@@ -814,6 +837,9 @@ pub enum WriteError {
     MongoDB(#[from] MongoDbError),
 
     #[error(transparent)]
+    Qdrant(#[from] QdrantWriteError),
+
+    #[error(transparent)]
     Mssql(#[from] MssqlError),
 
     #[error(transparent)]
@@ -821,6 +847,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     Sqlite(#[from] SqliteError),
+
+    #[error(transparent)]
+    DuckDB(#[from] DuckDbError),
 
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
@@ -857,6 +886,9 @@ pub enum WriteError {
 
     #[error("primary key field names must be specified for a snapshot mode")]
     EmptyKeyFieldsForSnapshot,
+
+    #[error(transparent)]
+    Pinecone(#[from] PineconeError),
 }
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, WriteError>`.
@@ -864,6 +896,14 @@ pub enum WriteError {
 impl From<::mongodb::error::Error> for WriteError {
     fn from(e: ::mongodb::error::Error) -> Self {
         WriteError::MongoDB(MongoDbError::Driver(e))
+    }
+}
+
+// Allow `?` on raw `duckdb::Error` in functions returning `Result<_, WriteError>`.
+// Routes through `DuckDbError::Driver` so the full chain is `WriteError::DuckDB`.
+impl From<::duckdb::Error> for WriteError {
+    fn from(e: ::duckdb::Error) -> Self {
+        WriteError::DuckDB(DuckDbError::Driver(e))
     }
 }
 

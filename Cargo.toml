@@ -49,6 +49,7 @@ csv = "1.3.1"
 deltalake = { version = "0.31.1", features = ["datafusion", "s3"] }
 derivative = "2.2.0"
 differential-dataflow = { path = "./external/differential-dataflow" }
+duckdb = { version = "1.10504.0", features = ["bundled", "json"] }
 ed25519-dalek = { version = "2.1.1", features = ["serde", "pkcs8"] }
 elasticsearch = "8.17.0-alpha.1"
 futures = "0.3.31"
@@ -120,7 +121,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 tonic = { version = "0.13.1", features = ["tls-native-roots"] }
 typetag = "0.2.21"
 usearch = "2.15.3"
-uuid = { version = "1.17.0", features = ["v4"] }
+uuid = { version = "1.17.0", features = ["v4", "v5"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]

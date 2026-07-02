@@ -18,15 +18,41 @@ use super::{
 pub const MQTT_MAX_MESSAGES_IN_QUEUE: usize = 1024;
 pub const MQTT_CLIENT_MAX_CHANNEL_SIZE: usize = 1024 * 1024;
 
+// If the broker keeps the connection alive (i.e. it still answers keep-alive
+// pings) but never acknowledges the messages we publish, the delivery-draining
+// loop below would spin on keep-alive traffic forever, so `pw.run()` would never
+// terminate on a bounded input. To keep the connector usable for terminating
+// batch pipelines we give up after this many consecutive keep-alive pings during
+// which not a single in-flight message was confirmed, and surface an error
+// instead of blocking the pipeline indefinitely.
+pub const MQTT_MAX_PINGS_WITHOUT_DELIVERY: usize = 3;
+
+// A transient broker outage (broker restart, network blip) surfaces as a burst
+// of connection errors while `rumqttc` reconnects. We tolerate this many
+// consecutive errors before giving up, matching the resilience of the NATS and
+// Kafka readers, so that a short outage doesn't tear down a streaming pipeline.
+pub const MQTT_MAX_CONSECUTIVE_ERRORS: usize = 32;
+
 pub struct MqttReader {
+    client: MqttClient,
     connection: MqttConnection,
+    topic: String,
+    qos: MqttQoS,
     total_entries_read: usize,
 }
 
 impl MqttReader {
-    pub fn new(connection: MqttConnection) -> Self {
+    pub fn new(
+        client: MqttClient,
+        connection: MqttConnection,
+        topic: String,
+        qos: MqttQoS,
+    ) -> Self {
         Self {
+            client,
             connection,
+            topic,
+            qos,
             total_entries_read: 0,
         }
     }
@@ -57,6 +83,15 @@ impl Reader for MqttReader {
                         offset,
                     ));
                 }
+                MqttEvent::Incoming(MqttPacket::ConnAck(_)) => {
+                    // A `ConnAck` here means the connection was re-established after
+                    // a disconnect. With a clean session the broker forgets our
+                    // subscription on reconnect, so we must re-subscribe or we would
+                    // silently stop receiving messages.
+                    if let Err(e) = self.client.subscribe(self.topic.clone(), self.qos) {
+                        warn!("Failed to re-subscribe to MQTT topic after reconnect: {e}");
+                    }
+                }
                 other => {
                     info!("Received metadata event from MQTT reader: {other:?}");
                 }
@@ -65,6 +100,10 @@ impl Reader for MqttReader {
 
         // The broker has closed the connection, no new messages are expected
         Ok(ReadResult::Finished)
+    }
+
+    fn max_allowed_consecutive_errors(&self) -> usize {
+        MQTT_MAX_CONSECUTIVE_ERRORS
     }
 
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
@@ -125,7 +164,13 @@ impl MqttWriter {
     }
 
     fn ensure_max_packets_in_queue(&mut self, max_in_queue: usize) -> Result<(), WriteError> {
+        // Counts keep-alive pings observed since the last time a message was
+        // actually confirmed. It is reset to zero on every delivery confirmation
+        // and lets us detect a broker that keeps the connection alive but never
+        // acknowledges our publishes (which would otherwise loop forever).
+        let mut pings_without_delivery = 0;
         while self.packets_in_queue > max_in_queue {
+            let packets_in_queue_before = self.packets_in_queue;
             let packet = match self.connection.recv() {
                 Ok(Ok(event)) => event,
                 Ok(Err(event_error)) => {
@@ -171,9 +216,31 @@ impl MqttWriter {
                     // the MQTT client retries sending the last message with the DUP flag set.
                     self.on_packet_acked(id.pkid);
                 }
+                MqttEvent::Outgoing(MqttOutgoing::PingReq) => {
+                    // A keep-alive ping means a whole keep-alive interval elapsed
+                    // with the connection alive but no message got confirmed. If
+                    // this keeps happening, the broker is silently dropping our
+                    // publishes and we must not block the pipeline forever.
+                    pings_without_delivery += 1;
+                    if pings_without_delivery >= MQTT_MAX_PINGS_WITHOUT_DELIVERY {
+                        error!(
+                            "MQTT broker did not confirm delivery of {} in-flight message(s) \
+                             over {MQTT_MAX_PINGS_WITHOUT_DELIVERY} keep-alive intervals",
+                            self.packets_in_queue
+                        );
+                        return Err(WriteError::MqttDeliveryConfirmationTimeout(
+                            self.packets_in_queue,
+                        ));
+                    }
+                }
                 other => {
                     info!("Auxiliary information packet, unused in submission tracking: {other:?}");
                 }
+            }
+            if self.packets_in_queue < packets_in_queue_before {
+                // A message was confirmed since the last iteration: the broker is
+                // making progress, so reset the keep-alive stall detector.
+                pings_without_delivery = 0;
             }
         }
         Ok(())

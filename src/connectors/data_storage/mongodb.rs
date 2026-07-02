@@ -161,6 +161,7 @@ pub struct MongoWriter {
     collection: MongoCollection<BsonDocument>,
     buffer: WriteBuffer,
     max_batch_size: Option<usize>,
+    single_threaded: bool,
 }
 
 impl MongoWriter {
@@ -170,6 +171,7 @@ impl MongoWriter {
         collection: MongoCollection<BsonDocument>,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
+        sorted_output: bool,
     ) -> Self {
         let buffer = if snapshot_mode {
             WriteBuffer::Snapshot(HashMap::new())
@@ -182,6 +184,10 @@ impl MongoWriter {
             collection,
             buffer,
             max_batch_size,
+            // A global `sort_by` order spans the whole minibatch, so it can only
+            // be honored by a single writer; otherwise MongoDB writes shard
+            // freely across workers (see `single_threaded`).
+            single_threaded: sorted_output,
         }
     }
 
@@ -282,6 +288,22 @@ impl Writer for MongoWriter {
         self.buffer.clear();
 
         result
+    }
+
+    fn single_threaded(&self) -> bool {
+        // MongoDB writes shard freely across workers: the engine shards output by
+        // row key (`Shard for (Key, _)` hashes the key only), so every event for a
+        // given `_id` — insert, delete, and both halves of an update — is handled
+        // by one worker, and `MongoWriter` keeps no cross-worker global state
+        // (stream-of-changes appends independent documents; snapshot issues
+        // per-`_id` upserts/deletes via `bulk_write`). Disjoint `_id` ownership
+        // rules out conflicting writes.
+        //
+        // The only exception is a global `sort_by` order: it spans the whole
+        // minibatch, so a single writer is required to produce it. That case is
+        // captured at construction time in `self.single_threaded` (set from whether
+        // the sink was given a `sort_by`).
+        self.single_threaded
     }
 
     fn name(&self) -> String {

@@ -795,6 +795,7 @@ class BedrockChat(BaseChat):
         max_tokens: Maximum number of tokens to generate. Defaults to ``1024``.
         temperature: Sampling temperature (``0.0`` to ``1.0``).
         top_p: Top-p sampling parameter.
+        top_k: Top-k sampling parameter (supported by Anthropic models).
         stop_sequences: List of sequences that will stop generation.
 
     Example:
@@ -817,6 +818,9 @@ class BedrockChat(BaseChat):
     ROLE_ASSISTANT = "assistant"
     ROLE_SYSTEM = "system"
     _SUPPORTED_ROLES = {ROLE_USER, ROLE_ASSISTANT, ROLE_SYSTEM}
+
+    # Arguments specific to certain models (sent via additionalModelRequestFields)
+    _MODEL_SPECIFIC_ARGS = {"top_k"}
 
     @staticmethod
     def _convert_messages_to_bedrock_format(messages: list[dict]) -> list[dict]:
@@ -971,6 +975,15 @@ class BedrockChat(BaseChat):
                 "inferenceConfig": inference_config,
             }
 
+            # Extract model-specific parameters (like top_k) into additionalModelRequestFields
+            additional_fields = {}
+            for arg in self._MODEL_SPECIFIC_ARGS:
+                if arg in kwargs:
+                    additional_fields[arg] = kwargs.pop(arg)
+
+            if additional_fields:
+                converse_kwargs["additionalModelRequestFields"] = additional_fields
+
             if system_prompts:
                 converse_kwargs["system"] = system_prompts
 
@@ -1024,8 +1037,7 @@ class BedrockChat(BaseChat):
             "temperature",
             "top_p",
             "stop_sequences",
-            "top_k",  # Some models support this
-        }
+        }.union(self._MODEL_SPECIFIC_ARGS)
         return arg_name in supported_args
 
 

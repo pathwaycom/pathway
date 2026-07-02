@@ -548,6 +548,100 @@ for the details.
                 pet: 'dog',
             }
         ]
+
+    **Writing to MongoDB Atlas.** `MongoDB Atlas <https://www.mongodb.com/atlas>`_
+    is the managed, cloud-hosted version of MongoDB and speaks the same wire
+    protocol, so this same connector writes to it directly — there is no separate
+    Atlas connector. Pass the cluster's ``mongodb+srv://`` connection string (copy
+    it from the Atlas UI under *Connect → Drivers*); the SRV scheme, TLS, and
+    authentication are handled by the driver with no extra configuration:
+
+    >>> pw.io.mongodb.write(
+    ...     pet_owners,
+    ...     connection_string="mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority",
+    ...     database="pathway-test",
+    ...     collection="pet-owners",
+    ... )
+
+    **Writing vector embeddings for Atlas Vector Search.** A ``numpy`` array column
+    is serialized to a BSON array of numbers, which is exactly the shape
+    `Atlas Vector Search <https://www.mongodb.com/docs/atlas/atlas-vector-search/>`_
+    expects — so embeddings can be written with no special handling. Use
+    ``output_table_type="snapshot"`` so the collection keeps exactly one document
+    per row and never accumulates stale vectors:
+
+    .. code-block:: python
+
+        import numpy as np
+        import numpy.typing as npt
+        import pathway as pw
+
+        class Embeddings(pw.Schema):
+            doc_id: int
+            embedding: npt.NDArray[np.float64]   # e.g. a 736-dimensional vector
+
+        # `embeddings` is any table whose `embedding` column holds numpy float
+        # vectors, for example the output of an embedder UDF in a RAG pipeline.
+        pw.io.mongodb.write(
+            embeddings,
+            connection_string="mongodb+srv://...",
+            database="vector_db",
+            collection="embeddings",
+            output_table_type="snapshot",
+        )
+
+    Written vectors become searchable once a ``vectorSearch`` index exists on the
+    embedding field. Pathway does not create that index — it is an Atlas object you
+    create once through the Atlas UI, the Administration API, or the standard
+    MongoDB driver. ``numDimensions`` must match the length of the vectors Pathway
+    writes:
+
+    .. code-block:: python
+
+        from pymongo import MongoClient
+        from pymongo.operations import SearchIndexModel
+
+        client = MongoClient("mongodb+srv://...")
+        client["vector_db"]["embeddings"].create_search_index(
+            SearchIndexModel(
+                definition={
+                    "fields": [
+                        {
+                            "type": "vector",
+                            "path": "embedding",
+                            "numDimensions": 736,
+                            "similarity": "cosine",
+                        }
+                    ]
+                },
+                name="pw_vector_index",
+                type="vectorSearch",
+            )
+        )
+
+    Once the index is queryable, retrieve nearest neighbors with ``$vectorSearch``:
+
+    .. code-block:: python
+
+        client["vector_db"]["embeddings"].aggregate([
+            {"$vectorSearch": {
+                "index": "pw_vector_index",
+                "path": "embedding",
+                "queryVector": query_vector,   # a list[float] of length 736
+                "numCandidates": 100,
+                "limit": 5,
+            }},
+            {"$project": {"_id": 0, "doc_id": 1,
+                          "score": {"$meta": "vectorSearchScore"}}},
+        ])
+
+    **Note on parallelism.** When the program is run with multiple workers
+    (``pathway spawn -n N``), the write is distributed across them, and write
+    throughput grows with the worker count up to the capacity of the target
+    MongoDB/Atlas deployment. Each document is written by a single worker, so the
+    result is the same as with one worker. The exception is ``sort_by``: requesting
+    a global order within a minibatch makes the connector write from a single
+    worker, so a sorted output does not benefit from additional workers.
     """
     is_snapshot_mode = output_table_type == SNAPSHOT_OUTPUT_TABLE_TYPE
     column_names = set(table.schema.column_names())

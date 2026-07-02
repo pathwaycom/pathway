@@ -19,6 +19,64 @@ use super::{
     KeyToU64IdMapper, NonFilteringExternalIndex,
 };
 
+/// Build a Qdrant client from a URL and optional API key.
+///
+/// Shared between the KNN index ([`QdrantIndex`]) and the output connector
+/// (`QdrantWriter`) so both talk to Qdrant the exact same way.
+pub fn build_qdrant_client(
+    url: &str,
+    api_key: Option<String>,
+) -> Result<Qdrant, qdrant_client::QdrantError> {
+    Qdrant::from_url(url).api_key(api_key).build()
+}
+
+/// Ensure a collection exists, creating it with a single `Cosine`-distance
+/// vector of the given size if it does not.
+///
+/// Shared between the KNN index and the output connector: both create a missing
+/// collection with the same vector configuration, so a pipeline that indexes and
+/// one that writes agree on the collection layout.
+pub fn ensure_collection_with_cosine(
+    runtime: &tokio::runtime::Runtime,
+    client: &Qdrant,
+    collection_name: &str,
+    vector_size: u64,
+) -> Result<(), qdrant_client::QdrantError> {
+    runtime.block_on(async {
+        if client.collection_exists(collection_name).await? {
+            return Ok(());
+        }
+        match client
+            .create_collection(
+                CreateCollectionBuilder::new(collection_name)
+                    .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            // Several workers may create the collection concurrently (the output
+            // sink runs on every worker): treat the failure as success if the
+            // collection exists by the time we recheck, surfacing the original
+            // error otherwise.
+            Err(e) => {
+                if client.collection_exists(collection_name).await? {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    })
+}
+
+/// Cast a slice of `f64` vector components to the `f32` Qdrant stores.
+///
+/// Shared so the index and the output connector narrow vectors identically.
+#[allow(clippy::cast_possible_truncation)]
+pub fn cast_f64_slice_to_f32(data: &[f64]) -> Vec<f32> {
+    data.iter().map(|v| *v as f32).collect()
+}
+
 pub struct QdrantIndex {
     client: Qdrant,
     collection_name: String,
@@ -36,26 +94,10 @@ impl QdrantIndex {
     ) -> Result<Self, Error> {
         let runtime = create_async_tokio_runtime().map_err(IndexingError::from)?;
 
-        let client = Qdrant::from_url(url)
-            .api_key(api_key)
-            .build()
+        let client = build_qdrant_client(url, api_key).map_err(IndexingError::from)?;
+
+        ensure_collection_with_cosine(&runtime, &client, &collection_name, vector_size as u64)
             .map_err(IndexingError::from)?;
-
-        runtime.block_on(async {
-            let exists = client.collection_exists(&collection_name).await?;
-
-            if !exists {
-                client
-                    .create_collection(
-                        CreateCollectionBuilder::new(collection_name.clone()).vectors_config(
-                            VectorParamsBuilder::new(vector_size as u64, Distance::Cosine),
-                        ),
-                    )
-                    .await?;
-            }
-
-            Ok::<_, IndexingError>(())
-        })?;
 
         Ok(QdrantIndex {
             client,
@@ -72,7 +114,7 @@ impl QdrantIndex {
         data: &[f64],
         limit: usize,
     ) -> Result<Vec<KeyScoreMatch>, IndexingError> {
-        let query_vec: Vec<f32> = data.iter().map(|v| *v as f32).collect();
+        let query_vec: Vec<f32> = cast_f64_slice_to_f32(data);
         let search_result = self
             .client
             .query(
@@ -137,7 +179,7 @@ impl QdrantIndex {
                 }
 
                 let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
-                let vec_f32: Vec<f32> = vec_data.iter().map(|v| *v as f32).collect();
+                let vec_f32: Vec<f32> = cast_f64_slice_to_f32(&vec_data);
                 Ok(PointStruct::new(
                     key_id,
                     vec_f32,

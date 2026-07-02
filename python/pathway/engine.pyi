@@ -929,6 +929,8 @@ class DataStorage:
         aws_s3_settings: AwsS3Settings | None = None,
         elasticsearch_params: ElasticSearchParams | None = None,
         elasticsearch_reader_params: ElasticSearchReaderParams | None = None,
+        chroma_params: ChromaParams | None = None,
+        weaviate_params: WeaviateParams | None = None,
         parallel_readers: int | None = None,
         python_subject: PythonSubject | None = None,
         unique_name: str | None = None,
@@ -961,6 +963,8 @@ class DataStorage:
         schema_name: str | None = None,
         with_metadata: bool = False,
         mysql_server_id: int | None = None,
+        qdrant_params: QdrantParams | None = None,
+        pinecone_params: PineconeParams | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 
@@ -1003,6 +1007,33 @@ class ElasticSearchAuth:
 
 class ElasticSearchParams:
     def __init__(self, *args, **kwargs): ...
+
+class ChromaParams:
+    def __init__(self, *args, **kwargs): ...
+
+class QdrantParams:
+    def __init__(
+        self,
+        url: str,
+        collection_name: str,
+        vector_field_index: int,
+        api_key: str | None = None,
+        batch_size: int = 256,
+    ) -> None: ...
+
+class WeaviateParams:
+    def __init__(self, *args, **kwargs): ...
+
+class PineconeParams:
+    def __init__(
+        self,
+        api_key: str,
+        index_name: str,
+        vector_index: int,
+        metadata_indices: list[int],
+        namespace: str = ...,
+        control_host: str | None = None,
+    ) -> None: ...
 
 class ElasticSearchReaderParams:
     def __init__(self, *args, **kwargs): ...

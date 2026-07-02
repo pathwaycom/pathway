@@ -119,16 +119,17 @@ use crate::connectors::data_storage::elasticsearch::build_elasticsearch_reader;
 use crate::connectors::data_storage::mssql::MssqlWriter;
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
+use crate::connectors::data_storage::pinecone::PineconeWriter;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
-    ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter,
-    IcebergReader, KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader,
-    MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter,
-    ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
-    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
-    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ChromaWriter, ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
+    ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader, KafkaWriter, LakeWriter,
+    MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader,
+    NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType,
+    PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader,
+    RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
+    TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -241,6 +242,7 @@ async fn build_rabbitmq_environment(
 }
 
 use crate::connectors::data_storage::rabbitmq::probe_last_offset;
+use crate::external_integration::qdrant_integration::build_qdrant_client;
 
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
@@ -3785,10 +3787,17 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
+        let worker_index = self_.borrow().worker_index();
+        // Whether the output requests a global within-minibatch order. A writer
+        // that needs a single worker to honor that order (e.g. MongoDB) reads
+        // this when deciding `single_threaded()`; writers that don't care ignore it.
+        let sorted_output = sort_by_indices.is_some();
         let sink_impl = data_sink.borrow().construct_writer(
             py,
             &data_format.borrow(),
             self_.borrow().license.as_ref(),
+            worker_index,
+            sorted_output,
         )?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
 
@@ -4587,6 +4596,126 @@ impl ElasticSearchAuth {
     }
 }
 
+/// Connection and layout parameters for the Qdrant output connector. Carried as
+/// one [`DataStorage`] field so the giant storage constructor stays untouched:
+/// the URL and (optional) API key locate the instance, `collection_name` names
+/// the target, `vector_field_index` says which value column holds the point
+/// vector (all other columns become the point payload), and `batch_size` bounds
+/// the number of points sent per upsert/delete request.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct QdrantParams {
+    url: String,
+    collection_name: String,
+    api_key: Option<String>,
+    vector_field_index: usize,
+    batch_size: usize,
+}
+
+#[pymethods]
+impl QdrantParams {
+    #[new]
+    #[pyo3(signature = (url, collection_name, vector_field_index, api_key = None, batch_size = 256))]
+    fn new(
+        url: String,
+        collection_name: String,
+        vector_field_index: usize,
+        api_key: Option<String>,
+        batch_size: usize,
+    ) -> Self {
+        QdrantParams {
+            url,
+            collection_name,
+            api_key,
+            vector_field_index,
+            batch_size,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct PineconeParams {
+    api_key: String,
+    control_host: Option<String>,
+    index_name: String,
+    namespace: String,
+    vector_index: usize,
+    metadata_indices: Vec<usize>,
+}
+
+#[pymethods]
+impl PineconeParams {
+    #[new]
+    #[pyo3(signature = (api_key, index_name, vector_index, metadata_indices, namespace=String::new(), control_host=None))]
+    fn new(
+        api_key: String,
+        index_name: String,
+        vector_index: usize,
+        metadata_indices: Vec<usize>,
+        namespace: String,
+        control_host: Option<String>,
+    ) -> Self {
+        PineconeParams {
+            api_key,
+            control_host,
+            index_name,
+            namespace,
+            vector_index,
+            metadata_indices,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct WeaviateParams {
+    url: String,
+    collection_name: String,
+    pk_field: Option<String>,
+    vector_field: Option<String>,
+    api_key: Option<String>,
+    headers: HashMap<String, String>,
+    batch_size: usize,
+    concurrency: usize,
+}
+
+#[pymethods]
+impl WeaviateParams {
+    #[new]
+    #[pyo3(signature = (
+        url,
+        collection_name,
+        pk_field = None,
+        vector_field = None,
+        api_key = None,
+        headers = None,
+        batch_size = 100,
+        concurrency = 8,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        url: String,
+        collection_name: String,
+        pk_field: Option<String>,
+        vector_field: Option<String>,
+        api_key: Option<String>,
+        headers: Option<HashMap<String, String>>,
+        batch_size: usize,
+        concurrency: usize,
+    ) -> Self {
+        WeaviateParams {
+            url,
+            collection_name,
+            pk_field,
+            vector_field,
+            api_key,
+            headers: headers.unwrap_or_default(),
+            batch_size,
+            concurrency,
+        }
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Debug)]
 pub struct ElasticSearchParams {
@@ -4626,6 +4755,58 @@ impl ElasticSearchParams {
             })?;
 
         Ok(Elasticsearch::new(transport))
+    }
+}
+
+/// Connection and column-mapping parameters for the Chroma output connector.
+/// The role fields are column *names*; the writer resolves them to indices
+/// against the data format's value fields when it is constructed.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct ChromaParams {
+    host: String,
+    port: u16,
+    ssl: bool,
+    headers: Option<HashMap<String, String>>,
+    tenant: String,
+    database: String,
+    collection_name: String,
+    primary_key_field: Option<String>,
+    embedding_field: String,
+    document_field: Option<String>,
+    metadata_fields: Vec<String>,
+}
+
+#[pymethods]
+impl ChromaParams {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        host: String,
+        port: u16,
+        ssl: bool,
+        headers: Option<HashMap<String, String>>,
+        tenant: String,
+        database: String,
+        collection_name: String,
+        primary_key_field: Option<String>,
+        embedding_field: String,
+        document_field: Option<String>,
+        metadata_fields: Vec<String>,
+    ) -> Self {
+        ChromaParams {
+            host,
+            port,
+            ssl,
+            headers,
+            tenant,
+            database,
+            collection_name,
+            primary_key_field,
+            embedding_field,
+            document_field,
+            metadata_fields,
+        }
     }
 }
 
@@ -4713,6 +4894,24 @@ impl PyDeltaOptimizerRule {
     }
 }
 
+// The maximum size of an MQTT control packet allowed by the protocol
+// (`268_435_455` bytes, i.e. 256 MiB - 1). `rumqttc` defaults both the incoming
+// and outgoing packet size limits to a mere 10 KiB, which fails the pipeline on
+// perfectly valid larger payloads.
+const MQTT_MAX_PACKET_SIZE_BYTES: usize = 268_435_455;
+
+// Raise `rumqttc`'s 10 KiB incoming/outgoing packet size limits to the MQTT
+// protocol maximum, so that ordinary payloads larger than 10 KiB are transported
+// instead of crashing the connector. If the user pinned a packet size explicitly
+// in the connection URI, their choice is respected and left untouched.
+fn relax_mqtt_packet_size_limits(options: &mut MqttOptions, uri: &str) {
+    if !uri.contains("max_incoming_packet_size_bytes")
+        && !uri.contains("max_outgoing_packet_size_bytes")
+    {
+        options.set_max_packet_size(MQTT_MAX_PACKET_SIZE_BYTES, MQTT_MAX_PACKET_SIZE_BYTES);
+    }
+}
+
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen, name = "MqttSettings")]
 pub struct MqttSettings {
@@ -4792,6 +4991,8 @@ pub struct DataStorage {
     aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
     elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
     elasticsearch_reader_params: Option<Arc<Py<ElasticSearchReaderParams>>>,
+    chroma_params: Option<Arc<Py<ChromaParams>>>,
+    weaviate_params: Option<Arc<Py<WeaviateParams>>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Arc<Py<PythonSubject>>>,
     unique_name: Option<UniqueName>,
@@ -4824,6 +5025,8 @@ pub struct DataStorage {
     schema_name: Option<String>,
     with_metadata: bool,
     mysql_server_id: Option<i64>,
+    qdrant_params: Option<Arc<Py<QdrantParams>>>,
+    pinecone_params: Option<Arc<Py<PineconeParams>>>,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5356,6 +5559,8 @@ impl DataStorage {
         aws_s3_settings = None,
         elasticsearch_params = None,
         elasticsearch_reader_params = None,
+        chroma_params = None,
+        weaviate_params = None,
         parallel_readers = None,
         python_subject = None,
         unique_name = None,
@@ -5388,6 +5593,8 @@ impl DataStorage {
         schema_name = None,
         with_metadata = false,
         mysql_server_id = None,
+        qdrant_params = None,
+        pinecone_params = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5404,6 +5611,8 @@ impl DataStorage {
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         elasticsearch_reader_params: Option<Py<ElasticSearchReaderParams>>,
+        chroma_params: Option<Py<ChromaParams>>,
+        weaviate_params: Option<Py<WeaviateParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
         unique_name: Option<UniqueName>,
@@ -5436,6 +5645,8 @@ impl DataStorage {
         schema_name: Option<String>,
         with_metadata: bool,
         mysql_server_id: Option<i64>,
+        qdrant_params: Option<Py<QdrantParams>>,
+        pinecone_params: Option<Py<PineconeParams>>,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -5469,6 +5680,8 @@ impl DataStorage {
             aws_s3_settings: aws_s3_settings.map(Into::into),
             elasticsearch_params: elasticsearch_params.map(Into::into),
             elasticsearch_reader_params: elasticsearch_reader_params.map(Into::into),
+            chroma_params: chroma_params.map(Into::into),
+            weaviate_params: weaviate_params.map(Into::into),
             parallel_readers,
             python_subject: python_subject.map(Into::into),
             unique_name,
@@ -5501,6 +5714,8 @@ impl DataStorage {
             schema_name,
             with_metadata,
             mysql_server_id,
+            qdrant_params: qdrant_params.map(Into::into),
+            pinecone_params: pinecone_params.map(Into::into),
         })
     }
 
@@ -6217,6 +6432,41 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_duckdb_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+        needs_initialization: bool,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["duckdb"])?;
+        }
+        // The connection is opened lazily by the writer on first use, not here:
+        // DuckDB takes an exclusive file lock, and this constructor runs on
+        // every engine worker, so opening eagerly would make all but one fail.
+        let path = self.path()?.to_string();
+        let table_name = self.table_name.clone().ok_or_else(|| {
+            PyValueError::new_err("For DuckDB connector, table_name should be specified")
+        })?;
+        let table_ctx = TableContext::new(
+            "",
+            &table_name,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+        );
+        let writer = DuckDbWriter::new(
+            path,
+            table_ctx,
+            self.snapshot_maintenance_on_output,
+            self.table_writer_init_mode,
+            self.max_batch_size,
+            needs_initialization,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Unable to initialize DuckDB table: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_mssql_reader(
         &self,
         py: pyo3::Python,
@@ -6550,11 +6800,12 @@ impl DataStorage {
         let uri = self.path()?;
         let settings = self.mqtt_settings()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
-        let connection_options = MqttOptions::parse_url(uri)
+        let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        relax_mqtt_packet_size_limits(&mut connection_options, uri);
         let (client, mut connection) =
             MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
-        client.subscribe(topic, settings.qos).map_err(|e| {
+        client.subscribe(topic.clone(), settings.qos).map_err(|e| {
             PyIOError::new_err(format!(
                 "Failed to establish connection with MQTT broker: {e}"
             ))
@@ -6577,7 +6828,10 @@ impl DataStorage {
             }
         }
 
-        Ok((Box::new(MqttReader::new(connection)), 1))
+        Ok((
+            Box::new(MqttReader::new(client, connection, topic, settings.qos)),
+            1,
+        ))
     }
 
     fn construct_kinesis_reader(
@@ -6899,6 +7153,143 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_chroma_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["chromadb"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .chroma_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Chroma output, the chroma_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+
+        // Resolve the role column names to their positions in the value fields
+        // the writer receives at runtime, so it can index straight into them.
+        let field_names = data_format.value_field_names(py);
+        let index_of = |role: &str, name: &str| -> PyResult<usize> {
+            field_names
+                .iter()
+                .position(|field| field == name)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "Chroma {role} column {name:?} is not present in the table"
+                    ))
+                })
+        };
+        let primary_key_index = match &params.primary_key_field {
+            Some(name) => Some(index_of("primary_key", name)?),
+            None => None,
+        };
+        let embedding_index = index_of("embedding", &params.embedding_field)?;
+        let document_index = match &params.document_field {
+            Some(name) => Some(index_of("document", name)?),
+            None => None,
+        };
+        let metadata_indices = params
+            .metadata_fields
+            .iter()
+            .map(|name| index_of("metadata", name))
+            .collect::<PyResult<Vec<usize>>>()?;
+
+        let writer = ChromaWriter::new(
+            &params.host,
+            params.port,
+            params.ssl,
+            params.headers.clone(),
+            &params.tenant,
+            &params.database,
+            params.collection_name.clone(),
+            field_names,
+            primary_key_index,
+            embedding_index,
+            document_index,
+            metadata_indices,
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to create Chroma writer: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
+    fn construct_weaviate_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["weaviate"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .weaviate_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Weaviate output, weaviate_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+
+        let field_names = data_format.value_field_names(py);
+        let pk_index = match &params.pk_field {
+            Some(pk_field) => Some(
+                field_names
+                    .iter()
+                    .position(|name| name == pk_field)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "primary key field {pk_field:?} not found among the output columns"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let vector_index = match &params.vector_field {
+            Some(vector_field) => Some(
+                field_names
+                    .iter()
+                    .position(|name| name == vector_field)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "vector field {vector_field:?} not found among the output columns"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let property_fields: Vec<(String, usize)> = field_names
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != pk_index && Some(*index) != vector_index)
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+
+        let writer = WeaviateWriter::new(
+            &params.url,
+            params.collection_name.clone(),
+            pk_index,
+            vector_index,
+            property_fields,
+            params.api_key.as_deref(),
+            &params.headers,
+            params.batch_size,
+            params.concurrency,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Weaviate writer: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_deltalake_writer(
         &self,
         py: pyo3::Python,
@@ -7057,7 +7448,7 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
-    fn construct_mongodb_writer(&self) -> PyResult<Box<dyn Writer>> {
+    fn construct_mongodb_writer(&self, sorted_output: bool) -> PyResult<Box<dyn Writer>> {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
             .map_err(|e| PyIOError::new_err(format!("Failed to connect to MongoDB: {e}")))?;
@@ -7071,6 +7462,42 @@ impl DataStorage {
             collection,
             self.max_batch_size,
             self.snapshot_maintenance_on_output,
+            sorted_output,
+        );
+        Ok(Box::new(writer))
+    }
+
+    fn construct_qdrant_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["qdrant"])?;
+        }
+
+        let qdrant_params_py: &Py<_> = self
+            .qdrant_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("For Qdrant output, qdrant_params section must be specified")
+            })?
+            .borrow();
+        let qdrant_params = qdrant_params_py.get();
+
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let client = build_qdrant_client(&qdrant_params.url, qdrant_params.api_key.clone())
+            .map_err(|e| PyIOError::new_err(format!("Failed to connect to Qdrant: {e}")))?;
+
+        let writer = QdrantWriter::new(
+            runtime,
+            client,
+            qdrant_params.collection_name.clone(),
+            data_format.value_fields_vec(py),
+            qdrant_params.vector_field_index,
+            qdrant_params.batch_size,
         );
         Ok(Box::new(writer))
     }
@@ -7079,8 +7506,9 @@ impl DataStorage {
         let uri = self.path()?;
         let topic = self.message_queue_topic()?;
         let settings = self.mqtt_settings()?;
-        let connection_options = MqttOptions::parse_url(uri)
+        let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        relax_mqtt_packet_size_limits(&mut connection_options, uri);
         let (client, eventloop) = MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
         let writer = MqttWriter::new(client, eventloop, topic, settings.qos, settings.retain);
         Ok(Box::new(writer))
@@ -7303,14 +7731,19 @@ impl DataStorage {
         py: pyo3::Python,
         data_format: &DataFormat,
         license: Option<&License>,
+        worker_index: usize,
+        sorted_output: bool,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_writer(),
             "kafka" => self.construct_kafka_writer(),
             "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py, license),
+            "chroma" => self.construct_chroma_writer(py, data_format, license),
+            "weaviate" => self.construct_weaviate_writer(py, data_format, license),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
-            "mongodb" => self.construct_mongodb_writer(),
+            "mongodb" => self.construct_mongodb_writer(sorted_output),
+            "qdrant" => self.construct_qdrant_writer(py, data_format, license),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
@@ -7323,10 +7756,51 @@ impl DataStorage {
             "mssql" => self.construct_mssql_writer(py, data_format, license),
             "mysql" => self.construct_mysql_writer(py, data_format, license),
             "sqlite" => self.construct_sqlite_writer(py, data_format),
+            "duckdb" => {
+                // Only the output-owning worker (index 0) creates/replaces the
+                // destination table on an empty output; the rest must not contend
+                // for DuckDB's exclusive file lock.
+                self.construct_duckdb_writer(py, data_format, license, worker_index == 0)
+            }
+            "pinecone" => self.construct_pinecone_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
         }
+    }
+
+    fn construct_pinecone_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["pinecone"])?;
+        }
+        let params_py: &Py<PineconeParams> = self
+            .pinecone_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("For Pinecone output, pinecone_params must be specified")
+            })?
+            .borrow();
+        let params = params_py.get();
+        // `key_field_index` is None when the user did not pass a primary_key; the
+        // writer then uses the row's internal key as the Pinecone record id.
+        let writer = PineconeWriter::new(
+            params.api_key.clone(),
+            params.control_host.clone(),
+            &params.index_name,
+            params.namespace.clone(),
+            data_format.value_fields_vec(py),
+            self.key_field_index,
+            params.vector_index,
+            params.metadata_indices.clone(),
+            self.max_batch_size,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Pinecone writer: {e}")))?;
+        Ok(Box::new(writer))
     }
 }
 
@@ -7955,8 +8429,12 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<ChromaParams>()?;
+    m.add_class::<WeaviateParams>()?;
+    m.add_class::<PineconeParams>()?;
     m.add_class::<ElasticSearchReaderParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
+    m.add_class::<QdrantParams>()?;
     m.add_class::<CsvParserSettings>()?;
     m.add_class::<ValueField>()?;
     m.add_class::<DataStorage>()?;

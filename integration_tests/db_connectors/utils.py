@@ -8,7 +8,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, cast, get_args, get_origin
 
 import boto3
 import mysql.connector
@@ -18,6 +18,7 @@ import psycopg2
 import pymssql
 import requests
 from pymongo import MongoClient
+from pymongo.operations import SearchIndexModel
 
 import pathway as pw
 from pathway.internals import api, dtype
@@ -108,9 +109,28 @@ MONGODB_HOST_WITH_PORT = "mongodb:27017"
 MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
 
+# Atlas Local runs as its own compose service (the ``mongodb/mongodb-atlas-local``
+# image), separate from the plain ``mongo`` service above: it is the only MongoDB
+# image that ships the ``mongot`` search process, so ``$vectorSearch`` works in CI
+# without a cloud Atlas account. ``directConnection=true`` talks straight to the
+# single node instead of going through replica-set/SRV topology discovery.
+MONGODB_ATLAS_HOST_WITH_PORT = "mongodb-atlas:27017"
+MONGODB_ATLAS_CONNECTION_STRING = (
+    f"mongodb://{MONGODB_ATLAS_HOST_WITH_PORT}/?directConnection=true"
+)
+MONGODB_ATLAS_BASE_NAME = "pathway_atlas_tests"
+MONGODB_ATLAS_VECTOR_DIM = 736
+
 ELASTICSEARCH_HOST = "elasticsearch"
 ELASTICSEARCH_PORT = 9200
 ELASTICSEARCH_URL = f"http://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"
+
+# Defaults match the compose service name; override via env vars to point the
+# tests at a locally port-proxied Weaviate (see the module docstring).
+WEAVIATE_HOST = os.environ.get("WEAVIATE_HOST", "weaviate")
+WEAVIATE_HTTP_PORT = int(os.environ.get("WEAVIATE_PORT", "8080"))
+WEAVIATE_GRPC_PORT = int(os.environ.get("WEAVIATE_GRPC_PORT", "50051"))
+WEAVIATE_VECTOR_DIM = 3
 
 
 def elasticsearch_now_ms() -> int:
@@ -131,14 +151,29 @@ KAFKA_SETTINGS = {
 DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
 MYSQL_DB_HOST = "mysql"
+# A second, otherwise-identical MySQL booted with `--local-infile=ON`. The
+# `mysql` host keeps the image default (`local_infile=OFF`), so the connector's
+# startup probe selects the multi-row INSERT fallback there and the LOAD DATA
+# LOCAL INFILE fast path here. Tests parametrize over both to cover both write
+# strategies. See the service definition in docker-compose-integration.yml.
+MYSQL_LOCAL_INFILE_DB_HOST = "mysql-local-infile"
 MYSQL_DB_PORT = 3306
 MYSQL_DB_NAME = "testdb"
 MYSQL_DB_USER = "testuser"
 MYSQL_DB_PASSWORD = "testpass"
 MYSQL_DB_ROOT_PASSWORD = "rootpass"
-MYSQL_CONNECTION_STRING = (
-    f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
-    + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+
+
+def mysql_connection_string(host: str = MYSQL_DB_HOST) -> str:
+    return (
+        f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
+        + f"@{host}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+    )
+
+
+MYSQL_CONNECTION_STRING = mysql_connection_string()
+MYSQL_LOCAL_INFILE_CONNECTION_STRING = mysql_connection_string(
+    MYSQL_LOCAL_INFILE_DB_HOST
 )
 
 # ---------------------------------------------------------------------------
@@ -308,6 +343,18 @@ MONGODB_MAX_CONCURRENCY = 12
 # MySQL streaming tests tail the binary log; bound how many do so at once so the
 # server isn't saturated while a resume test races the binlog position.
 MYSQL_MAX_CONCURRENCY = 12
+# Every ElasticSearch test creates its own index(es) on a single ES node with a
+# small (512 MB) heap. Under the full suite (dozens of xdist workers, the host
+# CPU saturated by every other connector's engine work) the node falls behind:
+# index creation backs up the master's pending-task queue and freshly created
+# primary shards stay INITIALIZING. A write that arrives before its primary is
+# active fails with ``503 ... primary shard is not active`` once the bulk's
+# one-minute wait elapses, which the engine surfaces as a hard error. Capping how
+# many ES tests hit the node at once keeps that backlog short so primaries
+# activate promptly (verified: at a starved node uncapped concurrency 503s while
+# a cap of 8 lands every write). ``create_index`` additionally waits for the
+# primary to be active before returning, as belt-and-suspenders for the race.
+ELASTICSEARCH_MAX_CONCURRENCY = 8
 
 
 @contextmanager
@@ -340,7 +387,13 @@ def mysql_concurrency_slot():
         yield
 
 
-def _connect_to_mysql(timeout_sec: float = 120.0):
+@contextmanager
+def elasticsearch_concurrency_slot():
+    with db_concurrency_slot("elasticsearch", ELASTICSEARCH_MAX_CONCURRENCY):
+        yield
+
+
+def _connect_to_mysql(host: str = MYSQL_DB_HOST, timeout_sec: float = 120.0):
     """Open a MySQL connection, waiting for the server to become reachable.
 
     The official ``mysql`` Docker image briefly runs a socket-only temporary
@@ -357,7 +410,7 @@ def _connect_to_mysql(timeout_sec: float = 120.0):
     while True:
         try:
             return mysql.connector.connect(
-                host=MYSQL_DB_HOST,
+                host=host,
                 port=MYSQL_DB_PORT,
                 database=MYSQL_DB_NAME,
                 user=MYSQL_DB_USER,
@@ -1041,6 +1094,273 @@ class MilvusContext:
         self.client.close()
 
 
+# Host/port of the Chroma server. The defaults match the ``chroma`` service in
+# docker-compose; both are env-overridable so the suite can also run against a
+# Chroma container published on localhost without editing this file.
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "chroma")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
+
+
+class ChromaContext:
+    """Test helper talking to a Chroma server over its HTTP API.
+
+    ``host``/``port`` are what the tests pass to ``pw.io.chroma.write``. The
+    constructor polls the server's heartbeat with bounded backoff before
+    returning: the container's TCP healthcheck flips as soon as the socket is
+    open, which can be a moment before the API actually answers, so this is the
+    same readiness pattern :class:`QuestDBContext` uses.
+    """
+
+    def __init__(
+        self,
+        host: str = CHROMA_HOST,
+        port: int = CHROMA_PORT,
+        timeout_sec: float = 60.0,
+    ) -> None:
+        import chromadb
+
+        self.host = host
+        self.port = port
+        deadline = time.monotonic() + timeout_sec
+        delay = 0.25
+        while True:
+            try:
+                self.client = chromadb.HttpClient(host=host, port=port)
+                self.client.heartbeat()
+                return
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 2.0)
+
+    def generate_collection_name(self) -> str:
+        return f"chroma_{uuid.uuid4().hex[:12]}"
+
+    def create_collection(self, collection_name: str) -> None:
+        self.client.create_collection(collection_name)
+
+    def delete_collection(self, collection_name: str) -> None:
+        try:
+            self.client.delete_collection(collection_name)
+        except Exception as e:
+            logging.warning(f"Failed to drop Chroma collection {collection_name}: {e}")
+
+    def count(self, collection_name: str) -> int:
+        return self.client.get_collection(collection_name).count()
+
+    def query_all(
+        self,
+        collection_name: str,
+        include: tuple[str, ...] = ("embeddings", "documents", "metadatas"),
+    ) -> list[dict]:
+        """Return every record as a list of dicts keyed ``id``/``embedding``/
+        ``document``/``metadata``, sorted by id.
+
+        Embeddings come back from Chroma as ``numpy.ndarray`` (float32); they are
+        converted to plain ``list[float]`` so callers can compare against the
+        values they wrote.
+        """
+        collection = self.client.get_collection(collection_name)
+        # ``include`` is a Chroma Literal union and ``GetResult`` is a TypedDict
+        # whose optional fields are typed ``... | None``; cast to a plain dict so
+        # the by-index access below type-checks.
+        result: dict = cast(dict, collection.get(include=cast(Any, list(include))))
+        rows = []
+        for index, id_ in enumerate(result["ids"]):
+            row: dict[str, Any] = {"id": id_}
+            if result.get("embeddings") is not None:
+                row["embedding"] = [float(x) for x in result["embeddings"][index]]
+            if result.get("documents") is not None:
+                row["document"] = result["documents"][index]
+            if result.get("metadatas") is not None:
+                row["metadata"] = result["metadatas"][index]
+            rows.append(row)
+        rows.sort(key=lambda r: r["id"])
+        return rows
+
+    def close(self) -> None:
+        # chromadb.HttpClient holds no socket of its own to close; clearing the
+        # process-wide client cache keeps repeated fixtures from accumulating
+        # identity-cached clients across the run.
+        try:
+            self.client.clear_system_cache()
+        except Exception:
+            pass
+
+
+QDRANT_VECTOR_DIM = 3
+
+
+class QdrantContext:
+    def __init__(self, grpc_url: str, rest_url: str) -> None:
+        from qdrant_client import QdrantClient
+
+        # The native connector talks to Qdrant over gRPC, so the URL handed to
+        # ``pw.io.qdrant.write`` points at the gRPC port. The verification client
+        # below is the Python client, which uses the REST port.
+        self.url = grpc_url
+        self.client = QdrantClient(url=rest_url)
+        # Names handed out by ``generate_collection_name`` so the fixture can
+        # drop them on teardown. A Qdrant node keeps every collection's RocksDB
+        # files open, so leaking collections across the (parallel) suite would
+        # eventually exhaust the container's file descriptors and fail
+        # create_collection — delete each test's collections instead.
+        self._collections: list[str] = []
+
+    def create_collection(
+        self, collection_name: str, *, dimension: int = QDRANT_VECTOR_DIM, distance=None
+    ) -> None:
+        """Create a collection with the given vector dimension and distance.
+
+        Defaults to Euclidean distance so that stored vectors are returned
+        verbatim — Qdrant normalizes vectors when the collection uses Cosine
+        distance, which would break exact vector comparisons in the tests.
+        """
+        from qdrant_client.models import Distance, VectorParams
+
+        self.client.create_collection(
+            collection_name,
+            vectors_config=VectorParams(
+                size=dimension, distance=distance or Distance.EUCLID
+            ),
+        )
+
+    def query_all(
+        self, collection_name: str, *, with_vectors: bool = True
+    ) -> list[dict]:
+        """Return every point as its payload, with the vector added under
+        ``"vector"``.
+
+        The Qdrant point id is the connector-generated UUID derived from the
+        Pathway row key, so it is not asserted on directly; the row's own
+        identifier columns live in the payload.
+        """
+        points, _ = self.client.scroll(
+            collection_name,
+            limit=100000,
+            with_payload=True,
+            with_vectors=with_vectors,
+        )
+        result = []
+        for point in points:
+            row: dict = dict(point.payload or {})
+            if with_vectors and point.vector is not None:
+                row["vector"] = list(point.vector)
+            result.append(row)
+        return result
+
+    def count(self, collection_name: str) -> int:
+        return self.client.count(collection_name, exact=True).count
+
+    def generate_collection_name(self) -> str:
+        name = f"qdrant_{uuid.uuid4().hex[:12]}"
+        self._collections.append(name)
+        return name
+
+    def close(self) -> None:
+        # Drop every collection the test touched (whether created directly or
+        # auto-created by the connector) before closing, so collections do not
+        # accumulate on the shared Qdrant container.
+        for collection_name in self._collections:
+            try:
+                self.client.delete_collection(collection_name)
+            except Exception:
+                pass
+        self.client.close()
+
+
+class WeaviateContext:
+    """Minimal Weaviate helper for the output-connector tests.
+
+    Connects to a running Weaviate over its REST + gRPC endpoints. Each test
+    creates a uniquely named collection (Weaviate class names must start with a
+    capital letter) configured with the ``none`` vectorizer so the vectors the
+    connector sends are stored verbatim rather than recomputed server-side. The
+    vector dimension is not pinned at creation time — Weaviate fixes it from the
+    first object written — so :meth:`create_collection` ignores the ``dimension``
+    argument it accepts for parity with the other vector-store contexts.
+    """
+
+    def __init__(
+        self,
+        host: str = WEAVIATE_HOST,
+        http_port: int = WEAVIATE_HTTP_PORT,
+        grpc_port: int = WEAVIATE_GRPC_PORT,
+    ) -> None:
+        self.host = host
+        self.http_port = http_port
+        self.grpc_port = grpc_port
+        self._created_collections: list[str] = []
+        self.client = self._connect()
+
+    def _connect(self):
+        import weaviate
+
+        return weaviate.connect_to_custom(
+            http_host=self.host,
+            http_port=self.http_port,
+            http_secure=False,
+            grpc_host=self.host,
+            grpc_port=self.grpc_port,
+            grpc_secure=False,
+        )
+
+    def create_collection(
+        self, collection_name: str, *, dimension: int = WEAVIATE_VECTOR_DIM
+    ) -> None:
+        from weaviate.classes.config import Configure
+
+        # No explicit properties: the primary key is encoded in the object UUID
+        # (Weaviate reserves the "id" property name), and any other property the
+        # connector writes is added by Weaviate's auto-schema on first insert.
+        self._created_collections.append(collection_name)
+        self.client.collections.create(
+            collection_name,
+            vectorizer_config=Configure.Vectorizer.none(),
+        )
+
+    def query_all(
+        self, collection_name: str, *, include_vector: bool = True
+    ) -> list[dict]:
+        """Return every object as a dict of its properties plus its ``"uuid"``.
+
+        The primary key is not stored as a property — it is encoded in the object
+        UUID — so the UUID (as a string) is included for identity checks. When
+        ``include_vector`` is set, the vector is included under ``"vector"``.
+        """
+        collection = self.client.collections.get(collection_name)
+        results = []
+        for obj in collection.iterator(include_vector=include_vector):
+            row = dict(obj.properties)
+            row["uuid"] = str(obj.uuid)
+            if include_vector:
+                row["vector"] = list(obj.vector["default"])
+            results.append(row)
+        return results
+
+    def count(self, collection_name: str) -> int:
+        collection = self.client.collections.get(collection_name)
+        return collection.aggregate.over_all(total_count=True).total_count
+
+    def property_types(self, collection_name: str) -> dict[str, str]:
+        """Return the Weaviate-inferred data type (as a string) of each property."""
+        config = self.client.collections.get(collection_name).config.get()
+        return {prop.name: prop.data_type.value for prop in config.properties}
+
+    def generate_collection_name(self) -> str:
+        return f"Pwtest{uuid.uuid4().hex[:12]}"
+
+    def cleanup(self) -> None:
+        for collection_name in self._created_collections:
+            try:
+                self.client.collections.delete(collection_name)
+            except Exception:
+                pass
+        self._created_collections = []
+        self.client.close()
+
+
 class MongoDBContext:
     client: MongoClient
 
@@ -1104,6 +1424,109 @@ class MongoDBContext:
         db = self.client[MONGODB_BASE_NAME]
         collection = db[collection_name]
         collection.delete_one(filter)
+
+
+class AtlasContext:
+    """Helper for the ``mongodb-atlas`` compose service (MongoDB Atlas Local).
+
+    Wraps a ``pymongo`` client pointed at the in-network ``mongodb-atlas``
+    service. That service runs the ``mongodb/mongodb-atlas-local`` image, the
+    only MongoDB image that ships the ``mongot`` search process, so the
+    Atlas-specific ``$vectorSearch`` aggregation works against it directly —
+    no cloud Atlas account, and no per-test ``docker run`` from inside the
+    tests. The vector-search index is created through the regular driver
+    (``createSearchIndexes``), which is why these helpers use ``pymongo``
+    rather than any connector code.
+    """
+
+    INDEX_READY_TIMEOUT_S = 180
+
+    def __init__(self):
+        self.connection_string = MONGODB_ATLAS_CONNECTION_STRING
+        self.client: MongoClient = MongoClient(MONGODB_ATLAS_CONNECTION_STRING)
+
+    def collection_name(self) -> str:
+        return f"vec_{uuid.uuid4().hex}"
+
+    def collection(self, name: str):
+        return self.client[MONGODB_ATLAS_BASE_NAME][name]
+
+    def documents(self, name: str) -> list[dict]:
+        return list(self.collection(name).find({}))
+
+    def create_vector_index(
+        self,
+        collection: str,
+        *,
+        path: str = "embedding",
+        dimensions: int = MONGODB_ATLAS_VECTOR_DIM,
+        similarity: str = "cosine",
+        index_name: str = "pw_vector_index",
+    ) -> str:
+        """Create an Atlas Vector Search index and block until it is queryable.
+
+        This is the only Atlas-specific step. It mirrors what a user would run
+        once after pointing ``pw.io.mongodb.write`` at their Atlas collection.
+        """
+        model = SearchIndexModel(
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": path,
+                        "numDimensions": dimensions,
+                        "similarity": similarity,
+                    }
+                ]
+            },
+            name=index_name,
+            type="vectorSearch",
+        )
+        self.collection(collection).create_search_index(model)
+        self._wait_index_queryable(collection, index_name)
+        return index_name
+
+    def _wait_index_queryable(self, collection: str, index_name: str) -> None:
+        deadline = time.monotonic() + self.INDEX_READY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            for idx in self.collection(collection).list_search_indexes():
+                if idx.get("name") == index_name and idx.get("queryable"):
+                    return
+            time.sleep(2)
+        raise TimeoutError(
+            f"vector search index {index_name!r} did not become queryable "
+            f"within {self.INDEX_READY_TIMEOUT_S}s"
+        )
+
+    def vector_search(
+        self,
+        collection: str,
+        query_vector,
+        *,
+        index_name: str = "pw_vector_index",
+        path: str = "embedding",
+        limit: int = 3,
+        num_candidates: int = 100,
+    ) -> list[dict]:
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": index_name,
+                    "path": path,
+                    "queryVector": [float(x) for x in query_vector],
+                    "numCandidates": num_candidates,
+                    "limit": limit,
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "doc_id": 1,
+                    "score": {"$meta": "vectorSearchScore"},
+                }
+            },
+        ]
+        return list(self.collection(collection).aggregate(pipeline))
 
 
 class DebeziumContext:
@@ -1248,15 +1671,62 @@ class ElasticsearchContext:
         # Track the index up-front so cleanup runs even if a retried create
         # actually succeeded server-side before a read timeout surfaced.
         self._created_indices.append(index_name)
-        response = self._request("PUT", f"/{index_name}", json={"mappings": mappings})
+        # `wait_for_active_shards=1` makes the create wait for the primary shard
+        # to be active before returning (see `_wait_for_index_active` for why).
+        response = self._request(
+            "PUT",
+            f"/{index_name}",
+            json={"mappings": mappings},
+            params={"wait_for_active_shards": 1},
+        )
         # A create that timed out after succeeding, then retried, comes back as
         # "already exists" — treat that as success.
         if response.status_code == 400 and (
             "resource_already_exists_exception" in response.text
         ):
+            self._wait_for_index_active(index_name)
             return index_name
         response.raise_for_status()
+        self._wait_for_index_active(index_name)
         return index_name
+
+    def _wait_for_index_active(self, index_name: str, timeout: float = 120.0) -> None:
+        """Block until the index's primary shard is active.
+
+        A successful ``PUT /<index>`` only means the index exists in cluster
+        state; its primary shard may still be ``INITIALIZING``. Writing to it
+        before the primary is active fails the bulk request with
+        ``503 ... primary shard is not active`` — which the connector surfaces as
+        an engine error after exhausting its retries. Under a busy single-node
+        cluster (the whole db-connectors suite hammering one ES container) shard
+        allocation lags far enough behind index creation that the write loses
+        this race. ``wait_for_active_shards`` on create covers the common case,
+        but its own timeout can elapse under load, so poll cluster health here
+        with a generous deadline as the actual guarantee.
+
+        On a single node the default replica stays ``UNASSIGNED`` (health never
+        reaches ``green``), so ``yellow`` is the success state — it means exactly
+        "primary active".
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            response = self._request(
+                "GET",
+                f"/_cluster/health/{index_name}",
+                params={"wait_for_status": "yellow", "timeout": "10s"},
+            )
+            if response.status_code == 200:
+                body = response.json()
+                if not body.get("timed_out", True) and body.get("status") in (
+                    "yellow",
+                    "green",
+                ):
+                    return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Elasticsearch index {index_name!r} primary shard did not "
+                    f"become active within {timeout}s (last health: {response.text})"
+                )
 
     def refresh(self, index_name: str) -> None:
         self._request("POST", f"/{index_name}/_refresh")
@@ -1351,8 +1821,10 @@ class ElasticsearchContext:
 
 
 class MySQLContext:
-    def __init__(self):
-        self.connection = _connect_to_mysql()
+    def __init__(self, host: str = MYSQL_DB_HOST):
+        self.host = host
+        self.connection_string = mysql_connection_string(host)
+        self.connection = _connect_to_mysql(host)
         self.cursor = self.connection.cursor()
 
     def close(self) -> None:
@@ -1463,7 +1935,7 @@ class MySQLContext:
         from every streaming test).
         """
         root_connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
+            host=self.host,
             port=MYSQL_DB_PORT,
             user="root",
             password=MYSQL_DB_ROOT_PASSWORD,
@@ -1487,7 +1959,7 @@ class MySQLContext:
         hold. Non-result statements simply return an empty list.
         """
         root_connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
+            host=self.host,
             port=MYSQL_DB_PORT,
             user="root",
             password=MYSQL_DB_ROOT_PASSWORD,
@@ -2319,3 +2791,124 @@ def check_write_quotes_reserved_word_column_name(
             db_context.execute_sql(f"DROP TABLE IF EXISTS {table_name}")
         except Exception:
             pass
+
+
+PINECONE_VECTOR_DIM = 3
+
+
+def _pinecone_plaintext_host(host: str) -> str:
+    """Rewrite a Pinecone host to a plaintext ``http://`` URL.
+
+    Pinecone Local advertises its per-index hosts with an ``https://`` scheme even
+    though it only serves plaintext HTTP, so the scheme has to be forced down to
+    ``http://`` before connecting to the data plane.
+    """
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix) :]
+            break
+    return "http://" + host
+
+
+class PineconeContext:
+    """Test helper around a `Pinecone Local <https://docs.pinecone.io/guides/operations/local-development>`_ instance.
+
+    The control-plane host defaults to ``http://localhost:5080`` and can be
+    pointed at the in-network service name via the ``PINECONE_HOST`` environment
+    variable (set to the compose service name when running under docker-compose).
+    """
+
+    def __init__(self) -> None:
+        from pinecone import Pinecone, ServerlessSpec
+
+        self._ServerlessSpec = ServerlessSpec
+        self.pinecone_host = os.environ.get("PINECONE_HOST", "localhost")
+        self.control_host = f"http://{self.pinecone_host}:5080"
+        self.api_key = "pclocal"
+        self.client = Pinecone(api_key=self.api_key, host=self.control_host)
+        self._created: list[str] = []
+        self._wait_until_control_ready()
+
+    def _wait_until_control_ready(self, timeout: float = 60.0) -> None:
+        # The emulator image is distroless, so it can't expose a docker
+        # healthcheck; poll the control plane until it answers instead.
+        deadline = time.time() + timeout
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                self.client.list_indexes()
+                return
+            except Exception as e:  # connection refused while still starting up
+                last_error = e
+                time.sleep(0.5)
+        raise RuntimeError(
+            f"Pinecone Local control plane at {self.control_host} did not become "
+            f"ready within {timeout}s"
+        ) from last_error
+
+    def generate_index_name(self) -> str:
+        # Pinecone index names must be lowercase alphanumeric or hyphens.
+        return f"pw-test-{uuid.uuid4().hex[:12]}"
+
+    def create_index(
+        self, index_name: str, *, dimension: int = PINECONE_VECTOR_DIM
+    ) -> None:
+        self.client.create_index(
+            name=index_name,
+            dimension=dimension,
+            metric="cosine",
+            spec=self._ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+        self._created.append(index_name)
+        self._wait_until_ready(index_name)
+
+    def _wait_until_ready(self, index_name: str, timeout: float = 30.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            desc = self.client.describe_index(index_name)
+            if desc.host and getattr(desc.status, "ready", True):
+                return
+            time.sleep(0.5)
+
+    def _data_index(self, index_name: str):
+        raw_host = self.client.describe_index(index_name).host
+        assert raw_host, f"Pinecone index {index_name!r} has no data-plane host yet"
+        host = _pinecone_plaintext_host(raw_host)
+        return self.client.Index(host=host)
+
+    def count(self, index_name: str, namespace: str = "") -> int:
+        stats = self._data_index(index_name).describe_index_stats()
+        return stats.total_vector_count
+
+    def fetch(self, index_name: str, ids: list, namespace: str = "") -> dict[str, dict]:
+        res = self._data_index(index_name).fetch(
+            ids=[str(i) for i in ids], namespace=namespace
+        )
+        return {
+            key: {
+                "values": [round(float(x), 4) for x in vec.values],
+                "metadata": dict(vec.metadata) if vec.metadata else {},
+            }
+            for key, vec in res.vectors.items()
+        }
+
+    def wait_for_count(
+        self, index_name: str, expected: int, namespace: str = "", timeout: float = 60.0
+    ) -> int:
+        """Poll until the index holds ``expected`` vectors (Pinecone is eventually
+        consistent, so writes are not immediately visible). Returns the final
+        observed count, which the caller asserts on."""
+        deadline = time.time() + timeout
+        count = self.count(index_name, namespace)
+        while count != expected and time.time() < deadline:
+            time.sleep(0.5)
+            count = self.count(index_name, namespace)
+        return count
+
+    def cleanup(self) -> None:
+        for index_name in self._created:
+            try:
+                self.client.delete_index(index_name)
+            except Exception:
+                pass
+        self._created.clear()
