@@ -8393,6 +8393,8 @@ fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) ->
     Ok(())
 }
 
+type ExploreSchemaResult = PyResult<(Vec<(String, String, bool)>, Vec<String>)>;
+
 #[pyfunction]
 #[pyo3(signature = (connection_string, schema_name, table_name, ssl_mode_str, ssl_cert_path))]
 fn postgres_explore_schema(
@@ -8401,7 +8403,7 @@ fn postgres_explore_schema(
     table_name: &str,
     ssl_mode_str: &str,
     ssl_cert_path: Option<String>,
-) -> PyResult<(Vec<(String, String, bool)>, Vec<String>)> {
+) -> ExploreSchemaResult {
     let ssl_mode = match ssl_mode_str {
         "disable" => SslMode::Disable,
         "allow" => SslMode::Allow,
@@ -8411,8 +8413,7 @@ fn postgres_explore_schema(
         "verify-full" => SslMode::VerifyFull,
         _ => {
             return Err(PyValueError::new_err(format!(
-                "Invalid ssl_mode: {}",
-                ssl_mode_str
+                "Invalid ssl_mode: {ssl_mode_str}",
             )))
         }
     };
@@ -8464,15 +8465,12 @@ fn postgres_explore_schema(
 
 #[pyfunction]
 #[pyo3(signature = (connection_string, table_name))]
-fn mysql_explore_schema(
-    connection_string: &str,
-    table_name: &str,
-) -> PyResult<(Vec<(String, String, bool)>, Vec<String>)> {
+fn mysql_explore_schema(connection_string: &str, table_name: &str) -> ExploreSchemaResult {
     use mysql::prelude::Queryable;
     let opts = mysql::Opts::from_url(connection_string)
-        .map_err(|e| PyValueError::new_err(format!("Invalid MySQL URL: {}", e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Invalid MySQL URL: {e}")))?;
     let mut conn = mysql::Conn::new(opts)
-        .map_err(|e| PyValueError::new_err(format!("Failed to connect: {}", e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Failed to connect: {e}")))?;
 
     let cols_query = "
         SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
@@ -8483,7 +8481,7 @@ fn mysql_explore_schema(
 
     let rows: Vec<(String, String, String)> = conn
         .exec(cols_query, (table_name,))
-        .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {}", e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {e}")))?;
 
     let mut columns = Vec::new();
     for (col_name, data_type, is_nullable_str) in rows {
@@ -8505,7 +8503,7 @@ fn mysql_explore_schema(
 
     let pk_rows: Vec<String> = conn
         .exec(pk_query, (table_name,))
-        .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {}", e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {e}")))?;
 
     let mut pk_columns = Vec::new();
     for col_name in pk_rows {
@@ -8517,28 +8515,25 @@ fn mysql_explore_schema(
 
 #[pyfunction]
 #[pyo3(signature = (connection_string, table_name))]
-fn mssql_explore_schema(
-    connection_string: &str,
-    table_name: &str,
-) -> PyResult<(Vec<(String, String, bool)>, Vec<String>)> {
+fn mssql_explore_schema(connection_string: &str, table_name: &str) -> ExploreSchemaResult {
     let rt = crate::async_runtime::create_async_tokio_runtime()
-        .map_err(|e| PyValueError::new_err(format!("Failed to create tokio runtime: {}", e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Failed to create tokio runtime: {e}")))?;
     rt.block_on(async {
         use tokio::net::TcpStream;
         use tokio_util::compat::TokioAsyncWriteCompatExt;
 
         let config = tiberius::Config::from_ado_string(connection_string)
-            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL config: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL config: {e}")))?;
 
         let tcp = TcpStream::connect(config.get_addr())
             .await
-            .map_err(|e| PyValueError::new_err(format!("Failed to connect to TCP: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to connect to TCP: {e}")))?;
 
         let _ = tcp.set_nodelay(true);
 
         let mut client = tiberius::Client::connect(config, tcp.compat_write())
             .await
-            .map_err(|e| PyValueError::new_err(format!("Failed to connect to MSSQL: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to connect to MSSQL: {e}")))?;
 
         let cols_query = "
             SELECT c.name AS column_name, t.name AS data_type, c.is_nullable
@@ -8550,12 +8545,12 @@ fn mssql_explore_schema(
         let stream = client
             .query(cols_query, &[&table_name])
             .await
-            .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {e}")))?;
 
         let rows = stream
             .into_first_result()
             .await
-            .map_err(|e| PyValueError::new_err(format!("Failed to fetch columns: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to fetch columns: {e}")))?;
 
         let mut columns = Vec::new();
         for row in rows {
@@ -8575,12 +8570,12 @@ fn mssql_explore_schema(
         let stream = client
             .query(pk_query, &[&table_name])
             .await
-            .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {e}")))?;
 
         let pk_rows = stream
             .into_first_result()
             .await
-            .map_err(|e| PyValueError::new_err(format!("Failed to fetch primary key: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("Failed to fetch primary key: {e}")))?;
 
         let mut pk_columns = Vec::new();
         for row in pk_rows {
