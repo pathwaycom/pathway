@@ -277,6 +277,7 @@ def read(
     with_metadata: bool = False,
     refresh_interval: int = 30,
     max_failed_attempts_in_row: int | None = 8,
+    max_backlog_size: int | None = None,
 ) -> Table:
     """Reads a table from a directory or a file in Microsoft SharePoint site.
     Requires a valid Pathway Live Data Framework Scale license key.
@@ -320,6 +321,10 @@ as UNIX timestamps;
         max_failed_attempts_in_row: The maximum number of consecutive read errors before\
 the connector terminates with an error. If set to ``None``, the connector tries to read\
 data indefinitely, regardless of possible errors in the provided credentials.
+        max_backlog_size: Limit on the number of entries read from the input source and kept\
+ in processing at any moment. Reading pauses when the limit is reached and resumes as\
+ processing of some entries completes. Useful with large sources that emit an initial\
+ burst of data to avoid memory spikes.
 
     Returns:
         The table read.
@@ -394,7 +399,9 @@ you can configure the connector this way:
         only_metadata=only_provide_metadata,
     )
 
-    table = pw.io.python.read(subject, format="binary")
+    table = pw.io.python.read(
+        subject, format="binary", max_backlog_size=max_backlog_size
+    )
     if only_provide_metadata:
         table = table.select(_metadata=table._metadata)
     return table
