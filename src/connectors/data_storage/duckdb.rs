@@ -278,6 +278,7 @@ enum WritePlan {
 /// list value as a statement parameter, list/array/tuple and JSON values are
 /// bound as a JSON string and cast back into the destination type inside the
 /// generated SQL (`CAST(CAST(? AS JSON) AS DOUBLE[])`).
+#[allow(clippy::struct_excessive_bools)]
 pub struct DuckDbWriter {
     /// Path to the database file (or `:memory:`). The connection is opened
     /// lazily, on the first non-empty flush — see
