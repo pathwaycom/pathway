@@ -8393,6 +8393,205 @@ fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) ->
     Ok(())
 }
 
+#[pyfunction]
+#[pyo3(signature = (connection_string, schema_name, table_name, ssl_mode_str, ssl_cert_path))]
+fn postgres_explore_schema(
+    connection_string: &str,
+    schema_name: &str,
+    table_name: &str,
+    ssl_mode_str: &str,
+    ssl_cert_path: Option<String>,
+) -> PyResult<(Vec<(String, String, bool)>, Vec<String>)> {
+    let ssl_mode = match ssl_mode_str {
+        "disable" => SslMode::Disable,
+        "allow" => SslMode::Allow,
+        "prefer" => SslMode::Prefer,
+        "require" => SslMode::Require,
+        "verify-ca" => SslMode::VerifyCa,
+        "verify-full" => SslMode::VerifyFull,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "Invalid ssl_mode: {}",
+                ssl_mode_str
+            )))
+        }
+    };
+
+    let mut client = create_psql_client(connection_string, ssl_mode, ssl_cert_path)
+        .map_err(|e| PyValueError::new_err(format!("Failed to connect: {e}")))?;
+
+    let cols_query = "
+        SELECT column_name, udt_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2
+        ORDER BY ordinal_position;
+    ";
+    let rows = client
+        .query(cols_query, &[&schema_name, &table_name])
+        .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {e}")))?;
+
+    let mut columns = Vec::new();
+    for row in rows {
+        let col_name: String = row.get(0);
+        let udt_name: String = row.get(1);
+        let is_nullable_str: String = row.get(2);
+        let is_nullable = is_nullable_str == "YES";
+        columns.push((col_name, udt_name, is_nullable));
+    }
+
+    let pk_query = "
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tco
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_name = tco.constraint_name
+          AND kcu.constraint_schema = tco.constraint_schema
+        WHERE tco.constraint_type = 'PRIMARY KEY'
+          AND kcu.table_schema = $1
+          AND kcu.table_name = $2;
+    ";
+    let pk_rows = client
+        .query(pk_query, &[&schema_name, &table_name])
+        .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {e}")))?;
+
+    let mut pk_columns = Vec::new();
+    for row in pk_rows {
+        let col_name: String = row.get(0);
+        pk_columns.push(col_name);
+    }
+
+    Ok((columns, pk_columns))
+}
+
+#[pyfunction]
+#[pyo3(signature = (connection_string, table_name))]
+fn mysql_explore_schema(
+    connection_string: &str,
+    table_name: &str,
+) -> PyResult<(Vec<(String, String, bool)>, Vec<String>)> {
+    use mysql::prelude::Queryable;
+    let opts = mysql::Opts::from_url(connection_string)
+        .map_err(|e| PyValueError::new_err(format!("Invalid MySQL URL: {}", e)))?;
+    let mut conn = mysql::Conn::new(opts)
+        .map_err(|e| PyValueError::new_err(format!("Failed to connect: {}", e)))?;
+
+    let cols_query = "
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION;
+    ";
+
+    let rows: Vec<(String, String, String)> = conn
+        .exec(cols_query, (table_name,))
+        .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {}", e)))?;
+
+    let mut columns = Vec::new();
+    for (col_name, data_type, is_nullable_str) in rows {
+        let is_nullable = is_nullable_str == "YES";
+        columns.push((col_name, data_type, is_nullable));
+    }
+
+    let pk_query = "
+        SELECT kcu.COLUMN_NAME
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tco
+        JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+          ON kcu.CONSTRAINT_NAME = tco.CONSTRAINT_NAME
+          AND kcu.CONSTRAINT_SCHEMA = tco.CONSTRAINT_SCHEMA
+          AND kcu.TABLE_NAME = tco.TABLE_NAME
+        WHERE tco.CONSTRAINT_TYPE = 'PRIMARY KEY'
+          AND kcu.TABLE_SCHEMA = DATABASE()
+          AND kcu.TABLE_NAME = ?;
+    ";
+
+    let pk_rows: Vec<String> = conn
+        .exec(pk_query, (table_name,))
+        .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {}", e)))?;
+
+    let mut pk_columns = Vec::new();
+    for col_name in pk_rows {
+        pk_columns.push(col_name);
+    }
+
+    Ok((columns, pk_columns))
+}
+
+#[pyfunction]
+#[pyo3(signature = (connection_string, table_name))]
+fn mssql_explore_schema(
+    connection_string: &str,
+    table_name: &str,
+) -> PyResult<(Vec<(String, String, bool)>, Vec<String>)> {
+    let rt = crate::async_runtime::create_async_tokio_runtime()
+        .map_err(|e| PyValueError::new_err(format!("Failed to create tokio runtime: {}", e)))?;
+    rt.block_on(async {
+        use tokio::net::TcpStream;
+        use tokio_util::compat::TokioAsyncWriteCompatExt;
+
+        let config = tiberius::Config::from_ado_string(connection_string)
+            .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL config: {}", e)))?;
+
+        let tcp = TcpStream::connect(config.get_addr())
+            .await
+            .map_err(|e| PyValueError::new_err(format!("Failed to connect to TCP: {}", e)))?;
+
+        let _ = tcp.set_nodelay(true);
+
+        let mut client = tiberius::Client::connect(config, tcp.compat_write())
+            .await
+            .map_err(|e| PyValueError::new_err(format!("Failed to connect to MSSQL: {}", e)))?;
+
+        let cols_query = "
+            SELECT c.name AS column_name, t.name AS data_type, c.is_nullable
+            FROM sys.columns c
+            INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+            WHERE c.object_id = OBJECT_ID(@P1)
+            ORDER BY c.column_id;
+        ";
+        let stream = client
+            .query(cols_query, &[&table_name])
+            .await
+            .map_err(|e| PyValueError::new_err(format!("Failed to query columns: {}", e)))?;
+
+        let rows = stream
+            .into_first_result()
+            .await
+            .map_err(|e| PyValueError::new_err(format!("Failed to fetch columns: {}", e)))?;
+
+        let mut columns = Vec::new();
+        for row in rows {
+            let col_name: &str = row.get(0).unwrap_or("");
+            let data_type: &str = row.get(1).unwrap_or("");
+            let is_nullable: bool = row.get(2).unwrap_or(false);
+            columns.push((col_name.to_string(), data_type.to_string(), is_nullable));
+        }
+
+        let pk_query = "
+            SELECT c.name AS column_name
+            FROM sys.indexes i
+            INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+            INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+            WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID(@P1);
+        ";
+        let stream = client
+            .query(pk_query, &[&table_name])
+            .await
+            .map_err(|e| PyValueError::new_err(format!("Failed to query primary key: {}", e)))?;
+
+        let pk_rows = stream
+            .into_first_result()
+            .await
+            .map_err(|e| PyValueError::new_err(format!("Failed to fetch primary key: {}", e)))?;
+
+        let mut pk_columns = Vec::new();
+        for row in pk_rows {
+            let col_name: &str = row.get(0).unwrap_or("");
+            pk_columns.push(col_name.to_string());
+        }
+
+        Ok((columns, pk_columns))
+    })
+}
+
 #[pymodule]
 #[pyo3(name = "engine")]
 fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
@@ -8471,6 +8670,10 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyExternalIndexFactory>()?;
     m.add_class::<PyExternalIndexData>()?;
     m.add_class::<PyExternalIndexQuery>()?;
+
+    m.add_function(wrap_pyfunction!(postgres_explore_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(mysql_explore_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(mssql_explore_schema, m)?)?;
     m.add_class::<PyUSearchMetricKind>()?;
     m.add_class::<PyBruteForceKnnMetricKind>()?;
 
