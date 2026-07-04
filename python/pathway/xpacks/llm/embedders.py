@@ -15,6 +15,8 @@ from pathway.optional_import import optional_imports
 from pathway.xpacks.llm._utils import _coerce_sync, _extract_value_inside_dict
 from pathway.xpacks.llm.constants import OPENAI_EMBEDDERS_MAX_TOKENS
 
+from ._utils import _build_async_twelvelabs_client, _build_twelvelabs_client
+
 __all__ = [
     "OpenAIEmbedder",
     "LiteLLMEmbedder",
@@ -759,40 +761,6 @@ class BedrockEmbedder(BaseEmbedder):
 DEFAULT_MARENGO_MODEL = "marengo3.0"
 
 
-def _resolve_twelvelabs_api_key(api_key: str | None) -> str:
-    import os
-
-    key = api_key or os.environ.get("TWELVELABS_API_KEY")
-    if not key:
-        raise ValueError(
-            "TwelveLabs API key is missing. Pass `api_key=...` or set the "
-            "`TWELVELABS_API_KEY` environment variable."
-        )
-    return key
-
-
-def _build_twelvelabs_client(api_key: str | None):
-    try:
-        from twelvelabs import TwelveLabs
-    except ImportError as e:
-        raise ImportError(
-            "The `twelvelabs` package is required to use the TwelveLabs components. "
-            "Install it with `pip install pathway[twelvelabs]`."
-        ) from e
-    return TwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))
-
-
-def _build_async_twelvelabs_client(api_key: str | None):
-    try:
-        from twelvelabs import AsyncTwelveLabs
-    except ImportError as e:
-        raise ImportError(
-            "The `twelvelabs` package is required to use the TwelveLabs components. "
-            "Install it with `pip install pathway[twelvelabs]`."
-        ) from e
-    return AsyncTwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))
-
-
 class MarengoEmbedder(BaseEmbedder):
     """Embed text using the TwelveLabs Marengo multimodal embedding model.
 
@@ -890,6 +858,5 @@ class MarengoEmbedder(BaseEmbedder):
         Returns:
             A list of 512-dimensional ``numpy`` arrays, one per input string.
         """
-        import asyncio
 
         return list(await asyncio.gather(*[self._aembed_one(t) for t in inputs]))

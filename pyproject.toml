@@ -100,7 +100,7 @@ xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
 ]
 twelvelabs = [
-    "twelvelabs >= 0.3.0",
+    "twelvelabs >= 1.2.8",
 ]
 all = [
     "pathway[pyfilesystem]",

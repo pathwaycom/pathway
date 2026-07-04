@@ -10,6 +10,7 @@ import inspect
 import io
 import logging
 import re
+import time
 import warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -29,7 +30,7 @@ from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import _parser_utils, llms, prompts
-from pathway.xpacks.llm._utils import _prepare_executor
+from pathway.xpacks.llm._utils import _build_twelvelabs_client, _prepare_executor
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
 if TYPE_CHECKING:
@@ -1373,29 +1374,6 @@ DEFAULT_PROMPT = (
 )
 
 
-def _resolve_twelvelabs_api_key(api_key: str | None) -> str:
-    import os
-
-    key = api_key or os.environ.get("TWELVELABS_API_KEY")
-    if not key:
-        raise ValueError(
-            "TwelveLabs API key is missing. Pass `api_key=...` or set the "
-            "`TWELVELABS_API_KEY` environment variable."
-        )
-    return key
-
-
-def _build_twelvelabs_client(api_key: str | None):
-    try:
-        from twelvelabs import TwelveLabs
-    except ImportError as e:
-        raise ImportError(
-            "The `twelvelabs` package is required to use the TwelveLabs components. "
-            "Install it with `pip install pathway[twelvelabs]`."
-        ) from e
-    return TwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))
-
-
 class TwelveLabsVideoParser(pw.UDF):
     """Parse videos into text using the TwelveLabs Pegasus model.
 
@@ -1468,7 +1446,6 @@ class TwelveLabsVideoParser(pw.UDF):
 
     def _upload_asset(self, contents: bytes) -> str:
         """Upload video bytes and return the asset id once it is ready."""
-        import time
 
         asset = self.client.assets.create(
             method="direct", file=("video.mp4", contents), filename="video.mp4"
