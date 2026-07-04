@@ -736,6 +736,83 @@ def test_mssql_read_static_rejects_missing_table(mssql, tmp_path):
         pw.run()
 
 
+def _live_connector_threads() -> list[str]:
+    """Describe the native reader threads alive in this process.
+
+    The engine names every reader thread ``pathway:connector-...``; the kernel
+    truncates thread names to 15 characters in ``comm``, so match on the
+    truncated prefix.  Each entry carries the tid plus the kernel's view of
+    where the thread is blocked (``wchan``/``syscall``), which is the only
+    identification available — the full engine thread name doesn't survive the
+    15-character limit.
+    """
+    threads = []
+    for task in pathlib.Path("/proc/self/task").iterdir():
+        try:
+            comm = (task / "comm").read_text().strip()
+            if not comm.startswith("pathway:connect"):
+                continue
+            wchan = (task / "wchan").read_text().strip()
+            try:
+                syscall = (task / "syscall").read_text().split()[0]
+            except (OSError, IndexError):
+                syscall = "?"
+            threads.append(f"tid={task.name} wchan={wchan} syscall={syscall}")
+        except OSError:
+            # The thread exited between iterdir() and the reads.
+            continue
+    return threads
+
+
+def test_mssql_failed_run_terminates_reader_thread(mssql, tmp_path):
+    """A run that fails because the reader keeps erroring must not leak the
+    reader thread past ``pw.run()``.
+
+    The error path of a run does not join connector threads, so the reader
+    itself must stop once it has reported the fatal error. A leaked reader
+    retries and logs the same error forever in the host process and, worse,
+    poisons every later ``multiprocessing`` fork made from it — the child
+    inherits mutexes that the phantom thread held at fork time and hangs or
+    dies without a traceback.
+    """
+    table_name = mssql.random_table_name()
+    # Don't create the table: every read attempt fails with TableNotFound,
+    # which (after the allowed retries) is reported as the fatal run error.
+
+    # Compare against a pre-run snapshot instead of asserting an empty set:
+    # under xdist this worker process may have run other tests before this
+    # one, and this test's contract covers only the threads its own failing
+    # run creates.
+    threads_before = {t.split()[0] for t in _live_connector_threads()}
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    G.clear()
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, str(tmp_path / "output.jsonl"))
+    with pytest.raises(pw.engine.EngineError, match=r"does not exist"):
+        pw.run()
+
+    def leaked() -> list[str]:
+        return [
+            t for t in _live_connector_threads() if t.split()[0] not in threads_before
+        ]
+
+    # pw.run() raises as soon as the error is reported; give the reader thread
+    # a moment to observe the failure and exit before asserting it is gone.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and leaked():
+        time.sleep(0.25)
+    assert leaked() == []
+
+
 def test_mssql_read_numeric_overflow_int_drops_row(mssql, tmp_path):
     """A `NUMERIC(N, 0)` value larger than i64::MAX must NOT silently
     truncate when read into a `Type::Int` schema.  Pathway's per-row

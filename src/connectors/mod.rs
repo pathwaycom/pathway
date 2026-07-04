@@ -488,6 +488,12 @@ impl Connector {
                     consecutive_errors += 1;
                     if consecutive_errors > reader.max_allowed_consecutive_errors() {
                         error_reporter.report(EngineError::ReaderFailed(Box::new(error)));
+                        // The reported error takes the whole pipeline down, and
+                        // the error path of the run never joins connector
+                        // threads — without this `break` the thread outlives
+                        // the run, retrying and logging the same error forever
+                        // in the host process.
+                        break;
                     }
                     // Pause before the loop retries `read()`, growing the delay
                     // while errors persist (see `error_backoff` above).

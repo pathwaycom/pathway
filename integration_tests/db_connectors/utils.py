@@ -5,6 +5,7 @@ import os
 import random
 import tempfile
 import time
+import types as builtin_types
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1199,8 +1200,15 @@ class QdrantContext:
         # The native connector talks to Qdrant over gRPC, so the URL handed to
         # ``pw.io.qdrant.write`` points at the gRPC port. The verification client
         # below is the Python client, which uses the REST port.
+        #
+        # An explicit timeout because the client's default (httpx's 5 s) is far
+        # too tight for a shared container under the full parallel suite: when
+        # the host is saturated by every other connector's engine work, a
+        # ``create_collection`` (WAL fsync + collection registry updates) can
+        # take tens of seconds even though it succeeds — with the default the
+        # whole test dies on ``ReadTimeout`` instead of just waiting it out.
         self.url = grpc_url
-        self.client = QdrantClient(url=rest_url)
+        self.client = QdrantClient(url=rest_url, timeout=120)
         # Names handed out by ``generate_collection_name`` so the fixture can
         # drop them on teardown. A Qdrant node keeps every collection's RocksDB
         # files open, so leaking collections across the (parallel) suite would
@@ -2171,7 +2179,7 @@ class MssqlContext:
         captured_column_list: str | None = None,
         capture_instance: str | None = None,
     ) -> None:
-        """Enable CDC on a table, retrying on deadlock (SQL Server error 1205).
+        """Enable CDC on a table, retrying on transient SQL Server failures.
 
         ``captured_column_list`` restricts capture to a subset of the table's
         columns (``@captured_column_list``); ``capture_instance`` names the
@@ -2207,12 +2215,27 @@ class MssqlContext:
                 self._tracked_cdc.add(table_name)
                 return
             except pymssql.exceptions.OperationalError as e:
-                if attempt < max_retries - 1 and "1205" in str(e):
+                message = str(e)
+                # Two distinct transient failures, both of which SQL Server
+                # asks the caller to resubmit:
+                #  - 1205: the proc was picked as a deadlock victim on CDC
+                #    system-table locks;
+                #  - 2714 on 'create table msdb.dbo.cdc_jobs' (wrapped in
+                #    22832/22836): the server bootstraps msdb.dbo.cdc_jobs
+                #    lazily on its first-ever sp_cdc_add_job, and two workers
+                #    enabling CDC concurrently right after server start both
+                #    attempt the create — the loser fails, and on resubmit
+                #    finds the table in place and succeeds.
+                transient = (
+                    "1205" in message
+                    or "There is already an object named 'cdc_jobs'" in message
+                )
+                if attempt < max_retries - 1 and transient:
                     delay = retry_delay * (1.25**attempt) + random.uniform(
                         0, retry_delay
                     )
                     logging.warning(
-                        f"CDC enable deadlock on {table_name} "
+                        f"transient CDC enable failure on {table_name} "
                         f"(attempt {attempt + 1}/{max_retries}), "
                         f"retrying in {delay:.1f}s: {e}"
                     )
@@ -2912,3 +2935,100 @@ class PineconeContext:
             except Exception:
                 pass
         self._created.clear()
+
+
+def type_to_source_str(t: Any) -> str:
+    """Return a Python source expression for *t* suitable for exec'd schema code."""
+    if t is type(None):
+        return "None"
+    if t is Any:
+        return "Any"
+    if t in (int, float, bool, str, bytes):
+        return t.__name__
+    if t is pw.Pointer:
+        return "pw.Pointer"
+    if t is pw.Json:
+        return "pw.Json"
+    if t is pw.Duration:
+        return "pw.Duration"
+    if t is pw.DateTimeNaive:
+        return "pw.DateTimeNaive"
+    if t is pw.DateTimeUtc:
+        return "pw.DateTimeUtc"
+
+    origin = get_origin(t)
+    args = get_args(t)
+
+    if origin is Union or (
+        hasattr(builtin_types, "UnionType") and isinstance(t, builtin_types.UnionType)
+    ):
+        return " | ".join(type_to_source_str(a) for a in args)
+
+    if origin is list:
+        return f"list[{type_to_source_str(args[0])}]"
+
+    if origin is tuple:
+        return f"tuple[{', '.join(type_to_source_str(a) for a in args)}]"
+
+    if origin is np.ndarray:
+        dims_arg, scalar_arg = args
+        scalar_str = type_to_source_str(scalar_arg)
+        if dims_arg is None:
+            return f"np.ndarray[None, {scalar_str}]"
+        return f"np.ndarray[{type_to_source_str(dims_arg)}, {scalar_str}]"
+
+    # pw.PyObjectWrapper[X]
+    if origin is pw.PyObjectWrapper and args:
+        return f"pw.PyObjectWrapper[{args[0].__name__}]"
+
+    if hasattr(t, "__name__"):
+        return t.__name__
+    return repr(t)
+
+
+def generate_pkey_item_schema_code(ItemType: Any, *, primary_key: bool = True) -> str:
+    """Return Python source that defines InputSchemaWithPkey for the given type.
+
+    Used by the parsing suites' streaming tests, whose reader pipeline runs in
+    a separate interpreter (``subprocess.Popen``) and therefore has to receive
+    the schema as source code rather than as a Python object."""
+    item_type_str = type_to_source_str(ItemType)
+    lines: list[str] = []
+
+    def add_import(line: str) -> None:
+        if line not in lines:
+            lines.append(line)
+
+    # Walk the whole (possibly nested, e.g. list[PyObjectWrapper[...]]) type
+    # and emit the imports its source form needs: numpy for ndarray, and the
+    # inner class of a PyObjectWrapper if it comes from utils.
+    def collect_imports(t: Any) -> None:
+        origin = get_origin(t)
+        if origin is np.ndarray:
+            add_import("import numpy as np")
+            add_import("from typing import Any")
+        if origin is pw.PyObjectWrapper:
+            args = get_args(t)
+            if args:
+                inner = args[0]
+                module = getattr(inner, "__module__", "builtins")
+                if not module.startswith(("builtins", "pathway")):
+                    add_import(f"from utils import {inner.__name__}")
+        for arg in get_args(t):
+            if arg is not None:
+                collect_imports(arg)
+
+    collect_imports(ItemType)
+    if lines:
+        lines.append("")
+    pkey_definition = (
+        "pkey: int = pw.column_definition(primary_key=True)"
+        if primary_key
+        else "pkey: int"
+    )
+    lines += [
+        "class InputSchemaWithPkey(pw.Schema):",
+        f"    {pkey_definition}",
+        f"    item: {item_type_str}",
+    ]
+    return "\n".join(lines)

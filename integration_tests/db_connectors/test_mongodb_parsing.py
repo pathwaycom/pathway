@@ -1,3 +1,9 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
 from typing import Any
 
 import numpy as np
@@ -11,6 +17,7 @@ from utils import (
     _compare_input_and_output,
     _create_ndarray_table,
     _make_type_check_observer,
+    generate_pkey_item_schema_code,
 )
 
 import pathway as pw
@@ -19,6 +26,77 @@ from pathway.internals.parse_graph import G
 from pathway.tests.utils import ExceptionAwareThread, run, wait_result_with_checker
 
 pytestmark = pytest.mark.xdist_group("mongodb")
+
+_TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Script run in a separate interpreter for the streaming tests, mirroring the
+# MSSQL CDC twin of this harness. The streaming reader can live neither on a
+# thread of the test process (a streaming ``pw.run`` never returns, so its
+# reader threads would outlive the test and poison every later
+# ``multiprocessing`` fork made from this pytest worker) nor in a forked
+# child: the engine's MongoDB session client keeps a process-global driver
+# runtime whose threads a fork does not inherit, so the forked pipeline
+# deadlocks at build time. A fresh interpreter avoids both failure modes.
+_MONGODB_STREAM_SCRIPT = textwrap.dedent(
+    """\
+    import json
+    import sys
+
+    cfg = json.loads(sys.argv[1])
+    sys.path.insert(0, cfg["test_dir"])
+
+    import pathway as pw
+    from pathway.tests.utils import run
+
+    exec(cfg["schema_code"], globals())
+
+    table = pw.io.mongodb.read(
+        connection_string=cfg["connection_string"],
+        database=cfg["database"],
+        collection=cfg["input_collection"],
+        schema=InputSchemaWithPkey,
+        mode="streaming",
+    )
+    pw.io.mongodb.write(
+        table,
+        connection_string=cfg["connection_string"],
+        database=cfg["database"],
+        collection=cfg["output_collection"],
+        output_table_type="stream_of_changes",
+    )
+    run()
+    """
+)
+
+
+def _start_mongodb_stream_worker(
+    input_collection: str,
+    output_collection: str,
+    schema_code: str,
+) -> subprocess.Popen:
+    cfg = json.dumps(
+        {
+            "connection_string": MONGODB_CONNECTION_STRING,
+            "database": MONGODB_BASE_NAME,
+            "input_collection": input_collection,
+            "output_collection": output_collection,
+            "schema_code": schema_code,
+            "test_dir": _TEST_DIR,
+        }
+    )
+    log_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".log", prefix="mongodb_stream_", delete=False
+    )
+    log_path = log_file.name
+    log_file.close()
+    print(f"[MongoDB stream subprocess log: {log_path}]", flush=True)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _MONGODB_STREAM_SCRIPT, cfg],
+        env=os.environ,
+        stdout=open(log_path, "w"),
+        stderr=subprocess.STDOUT,
+    )
+    return proc
 
 
 class MongoDBRowCountChecker:
@@ -120,10 +198,6 @@ def _test_mongodb_streaming(
     input_table_name = _test_mongodb_static(mongodb, ItemType, items, create_table)
     output_table_name = mongodb.generate_collection_name()
 
-    class InputSchemaWithPkey(pw.Schema):
-        pkey: int
-        item: ItemType
-
     input_rows = []
     for index, item in enumerate(items):
         input_rows.append(
@@ -165,39 +239,30 @@ def _test_mongodb_streaming(
             )
             run()
 
+    # Start the reader subprocess first so it has time to connect and deliver
+    # the snapshot rows before streaming_target starts polling for them. The
+    # per-item type check that the observer used to perform here is covered by
+    # the static phase above (same items, same schema) and by
+    # ``_compare_input_and_output`` on the delivered rows below.
+    proc = _start_mongodb_stream_worker(
+        input_table_name,
+        output_table_name,
+        generate_pkey_item_schema_code(ItemType, primary_key=False),
+    )
+
     streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
     streaming_thread.start()
 
-    G.clear()
-    table = pw.io.mongodb.read(
-        connection_string=MONGODB_CONNECTION_STRING,
-        database=MONGODB_BASE_NAME,
-        collection=input_table_name,
-        schema=InputSchemaWithPkey,
-        mode="streaming",
-    )
-    pw.io.mongodb.write(
-        table,
-        connection_string=MONGODB_CONNECTION_STRING,
-        database=MONGODB_BASE_NAME,
-        collection=output_table_name,
-        output_table_type="stream_of_changes",
-    )
-    observer, type_errors = _make_type_check_observer(ItemType)
-    pw.io.python.write(table, observer)
-
-    # Fails with fork
-    pathway_thread = ExceptionAwareThread(target=run, daemon=True)
-    pathway_thread.start()
-
-    wait_result_with_checker(
-        MongoDBRowCountChecker(mongodb, output_table_name, 2 * len(input_rows)),
-        60,
-        target=None,
-    )
-    streaming_thread.join()
-
-    assert not type_errors, "\n".join(type_errors)
+    try:
+        wait_result_with_checker(
+            MongoDBRowCountChecker(mongodb, output_table_name, 2 * len(input_rows)),
+            60,
+            target=None,
+        )
+        streaming_thread.join()
+    finally:
+        proc.terminate()
+        proc.wait()
 
     output_rows = mongodb.get_full_collection(output_table_name)
 
