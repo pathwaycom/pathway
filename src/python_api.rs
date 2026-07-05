@@ -88,6 +88,7 @@ use std::future::Future;
 use std::io::{BufWriter, Read};
 use std::mem::take;
 use std::os::unix::prelude::*;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -4170,6 +4171,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> Vec<DataRow> {
     telemetry_config = TelemetryConfig::default(),
     terminate_on_error = true,
     max_expression_batch_size = 1024,
+    udf_cache_directory = None,
 ))]
 pub fn run_with_new_graph(
     py: Python,
@@ -4184,6 +4186,7 @@ pub fn run_with_new_graph(
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
 ) -> PyResult<Vec<Vec<DataRow>>> {
     LOGGING_RESET_HANDLE.reset();
     defer! {
@@ -4266,6 +4269,7 @@ pub fn run_with_new_graph(
                 telemetry_config,
                 terminate_on_error,
                 max_expression_batch_size,
+                udf_cache_directory,
             )
         })
     })??;

@@ -282,6 +282,7 @@ def get_one_table_runner(
     mode: api.PersistenceMode,
     logic: Callable[[pw.Table], pw.Table],
     schema: type[pw.Schema],
+    run_kwargs: dict | None = None,
 ) -> tuple[Callable[[list[str], set[str]], None], pathlib.Path]:
     input_path = tmp_path / "1"
     os.makedirs(input_path)
@@ -302,7 +303,8 @@ def get_one_table_runner(
             persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(persistent_storage_path),
                 persistence_mode=mode,
-            )
+            ),
+            **(run_kwargs or {}),
         )
         assert_sets_equality_from_path(output_path, expected)
 
@@ -648,8 +650,16 @@ def test_deduplicate(tmp_path, mode, name):
     "mode", [api.PersistenceMode.OPERATOR_PERSISTING]
 )  # api.PersistenceMode.PERSISTING doesn't work as it replays the data without storing UDF results
 @pytest.mark.parametrize("sync", [True, False])
+@pytest.mark.parametrize("on_disk_cache", [False, True])
 @only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
-def test_non_deterministic_udf(tmp_path, mode, sync):
+def test_non_deterministic_udf(tmp_path, mode, sync, on_disk_cache):
+    # With the on-disk cache enabled, the memoized UDF results live in SQLite files
+    # in the directory passed to pw.run; on every restart the cache is
+    # rebuilt there from the operator snapshots and retractions replay the
+    # restored values.
+    cache_dir = tmp_path / "udf-cache"
+    run_kwargs = {"udf_cache_directory": str(cache_dir)} if on_disk_cache else {}
+
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
         b: int
@@ -675,9 +685,16 @@ def test_non_deterministic_udf(tmp_path, mode, sync):
     def logic(t: pw.Table) -> pw.Table:
         return t.select(pw.this.a, x=foo(pw.this.b))
 
-    run, input_path = get_one_table_runner(tmp_path, mode, logic, InputSchema)
+    run, input_path = get_one_table_runner(
+        tmp_path, mode, logic, InputSchema, run_kwargs=run_kwargs
+    )
 
     run(["a,b", "1,2"], {"1,1,1"})
+    if on_disk_cache:
+        assert cache_dir.is_dir()
+        # The on-disk cache is a runtime working set only: its files are removed on
+        # shutdown and the cache is rebuilt from the operator snapshots.
+        assert list(cache_dir.glob("*.sqlite")) == []
     os.remove(input_path / "1")
     run(["a,b", "1,3"], {"1,1,-1", "1,2,1"})
     run(["a,b", "2,4"], {"2,3,1"})

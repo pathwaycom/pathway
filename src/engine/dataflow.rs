@@ -7,6 +7,7 @@ mod async_transformer;
 mod complex_columns;
 pub mod config;
 mod export;
+pub mod expression_cache;
 pub mod maybe_total;
 pub mod monitoring;
 pub mod operators;
@@ -56,6 +57,7 @@ use std::iter::once;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,6 +110,7 @@ use xxhash_rust::xxh3::{Xxh3 as Hasher, Xxh3Builder};
 use self::async_transformer::async_transformer;
 use self::complex_columns::complex_columns;
 use self::export::{export_table, import_table};
+use self::expression_cache::ExpressionCache;
 use self::maybe_total::MaybeTotalScope;
 use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
@@ -747,6 +750,8 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     reducer_factory: Box<dyn CreateDataflowReducer<S>>,
     connector_synchronizer: SharedConnectorSynchronizer,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
+    expression_cache_counter: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1207,6 +1212,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         reducer_factory: Box<dyn CreateDataflowReducer<S>>,
         connector_synchronizer: SharedConnectorSynchronizer,
         max_expression_batch_size: usize,
+        udf_cache_directory: Option<PathBuf>,
     ) -> Result<Self> {
         Ok(Self {
             scope,
@@ -1233,6 +1239,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             reducer_factory,
             connector_synchronizer,
             max_expression_batch_size,
+            udf_cache_directory,
+            expression_cache_counter: 0,
         })
     }
 
@@ -1605,6 +1613,20 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         ))
     }
 
+    /// Creates the memoization storage for the non-deterministic expressions
+    /// of a single `expression_table` operator.
+    fn create_expression_cache(
+        &mut self,
+        should_cache: &[bool],
+    ) -> Result<Box<dyn ExpressionCache>> {
+        Ok(expression_cache::create_expression_cache(
+            should_cache,
+            self.udf_cache_directory.as_deref(),
+            self.worker_index(),
+            &mut self.expression_cache_counter,
+        )?)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn expression_table_non_deterministic(
         &mut self,
@@ -1619,6 +1641,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             position: usize,
         }
 
+        let should_cache: Vec<_> = expressions
+            .iter()
+            .map(|expression| !expression.deterministic)
+            .collect();
+        let mut caches = self.create_expression_cache(&should_cache)?;
+
         let table = self
             .tables
             .get(table_handle)
@@ -1627,12 +1655,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
 
-        let should_cache: Vec<_> = expressions
-            .iter()
-            .map(|expression| !expression.deterministic)
-            .collect();
-        let mut caches: Vec<HashMap<Key, Value>> = Vec::with_capacity(expressions.len());
-        caches.resize_with(expressions.len(), HashMap::new);
         let collection = table.values().clone();
         let max_expression_batch_size = self.max_expression_batch_size;
 
@@ -1643,6 +1665,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 collection.flat_map_batched_named_with_deletions_first(
                     "expression_table::evaluate_expression",
                     move |data_with_diffs| {
+                        caches.begin_batch();
                         let mut results = vec![None; data_with_diffs.len()];
                         let mut rows = Vec::with_capacity(data_with_diffs.len());
                         for (i, ((key, values), diff)) in data_with_diffs.into_iter().enumerate() {
@@ -1653,8 +1676,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                         expressions.iter().zip(states.iter()).enumerate()
                                     {
                                         if !expression.deterministic {
-                                            let current = caches[j].insert(key, state.clone());
-                                            assert!(current.is_none());
+                                            caches.insert(j, key, state);
                                         }
                                     }
                                 }
@@ -1684,11 +1706,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     // If the expression is deterministic, compute it normally.
                                 } else if expression_data.append_only {
                                     // If the expression is append_only but the stream is not, don't remove key from cache.
-                                    if let Some(result) = caches[i].get(&row.key) {
-                                        results[row.position].as_mut().unwrap()[i] = result.clone();
+                                    if let Some(result) = caches.get(i, row.key) {
+                                        results[row.position].as_mut().unwrap()[i] = result;
                                         should_be_computed = false;
                                     }
-                                } else if let Some(result) = caches[i].remove(&row.key) {
+                                } else if let Some(result) = caches.remove(i, row.key) {
                                     // If expression is not append_only, remove key from cache as a new result can be different.
                                     if row.diff != DIFF_DELETION {
                                         error_reporter.report_and_panic_with_trace(
@@ -1720,12 +1742,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     Value::Error,
                                 );
                                 if !expression_data.deterministic {
-                                    let current = caches[i].insert(key, result_i.clone());
-                                    assert!(current.is_none());
+                                    caches.insert(i, key, &result_i);
                                 }
                                 results[position].as_mut().unwrap()[i] = result_i;
                             }
                         }
+                        caches.commit_batch();
                         let mut rows_iter = rows.into_iter();
                         results
                             .into_iter()
@@ -4853,6 +4875,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     self.current_error_log.clone(),
                     Arc::new(Mutex::new(ConnectorSynchronizer::new())),
                     self.max_expression_batch_size,
+                    self.udf_cache_directory.clone(),
                 )?;
                 let mut subgraph_ref = subgraph.0.borrow_mut();
                 let mut state = BeforeIterate::new(
@@ -5650,6 +5673,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
         default_error_log: Option<ErrorLog>,
         connector_synchronizer: SharedConnectorSynchronizer,
         max_expression_batch_size: usize,
+        udf_cache_directory: Option<PathBuf>,
     ) -> Result<Self> {
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
@@ -5662,6 +5686,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             Box::new(NotTotalReducerFactory),
             connector_synchronizer,
             max_expression_batch_size,
+            udf_cache_directory,
         )?)))
     }
 }
@@ -6305,6 +6330,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
         terminate_on_error: bool,
         connector_synchronizer: SharedConnectorSynchronizer,
         max_expression_batch_size: usize,
+        udf_cache_directory: Option<PathBuf>,
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
@@ -6326,6 +6352,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
             Box::new(TimestampReducerFactory),
             connector_synchronizer,
             max_expression_batch_size,
+            udf_cache_directory,
         )?)))
     }
 }
@@ -7052,6 +7079,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
@@ -7119,6 +7147,7 @@ where
                     terminate_on_error,
                     connector_synchronizer.clone(),
                     max_expression_batch_size,
+                    udf_cache_directory.clone(),
                 )
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(

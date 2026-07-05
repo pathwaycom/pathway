@@ -858,6 +858,7 @@ def run_with_new_graph(
     license_key: str | None = None,
     terminate_on_error: bool = True,
     max_expression_batch_size: int,
+    udf_cache_directory: str | None = None,
 ) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
 
