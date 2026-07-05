@@ -146,3 +146,31 @@ def _prepare_executor(
         raise ValueError(
             "`async_mode` should be set to either `batch_async` or `fully_async`"
         )
+
+
+def _resolve_twelvelabs_api_key(api_key: str | None) -> str:
+    import os
+
+    key = api_key or os.environ.get("TWELVELABS_API_KEY")
+    if not key:
+        raise ValueError(
+            "TwelveLabs API key is missing. Pass `api_key=...` or set the "
+            "`TWELVELABS_API_KEY` environment variable."
+        )
+    return key
+
+
+def _build_twelvelabs_client(api_key: str | None):
+    from pathway.optional_import import optional_imports
+
+    with optional_imports("twelvelabs"):
+        from twelvelabs import TwelveLabs
+    return TwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))
+
+
+def _build_async_twelvelabs_client(api_key: str | None):
+    from pathway.optional_import import optional_imports
+
+    with optional_imports("twelvelabs"):
+        from twelvelabs import AsyncTwelveLabs
+    return AsyncTwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))

@@ -15,12 +15,15 @@ from pathway.optional_import import optional_imports
 from pathway.xpacks.llm._utils import _coerce_sync, _extract_value_inside_dict
 from pathway.xpacks.llm.constants import OPENAI_EMBEDDERS_MAX_TOKENS
 
+from ._utils import _build_async_twelvelabs_client, _build_twelvelabs_client
+
 __all__ = [
     "OpenAIEmbedder",
     "LiteLLMEmbedder",
     "SentenceTransformerEmbedder",
     "GeminiEmbedder",
     "BedrockEmbedder",
+    "MarengoEmbedder",
 ]
 
 
@@ -753,3 +756,107 @@ class BedrockEmbedder(BaseEmbedder):
             embedding = result.get("embedding", result.get("embeddings", [[]])[0])
 
         return np.array(embedding)
+
+
+DEFAULT_MARENGO_MODEL = "marengo3.0"
+
+
+class MarengoEmbedder(BaseEmbedder):
+    """Embed text using the TwelveLabs Marengo multimodal embedding model.
+
+    Marengo returns 512-dimensional embeddings in a shared multimodal space, so the
+    text it produces is directly comparable with image, audio and video embeddings
+    from the same model. This makes it a natural retriever embedder for pipelines
+    that index video with :class:`TwelveLabsVideoParser`.
+
+    Args:
+        model: Marengo model name. Defaults to ``"marengo3.0"``.
+        api_key: TwelveLabs API key. If ``None``, the SDK reads it from the
+            ``TWELVELABS_API_KEY`` environment variable.
+        capacity: Maximum number of concurrent operations. Defaults to ``None``
+            (no specific limit).
+        retry_strategy: Strategy for handling retries. Defaults to
+            :py:class:`~pathway.udfs.ExponentialBackoffRetryStrategy`.
+        cache_strategy: Pathway caching strategy. Defaults to ``None``.
+
+    Example:
+
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.embedders import MarengoEmbedder  # doctest: +SKIP
+    >>> embedder = MarengoEmbedder()  # doctest: +SKIP
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_MARENGO_MODEL,
+        api_key: str | None = None,
+        capacity: int | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
+        cache_strategy: udfs.CacheStrategy | None = None,
+    ):
+        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Marengo embeds one text per request, so keep batches at size 1.
+        super().__init__(
+            executor=executor, cache_strategy=cache_strategy, max_batch_size=1
+        )
+        self.model = model
+        self._api_key = api_key
+        self._client = None
+        self._aclient = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = _build_twelvelabs_client(self._api_key)
+        return self._client
+
+    @property
+    def aclient(self):
+        if self._aclient is None:
+            self._aclient = _build_async_twelvelabs_client(self._api_key)
+        return self._aclient
+
+    def get_embedding_dimension(self, **kwargs) -> int:
+        """Return the embedding dimension (512 for Marengo).
+
+        This is a one-time, setup-time probe: Pathway calls it once while
+        building the index, not on the per-document hot path. The single
+        synchronous request issued here is therefore intentional and acceptable
+        (the actual embedding hot path runs asynchronously via ``__wrapped__``).
+
+        The base implementation probes ``__wrapped__`` with a single string and
+        takes ``len`` of the result; since this embedder always returns a list of
+        vectors, probe with a one-element list and measure the first vector
+        instead (mirroring Pathway's ``SentenceTransformerEmbedder``).
+        """
+        return len(self._embed_one("."))
+
+    def _embed_one(self, text: str) -> np.ndarray:
+        """Synchronous single-text embed, used only for the setup-time probe."""
+        response = self.client.embed.create(model_name=self.model, text=text)
+        vector = response.text_embedding.segments[0].float_
+        return np.array(vector, dtype=np.float32)
+
+    async def _aembed_one(self, text: str) -> np.ndarray:
+        resp = await self.aclient.embed.create(model_name=self.model, text=text)
+        vector = resp.text_embedding.segments[0].float_
+        return np.array(vector, dtype=np.float32)
+
+    async def __wrapped__(self, inputs: list[str], **kwargs) -> list[np.ndarray]:
+        """Embed the given texts with Marengo.
+
+        Marengo embeds one text per request, so the requests are issued
+        concurrently on the async TwelveLabs client (``AsyncTwelveLabs``) rather
+        than serially, keeping the embedding hot path non-blocking.
+
+        Args:
+            inputs: the strings to embed.
+
+        Returns:
+            A list of 512-dimensional ``numpy`` arrays, one per input string.
+        """
+
+        return list(await asyncio.gather(*[self._aembed_one(t) for t in inputs]))
