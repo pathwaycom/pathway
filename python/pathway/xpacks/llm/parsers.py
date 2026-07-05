@@ -6,6 +6,7 @@ chunks along with their metadata.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import io
 import logging
@@ -30,7 +31,7 @@ from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import _parser_utils, llms, prompts
-from pathway.xpacks.llm._utils import _build_twelvelabs_client, _prepare_executor
+from pathway.xpacks.llm._utils import _build_async_twelvelabs_client, _prepare_executor
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
 if TYPE_CHECKING:
@@ -1367,11 +1368,14 @@ class AudioParser(pw.UDF):
 
 
 DEFAULT_PEGASUS_MODEL = "pegasus1.5"
-DEFAULT_PROMPT = (
+DEFAULT_PEGASUS_PROMPT = (
     "Describe this video in detail. Summarize what happens, who and what appears, "
     "the setting, any spoken or on-screen text, and the overall topic. "
     "Write the description so it can be used to answer questions about the video."
 )
+# Pegasus input limits (https://docs.twelvelabs.io/docs/concepts/models/pegasus):
+# duration 4 s - 2 h, file size <= 2 GB, resolution 360x360 - 5184x2160.
+_PEGASUS_MAX_VIDEO_BYTES = 2 * 1024**3
 
 
 class TwelveLabsVideoParser(pw.UDF):
@@ -1382,11 +1386,21 @@ class TwelveLabsVideoParser(pw.UDF):
     description of the video using ``prompt``. The returned text is suitable for
     chunking, embedding and indexing by the standard Pathway RAG components.
 
+    Pegasus accepts videos between 4 seconds and 2 hours long, up to 2 GB in
+    size, with resolution between 360x360 and 5184x2160, in any FFmpeg-supported
+    container. Videos larger than 2 GB are rejected by the parser before the
+    upload; the other limits are enforced by the TwelveLabs API.
+
     By default the uploaded asset is deleted once the analysis finishes (even if
     the analysis fails), so repeated runs do not flood the TwelveLabs asset list.
     Set ``delete_assets=False`` to keep the assets around for reuse or
     inspection; in that case the emitted ``twelvelabs_asset_id`` metadata refers
     to a live, retrievable asset.
+
+    Parsing a video takes minutes and costs money, so in production it is
+    recommended to persist the results with
+    ``cache_strategy=pw.udfs.DiskCache()`` — otherwise every restart of the
+    pipeline re-parses all videos.
 
     Args:
         prompt: Instruction sent to Pegasus describing what to extract from the
@@ -1396,6 +1410,9 @@ class TwelveLabsVideoParser(pw.UDF):
             ``TWELVELABS_API_KEY`` environment variable.
         max_tokens: Maximum number of tokens Pegasus may generate. Defaults to 2048.
         temperature: Sampling temperature for Pegasus. Defaults to ``None`` (SDK default).
+        video_format: Container format of the incoming videos, used as the
+            filename extension of the uploaded asset. Any FFmpeg-supported
+            format (e.g. ``"mp4"``, ``"webm"``, ``"mov"``). Defaults to ``"mp4"``.
         asset_poll_interval: Seconds between asset-readiness checks. Defaults to 5.
         asset_timeout: Maximum number of seconds to wait for an uploaded asset to
             become ready before raising. Defaults to 600.
@@ -1405,50 +1422,87 @@ class TwelveLabsVideoParser(pw.UDF):
             ``twelvelabs_asset_id`` metadata is omitted because the asset no
             longer exists. Set to ``False`` to keep assets (e.g. for reuse or
             debugging), in which case the id is included in the metadata.
+        capacity: Maximum number of videos processed concurrently. Defaults to
+            ``None`` (no specific limit).
+        retry_strategy: Strategy for handling retries in case of failures.
+            Retries are applied per video, before ``on_error`` is consulted.
+            Note that a retry re-runs the whole parse, including the video
+            upload. Defaults to
+            :py:class:`~pathway.udfs.ExponentialBackoffRetryStrategy`.
+        on_error: What to do when parsing a video fails after all retries:
+            ``"raise"`` (the default) propagates the error and fails the
+            pipeline, ``"skip"`` logs the error and produces no chunks for the
+            failed video, letting the rest of the pipeline continue. Use
+            ``"skip"`` in production pipelines where a single malformed video
+            must not halt processing.
         cache_strategy: Pathway caching strategy. To enable caching, pass a valid
             :py:class:`~pathway.udfs.CacheStrategy`. Defaults to ``None``.
+        async_mode: Mode of execution for the UDF, either ``"batch_async"`` or
+            ``"fully_async"``. In the default ``"batch_async"`` mode a minibatch
+            waits for all of its videos to finish; ``"fully_async"`` lets the
+            rest of the pipeline proceed while videos are being parsed, which
+            suits the minutes-long parse times better.
 
     Example:
 
     >>> import pathway as pw  # doctest: +SKIP
     >>> from pathway.xpacks.llm.parsers import TwelveLabsVideoParser  # doctest: +SKIP
-    >>> parser = TwelveLabsVideoParser()  # doctest: +SKIP
+    >>> parser = TwelveLabsVideoParser(  # doctest: +SKIP
+    ...     cache_strategy=pw.udfs.DiskCache(),  # don't re-parse videos on restarts
+    ...     on_error="skip",  # a single broken video must not halt the pipeline
+    ... )
     """
 
     def __init__(
         self,
-        prompt: str = DEFAULT_PROMPT,
+        prompt: str = DEFAULT_PEGASUS_PROMPT,
         model: str = DEFAULT_PEGASUS_MODEL,
         api_key: str | None = None,
         max_tokens: int = 2048,
         temperature: float | None = None,
+        video_format: str = "mp4",
         asset_poll_interval: float = 5.0,
         asset_timeout: float = 600.0,
         delete_assets: bool = True,
+        capacity: int | None = None,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = udfs.ExponentialBackoffRetryStrategy(max_retries=4),
+        on_error: Literal["raise", "skip"] = "raise",
         cache_strategy: udfs.CacheStrategy | None = None,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
     ):
-        super().__init__(cache_strategy=cache_strategy)
+        _check_entitlements("advanced-parser")
+        # Retries are applied inside `__wrapped__` (see there) rather than at the
+        # executor level, so that `on_error="skip"` kicks in only after the
+        # retries are exhausted.
+        executor = _prepare_executor(async_mode, capacity=capacity)
+        super().__init__(executor=executor, cache_strategy=cache_strategy)
         self.prompt = prompt
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.video_format = video_format
         self.asset_poll_interval = asset_poll_interval
         self.asset_timeout = asset_timeout
         self.delete_assets = delete_assets
+        self.retry_strategy = retry_strategy or udfs.NoRetryStrategy()
+        self.on_error = on_error
         self._api_key = api_key
-        self._client = None
+        self._aclient = None
 
     @property
-    def client(self):
-        if self._client is None:
-            self._client = _build_twelvelabs_client(self._api_key)
-        return self._client
+    def aclient(self):
+        if self._aclient is None:
+            self._aclient = _build_async_twelvelabs_client(self._api_key)
+        return self._aclient
 
-    def _upload_asset(self, contents: bytes) -> str:
+    async def _upload_asset(self, contents: bytes) -> str:
         """Upload video bytes and return the asset id once it is ready."""
 
-        asset = self.client.assets.create(
-            method="direct", file=("video.mp4", contents), filename="video.mp4"
+        filename = f"video.{self.video_format}"
+        asset = await self.aclient.assets.create(
+            method="direct", file=(filename, contents), filename=filename
         )
         deadline = time.monotonic() + self.asset_timeout
         while asset.status not in ("ready", "failed"):
@@ -1457,16 +1511,33 @@ class TwelveLabsVideoParser(pw.UDF):
                     f"TwelveLabs asset {asset.id} was not ready after "
                     f"{self.asset_timeout}s (last status: {asset.status})."
                 )
-            time.sleep(self.asset_poll_interval)
-            asset = self.client.assets.retrieve(asset.id)
+            await asyncio.sleep(self.asset_poll_interval)
+            asset = await self.aclient.assets.retrieve(asset.id)
         if asset.status == "failed":
             raise RuntimeError(f"TwelveLabs asset {asset.id} failed to process.")
         return asset.id
 
-    def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
+    async def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
+        try:
+            if len(contents) > _PEGASUS_MAX_VIDEO_BYTES:
+                raise ValueError(
+                    f"Video is {len(contents)} bytes; Pegasus accepts videos up "
+                    f"to {_PEGASUS_MAX_VIDEO_BYTES} bytes (2 GB)."
+                )
+            return await self.retry_strategy.invoke(self._parse, contents)
+        except Exception:
+            if self.on_error == "skip":
+                logger.error(
+                    "Failed to parse a video with TwelveLabs; skipping it.",
+                    exc_info=True,
+                )
+                return []
+            raise
+
+    async def _parse(self, contents: bytes) -> list[tuple[str, dict]]:
         from twelvelabs.types.video_context import VideoContext_AssetId
 
-        asset_id = self._upload_asset(contents)
+        asset_id = await self._upload_asset(contents)
         try:
             logger.info("Analyzing TwelveLabs asset %s with Pegasus...", asset_id)
             analyze_kwargs: dict = dict(
@@ -1477,15 +1548,21 @@ class TwelveLabsVideoParser(pw.UDF):
             )
             if self.temperature is not None:
                 analyze_kwargs["temperature"] = self.temperature
-            response = self.client.analyze(**analyze_kwargs)
+            response = await self.aclient.analyze(**analyze_kwargs)
             text = response.data or ""
+            if not text:
+                logger.warning(
+                    "Pegasus returned no text for TwelveLabs asset %s; "
+                    "the video will produce an empty document.",
+                    asset_id,
+                )
         finally:
             if self.delete_assets:
                 # Remove the per-run asset so repeated runs do not flood the
                 # TwelveLabs asset list. Best-effort: a cleanup failure must not
                 # mask the analysis result (or an analysis error above).
                 try:
-                    self.client.assets.delete(asset_id)
+                    await self.aclient.assets.delete(asset_id)
                 except Exception:  # noqa: BLE001
                     logger.warning("Failed to delete TwelveLabs asset %s.", asset_id)
         # When the asset has been deleted the id no longer resolves, so only

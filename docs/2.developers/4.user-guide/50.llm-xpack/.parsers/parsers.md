@@ -25,6 +25,7 @@ Here is a table listing all available parsers and some details about them:
 | PaddleOCR          | PDF + tables + images | Utilizes the PaddleOCR library to extract structured content from PDFs and images. |
 | PypdfParser        | PDF  | Uses pypdf library to extract text from PDFs with optional text cleanup. |
 | SlideParser        | Slide| Extracts information from PPTX and PDF slide decks using vision-based LLMs. |
+| TwelveLabsVideoParser | Video | Turns videos into rich textual descriptions using the TwelveLabs Pegasus video-understanding model. |
 | UnstructuredParser | Text + tables | Leverages Unstructured library to parse various document types. |
 | Utf8Parser         | Text | Decodes text encoded in UTF-8. |
 
@@ -240,5 +241,41 @@ The second step is optional - if you don't specify `detail_parse_schema` paramet
 It converts slides into images before processing them by vision LLM that tries to describe the content of a slide.
 
 As in case of ImageParser you can also extract information specified in pydantic schema.
+
+
+## TwelveLabsVideoParser
+
+[`TwelveLabsVideoParser`](/developers/api-docs/pathway-xpacks-llm/parsers#pathway.xpacks.llm.parsers.TwelveLabsVideoParser) turns videos into rich textual descriptions using the [TwelveLabs Pegasus](https://docs.twelvelabs.io/docs/concepts/models/pegasus) video-understanding model. The resulting text can be chunked, embedded and indexed like the output of any other parser, enabling Video RAG pipelines. For retrieval, pair it with the [`MarengoEmbedder`](/developers/user-guide/llm-xpack/embedders#marengoembedder), which embeds text into the same multimodal space TwelveLabs uses for video.
+
+It requires the `twelvelabs` SDK (`pip install "pathway[twelvelabs]"`) and a TwelveLabs API key, read from the `TWELVELABS_API_KEY` environment variable unless passed explicitly. Pegasus accepts videos between 4 seconds and 2 hours long, up to 2 GB, in any FFmpeg-supported format.
+
+Parsing a video takes minutes and is billed by TwelveLabs, so in production pipelines it is recommended to persist results with `cache_strategy=pw.udfs.DiskCache()` and to use `on_error="skip"` so that a single malformed video does not halt the pipeline.
+
+::if{path="/llm-xpack/"}
+Example:
+
+```python
+import pathway as pw
+from pathway.xpacks.llm.parsers import TwelveLabsVideoParser
+
+videos = pw.io.fs.read("./videos", format="binary", mode="streaming")
+
+parser = TwelveLabsVideoParser(
+    cache_strategy=pw.udfs.DiskCache(),  # don't re-parse videos on restarts
+    on_error="skip",  # a single broken video must not halt the pipeline
+)
+
+result = videos.select(parsed=parser(videos.data))
+```
+::
+
+::if{path="/templates/"}
+Example of YAML configuration
+```yaml
+$parser: !pw.xpacks.llm.parsers.TwelveLabsVideoParser
+  on_error: "skip"
+  cache_strategy: !pw.udfs.DiskCache
+```
+::
 
 

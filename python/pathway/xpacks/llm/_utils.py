@@ -3,6 +3,7 @@
 import asyncio
 import functools
 import inspect
+import os
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import pathway as pw
 from pathway.internals.udfs.executors import Executor, FullyAsyncExecutor
 from pathway.internals.udfs.retries import AsyncRetryStrategy
+from pathway.optional_import import optional_imports
 
 
 # https://stackoverflow.com/a/75094151
@@ -149,8 +151,6 @@ def _prepare_executor(
 
 
 def _resolve_twelvelabs_api_key(api_key: str | None) -> str:
-    import os
-
     key = api_key or os.environ.get("TWELVELABS_API_KEY")
     if not key:
         raise ValueError(
@@ -160,17 +160,7 @@ def _resolve_twelvelabs_api_key(api_key: str | None) -> str:
     return key
 
 
-def _build_twelvelabs_client(api_key: str | None):
-    from pathway.optional_import import optional_imports
-
-    with optional_imports("twelvelabs"):
-        from twelvelabs import TwelveLabs
-    return TwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))
-
-
 def _build_async_twelvelabs_client(api_key: str | None):
-    from pathway.optional_import import optional_imports
-
     with optional_imports("twelvelabs"):
         from twelvelabs import AsyncTwelveLabs
     return AsyncTwelveLabs(api_key=_resolve_twelvelabs_api_key(api_key))

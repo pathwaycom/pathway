@@ -17,6 +17,7 @@ The following embedding wrappers are available through the `pathway` xpack:
 - [`LiteLLMEmbedder`](#litellmembedder) - Embed text with any model available through LiteLLM
 - [`SentenceTransformersEmbedder`](#sentencetransformerembedder) - Embed text with any model available through SentenceTransformer (aka. SBERT) maintained by Hugging Face
 - [`GeminiEmbedder`](#gemeniembedder) - Embed text with any of Google's available embedding models
+- [`MarengoEmbedder`](#marengoembedder) - Embed text with TwelveLabs' multimodal Marengo model, for Video RAG pipelines
 
 ## OpenAIEmbedder
 The default model for [`OpenAIEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders#pathway.xpacks.llm.embedders.OpenAIEmbedder) is `text-embedding-3-small`.
@@ -132,5 +133,37 @@ t.select(ret=embedder(pw.this.txt))
 ```yaml
 embedder: !pw.xpacks.llm.embedders.GeminiEmbedder
   model: "models/text-embedding-004"
+```
+::
+
+## MarengoEmbedder
+
+[`MarengoEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders#pathway.xpacks.llm.embedders.MarengoEmbedder) embeds text with the [TwelveLabs Marengo](https://docs.twelvelabs.io/docs/concepts/models/marengo) multimodal model. It produces 512-dimensional vectors in a shared text/image/audio/video embedding space, which makes it a natural companion for indexing the video descriptions produced by the [`TwelveLabsVideoParser`](/developers/user-guide/llm-xpack/parsers#twelvelabsvideoparser) in Video RAG pipelines.
+
+It requires the `twelvelabs` SDK (`pip install "pathway[twelvelabs]"`) and a TwelveLabs API key, read from the `TWELVELABS_API_KEY` environment variable unless passed explicitly.
+
+::if{path="/llm-xpack/"}
+```python
+import pathway as pw
+from pathway.xpacks.llm import embedders
+
+embedder = embedders.MarengoEmbedder(
+    cache_strategy=pw.udfs.DiskCache(),  # don't re-embed documents on restarts
+)
+
+# Create a table with text to embed
+t = pw.debug.table_from_markdown('''
+txt
+Some text to embed
+''')
+
+t.select(ret=embedder(pw.this.txt))
+```
+::
+::if{path="/templates/"}
+```yaml
+embedder: !pw.xpacks.llm.embedders.MarengoEmbedder
+  model: "marengo3.0"
+  cache_strategy: !pw.udfs.DiskCache
 ```
 ::
