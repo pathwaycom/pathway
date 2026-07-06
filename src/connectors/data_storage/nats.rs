@@ -1,5 +1,6 @@
 use log::error;
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::future::{Future, IntoFuture};
 use std::mem::take;
 use std::pin::Pin;
@@ -9,9 +10,10 @@ use async_nats::jetstream;
 use async_nats::jetstream::consumer::pull::Stream as NatsPullStream;
 use async_nats::jetstream::context::Context as JetStream;
 use async_nats::jetstream::context::PublishAckFuture as JetStreamAckFuture;
+use async_nats::jetstream::context::PublishErrorKind;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
-use futures::future::join_all;
+use bytes::Bytes;
 use futures::StreamExt;
 use tokio::runtime::Runtime as TokioRuntime;
 
@@ -22,6 +24,23 @@ use crate::connectors::{
     StorageType, WriteError, Writer,
 };
 use crate::persistence::frontier::OffsetAntichain;
+use crate::retry::{execute_with_retries_if_async, RetryConfig};
+
+// The maximum number of JetStream publishes whose acknowledgements may be
+// outstanding at any given moment. Each publish is sent immediately and returns
+// a future resolving to the server's acknowledgement; the writer only awaits
+// those futures in `flush`. Letting an unbounded number of them accumulate
+// (a large minibatch, multiplied by several workers writing to the same stream)
+// overwhelms the server, which then rejects publishes with a "too many requests"
+// error. Once this many are in flight, the oldest acknowledgement is awaited
+// before sending more, bounding the pressure on the server while still allowing
+// aggressive pipelining.
+const MAX_IN_FLIGHT_ACKS: usize = 1000;
+
+// How many times a single publish whose acknowledgement fails with a transient
+// error (server overload or acknowledgement timeout) is re-sent before giving
+// up. Retries use exponential backoff.
+const PUBLISH_ACK_RETRIES: usize = 8;
 
 pub enum NatsPoller {
     Simple(NatsSubscriber),
@@ -158,17 +177,92 @@ impl WriteAccessor for SimpleWriteAccessor {
     }
 }
 
+// A JetStream publish whose acknowledgement has not been awaited yet. The
+// message payload and headers are kept so the publish can be retried if its
+// acknowledgement fails with a transient error.
+struct InFlightPublish {
+    subject: String,
+    headers: NatsHeaders,
+    payload: Bytes,
+    ack: <JetStreamAckFuture as IntoFuture>::IntoFuture,
+}
+
+// A publish acknowledgement error is worth retrying only when it reflects a
+// transient server condition: an overloaded server (mapped to `Other`, e.g. a
+// "too many requests" response) or an acknowledgement that did not arrive in
+// time. Permanent errors (missing stream, wrong expected sequence) fail fast.
+fn is_retriable_publish_error(error: &WriteError) -> bool {
+    match error {
+        WriteError::JetStream(error) => {
+            matches!(
+                error.kind(),
+                PublishErrorKind::TimedOut | PublishErrorKind::Other
+            )
+        }
+        _ => false,
+    }
+}
+
 pub struct JetStreamWriteAccessor {
     jetstream: JetStream,
-    ack_futures: Vec<<JetStreamAckFuture as IntoFuture>::IntoFuture>,
+    in_flight: VecDeque<InFlightPublish>,
+    max_in_flight: usize,
 }
 
 impl JetStreamWriteAccessor {
     pub fn new(client: NatsClient) -> Self {
         Self {
             jetstream: jetstream::new(client),
-            ack_futures: Vec::new(),
+            in_flight: VecDeque::new(),
+            max_in_flight: MAX_IN_FLIGHT_ACKS,
         }
+    }
+
+    // Awaits a single publish acknowledgement, re-sending the message with
+    // exponential backoff if the server reports a transient failure. The first
+    // attempt reuses the acknowledgement future of the publish that was already
+    // sent; only retries re-publish the message (which is safe under Pathway's
+    // at-least-once output semantics).
+    async fn await_ack(&self, publish: InFlightPublish) -> Result<(), WriteError> {
+        let InFlightPublish {
+            subject,
+            headers,
+            payload,
+            ack,
+        } = publish;
+        let mut ack = Some(ack);
+        execute_with_retries_if_async(
+            async || {
+                let ack_future = match ack.take() {
+                    Some(existing) => existing,
+                    None => self
+                        .jetstream
+                        .publish_with_headers(subject.clone(), headers.clone(), payload.clone())
+                        .await?
+                        .into_future(),
+                };
+                ack_future.await?;
+                Ok(())
+            },
+            is_retriable_publish_error,
+            RetryConfig::default(),
+            PUBLISH_ACK_RETRIES,
+        )
+        .await
+    }
+
+    // Awaits acknowledgements, oldest first, until at most `limit` publishes
+    // remain in flight. Used both to apply backpressure before sending a new
+    // publish and to drain everything on `flush`.
+    async fn drain_until(&mut self, limit: usize) -> Result<(), WriteError> {
+        while self.in_flight.len() > limit {
+            let publish = self
+                .in_flight
+                .pop_front()
+                .expect("in_flight is non-empty while its length exceeds the limit");
+            self.await_ack(publish).await?;
+        }
+        Ok(())
     }
 }
 
@@ -179,24 +273,30 @@ impl WriteAccessor for JetStreamWriteAccessor {
         headers: NatsHeaders,
         payload: Vec<u8>,
     ) -> AccessorResult<'_> {
-        Box::pin(async {
-            let ack_future = self
+        Box::pin(async move {
+            // Apply backpressure so we never have more than `max_in_flight`
+            // un-acknowledged publishes outstanding at once.
+            self.drain_until(self.max_in_flight.saturating_sub(1))
+                .await?;
+            let payload: Bytes = payload.into();
+            let ack = self
                 .jetstream
-                .publish_with_headers(topic, headers, payload.into())
+                .publish_with_headers(topic.clone(), headers.clone(), payload.clone())
                 .await
-                .map_err(WriteError::JetStream)?;
-            self.ack_futures.push(ack_future.into_future());
+                .map_err(WriteError::JetStream)?
+                .into_future();
+            self.in_flight.push_back(InFlightPublish {
+                subject: topic,
+                headers,
+                payload,
+                ack,
+            });
             Ok(())
         })
     }
 
     fn flush(&mut self) -> AccessorResult<'_> {
-        Box::pin(async {
-            for result in join_all(take(&mut self.ack_futures)).await {
-                let _ = result?;
-            }
-            Ok(())
-        })
+        Box::pin(async move { self.drain_until(0).await })
     }
 }
 
@@ -268,5 +368,43 @@ impl NatsWriter {
             topic,
             header_fields,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connectors::Reader;
+
+    fn nats_frontier(worker_index: usize, entries_read: usize) -> OffsetAntichain {
+        let mut frontier = OffsetAntichain::new();
+        frontier.advance_offset(
+            OffsetKey::Nats(worker_index),
+            OffsetValue::NatsReadEntriesCount(entries_read),
+        );
+        frontier
+    }
+
+    #[test]
+    fn merge_frontiers_keeps_the_furthest_read_position() {
+        // Recovering a NATS reader's frontier from several persisted snapshots
+        // merges their offsets pairwise. The merged frontier must keep the
+        // furthest-read position (the largest number of entries read), so a
+        // restart resumes after everything that was already processed rather
+        // than replaying from an earlier snapshot.
+        let behind = nats_frontier(0, 10);
+        let ahead = nats_frontier(0, 25);
+
+        let expected = OffsetValue::NatsReadEntriesCount(25);
+
+        let merged = NatsReader::merge_two_frontiers(&behind, &ahead);
+        assert_eq!(merged.get_offset(&OffsetKey::Nats(0)), Some(&expected));
+
+        // The result must not depend on the argument order.
+        let merged_swapped = NatsReader::merge_two_frontiers(&ahead, &behind);
+        assert_eq!(
+            merged_swapped.get_offset(&OffsetKey::Nats(0)),
+            Some(&expected)
+        );
     }
 }

@@ -640,6 +640,14 @@ pub trait Reader {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
                     (
+                        OffsetValue::NatsReadEntriesCount(offset_entries_read),
+                        OffsetValue::NatsReadEntriesCount(other_entries_read),
+                    ) => {
+                        if other_entries_read > offset_entries_read {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
                         OffsetValue::MysqlBinlogPos {
                             filename: lhs_file,
                             position: lhs_pos,

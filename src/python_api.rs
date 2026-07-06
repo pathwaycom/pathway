@@ -6627,6 +6627,12 @@ impl DataStorage {
                             &readers_group_name.clone(),
                             async_nats::jetstream::consumer::pull::Config {
                                 durable_name: Some(readers_group_name),
+                                // Restrict the consumer to the requested topic.
+                                // A JetStream stream can span several subjects,
+                                // so without this filter the consumer would
+                                // deliver every subject in the stream instead of
+                                // just the one the user asked to read.
+                                filter_subject: topic.clone(),
                                 ..Default::default()
                             },
                         )
