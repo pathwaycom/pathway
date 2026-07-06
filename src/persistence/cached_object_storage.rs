@@ -49,6 +49,21 @@ const SMALL_BATCH_BLOB_LENGTH: usize = 262_144;
 const LARGE_BATCH_EVENTS_COUNT: usize = 100_000;
 const LARGE_BATCH_BLOB_LENGTH: usize = 200_000_000;
 
+/// Blob length threshold that starts an eager background upload of the
+/// current batch, without waiting for the next logical time commit.
+///
+/// The commit protocol saves the metadata only after all cached object
+/// uploads are durable, so any blob that is still pending at commit time
+/// blocks the commit — and with it the advancement of the persistent
+/// frontier — for the whole duration of the upload. A large object (e.g. a
+/// whole input file cached by a filesystem-like connector) is placed here
+/// before it is tokenized, while the first possible commit happens only
+/// after the file is ingested in full. Starting the upload at placement time
+/// lets it proceed in the background of the ingestion, so the commit only
+/// has to await the (usually empty) remainder instead of a multi-second
+/// upload of the entire blob.
+const EAGER_UPLOAD_BLOB_LENGTH: usize = 16_777_216;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum EventType {
     Update(FileLikeMetadata),
@@ -560,7 +575,8 @@ impl CachedObjectsExternalAccessor {
         self.current_blobs.append(&mut blob);
         self.has_changes = true;
 
-        if self.current_batch.is_large_batch() {
+        let needs_eager_upload = self.current_blobs.len() >= EAGER_UPLOAD_BLOB_LENGTH;
+        if self.current_batch.is_large_batch() || needs_eager_upload {
             let current_upload = Self::start_upload_with_backend(
                 self.backend.as_ref(),
                 &mut self.current_batch,

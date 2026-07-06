@@ -77,6 +77,38 @@ fn test_place_access() -> eyre::Result<()> {
 }
 
 #[test]
+fn test_large_object_upload_does_not_wait_for_commit() -> eyre::Result<()> {
+    let test_storage = tempdir()?;
+    let test_storage_path = test_storage.path();
+    let backend = FilesystemKVStorage::new(test_storage_path)?;
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+
+    // The document is larger than the eager upload threshold, so its upload
+    // must be started by the placement itself. Otherwise the first commit
+    // after the ingestion would have to transfer the whole blob, blocking
+    // the advancement of the persistent frontier for the upload duration.
+    let document = vec![b'x'; 20_000_000];
+    let metadata = create_mock_storage_metadata();
+    storage.place_object(b"a", &document, metadata.clone())?;
+    let stable_version = storage.actual_version();
+
+    // Note: no forced state upload here. We only await the uploads that the
+    // placement has already started.
+    storage
+        .get_external_accessor()
+        .lock()
+        .unwrap()
+        .wait_for_all_uploads()?;
+
+    let backend = FilesystemKVStorage::new(test_storage_path)?;
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+    storage.start_from_stable_version(stable_version)?;
+    check_storage_has_object(&storage, b"a", &document, &metadata)?;
+
+    Ok(())
+}
+
+#[test]
 fn test_place_delete_access() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
