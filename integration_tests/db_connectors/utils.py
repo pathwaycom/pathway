@@ -1195,6 +1195,7 @@ QDRANT_VECTOR_DIM = 3
 
 class QdrantContext:
     def __init__(self, grpc_url: str, rest_url: str) -> None:
+        import httpx
         from qdrant_client import QdrantClient
 
         # The native connector talks to Qdrant over gRPC, so the URL handed to
@@ -1207,8 +1208,22 @@ class QdrantContext:
         # ``create_collection`` (WAL fsync + collection registry updates) can
         # take tens of seconds even though it succeeds — with the default the
         # whole test dies on ``ReadTimeout`` instead of just waiting it out.
+        #
+        # HTTP keep-alive is disabled (``max_keepalive_connections=0``) because
+        # Qdrant's REST server (actix-web) closes idle connections after ~5 s,
+        # and the gap between two verification requests spans a whole pipeline
+        # run. A pooled connection therefore routinely expires in between, and
+        # under CI load the server's FIN can arrive late enough that httpx
+        # reuses the already-closed connection and the test dies with
+        # "Server disconnected without sending a response". qdrant-client
+        # disables keep-alive itself when the host is ``localhost``, but here
+        # the host is the docker-network service name, so it must be explicit.
         self.url = grpc_url
-        self.client = QdrantClient(url=rest_url, timeout=120)
+        self.client = QdrantClient(
+            url=rest_url,
+            timeout=120,
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=0),
+        )
         # Names handed out by ``generate_collection_name`` so the fixture can
         # drop them on teardown. A Qdrant node keeps every collection's RocksDB
         # files open, so leaking collections across the (parallel) suite would
