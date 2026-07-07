@@ -31,6 +31,19 @@ PERSISTENCE_MODES = [
 ]
 
 
+_next_forward_mtime = 0.0
+
+
+def _rewrite_file(path, lines):
+    """Write an input file with a strictly increasing mtime, so that a
+    same-size rewrite is always seen as a change despite the
+    second-granularity mtime tracking. Harmless for new files."""
+    global _next_forward_mtime
+    write_lines(path, lines)
+    _next_forward_mtime = max(_next_forward_mtime + 2, time.time() + 2)
+    os.utime(path, (_next_forward_mtime, _next_forward_mtime))
+
+
 # --- Common schemas ---
 
 
@@ -102,7 +115,7 @@ def _make_event_runner(tmp_path, mode, pipeline_fn):
         for eid, edata in changes.items():
             events[eid] = edata
             et, flag, data = edata
-            write_lines(
+            _rewrite_file(
                 input_path / f"{eid}.csv",
                 ["event_time,flag,data", f"{et},{flag},{data}"],
             )
@@ -633,7 +646,7 @@ def test_iterate_persistence_sort_propagation(
                 events[event_id] = event_data
                 event_time, flag, data = event_data
                 filepath = input_path / f"{event_id}.csv"
-                write_lines(
+                _rewrite_file(
                     filepath,
                     [
                         "event_time,flag,data",
@@ -698,6 +711,323 @@ def test_iterate_persistence_sort_propagation(
             f"  missing: {curr_output_rows - active_rows}\n"
             f"  extra:   {active_rows - curr_output_rows}"
         )
+
+
+@only_with_license_key
+@needs_multiprocessing_fork
+def test_iterate_persistence_delayed_snapshot_write(tmp_path, monkeypatch):
+    """Regression test: commits must wait for iterate's snapshot writes.
+
+    Iterate's input snapshots are persisted on a dead-end branch that is not
+    on a datapath to any output sink.  The checkpoint commit is driven by
+    sinks, so without extra gating an output sink could report the final
+    frontier and commit the checkpoint (input offsets included) while the
+    iterate persist branch still has unwritten data.  That data would be lost:
+    the next run wouldn't replay the corresponding input (offsets say it's
+    done) and the snapshot wouldn't contain it either, so prev pointers of new
+    rows would reference keys missing from the iterated table
+    ("key missing in output table" errors).
+
+    The env var below delays iterate's snapshot writes, deterministically
+    losing the race that is otherwise won almost always.  The engine gates
+    commits on the persist branch (registered as a pseudo-sink), so the test
+    must pass regardless of the delay.
+    """
+    monkeypatch.setenv("PATHWAY_TEST_ITERATE_PERSIST_WRITE_DELAY_MS", "300")
+
+    input_path = tmp_path / "input"
+    os.makedirs(input_path)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    events: dict = {}
+    prev_output_rows: set = set()
+
+    def do_run(changes):
+        nonlocal prev_output_rows
+        for event_id, event_data in changes.items():
+            events[event_id] = event_data
+            event_time, flag, data = event_data
+            _rewrite_file(
+                input_path / f"{event_id}.csv",
+                ["event_time,flag,data", f"{event_time},{flag},{data}"],
+            )
+        assignments = _compute_chunk_assignments(events)
+        curr_output_rows = _output_rows(events, assignments)
+        expected_diffs = _compute_expected_diffs(prev_output_rows, curr_output_rows)
+        prev_output_rows = curr_output_rows
+
+        G.clear()
+        t = pw.io.csv.read(input_path, schema=EventSchema, mode="static")
+        result = _build_chunk_propagation_pipeline(t)
+        pw.io.csv.write(
+            result.select(pw.this.event_time, pw.this.data, pw.this.chunk_start),
+            output_path,
+        )
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=api.PersistenceMode.OPERATOR_PERSISTING,
+            )
+        )
+        _assert_diffs_match(output_path, expected_diffs)
+
+    for run_changes in CHUNK_SCENARIOS["repeated_appends"]:
+        do_run(run_changes)
+
+
+@pytest.mark.parametrize("persistence_mode", PERSISTENCE_MODES)
+@only_with_license_key("persistence_mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_iterate_persistence_extra_table(persistence_mode, tmp_path):
+    """Iterate with an extra (read-only, non-iterated) table across runs.
+
+    The ``bonus`` table is passed to the iteration logic but not returned from
+    it, so it becomes iterate's "extra" input: available inside the loop but
+    not iterated.  Old rows of the iterated table must still find their bonus
+    rows after a restart — the extra table's state must survive persistence
+    just like the iterated state does.
+
+    Pipeline: val += bonus.add until val >= 100.
+    Run 1: two rows converge with their bonuses.
+    Run 2: a new row (with a new bonus) appears — only it shows up in output.
+    Run 3: no-op restart — no diffs.
+    """
+
+    class ValSchema(pw.Schema):
+        label: str
+        val: int
+
+    class BonusSchema(pw.Schema):
+        label: str
+        add: int
+
+    val_dir = tmp_path / "vals"
+    bonus_dir = tmp_path / "bonus"
+    os.makedirs(val_dir)
+    os.makedirs(bonus_dir)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    def do_run(val_lines, bonus_lines, expected, run_no):
+        if val_lines:
+            write_lines(val_dir / f"{run_no}.csv", val_lines)
+        if bonus_lines:
+            write_lines(bonus_dir / f"{run_no}.csv", bonus_lines)
+
+        G.clear()
+        t = pw.io.csv.read(val_dir, schema=ValSchema, mode="static")
+        bonus = pw.io.csv.read(bonus_dir, schema=BonusSchema, mode="static")
+
+        def step(iterated, bonus):
+            return (
+                iterated.join(bonus, iterated.label == bonus.label, id=iterated.id)
+                .select(
+                    iterated.label,
+                    val=pw.if_else(
+                        iterated.val < 100,
+                        iterated.val + bonus.add,
+                        iterated.val,
+                    ),
+                )
+                .with_universe_of(iterated)
+            )
+
+        result = pw.iterate(step, iterated=t, bonus=bonus)
+        pw.io.csv.write(result, output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=persistence_mode,
+            )
+        )
+        _assert_diffs_match(output_path, expected)
+
+    # Run 1: a: 10 -> 40 -> 70 -> 100; b: 5 -> 55 -> 105
+    do_run(
+        ["label,val", "a,10", "b,5"],
+        ["label,add", "a,30", "b,50"],
+        {"a,100,1", "b,105,1"},
+        1,
+    )
+
+    # Run 2: c: 7 -> 107 (bonus 100); old rows must stay untouched
+    do_run(
+        ["label,val", "c,7"],
+        ["label,add", "c,100"],
+        {"c,107,1"},
+        2,
+    )
+
+    # Run 3: no-op restart
+    do_run(None, None, set(), 3)
+
+
+@pytest.mark.parametrize("persistence_mode", PERSISTENCE_MODES)
+@only_with_license_key("persistence_mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_iterate_persistence_extra_table_updated(persistence_mode, tmp_path):
+    """Extra (non-iterated) table row updated between runs.
+
+    When a bonus row changes, the affected iterated row must reconverge with
+    the new bonus value while unaffected rows stay silent.
+    """
+
+    class ValSchema(pw.Schema):
+        label: str
+        val: int
+
+    class BonusSchema(pw.Schema):
+        label: str
+        add: int
+
+    val_dir = tmp_path / "vals"
+    bonus_dir = tmp_path / "bonus"
+    os.makedirs(val_dir)
+    os.makedirs(bonus_dir)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    def do_run(expected):
+        G.clear()
+        t = pw.io.csv.read(val_dir, schema=ValSchema, mode="static")
+        bonus = pw.io.csv.read(bonus_dir, schema=BonusSchema, mode="static")
+
+        def step(iterated, bonus):
+            return (
+                iterated.join(bonus, iterated.label == bonus.label, id=iterated.id)
+                .select(
+                    iterated.label,
+                    val=pw.if_else(
+                        iterated.val < 100,
+                        iterated.val + bonus.add,
+                        iterated.val,
+                    ),
+                )
+                .with_universe_of(iterated)
+            )
+
+        result = pw.iterate(step, iterated=t, bonus=bonus)
+        pw.io.csv.write(result, output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=persistence_mode,
+            )
+        )
+        _assert_diffs_match(output_path, expected)
+
+    # Run 1: a: 10 -> 40 -> 70 -> 100
+    write_lines(val_dir / "a.csv", ["label,val", "a,10"])
+    write_lines(bonus_dir / "a.csv", ["label,add", "a,30"])
+    do_run({"a,100,1"})
+
+    # Run 2: bonus for a changes 30 -> 95: a reconverges 10 -> 105
+    _rewrite_file(bonus_dir / "a.csv", ["label,add", "a,95"])
+    do_run({"a,100,-1", "a,105,1"})
+
+
+@pytest.mark.parametrize("persistence_mode", PERSISTENCE_MODES)
+@only_with_license_key("persistence_mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_iterate_persistence_extra_from_iterate(persistence_mode, tmp_path):
+    """Extra table fed from another iterate's output, across restarts.
+
+    Iterate's output keeps its T=0 (persisted) entries — it can't strip them
+    because its separate column collections can't be filtered consistently.
+    So on restart the second iterate's extra input carries T=0 from upstream
+    AND loads the same rows from its own snapshot.  Each old key must exist
+    exactly once inside the loop: old rows stay silent and lookups against
+    the extra table must not double.
+
+    Pipeline: iterate 1 converges the bonus table (add doubles until >= 50);
+    its output is the extra table of iterate 2, where each val row looks up
+    its bonus row by pointer and adds bonus.add until val >= 100.
+
+    Run 1: initial rows converge.
+    Run 2: restart with a new val row referencing an OLD bonus row — only the
+    new row appears in the output, with a single (not doubled) diff.
+    Run 3: no-op restart — no diffs.
+    """
+
+    class ValSchema(pw.Schema):
+        label: str = pw.column_definition(primary_key=True)
+        ref: str
+        val: int
+
+    class BonusSchema(pw.Schema):
+        label: str = pw.column_definition(primary_key=True)
+        add: int
+
+    val_dir = tmp_path / "vals"
+    bonus_dir = tmp_path / "bonus"
+    os.makedirs(val_dir)
+    os.makedirs(bonus_dir)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    def do_run(val_lines, bonus_lines, expected, run_no):
+        if val_lines:
+            write_lines(val_dir / f"{run_no}.csv", val_lines)
+        if bonus_lines:
+            write_lines(bonus_dir / f"{run_no}.csv", bonus_lines)
+
+        G.clear()
+        t = pw.io.csv.read(val_dir, schema=ValSchema, mode="static")
+        bonus_raw = pw.io.csv.read(bonus_dir, schema=BonusSchema, mode="static")
+
+        # Iterate 1: converge the bonus table (double `add` until >= 50).
+        def bonus_step(iterated):
+            return iterated.select(
+                pw.this.label,
+                add=pw.if_else(iterated.add < 50, iterated.add * 2, iterated.add),
+            )
+
+        bonus = pw.iterate(bonus_step, iterated=bonus_raw)
+
+        t_init = t.with_columns(bptr=bonus.pointer_from(pw.this.ref))
+
+        # Iterate 2: `bonus` is the extra table — looked up inside the loop
+        # (via a pointer into its universe) but not iterated itself.
+        def step(iterated, bonus):
+            bonus_row = bonus.ix(iterated.bptr)
+            return iterated.with_columns(
+                val=pw.if_else(
+                    iterated.val < 100,
+                    iterated.val + bonus_row.add,
+                    iterated.val,
+                )
+            )
+
+        result = pw.iterate(step, iterated=t_init, bonus=bonus)
+        pw.io.csv.write(result.select(pw.this.label, pw.this.val), output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=persistence_mode,
+            )
+        )
+        _assert_diffs_match(output_path, expected)
+
+    # Run 1: bonus x: 30 -> 60 (converged); val a: 10 -> 70 -> 130
+    do_run(
+        ["label,ref,val", "a,x,10"],
+        ["label,add", "x,30"],
+        {"a,130,1"},
+        1,
+    )
+
+    # Run 2: new row b references the OLD bonus row x: 5 -> 65 -> 125.
+    # Old row a stays silent; the lookup against x must not double.
+    do_run(
+        ["label,ref,val", "b,x,5"],
+        None,
+        {"b,125,1"},
+        2,
+    )
+
+    # Run 3: no-op restart — no diffs.
+    do_run(None, None, set(), 3)
 
 
 # --- Streaming persistence tests ---
@@ -973,7 +1303,7 @@ def test_reduce_iterate_reduce_pipeline(persistence_mode, tmp_path):
         for sid, data in changes.items():
             all_sales[sid] = data
             product, amount = data
-            write_lines(
+            _rewrite_file(
                 input_path / f"{sid}.csv",
                 ["product,amount", f"{product},{amount}"],
             )
