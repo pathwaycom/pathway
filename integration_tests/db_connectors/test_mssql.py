@@ -29,6 +29,7 @@ from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     FileLinesNumberChecker,
     read_jsonlines,
+    terminate_process,
     wait_result_with_checker,
 )
 
@@ -1136,8 +1137,7 @@ def test_mssql_read_streaming_rejects_column_added_after_cdc_enable(mssql, tmp_p
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0)
     error_text = error_path.read_text() if error_path.exists() else ""
@@ -1322,8 +1322,7 @@ def test_mssql_streaming_requires_cdc_on_table(tmp_path, mssql):
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0)
     error_text = error_path.read_text() if error_path.exists() else ""
@@ -1392,8 +1391,7 @@ def test_mssql_streaming_requires_cdc_on_database(tmp_path, mssql):
         p.start()
         p.join(timeout=60)
         if p.is_alive():
-            p.terminate()
-            p.join()
+            terminate_process(p)
             raise AssertionError("worker should have failed fast, not hung")
         assert p.exitcode not in (None, 0)
         error_text = error_path.read_text() if error_path.exists() else ""
@@ -1780,8 +1778,7 @@ def _run_mssql_static_pipeline(
     # to trip the previous tighter bound.
     p.join(timeout=120)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("static-mode worker did not terminate within 120 s")
     assert p.exitcode == 0, f"static-mode worker exited with code {p.exitcode}"
 
@@ -1910,8 +1907,7 @@ def test_mssql_static_persistence_without_cdc_errors(tmp_path, mssql):
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0), "persistence-without-CDC must fail"
     error_text = error_path.read_text() if error_path.exists() else ""
@@ -2563,8 +2559,7 @@ def test_mssql_read_rejects_multiple_capture_instances(mssql, tmp_path):
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0)
     error_text = error_path.read_text() if error_path.exists() else ""

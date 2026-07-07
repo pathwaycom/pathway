@@ -27,6 +27,7 @@ from pathway.tests.utils import (
     only_with_license_key,
     run,
     run_all,
+    terminate_process,
     wait_result_with_checker,
     write_csv,
 )
@@ -294,8 +295,7 @@ def test_streaming_from_deltalake(tmp_path, with_backfilling_thresholds):
         stream_thread.join()
     finally:
         # Finish Pathway process in any case
-        pathway_process.terminate()
-        pathway_process.join()
+        terminate_process(pathway_process)
 
 
 @only_with_license_key

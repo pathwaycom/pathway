@@ -19,6 +19,7 @@ from pathway.tests.utils import (
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
+    terminate_process,
     wait_result_with_checker,
     write_csv,
     write_lines,
@@ -758,8 +759,7 @@ def test_iterate_persistence_streaming_restart(persistence_mode, tmp_path):
     )
     _assert_diffs_are_unit(output_path_1 / "out.csv")
     time.sleep(2)  # allow persistence snapshot
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
     # Run 2: restart with additional data — only new data appears in output
     write_csv(
@@ -784,8 +784,7 @@ def test_iterate_persistence_streaming_restart(persistence_mode, tmp_path):
     )
     _assert_diffs_are_unit(output_path_2 / "out.csv")
     time.sleep(2)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
 
 def _snapshot_size(pstorage_path: pathlib.Path, kind: str) -> int:

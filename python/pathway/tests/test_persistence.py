@@ -21,6 +21,7 @@ from pathway.tests.utils import (
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
+    terminate_process,
     wait_result_with_checker,
     write_csv,
     write_lines,
@@ -84,8 +85,7 @@ def test_groupby_count(persistence_mode, tmp_path):
         CsvPathwayChecker(expected, output_path, id_from=["w"]), 10, target=None, step=1
     )
     time.sleep(2)  # sleep needed to save persistence state (see snapshot_interval_ms)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
     file3 = """
     w
@@ -113,8 +113,7 @@ def test_groupby_count(persistence_mode, tmp_path):
         CsvPathwayChecker(expected, output_path, id_from=["w"]), 10, target=None, step=1
     )
     time.sleep(2)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
     file5 = """
     w
@@ -142,8 +141,7 @@ def test_groupby_count(persistence_mode, tmp_path):
         CsvPathwayChecker(expected, output_path, id_from=["w"]), 10, target=None
     )
     time.sleep(2)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
 
 # Each run is denoted by a scenario.

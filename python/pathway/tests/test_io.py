@@ -13,6 +13,7 @@ import pickle
 import random
 import re
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -3336,6 +3337,42 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
         for _ in f:
             total_lines += 1
     assert total_lines == 500
+
+
+def test_airbyte_venv_connector_install_is_bounded_in_time(monkeypatch):
+    """A stalled ``pip install`` of the connector package must not hang the
+    pipeline: every attempt runs with a timeout, is retried, and after the last
+    attempt a clear error is raised."""
+    from pathway.third_party.airbyte_serverless import sources
+
+    monkeypatch.setattr(sources.venv, "create", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sources, "PIP_INSTALL_RETRY_DELAY", 0.0)
+    attempts = []
+
+    def stalled_pip_run(cmd, *args, **kwargs):
+        assert kwargs.get("timeout") is not None
+        attempts.append(cmd)
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(sources.subprocess, "run", stalled_pip_run)
+    with pytest.raises(RuntimeError, match="Failed to install package"):
+        VenvAirbyteSource("source-faker", config={}, streams=["users"])
+    assert len(attempts) == sources.MAX_PIP_INSTALL_ATTEMPTS
+
+
+def test_airbyte_venv_connector_install_runs_pip_once_on_success(monkeypatch):
+    from pathway.third_party.airbyte_serverless import sources
+
+    monkeypatch.setattr(sources.venv, "create", lambda *args, **kwargs: None)
+    successful_runs = []
+
+    def successful_pip_run(cmd, *args, **kwargs):
+        successful_runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(sources.subprocess, "run", successful_pip_run)
+    VenvAirbyteSource("source-faker", config={}, streams=["users"])
+    assert len(successful_runs) == 1
 
 
 @needs_multiprocessing_fork
