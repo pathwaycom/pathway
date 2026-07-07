@@ -253,13 +253,15 @@ class OpenAIChat(BaseChat):
     ):
         with optional_imports("xpack-llm"):
             import openai  # noqa:F401
-        executor = _prepare_executor(
-            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
-        )
+        # Retries are applied inside `__wrapped__` (see there) rather than at the
+        # executor level, so that direct `__wrapped__` calls are covered too —
+        # the client below has its own retries disabled (`max_retries=0`).
+        executor = _prepare_executor(async_mode=async_mode, capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or udfs.NoRetryStrategy()
         self.kwargs.update(openai_kwargs)
         api_key = self.kwargs.pop("api_key", None)
         base_url = self.kwargs.pop("base_url", None)
@@ -287,7 +289,9 @@ class OpenAIChat(BaseChat):
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
-        ret = await self.client.chat.completions.create(messages=messages_decoded, **kwargs)  # type: ignore
+        ret = await self.retry_strategy.invoke(
+            self.client.chat.completions.create, messages=messages_decoded, **kwargs  # type: ignore
+        )
         response: str | None = ret.choices[0].message.content
 
         if response is not None:
@@ -902,13 +906,14 @@ class BedrockChat(BaseChat):
         with optional_imports("xpack-llm"):
             import aioboto3  # noqa:F401
 
-        executor = _prepare_executor(
-            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
-        )
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls are covered too.
+        executor = _prepare_executor(async_mode=async_mode, capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or udfs.NoRetryStrategy()
 
         self.kwargs.update(bedrock_kwargs)
         if model_id is not None:
@@ -968,26 +973,31 @@ class BedrockChat(BaseChat):
         if "stop_sequences" in kwargs:
             inference_config["stopSequences"] = kwargs.pop("stop_sequences")
 
-        async with self._session.client("bedrock-runtime") as client:
-            converse_kwargs = {
-                "modelId": model_id,
-                "messages": bedrock_messages,
-                "inferenceConfig": inference_config,
-            }
+        converse_kwargs = {
+            "modelId": model_id,
+            "messages": bedrock_messages,
+            "inferenceConfig": inference_config,
+        }
 
-            # Extract model-specific parameters (like top_k) into additionalModelRequestFields
-            additional_fields = {}
-            for arg in self._MODEL_SPECIFIC_ARGS:
-                if arg in kwargs:
-                    additional_fields[arg] = kwargs.pop(arg)
+        # Extract model-specific parameters (like top_k) into additionalModelRequestFields
+        additional_fields = {}
+        for arg in self._MODEL_SPECIFIC_ARGS:
+            if arg in kwargs:
+                additional_fields[arg] = kwargs.pop(arg)
 
-            if additional_fields:
-                converse_kwargs["additionalModelRequestFields"] = additional_fields
+        if additional_fields:
+            converse_kwargs["additionalModelRequestFields"] = additional_fields
 
-            if system_prompts:
-                converse_kwargs["system"] = system_prompts
+        if system_prompts:
+            converse_kwargs["system"] = system_prompts
 
-            response = await client.converse(**converse_kwargs)
+        # The client is recreated on each attempt: after a failure it may be
+        # left in a broken state, so the retry covers its creation as well.
+        async def _converse():
+            async with self._session.client("bedrock-runtime") as client:
+                return await client.converse(**converse_kwargs)
+
+        response = await self.retry_strategy.invoke(_converse)
 
         # Extract response content
         output = response.get("output", {})

@@ -193,10 +193,14 @@ class OpenAIEmbedder(BaseEmbedder):
             import openai  # noqa:F401
 
         _monkeypatch_openai_async()
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
+        # are covered too — the client's own retries are disabled below.
+        executor = udfs.async_executor(capacity=capacity)
         super().__init__(
             executor=executor, cache_strategy=cache_strategy, max_batch_size=batch_size
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
         self.truncation_keep_strategy = truncation_keep_strategy
         self.kwargs = dict(openai_kwargs)
         self.api_key = self.kwargs.pop("api_key", None)
@@ -252,7 +256,9 @@ class OpenAIEmbedder(BaseEmbedder):
 
             async def embed_single(input, kwargs) -> np.ndarray:
                 kwargs = {**constant_kwargs, **kwargs}
-                ret = await self.client.embeddings.create(input=[input], **kwargs)  # type: ignore
+                ret = await self.retry_strategy.invoke(
+                    self.client.embeddings.create, input=[input], **kwargs  # type: ignore
+                )
                 return np.array(ret.data[0].embedding)
 
             list_of_per_row_kwargs = [
@@ -269,7 +275,9 @@ class OpenAIEmbedder(BaseEmbedder):
             return result_list
 
         else:
-            ret = await self.client.embeddings.create(input=inputs, **constant_kwargs)
+            ret = await self.retry_strategy.invoke(
+                self.client.embeddings.create, input=inputs, **constant_kwargs
+            )
             return [np.array(datum.embedding) for datum in ret.data]
 
     @staticmethod
@@ -399,11 +407,15 @@ class LiteLLMEmbedder(BaseEmbedder):
             import litellm  # noqa:F401
 
         _monkeypatch_openai_async()
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
+        # are covered too.
+        executor = udfs.async_executor(capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
         self.kwargs = dict(llmlite_kwargs)
         if model is not None:
             self.kwargs["model"] = model
@@ -420,7 +432,9 @@ class LiteLLMEmbedder(BaseEmbedder):
 
         kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
-        ret = await litellm.aembedding(input=[input or "."], **kwargs)
+        ret = await self.retry_strategy.invoke(
+            litellm.aembedding, input=[input or "."], **kwargs
+        )
         return np.array(ret.data[0]["embedding"])
 
 
@@ -678,11 +692,15 @@ class BedrockEmbedder(BaseEmbedder):
         with optional_imports("xpack-llm"):
             import aioboto3  # noqa:F401
 
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
+        # are covered too.
+        executor = udfs.async_executor(capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
 
         self.kwargs = dict(bedrock_kwargs)
         if model_id is not None:
@@ -735,17 +753,20 @@ class BedrockEmbedder(BaseEmbedder):
             # Generic format - try Titan-style
             request_body = {"inputText": input}
 
-        async with self._session.client("bedrock-runtime") as client:
-            response = await client.invoke_model(
-                modelId=model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
+        # The client is recreated on each attempt: after a failure it may be
+        # left in a broken state, so the retry covers its creation as well.
+        async def _invoke_model():
+            async with self._session.client("bedrock-runtime") as client:
+                response = await client.invoke_model(
+                    modelId=model_id,
+                    body=json.dumps(request_body),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+                response_body = await response["body"].read()
+                return json.loads(response_body)
 
-            # Read and parse response
-            response_body = await response["body"].read()
-            result = json.loads(response_body)
+        result = await self.retry_strategy.invoke(_invoke_model)
 
         # Extract embedding based on model type
         if "titan" in model_id.lower():
@@ -808,11 +829,14 @@ class MarengoEmbedder(BaseEmbedder):
         cache_strategy: udfs.CacheStrategy | None = None,
         embedding_dimension: int | None = MARENGO_EMBEDDING_DIMENSION,
     ):
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside the per-request helpers rather than at the
+        # executor level, so that the setup-time dimension probe is covered too.
+        executor = udfs.async_executor(capacity=capacity)
         # Marengo embeds one text per request, so keep batches at size 1.
         super().__init__(
             executor=executor, cache_strategy=cache_strategy, max_batch_size=1
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
         self.model = model
         self.embedding_dimension = embedding_dimension
         self._api_key = api_key
@@ -845,11 +869,15 @@ class MarengoEmbedder(BaseEmbedder):
         # `_coerce_sync`), so it uses a throwaway client: the cached `aclient`
         # must only ever bind to the executor's loop used by the hot path.
         client = _build_async_twelvelabs_client(self._api_key)
-        resp = await client.embed.create(model_name=self.model, text=".")
+        resp = await self.retry_strategy.invoke(
+            client.embed.create, model_name=self.model, text="."
+        )
         return np.array(resp.text_embedding.segments[0].float_, dtype=np.float32)
 
     async def _aembed_one(self, text: str) -> np.ndarray:
-        resp = await self.aclient.embed.create(model_name=self.model, text=text)
+        resp = await self.retry_strategy.invoke(
+            self.aclient.embed.create, model_name=self.model, text=text
+        )
         vector = resp.text_embedding.segments[0].float_
         return np.array(vector, dtype=np.float32)
 

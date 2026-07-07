@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
+from pathway.internals.udfs import (
+    DiskCache,
+    ExponentialBackoffRetryStrategy,
+    FixedDelayRetryStrategy,
+)
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm import llms
 
@@ -75,6 +79,35 @@ def test_init_kwargs(kwargs):
     assert llm.kwargs.get("temperature", "not_set") == kwargs.get(
         "temperature", "not_set"
     )
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_wrapped_retries_transient_errors():
+    from unittest.mock import AsyncMock, MagicMock
+
+    llm = llms.OpenAIChat(
+        model="gpt-3.5-turbo",
+        api_key="mock-key",
+        retry_strategy=FixedDelayRetryStrategy(max_retries=4, delay_ms=1),
+    )
+
+    ok_response = MagicMock()
+    ok_response.choices[0].message.content = "mocked"
+    create = AsyncMock(
+        side_effect=[
+            RuntimeError("upstream connect error or disconnect/reset before headers"),
+            ok_response,
+        ]
+    )
+    llm.client = MagicMock()
+    llm.client.chat.completions.create = create
+
+    response = await llm.__wrapped__(
+        [{"role": "system", "content": "hey, whats your name?"}], max_tokens=2
+    )
+
+    assert response == "mocked"
+    assert create.await_count == 2
 
 
 VALID_ARGS = ["top_p", "temperature", "max_tokens"]
@@ -197,6 +230,36 @@ def test_bedrock_call_args(model_id, call_arg):
 
     # BedrockChat always returns based on supported_args, model_id doesn't affect it
     assert llm._accepts_call_arg(call_arg) is (call_arg in BEDROCK_VALID_ARGS)
+
+
+@pytest.mark.asyncio
+async def test_bedrock_chat_wrapped_retries_transient_errors():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    llm = llms.BedrockChat(
+        model_id="anthropic.claude-3",
+        region_name="us-east-1",
+        retry_strategy=FixedDelayRetryStrategy(max_retries=4, delay_ms=1),
+    )
+
+    mock_client = AsyncMock()
+    mock_client.converse = AsyncMock(
+        side_effect=[
+            RuntimeError("connection reset by peer"),
+            {"output": {"message": {"content": [{"text": "mocked"}]}}},
+        ]
+    )
+    mock_client_cm = AsyncMock()
+    mock_client_cm.__aenter__.return_value = mock_client
+    mock_client_cm.__aexit__.return_value = None
+    mock_session = MagicMock()
+    mock_session.client.return_value = mock_client_cm
+
+    with patch.object(llm, "_session", mock_session):
+        response = await llm.__wrapped__([{"role": "user", "content": "hi"}])
+
+    assert response == "mocked"
+    assert mock_client.converse.await_count == 2
 
 
 @pytest.mark.asyncio
