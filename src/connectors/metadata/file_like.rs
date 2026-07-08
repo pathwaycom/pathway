@@ -100,8 +100,19 @@ mod file_owner {
     use crate::retry::{execute_with_retries, RetryConfig};
 
     const ERROR_THROTTLE_INTERVAL_PER_UID: Duration = Duration::from_mins(1);
+
+    // NSS configuration can change at runtime (e.g. sssd coming up), so a
+    // "UID not found" answer is only cached for a limited time. Positive
+    // entries are kept forever.
+    const NEGATIVE_CACHE_TTL: Duration = Duration::from_mins(1);
+
+    enum CachedResolution {
+        Found(String),
+        NotFound(Instant),
+    }
+
     thread_local! {
-        static UID_USER_CACHE: RefCell<HashMap<u32, String>> = RefCell::new(HashMap::new());
+        static UID_USER_CACHE: RefCell<HashMap<u32, CachedResolution>> = RefCell::new(HashMap::new());
         static LAST_ERROR_REPORTED_AT: RefCell<HashMap<u32, Instant>> = RefCell::new(HashMap::new());
     }
 
@@ -120,44 +131,133 @@ mod file_owner {
         });
     }
 
-    fn cache_user_name(uid: u32, user_name: String) {
+    fn cache_resolution(uid: u32, resolution: CachedResolution) {
         UID_USER_CACHE.with(|cache| {
-            cache.borrow_mut().insert(uid, user_name);
+            cache.borrow_mut().insert(uid, resolution);
         });
     }
 
-    fn get_cached_user_name(uid: u32) -> Option<String> {
-        UID_USER_CACHE.with(|cache| cache.borrow().get(&uid).cloned())
+    /// Returns the still-valid cached entry for the UID, if any. Expired
+    /// negative entries are evicted and reported as a cache miss.
+    fn get_cached_resolution(uid: u32) -> Option<CachedResolution> {
+        UID_USER_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            match cache.get(&uid) {
+                Some(CachedResolution::Found(name)) => Some(CachedResolution::Found(name.clone())),
+                Some(CachedResolution::NotFound(cached_at)) => {
+                    if cached_at.elapsed() < NEGATIVE_CACHE_TTL {
+                        Some(CachedResolution::NotFound(*cached_at))
+                    } else {
+                        cache.remove(&uid);
+                        None
+                    }
+                }
+                None => None,
+            }
+        })
+    }
+
+    fn get_owner_impl(
+        uid: u32,
+        resolve: impl FnMut() -> nix::Result<Option<String>>,
+    ) -> Option<String> {
+        match get_cached_resolution(uid) {
+            Some(CachedResolution::Found(name)) => return Some(name),
+            Some(CachedResolution::NotFound(_)) => return None,
+            None => {}
+        }
+
+        // Retries handle transient resolver errors (EINTR/EAGAIN/NSS
+        // hiccups); a clean "not found" is `Ok(None)` and returns from
+        // `execute_with_retries` immediately, without retry sleeps.
+        let user = execute_with_retries(
+            resolve,
+            RetryConfig::new(Duration::from_millis(50), 1.5, Duration::from_millis(10)),
+            5,
+        );
+        match user {
+            Ok(Some(name)) => {
+                cache_resolution(uid, CachedResolution::Found(name.clone()));
+                Some(name)
+            }
+            Ok(None) => {
+                cache_resolution(uid, CachedResolution::NotFound(Instant::now()));
+                if need_to_report_error(uid) {
+                    warn!("UID {uid} not found in system user database");
+                    mark_error_reported(uid);
+                }
+                None
+            }
+            Err(err) => {
+                // Errors are transient by assumption and aren't cached.
+                if need_to_report_error(uid) {
+                    error!("Failed to resolve user name for UID {uid}: {err}");
+                    mark_error_reported(uid);
+                }
+                None
+            }
+        }
     }
 
     pub fn get_owner(metadata: &std::fs::Metadata) -> Option<String> {
         let uid = metadata.uid();
+        get_owner_impl(
+            uid,
+            || Ok(User::from_uid(uid.into())?.map(|user| user.name)),
+        )
+    }
 
-        if let Some(cached_user_name) = get_cached_user_name(uid) {
-            return Some(cached_user_name);
-        }
+    #[cfg(test)]
+    mod tests {
+        use super::{get_owner_impl, ERROR_THROTTLE_INTERVAL_PER_UID, NEGATIVE_CACHE_TTL};
 
-        let user = execute_with_retries(
-            || User::from_uid(uid.into()),
-            RetryConfig::new(Duration::from_millis(50), 1.5, Duration::from_millis(10)),
-            5,
-        );
-        if let Ok(Some(user)) = user {
-            let name = user.name.clone();
-            cache_user_name(uid, name.clone());
-            return Some(name);
-        }
+        // Caches are thread-local and each test runs on its own thread, but
+        // distinct UIDs keep the tests independent regardless of the runner.
+        const UNMAPPED_UID: u32 = 3_000_000_001;
+        const MAPPED_UID: u32 = 3_000_000_002;
+        const FAILING_UID: u32 = 3_000_000_003;
 
-        if need_to_report_error(uid) {
-            match user {
-                Ok(None) => warn!("UID {uid} not found in system user database"),
-                Err(err) => error!("Failed to resolve user name for UID {uid}: {err}"),
-                Ok(Some(_)) => unreachable!(),
+        #[test]
+        fn test_unmapped_uid_is_resolved_once_per_ttl() {
+            assert!(NEGATIVE_CACHE_TTL <= ERROR_THROTTLE_INTERVAL_PER_UID);
+            let mut resolver_calls = 0;
+            for _ in 0..100 {
+                let owner = get_owner_impl(UNMAPPED_UID, || {
+                    resolver_calls += 1;
+                    Ok(None)
+                });
+                assert_eq!(owner, None);
             }
-            mark_error_reported(uid);
+            assert_eq!(resolver_calls, 1);
         }
 
-        None
+        #[test]
+        fn test_mapped_uid_is_resolved_once_and_cached() {
+            let mut resolver_calls = 0;
+            for _ in 0..100 {
+                let owner = get_owner_impl(MAPPED_UID, || {
+                    resolver_calls += 1;
+                    Ok(Some("pathway".to_string()))
+                });
+                assert_eq!(owner, Some("pathway".to_string()));
+            }
+            assert_eq!(resolver_calls, 1);
+        }
+
+        #[test]
+        fn test_resolver_errors_are_retried_and_not_cached() {
+            let mut resolver_calls = 0;
+            let owner = get_owner_impl(FAILING_UID, || {
+                resolver_calls += 1;
+                Err(nix::errno::Errno::EAGAIN)
+            });
+            assert_eq!(owner, None);
+            assert_eq!(resolver_calls, 6); // the initial attempt + 5 retries
+
+            // A subsequent successful resolution isn't shadowed by the failure.
+            let owner = get_owner_impl(FAILING_UID, || Ok(Some("pathway".to_string())));
+            assert_eq!(owner, Some("pathway".to_string()));
+        }
     }
 }
 
