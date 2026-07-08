@@ -21,23 +21,22 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Iterable, Iterator, Literal, TypeAlias, get_args
 
 import numpy as np
-from pdf2image import convert_from_bytes
-from PIL import Image
 from pydantic import BaseModel
-from unstructured.file_utils.filetype import FileType, detect_filetype
 
 import pathway as pw
 from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm import _parser_utils, llms, prompts
+from pathway.xpacks.llm import llms, prompts
 from pathway.xpacks.llm._utils import _build_async_twelvelabs_client, _prepare_executor
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
 if TYPE_CHECKING:
     with optional_imports("xpack-llm-docs"):
         from paddleocr import PaddleOCR, PPStructureV3
+        from PIL import Image
         from unstructured.documents.elements import Element
+        from unstructured.file_utils.filetype import FileType
 
 logger = logging.getLogger(__name__)
 
@@ -727,6 +726,8 @@ class ImageParser(pw.UDF):
         *,
         async_mode: Literal["batch_async", "fully_async"] = "batch_async",
     ):
+        with optional_imports("xpack-llm-docs"):
+            from PIL import Image  # noqa:F401
         with optional_imports("xpack-llm"):
             import openai
 
@@ -788,6 +789,8 @@ class ImageParser(pw.UDF):
 
     async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse image bytes with GPT-v model."""
+
+        from PIL import Image
 
         from pathway.xpacks.llm import _parser_utils
 
@@ -1213,6 +1216,12 @@ class PaddleOCRParser(pw.UDF):
 
         with optional_imports("xpack-llm-docs"):
             import paddleocr  # noqa:F401
+            from pdf2image import convert_from_bytes  # noqa:F401
+            from PIL import Image  # noqa:F401
+            from unstructured.file_utils.filetype import (  # noqa:F401
+                FileType,
+                detect_filetype,
+            )
 
         try:
             import paddle  # noqa:F401
@@ -1252,6 +1261,12 @@ class PaddleOCRParser(pw.UDF):
         self,
         contents: bytes,
     ) -> tuple[list[Image.Image], FileType | None]:
+        from pdf2image import convert_from_bytes
+        from PIL import Image
+        from unstructured.file_utils.filetype import FileType, detect_filetype
+
+        from pathway.xpacks.llm import _parser_utils
+
         byte_file = io.BytesIO(contents)
         filetype = detect_filetype(file=byte_file)
 
@@ -1284,6 +1299,8 @@ class PaddleOCRParser(pw.UDF):
         return images, filetype
 
     async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        from unstructured.file_utils.filetype import FileType
+
         images, original_filetype = self._normalize_input(contents)
 
         def metadata(page_number: int) -> dict:
