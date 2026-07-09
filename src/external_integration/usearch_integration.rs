@@ -52,7 +52,7 @@ impl USearchKNNIndex {
 
     fn search_one(&self, data: &[f64], limit: usize) -> DynResult<Vec<KeyScoreMatch>> {
         let matches = self.index.search(data, limit)?;
-        Ok(matches
+        let mut results: Vec<KeyScoreMatch> = matches
             .keys
             .into_iter()
             .zip(matches.distances)
@@ -66,7 +66,17 @@ impl USearchKNNIndex {
                     score: -f64::from(d),
                 })
             })
-            .collect())
+            .collect();
+
+        // Deterministic tie-breaking for matches with identical distances
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+
+        Ok(results)
     }
 
     fn add_one(&mut self, key: Key, data: &[f64]) -> DynResult<()> {
