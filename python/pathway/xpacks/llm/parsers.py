@@ -26,6 +26,7 @@ from pydantic import BaseModel
 import pathway as pw
 from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
+from pathway.io._utils import DurationLike, as_duration_seconds
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import llms, prompts
 from pathway.xpacks.llm._utils import _build_async_twelvelabs_client, _prepare_executor
@@ -53,7 +54,7 @@ def default_vision_llm() -> pw.UDF:
 
 class Utf8Parser(pw.UDF):
     """
-    Decode text encoded as UTF-8. If the text is type `str`, return it without any modification.
+    Decode text encoded as UTF-8. If the text is type ``str``, return it without any modification.
     """
 
     async def __wrapped__(self, contents: bytes | str) -> list[tuple[str, dict]]:
@@ -339,8 +340,8 @@ class ParseUnstructured(UnstructuredParser):
 # MIT licensed
 class DoclingParser(pw.UDF):
     """
-    Parse PDFs using `docling` library.
-    This class is a wrapper around the `DocumentConverter` from `docling` library with some extra
+    Parse PDFs using ``docling`` library.
+    This class is a wrapper around the ``DocumentConverter`` from ``docling`` library with some extra
     functionality to also parse images from the PDFs using vision LLMs.
 
     Args:
@@ -374,7 +375,7 @@ class DoclingParser(pw.UDF):
             Chunks that have similar metadata will be merged together.
             As of now, this chunker is not sensitive for length of the chunks (neither if measured
             in characters or tokens). It will chunk the document based only on the structure.
-            If set to False the entire document will be returned as a single chunk.
+            If set to ``False`` the entire document will be returned as a single chunk.
             Defaults to ``True``.
     """
 
@@ -703,7 +704,7 @@ class ImageParser(pw.UDF):
         retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
             propriety LLMs is strongly suggested.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            a valid :py:class:`~pathway.udfs.CacheStrategy` should be provided.
             Defaults to None.
     """
 
@@ -867,7 +868,7 @@ class SlideParser(pw.UDF):
         retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
             propriety LLMs is strongly suggested.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            a valid :py:class:`~pathway.udfs.CacheStrategy` should be provided.
             Defaults to None.
     """
 
@@ -1034,7 +1035,7 @@ class PypdfParser(pw.UDF):
     Args:
         apply_text_cleanup: Apply text cleanup for line breaks and repeated spaces.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            a valid :py:class:`~pathway.udfs.CacheStrategy` should be provided.
             Defaults to None.
     """
 
@@ -1187,7 +1188,7 @@ class PaddleOCRParser(pw.UDF):
         downsize_horizontal_width: Width to which images are downsized if necessary.
             Default is 1920.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            a valid :py:class:`~pathway.udfs.CacheStrategy` should be provided.
             Defaults to None.
         async_mode: Mode of execution for the UDF, either ``"batch_async"`` or ``"fully_async"``.
             Default is ``"batch_async"``.
@@ -1338,11 +1339,11 @@ class AudioParser(pw.UDF):
         retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
             propriety LLMs is strongly suggested.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            a valid :py:class:`~pathway.udfs.CacheStrategy` should be provided.
             Defaults to None.
         async_mode: Mode of execution for the UDF, either ``"batch_async"`` or ``"fully_async"``.
             Default is ``"batch_async"``.
-        **kwargs: Additional arguments for `audio.transcriptions.create`.
+        **kwargs: Additional arguments for ``audio.transcriptions.create``.
     """
 
     def __init__(
@@ -1430,9 +1431,11 @@ class TwelveLabsVideoParser(pw.UDF):
         video_format: Container format of the incoming videos, used as the
             filename extension of the uploaded asset. Any FFmpeg-supported
             format (e.g. ``"mp4"``, ``"webm"``, ``"mov"``). Defaults to ``"mp4"``.
-        asset_poll_interval: Seconds between asset-readiness checks. Defaults to 5.
-        asset_timeout: Maximum number of seconds to wait for an uploaded asset to
-            become ready before raising. Defaults to 600.
+        asset_poll_interval: Time between asset-readiness checks, given as a number
+            of seconds or a ``datetime.timedelta`` / ``pw.Duration``. Defaults to 5.
+        asset_timeout: Maximum time to wait for an uploaded asset to become ready
+            before raising, given as a number of seconds or a ``datetime.timedelta``
+            / ``pw.Duration``. Defaults to 600 seconds.
         delete_assets: If ``True`` (the default), the uploaded asset is deleted
             after the analysis completes, so repeated runs do not accumulate
             assets in your TwelveLabs account. When ``True``, the emitted
@@ -1478,8 +1481,8 @@ class TwelveLabsVideoParser(pw.UDF):
         max_tokens: int = 2048,
         temperature: float | None = None,
         video_format: str = "mp4",
-        asset_poll_interval: float = 5.0,
-        asset_timeout: float = 600.0,
+        asset_poll_interval: DurationLike = 5.0,
+        asset_timeout: DurationLike = 600.0,
         delete_assets: bool = True,
         capacity: int | None = None,
         retry_strategy: (
@@ -1500,8 +1503,12 @@ class TwelveLabsVideoParser(pw.UDF):
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.video_format = video_format
-        self.asset_poll_interval = asset_poll_interval
-        self.asset_timeout = asset_timeout
+        self.asset_poll_interval = as_duration_seconds(
+            asset_poll_interval, "asset_poll_interval"
+        )
+        self.asset_timeout = as_duration_seconds(
+            asset_timeout, "asset_timeout", allow_zero=False
+        )
         self.delete_assets = delete_assets
         self.retry_strategy = retry_strategy or udfs.NoRetryStrategy()
         self.on_error = on_error

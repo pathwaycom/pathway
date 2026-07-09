@@ -13,7 +13,7 @@ from pathway.internals import api
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import STATIC_MODE_NAME
+from pathway.io._utils import STATIC_MODE_NAME, DurationLike, as_duration_seconds
 from pathway.io.python import ConnectorSubject, read as python_connector_read
 from pathway.optional_import import optional_imports
 
@@ -160,7 +160,7 @@ def read(
     source,
     *,
     path: str = "",
-    refresh_interval: float = 30,
+    refresh_interval: DurationLike = 30,
     mode: Literal["streaming", "static"] = "streaming",
     format: Literal["binary", "only_metadata"] = "binary",
     with_metadata: bool = False,
@@ -183,18 +183,19 @@ def read(
         path: Path inside the PyFilesystem source to process. All files within this
             path will be processed recursively. If unspecified, the root of the source is taken.
         mode: denotes how the engine polls the new data from the source. Currently
-            "streaming" and "static" are supported. If set to "streaming", it will check for
-            updates, deletions, and new files every ``refresh_interval`` seconds. "static" mode will
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"``, it will check for
+            updates, deletions, and new files every ``refresh_interval`` seconds. ``"static"`` mode will
             only consider the available data and ingest all of it in one commit.
-            The default value is "streaming".
+            The default value is ``"streaming"``.
         format: the format of the resulting table. Can be either ``"binary"``, which
             corresponds to a table with a ``data`` column containing each file's contents,
             or ``"only_metadata"``, which corresponds to a table that has only the
             ``_metadata`` column with the objects' metadata, without reading the objects
             themselves.
-        refresh_interval: time in seconds between scans. Applicable if the mode is
-            set to "streaming".
-        with_metadata: when set to True, the connector will add column
+        refresh_interval: time between scans, given as a number of seconds or a
+            ``datetime.timedelta`` / ``pw.Duration``. Applicable if the mode is
+            set to ``"streaming"``.
+        with_metadata: when set to ``True``, the connector will add column
             named ``_metadata`` to the table. This column will contain file metadata, such as:
             ``path``, ``name``, ``owner``, ``created_at``, ``modified_at``, ``accessed_at``,
             ``size``.
@@ -212,7 +213,7 @@ def read(
     Example:
 
     Suppose that you want to read a file from a ZIP archive ``projects.zip`` with the
-    usage of PyFilesystem. To do that, you first need to import the `fs` library or just
+    usage of PyFilesystem. To do that, you first need to import the ``fs`` library or just
     the ``open_fs`` method and to create the data source. It can be done as follows:
 
     >>> from fs import open_fs
@@ -247,7 +248,7 @@ def read(
         source=source,
         path=path,
         mode=mode,
-        refresh_interval=refresh_interval,
+        refresh_interval=as_duration_seconds(refresh_interval, "refresh_interval"),
         with_metadata=with_metadata or only_provide_metadata,
         only_metadata=only_provide_metadata,
     )

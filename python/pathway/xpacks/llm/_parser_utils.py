@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 def maybe_downscale(
     img: PIL.Image.Image, max_image_size: int, downsize_horizontal_width: int
 ) -> PIL.Image.Image:
-    """Downscale an image if it exceeds `max_image_size` limit, while maintaining the aspect ratio.
+    """Downscale an image if it exceeds ``max_image_size`` limit, while maintaining the aspect ratio.
 
     Args:
         img: The image to be downscaled.
@@ -82,10 +82,10 @@ async def parse_images(
 ) -> tuple[list[str], list[BaseModel]]:
     """
     Parse images and optional Pydantic model with a multi-modal LLM.
-    `parse_prompt` will be only used for the regular parsing.
+    ``parse_prompt`` will be only used for the regular parsing.
 
     Args:
-        images: Image list to be parsed. Images are expected to be `PIL.Image.Image`.
+        images: Image list to be parsed. Images are expected to be ``PIL.Image.Image``.
         llm: LLM model to be used for parsing. Needs to support image input.
         parse_details: Whether to make second LLM call to parse specific Pydantic
             model from the image.
@@ -185,18 +185,18 @@ async def parse_image(
     **kwargs,
 ) -> str:
     """
-    Parse base64 image with the LLM. `model` will be set to llm's default if not provided.
-    If llm's `model` is also not set, ``OpenAI`` ``gpt-4o-mini`` will be used.
+    Parse base64 image with the LLM. ``model`` will be set to llm's default if not provided.
+    If llm's ``model`` is also not set, ``OpenAI`` ``gpt-4o-mini`` will be used.
 
     Args:
-        b_64_img: Image in base64 format to be parsed. See `img_to_b64` for the conversion utility.
+        b_64_img: Image in base64 format to be parsed. See ``img_to_b64`` for the conversion utility.
         llm: LLM instance to be called with image.
         prompt: Instructions for image parsing.
         model: Optional LLM model name. Defaults to ``OpenAI`` ``gpt-4o-mini``,
-            if neither `model` nor `llm.model` is set.
+            if neither ``model`` nor ``llm.model`` is set.
         kwargs: Additional arguments to be sent to the LLM inference.
             Refer to the specific provider's API for available options.
-            Examples include `temperature`, `max_tokens`, etc.
+            Examples include ``temperature``, ``max_tokens``, etc.
     """
     model = model or llm.kwargs.get("model") or DEFAULT_VISION_MODEL  # type:ignore
 
@@ -301,10 +301,10 @@ def _convert_pptx_to_pdf(contents: bytes) -> bytes:
 
 class _HierarchicalChunker(HierarchicalChunker):
     """
-    This class is a wrapper for Docling's `HierarchicalChunker` that changes the behavior of
-    `chunk` method. In particular it handles PictureItem and TableItem differently to allow
+    This class is a wrapper for Docling's ``HierarchicalChunker`` that changes the behavior of
+    ``chunk`` method. In particular it handles PictureItem and TableItem differently to allow
     our custom parsing of these items using multimodal LLM.
-    Majority of the code is copied from the original `HierarchicalChunker` with minor changes.
+    Majority of the code is copied from the original ``HierarchicalChunker`` with minor changes.
     Here is link to the reference Docling code:
     https://github.com/DS4SD/docling-core/blob/main/docling_core/transforms/chunker/hierarchical_chunker.py#L113
     """
@@ -417,8 +417,8 @@ class _HierarchicalChunker(HierarchicalChunker):
 
 class _HybridChunker(HybridChunker):
     """
-    Wrapper for Docling's `HybridChunker` to use custom `HierarchicalChunker` with changed
-    behavior for serializing tables. This wrapper also changes the behavior of `chunk` method
+    Wrapper for Docling's ``HybridChunker`` to use custom ``HierarchicalChunker`` with changed
+    behavior for serializing tables. This wrapper also changes the behavior of ``chunk`` method
     a bit to chunk using Hierarchical chunking and then merging chunks with similar metadata.
     Chunking based on length of the text is disabled as of now.
     Here is link to the reference Docling code:

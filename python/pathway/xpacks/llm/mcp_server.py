@@ -271,10 +271,10 @@ class McpServer(PathwayServer):
             schema: Query schema, used to generate tool input schema.
             delete_completed_queries: Delete completed queries, default False.
             cache_strategy: Optional caching strategy.
-            title: Optional tool title for display purposes, `name` is used if `None`.
-            description: Optional tool description, `request_handler` docstring is used if `None`.
+            title: Optional tool title for display purposes, ``name`` is used if ``None``.
+            description: Optional tool description, ``request_handler`` docstring is used if ``None``.
             output_schema: Optional output schema.
-            annotations: Optional specialized metadata like `readOnlyHint`, `idempotentHint`, ...
+            annotations: Optional specialized metadata like ``readOnlyHint``, ``idempotentHint``, ...
             meta: Optional tool metadata.
             autocommit_duration_ms: Maximum time between two commits in milliseconds.
         """
@@ -311,11 +311,11 @@ class PathwayMcp:
 
     Args:
         transport: The transport protocol used by the server.
-            The 'stdio' transport is unstable and experimental. It may change or be removed in future releases.
-            Defaults to "streamable-http".
-        host The hostname or IP address to bind the server to. If None, uses default binding.
-        port: The port number to bind the server to. If None, uses default port.
-        name: The name of the MCP server instance. Defaults to "pathway-mcp-server".
+            The ``"stdio"`` transport is unstable and experimental. It may change or be removed in future releases.
+            Defaults to ``"streamable-http"``.
+        host: The hostname or IP address to bind the server to. If ``None``, uses default binding.
+        port: The port number to bind the server to. If ``None``, uses default port.
+        name: The name of the MCP server instance. Defaults to ``"pathway-mcp-server"``.
         serve: A list of :py:class:`~pathway.xpacks.llm.mcp_server.McpServable`
             objects to register with the MCP server.
     """

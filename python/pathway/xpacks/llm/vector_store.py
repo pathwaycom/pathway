@@ -78,8 +78,8 @@ class VectorStoreServer(DocumentStore):
         Args:
             host: host to bind the HTTP listener
             port: to bind the HTTP listener
-            threaded: if True, run in a thread. Else block computation
-            with_cache: if True, embedding requests for the same contents are cached
+            threaded: if ``True``, run in a thread. Else block computation
+            with_cache: if ``True``, embedding requests for the same contents are cached
             cache_backend: the backend to use for caching if it is enabled. The
               default is the disk cache, hosted locally in the folder ``./Cache``. You
               can use ``Backend`` class of the
@@ -228,7 +228,7 @@ class VectorStoreServer(DocumentStore):
         Args:
             docs: pathway tables typically coming out of connectors which contain source documents
             transformations: list of LlamaIndex components. The last component in this list
-                is required to inherit from LlamaIndex `BaseEmbedding`
+                is required to inherit from LlamaIndex ``BaseEmbedding``
             parser: callable that parses file contents into a list of documents
         """
         try:

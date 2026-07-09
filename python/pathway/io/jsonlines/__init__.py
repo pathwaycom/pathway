@@ -48,12 +48,12 @@ def read(
             as recursively read the contents of all matching folders.
         schema: Schema of the resulting table.
         mode: Denotes how the engine polls the new data from the source. Currently
-            "streaming" and "static" are supported. If set to "streaming" the engine will wait for
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
             the updates in the specified directory. It will track file additions, deletions, and
             modifications and reflect these events in the state. For example, if a file was deleted,
-            "streaming" mode will also remove rows obtained by reading this file from the table. On
-            the other hand, the "static" mode will only consider the available data and ingest all
-            of it in one commit. The default value is "streaming".
+            ``"streaming"`` mode will also remove rows obtained by reading this file from the table. On
+            the other hand, the ``"static"`` mode will only consider the available data and ingest all
+            of it in one commit. The default value is ``"streaming"``.
         json_field_paths: This field allows to map field names into path in the field.
             For the field which require such mapping, it should be given in the format
             ``<field_name>: <path to be mapped>``, where the path to be mapped needs to be a

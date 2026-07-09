@@ -31,7 +31,8 @@ from pathway.engine import DebeziumDBType
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
-from pathway.io.airbyte.logic import _PathwayAirbyteDestination
+from pathway.io._utils import as_duration_seconds
+from pathway.io.airbyte.logic import _PathwayAirbyteDestination, _PathwayAirbyteSubject
 from pathway.io.http._server import RestServerSubject
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
@@ -4832,3 +4833,209 @@ def test_output_rejects_nonpositive_max_batch_size(bad_max_batch_size):
     # conversion error.
     with pytest.raises(ValueError, match="max_batch_size must be a positive integer"):
         api.DataStorage(storage_type="postgres", max_batch_size=bad_max_batch_size)
+
+
+DURATION_30S_FORMS = [
+    30,
+    30.0,
+    datetime.timedelta(seconds=30),
+    pw.Duration("30s"),
+    pd.Timedelta("30s"),
+]
+
+
+@pytest.mark.parametrize("value", DURATION_30S_FORMS)
+def test_as_duration_seconds_accepts_all_duration_forms(value):
+    assert as_duration_seconds(value, "param") == 30.0
+
+
+def test_as_duration_seconds_keeps_fractional_seconds():
+    assert as_duration_seconds(datetime.timedelta(milliseconds=1500), "param") == 1.5
+    assert as_duration_seconds(0.25, "param") == 0.25
+
+
+@pytest.mark.parametrize("value", [0, 0.0, datetime.timedelta(0)])
+def test_as_duration_seconds_accepts_zero_by_default(value):
+    # A zero polling interval is legitimate: it means "poll as fast as
+    # possible", at the price of a busy-wait loop.
+    assert as_duration_seconds(value, "param") == 0.0
+
+
+@pytest.mark.parametrize("value", [-1, -0.5, datetime.timedelta(seconds=-1)])
+def test_as_duration_seconds_rejects_negative_values(value):
+    with pytest.raises(ValueError, match="'param' must be non-negative"):
+        as_duration_seconds(value, "param")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_as_duration_seconds_rejects_non_finite_values(value):
+    with pytest.raises(ValueError, match="'param' must be finite"):
+        as_duration_seconds(value, "param")
+
+
+@pytest.mark.parametrize("value", ["30", None, True, [30]])
+def test_as_duration_seconds_rejects_wrong_types(value):
+    with pytest.raises(TypeError, match="'param' must be a number of seconds"):
+        as_duration_seconds(value, "param")
+
+
+def test_as_duration_seconds_can_require_positive_values():
+    # Timeout-like parameters opt out of the zero allowance.
+    with pytest.raises(ValueError, match="'param' must be positive"):
+        as_duration_seconds(0, "param", allow_zero=False)
+    with pytest.raises(ValueError, match="'param' must be positive"):
+        as_duration_seconds(datetime.timedelta(0), "param", allow_zero=False)
+    assert as_duration_seconds(1, "param", allow_zero=False) == 1.0
+
+
+@pytest.mark.parametrize("refresh_interval", DURATION_30S_FORMS)
+def test_pyfilesystem_read_accepts_all_duration_forms(refresh_interval):
+    # In particular, a plain int (refresh_interval=30) must be accepted: the
+    # parameter used to be annotated as float only, so the runtime type check
+    # rejected integer values.
+    with open_fs("mem://") as source:
+        table = pw.io.pyfilesystem.read(source, refresh_interval=refresh_interval)
+        assert table is not None
+
+
+def test_pyfilesystem_read_accepts_zero_refresh_interval():
+    # Zero means "poll as fast as possible" (busy-wait) and must stay allowed.
+    with open_fs("mem://") as source:
+        table = pw.io.pyfilesystem.read(source, refresh_interval=0)
+        assert table is not None
+
+
+def test_pyfilesystem_read_rejects_invalid_refresh_interval():
+    with open_fs("mem://") as source:
+        with pytest.raises(ValueError, match="'refresh_interval' must be non-negative"):
+            pw.io.pyfilesystem.read(source, refresh_interval=-1)
+        with pytest.raises(TypeError):
+            pw.io.pyfilesystem.read(source, refresh_interval="30")
+
+
+@pytest.mark.parametrize("refresh_interval", DURATION_30S_FORMS)
+def test_gdrive_read_accepts_all_duration_forms(refresh_interval):
+    # The credentials file is only opened when the pipeline runs, so building
+    # the table is enough to exercise the parameter validation.
+    table = pw.io.gdrive.read(
+        object_id="fake-object-id",
+        service_user_credentials_file="credentials.json",
+        refresh_interval=refresh_interval,
+    )
+    assert table is not None
+
+
+def test_gdrive_read_rejects_invalid_refresh_interval():
+    with pytest.raises(ValueError, match="'refresh_interval' must be non-negative"):
+        pw.io.gdrive.read(
+            object_id="fake-object-id",
+            service_user_credentials_file="credentials.json",
+            refresh_interval=datetime.timedelta(seconds=-1),
+        )
+
+
+@pytest.mark.parametrize(
+    "passed_ms,expected_suggestion",
+    [
+        (
+            60000,
+            "Use refresh_interval=60 (or timedelta(seconds=60)) "
+            "instead of refresh_interval_ms=60000.",
+        ),
+        (
+            90000,
+            "Use refresh_interval=90 (or timedelta(seconds=90)) "
+            "instead of refresh_interval_ms=90000.",
+        ),
+        (
+            500,
+            "Use refresh_interval=0.5 (or timedelta(seconds=0.5)) "
+            "instead of refresh_interval_ms=500.",
+        ),
+    ],
+)
+def test_airbyte_refresh_interval_ms_raises_migration_error(
+    passed_ms, expected_suggestion
+):
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "`refresh_interval_ms` was replaced by `refresh_interval`, which takes "
+            "seconds or a timedelta. " + expected_suggestion
+        ),
+    ):
+        pw.io.airbyte.read(
+            "connection.yaml",
+            streams=["users"],
+            refresh_interval_ms=passed_ms,
+        )
+
+
+def test_airbyte_read_rejects_invalid_refresh_interval():
+    with pytest.raises(ValueError, match="'refresh_interval' must be non-negative"):
+        pw.io.airbyte.read("connection.yaml", streams=["users"], refresh_interval=-1)
+
+
+def test_airbyte_subject_refresh_interval_matches_old_ms_default():
+    class FakeSource:
+        configured_catalog = {
+            "streams": [{"stream": {"name": "users"}, "sync_mode": "incremental"}]
+        }
+
+    # refresh_interval=60 (seconds) must configure the same polling period as
+    # the previous refresh_interval_ms=60000 default.
+    subject = _PathwayAirbyteSubject(
+        source=FakeSource(),
+        mode="streaming",
+        refresh_interval=as_duration_seconds(60, "refresh_interval"),
+        streams=["users"],
+    )
+    assert subject.refresh_interval == 60.0
+
+
+def test_deltalake_table_optimizer_accepts_all_duration_forms():
+    table = pw.debug.table_from_markdown(
+        """
+        day_utc
+        2025-01-01
+        """
+    )
+    for compression_frequency in (
+        86400,
+        86400.0,
+        datetime.timedelta(days=1),
+        pw.Duration("1d"),
+    ):
+        optimizer = pw.io.deltalake.TableOptimizer(
+            tracked_column=table.day_utc,
+            time_format="%Y-%m-%d",
+            quick_access_window=datetime.timedelta(days=7),
+            compression_frequency=compression_frequency,
+        )
+        assert optimizer.compression_frequency == datetime.timedelta(days=1)
+
+
+def test_deltalake_table_optimizer_rejects_invalid_durations():
+    table = pw.debug.table_from_markdown(
+        """
+        day_utc
+        2025-01-01
+        """
+    )
+    with pytest.raises(
+        ValueError, match="'compression_frequency' must be non-negative"
+    ):
+        pw.io.deltalake.TableOptimizer(
+            tracked_column=table.day_utc,
+            time_format="%Y-%m-%d",
+            quick_access_window=datetime.timedelta(days=7),
+            compression_frequency=-1,
+        )
+    with pytest.raises(ValueError, match="'retention_period' must be non-negative"):
+        pw.io.deltalake.TableOptimizer(
+            tracked_column=table.day_utc,
+            time_format="%Y-%m-%d",
+            quick_access_window=datetime.timedelta(days=7),
+            compression_frequency=datetime.timedelta(days=1),
+            retention_period=-1,
+        )

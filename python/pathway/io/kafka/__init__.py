@@ -425,10 +425,10 @@ def simple_read(
 ) -> Table:
     """Simplified method to read data from Kafka. Only requires the server address and
     the topic name. If you have any kind of authentication or require fine-tuning of the
-    parameters, please use `read` method.
+    parameters, please use ``read`` method.
 
-    Read starts from the beginning of the topic, unless the `read_only_new` parameter is
-    set to True.
+    Read starts from the beginning of the topic, unless the ``read_only_new`` parameter is
+    set to ``True``.
 
     There are three formats currently supported: "plaintext", "raw", and "json".
     If the "raw" format is chosen, the key and the payload are read from the topic as raw
@@ -445,7 +445,7 @@ def simple_read(
     Args:
         server: Address of the server.
         topic: Name of topic in Kafka from which the data should be read.
-        read_only_new: If set to `True` only the entries which appear after the start
+        read_only_new: If set to ``True`` only the entries which appear after the start
             of the program will be read. Otherwise, the read will be done from the
             beginning of the topic.
         schema: Schema of the resulting table.

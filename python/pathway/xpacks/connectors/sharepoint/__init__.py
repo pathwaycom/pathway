@@ -16,6 +16,8 @@ from pathway.io._utils import (
     STATIC_MODE_NAME,
     STATUS_DOWNLOADED,
     STATUS_SIZE_LIMIT_EXCEEDED,
+    DurationLike,
+    as_duration_seconds,
 )
 from pathway.io.python import ConnectorSubject
 from pathway.optional_import import optional_imports
@@ -275,14 +277,14 @@ def read(
     recursive: bool = True,
     object_size_limit: int | None = None,
     with_metadata: bool = False,
-    refresh_interval: int = 30,
+    refresh_interval: DurationLike = 30,
     max_failed_attempts_in_row: int | None = 8,
     max_backlog_size: int | None = None,
 ) -> Table:
     """Reads a table from a directory or a file in Microsoft SharePoint site.
     Requires a valid Pathway Live Data Framework Scale license key.
 
-    It will return a table with single column `data` containing each file in a binary format.
+    It will return a table with single column ``data`` containing each file in a binary format.
 
     Note that if you only need to monitor changes in the given directory, you can use the
     ``"only_metadata"`` format, in which case the table will contain only the ``_metadata``
@@ -300,24 +302,24 @@ specified above and used to authenticate;
         root_path: The path for a directory or a file within the SharePoint space to be\
 read;
         mode: Denotes how the engine polls the new data from the source. Currently \
-"streaming" and "static" are supported. If set to "streaming", it will check for \
-updates, deletions and new files every `refresh_interval` seconds. "static" mode will \
+``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"``, it will check for \
+updates, deletions and new files every ``refresh_interval`` seconds. ``"static"`` mode will \
 only consider the available data and ingest all of it in one commit. The default value \
-is "streaming";
+is ``"streaming"``;
         format: The format of the resulting table. Can be either ``"binary"``, which \
 corresponds to a table with a ``data`` column containing each file's contents, or \
 ``"only_metadata"``, which corresponds to a table that has only the ``_metadata`` column \
 with the objects' metadata, without downloading the objects themselves;
-        recursive: If set to True, the connector will scan the nested directories. \
+        recursive: If set to ``True``, the connector will scan the nested directories. \
 Otherwise it will only process files that are placed in the specified directory;
         object_size_limit: Maximum size (in bytes) of a file that will be processed by \
-this connector or `None` if no filtering by size should be made;
-        with_metadata: when set to True, the connector will add an additional column \
-named `_metadata` to the table. This column will contain file metadata, such as:  \
-`path`, `modified_at`, `created_at`. The creation and modification times will be given \
+this connector or ``None`` if no filtering by size should be made;
+        with_metadata: when set to ``True``, the connector will add an additional column \
+named ``_metadata`` to the table. This column will contain file metadata, such as: \
+``path``, ``modified_at``, ``created_at``. The creation and modification times will be given \
 as UNIX timestamps;
-        refresh_interval: Time in seconds between scans. Applicable if mode is set to\
-'streaming'.
+        refresh_interval: Time between scans, given as a number of seconds or a\
+ ``datetime.timedelta`` / ``pw.Duration``. Applicable if mode is set to ``"streaming"``.
         max_failed_attempts_in_row: The maximum number of consecutive read errors before\
 the connector terminates with an error. If set to ``None``, the connector tries to read\
 data indefinitely, regardless of possible errors in the provided credentials.
@@ -332,7 +334,7 @@ data indefinitely, regardless of possible errors in the provided credentials.
     Example:
 
     Let's consider that there is a dataset stored in SharePoint site Datasets. Below we \
-give an example for reading this dataset in the steaming mode. Please note that you can\
+give an example for reading this dataset in the streaming mode. Please note that you can\
 use this example for the reference of how the parameters should look:
 
 
@@ -346,11 +348,11 @@ use this example for the reference of how the parameters should look:
     ... )
 
     In the example above we also consider that this dataset is located by the path \
-`Shared Documents/Data`. This code will also recursively scan the subdirectories of the\
+``Shared Documents/Data``. This code will also recursively scan the subdirectories of the\
 given directory.
 
     We can change it a little. Let's suppose that we need to take the dataset from the \
-directory `Datasets/Animals/2023` and not take the nested subdirectories into consideration. \
+directory ``Datasets/Animals/2023`` and not take the nested subdirectories into consideration. \
 That leads us to the following snippet:
 
     >>> t = pw.xpacks.connectors.sharepoint.read(  # doctest: +SKIP
@@ -365,7 +367,7 @@ That leads us to the following snippet:
 
     SharePoint sites are often used with the subsites. The Pathway Live Data Framework supports the data reads \
 from the subsites as well. To read the data from the subsite, you need to specify its' \
-URL in the `url` parameter. For example, if you read the dataset from `vendor` subspace, \
+URL in the ``url`` parameter. For example, if you read the dataset from ``vendor`` subspace, \
 you can configure the connector this way:
 
     >>> t = pw.xpacks.connectors.sharepoint.read(  # doctest: +SKIP
@@ -390,7 +392,7 @@ you can configure the connector this way:
     subject = _SharePointSubject(
         context_wrapper=context_wrapper,
         root_path=root_path,
-        refresh_interval=refresh_interval,
+        refresh_interval=as_duration_seconds(refresh_interval, "refresh_interval"),
         mode=mode,
         with_metadata=with_metadata or only_provide_metadata,
         recursive=recursive,

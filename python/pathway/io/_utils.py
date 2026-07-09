@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import functools
 import inspect
+import math
 import warnings
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Iterable
@@ -80,6 +82,52 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "plaintext_by_object",
     "only_metadata",
 }
+
+
+DurationLike = int | float | datetime.timedelta
+"""Type of duration parameters accepted by connectors: a number of seconds
+(``int`` or ``float``) or a ``datetime.timedelta`` (including its subclasses
+``pd.Timedelta`` and ``pw.Duration``)."""
+
+
+def as_duration_seconds(
+    value: DurationLike,
+    param_name: str,
+    *,
+    allow_zero: bool = True,
+) -> float:
+    """Coerces a duration-like parameter value to a float number of seconds.
+
+    ``int`` and ``float`` values are interpreted as seconds. ``datetime.timedelta``
+    values (including ``pd.Timedelta`` and ``pw.Duration``, which subclass it) are
+    converted with ``total_seconds()``.
+
+    Args:
+        value: The value of the parameter to be coerced.
+        param_name: The name of the parameter, used in error messages.
+        allow_zero: If ``True`` (the default), a zero duration is accepted: for
+            polling-type intervals it is a legitimate way to ask for updates as
+            often as possible, at the price of a busy-wait loop. Set to ``False``
+            for parameters where zero can never be meaningful (e.g. timeouts).
+
+    Returns:
+        The duration expressed as a float number of seconds.
+    """
+    if isinstance(value, datetime.timedelta):
+        seconds = value.total_seconds()
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = float(value)
+    else:
+        raise TypeError(
+            f"'{param_name}' must be a number of seconds (int or float) or a "
+            f"datetime.timedelta, got {type(value).__name__}"
+        )
+    if not math.isfinite(seconds):
+        raise ValueError(f"'{param_name}' must be finite, got {value!r}")
+    if seconds < 0 or (seconds == 0 and not allow_zero):
+        constraint = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"'{param_name}' must be {constraint}, got {value!r}")
+    return seconds
 
 
 class RawDataSchema(pw.Schema):

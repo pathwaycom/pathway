@@ -180,8 +180,8 @@ class TokenCountSplitter(BaseSplitter):
     count.
 
     This splitter tokenizes the input texts and splits them into smaller parts ("chunks")
-    ensuring that each chunk has a token count between `min_tokens` and
-    `max_tokens`. It also attempts to break chunks at sensible points such as
+    ensuring that each chunk has a token count between ``min_tokens`` and
+    ``max_tokens``. It also attempts to break chunks at sensible points such as
     punctuation marks.
     Splitter expects input to be a Pathway Live Data Framework column of strings OR pairs of strings and dict metadata.
 
@@ -190,7 +190,7 @@ class TokenCountSplitter(BaseSplitter):
     Args:
         min_tokens: minimum tokens in a chunk of text.
         max_tokens: maximum size of a chunk in tokens.
-        encoding_name: name of the encoding from `tiktoken`.
+        encoding_name: name of the encoding from ``tiktoken``.
             For a list of available encodings please refer to the tiktoken documentation:
             https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
 

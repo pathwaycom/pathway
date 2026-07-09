@@ -580,7 +580,7 @@ for the details.
             doc_id: int
             embedding: npt.NDArray[np.float64]   # e.g. a 736-dimensional vector
 
-        # `embeddings` is any table whose `embedding` column holds numpy float
+        # ``embeddings`` is any table whose ``embedding`` column holds numpy float
         # vectors, for example the output of an embedder UDF in a RAG pipeline.
         pw.io.mongodb.write(
             embeddings,

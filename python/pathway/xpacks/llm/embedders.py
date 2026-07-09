@@ -123,7 +123,7 @@ class OpenAIEmbedder(BaseEmbedder):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: ID of the model to use. You can use the
@@ -137,10 +137,10 @@ class OpenAIEmbedder(BaseEmbedder):
             If set, only documents that are longer than model's supported context will be truncated.
             Can be ``"start"``, ``"end"`` or ``None``. ``"start"`` will keep the first part of the text
             and remove the rest. ``"end"`` will keep the last part of the text.
-            If `None`, no truncation will be applied to any of the documents, this may cause API exceptions.
+            If ``None``, no truncation will be applied to any of the documents, this may cause API exceptions.
         batch_size: maximum size of a single batch to be sent to the embedder. Bigger
             batches may reduce the time needed for embedding.
-        encoding_format: The format to return the embeddings in. Can be either `float` or
+        encoding_format: The format to return the embeddings in. Can be either ``float`` or
             `base64 <https://pypi.org/project/pybase64/>`_.
         user: A unique identifier representing your end-user, which can help OpenAI to monitor
             and detect abuse.
@@ -151,7 +151,7 @@ class OpenAIEmbedder(BaseEmbedder):
         timeout: Timeout for requests, in seconds
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None.
+    To specify the ``model`` in the UDF call, set it to ``None``.
 
     Example:
 
@@ -339,7 +339,7 @@ class OpenAIEmbedder(BaseEmbedder):
 
 
 class LiteLLMEmbedder(BaseEmbedder):
-    """Pathway Live Data Framework wrapper for `litellm.embedding`.
+    """Pathway Live Data Framework wrapper for ``litellm.embedding``.
 
     Model has to be specified either in constructor call or in each application, no default
     is provided. The capacity, retry_strategy and cache_strategy need to be specified
@@ -352,7 +352,7 @@ class LiteLLMEmbedder(BaseEmbedder):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: The embedding model to use.
@@ -367,7 +367,7 @@ class LiteLLMEmbedder(BaseEmbedder):
         custom_llm_provider: The custom llm provider.
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None.
+    To specify the ``model`` in the UDF call, set it to ``None``.
 
     Example:
 
@@ -492,7 +492,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
 
         Args:
             input: mandatory, the string to embed.
-            **kwargs: optional parameters for `encode` method. If unset defaults from the constructor
+            **kwargs: optional parameters for ``encode`` method. If unset defaults from the constructor
               will be taken. For possible arguments check
               `the Sentence-Transformers documentation
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
@@ -549,10 +549,11 @@ class GeminiEmbedder(BaseEmbedder):
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
-            for more information. Defaults to None.
+            for more information. Defaults to ``None``.
         model: ID of the model to use. Check the
             `Gemini documentation <https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding>`_
-            for list of available models. To specify the `model` in the UDF call, set it to None in the constructor.
+            for list of available models. To specify the ``model`` in the UDF call, set it
+            to ``None`` in the constructor.
         api_key: API key for Gemini API services. Can be provided in the constructor,
             in ``__call__`` or by setting ``GOOGLE_API_KEY`` environment variable
         gemini_kwargs: any other arguments accepted by gemini embedding service. Check

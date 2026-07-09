@@ -10,6 +10,7 @@ import requests
 
 import pathway as pw
 from pathway.internals import ColumnReference, Table, udfs
+from pathway.io._utils import DurationLike, as_duration_seconds
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
 from pathway.xpacks.llm.document_store import (
@@ -199,9 +200,9 @@ def answer_with_geometric_rag_strategy(
 ) -> ColumnReference:
     """
     Function for querying LLM chat while providing increasing number of documents until an answer
-    is found. Documents are taken from `documents` argument. Initially first `n_starting_documents` documents
+    is found. Documents are taken from ``documents`` argument. Initially first ``n_starting_documents`` documents
     are embedded in the query. If the LLM chat fails to find an answer, the number of documents
-    is multiplied by `factor` and the question is asked again.
+    is multiplied by ``factor`` and the question is asked again.
 
     Args:
         questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
@@ -212,7 +213,7 @@ def answer_with_geometric_rag_strategy(
             Either string template, callable or a pw.udf function is expected.
             Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
-            For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
+            For Adaptive RAG to work, prompt needs to instruct, to return ``no_answer_string``
             when information is not found.
         no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable,
@@ -245,7 +246,7 @@ def answer_with_geometric_rag_strategy(
     ...         "documents": [
     ...             [
     ...                 "`pw.io.csv.read reads a table from one or several files with delimiter-separated values.",
-    ...                 "`pw.io.kafka.read` is a seneralized method to read the data from the given topic in Kafka.",
+    ...                 "``pw.io.kafka.read`` is a seneralized method to read the data from the given topic in Kafka.",
     ...             ]
     ...         ],
     ...     }
@@ -320,9 +321,9 @@ def answer_with_geometric_rag_strategy_from_index(
 ) -> ColumnReference:
     """
     Function for querying LLM chat while providing increasing number of documents until an answer
-    is found. Documents are taken from `index`. Initially first `n_starting_documents` documents
+    is found. Documents are taken from ``index``. Initially first ``n_starting_documents`` documents
     are embedded in the query. If the LLM chat fails to find an answer, the number of documents
-    is multiplied by `factor` and the question is asked again.
+    is multiplied by ``factor`` and the question is asked again.
 
     Args:
         questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
@@ -333,7 +334,7 @@ def answer_with_geometric_rag_strategy_from_index(
             Either string template, callable or a pw.udf function is expected.
             Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
-            For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
+            For Adaptive RAG to work, prompt needs to instruct, to return ``no_answer_string``
             when information is not found.
         no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable,
@@ -838,7 +839,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             Either string template, callable or a pw.udf function is expected.
             Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
-            For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
+            For Adaptive RAG to work, prompt needs to instruct, to return ``no_answer_string``
             when information is not found.
         no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
@@ -954,7 +955,7 @@ class DeckRetriever(BaseQuestionAnswerer):
 
     Args:
         indexer: document store for parsing and indexing slides.
-        search_topk: Number of slides to be returned by the `answer_query` method.
+        search_topk: Number of slides to be returned by the ``answer_query`` method.
     """
 
     excluded_response_metadata = ["b64_image"]
@@ -1059,7 +1060,7 @@ class DeckRetriever(BaseQuestionAnswerer):
 
 
 def send_post_request(
-    url: str, data: dict, headers: dict = {}, timeout: int | None = None
+    url: str, data: dict, headers: dict = {}, timeout: float | None = None
 ):
     response = requests.post(url, json=data, headers=headers, timeout=timeout)
     response.raise_for_status()
@@ -1069,13 +1070,14 @@ def send_post_request(
 class RAGClient:
     """
     Connector for interacting with the Pathway Live Data Framework RAG applications.
-    Either (`host` and `port`) or `url` must be set.
+    Either (``host`` and ``port``) or ``url`` must be set.
 
     Args:
         host: The host of the RAG service.
         port: The port of the RAG service.
         url: The URL of the RAG service.
-        timeout: Timeout for requests in seconds. Defaults to 90.
+        timeout: Timeout for requests, given as a number of seconds or a
+            ``datetime.timedelta`` / ``pw.Duration``. Defaults to 90 seconds.
         additional_headers: Additional headers for the requests.
     """
 
@@ -1084,7 +1086,7 @@ class RAGClient:
         host: str | None = None,
         port: int | None = None,
         url: str | None = None,
-        timeout: int | None = 90,
+        timeout: DurationLike | None = 90,
         additional_headers: dict | None = None,
     ):
         err = "Either (`host` and `port`) or `url` must be provided, but not both."
@@ -1100,7 +1102,11 @@ class RAGClient:
             protocol = "https" if port == 443 else "http"
             self.url = f"{protocol}://{host}:{port}"
 
-        self.timeout = timeout
+        self.timeout = (
+            as_duration_seconds(timeout, "timeout", allow_zero=False)
+            if timeout is not None
+            else None
+        )
         self.additional_headers = additional_headers or {}
 
         self.index_client = DocumentStoreClient(
@@ -1122,7 +1128,7 @@ class RAGClient:
         Args:
             query: The query string.
             k: The number of results to retrieve.
-            metadata_filter: Optional metadata filter for the documents. Defaults to `None`, which
+            metadata_filter: Optional metadata filter for the documents. Defaults to ``None``, which
                 means there will be no filter.
             filepath_globpattern: Glob pattern for file paths.
         """

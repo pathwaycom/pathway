@@ -20,7 +20,7 @@ def combine_metadata(
         table (pw.Table): Table to operate on.
         from_column (str): Column name with text and metadata.
         to_column (str): Column name where metadata should be moved.
-        clean_from_column (bool): If True, the original column will be cleaned from metadata.
+        clean_from_column (bool): If ``True``, the original column will be cleaned from metadata.
             Only text will remain.
 
     Returns:

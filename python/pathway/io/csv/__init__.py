@@ -44,12 +44,12 @@ def read(
         schema: Schema of the resulting table.
         csv_settings: Settings for the CSV parser.
         mode: Denotes how the engine polls the new data from the source. Currently
-            "streaming" and "static" are supported. If set to "streaming" the engine will wait for
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
             the updates in the specified directory. It will track file additions, deletions, and
             modifications and reflect these events in the state. For example, if a file was deleted,
-            "streaming" mode will also remove rows obtained by reading this file from the table. On
-            the other hand, the "static" mode will only consider the available data and ingest all
-            of it in one commit. The default value is "streaming".
+            ``"streaming"`` mode will also remove rows obtained by reading this file from the table. On
+            the other hand, the ``"static"`` mode will only consider the available data and ingest all
+            of it in one commit. The default value is ``"streaming"``.
         object_pattern: Unix shell style pattern for filtering only certain files in the
             directory. Ignored in case a path to a single file is specified. This value will be
             deprecated soon, please use glob pattern in ``path`` instead.
@@ -87,7 +87,7 @@ def read(
         printf "id,owner,pet\\n1,Alice,dog\\n2,Bob,dog\\n3,Alice,cat\\n4,Bob,dog" > dataset.csv
 
     In order to read it into Pathway Live Data Framework's table, you can first do the import and then
-    use the `pw.io.csv.read` method:
+    use the ``pw.io.csv.read`` method:
 
     >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
@@ -134,7 +134,7 @@ def read(
     also called "logs rotation"). Now, consider that there is a need to fetch the new files
     from this logs directory all the time. Would the Pathway Live Data Framework handle that? Sure!
 
-    The only difference would be in the usage of `mode` flag. So the code
+    The only difference would be in the usage of ``mode`` flag. So the code
     snippet will look as follows:
 
     >>> t = pw.io.csv.read("logs/", schema=InputSchema, mode="streaming")
@@ -176,7 +176,7 @@ def write(
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
-    """Writes `table`'s stream of updates to a file in delimiter-separated values format.
+    """Writes ``table``'s stream of updates to a file in delimiter-separated values format.
 
     Args:
         table: Table to be written.
