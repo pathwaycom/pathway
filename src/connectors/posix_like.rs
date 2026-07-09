@@ -99,13 +99,13 @@ impl Reader for PosixLikeReader {
         self.current_action = None;
         self.scanner_actions_queue.clear();
         let are_deletions_enabled = self.are_deletions_enabled();
-        let stored_metadata = self
+        let stored_tag = self
             .cached_object_storage
-            .stored_metadata(object_path_arc.as_ref());
-        if let Some(stored_metadata) = stored_metadata {
+            .stored_tag(object_path_arc.as_ref());
+        if let Some(stored_tag) = stored_tag {
             let actual_metadata = self.scanner.object_metadata(object_path_arc.as_ref())?;
             if let Some(metadata) = actual_metadata {
-                let reread_needed = stored_metadata.is_changed(&metadata);
+                let reread_needed = self.cached_object_storage.is_changed(stored_tag, &metadata);
                 if reread_needed && are_deletions_enabled {
                     info!(
                         "The last read object has changed since it was last read. It will be reread."
@@ -237,14 +237,13 @@ impl PosixLikeReader {
                     return Ok(Some(result));
                 }
                 Some(QueuedAction::Delete(path) | QueuedAction::Update(path, _)) => {
-                    let old_metadata = self
+                    // A disk read that happens once per deletion or
+                    // modification event: the full old metadata is stored
+                    // on disk, next to the object contents, while the RAM
+                    // snapshot only keeps the compact comparison tags.
+                    let (cached_object_contents, old_metadata) = self
                         .cached_object_storage
-                        .stored_metadata(path.as_ref())
-                        .expect("Metadata for all indexed objects must be stored in the engine")
-                        .clone();
-                    let cached_object_contents = self
-                        .cached_object_storage
-                        .get_object(path.as_ref())
+                        .get_object_with_metadata(path.as_ref())
                         .expect("Copy of a cached object must be present to perform deletion");
                     self.cached_object_storage
                         .remove_object(path.as_ref())
@@ -252,7 +251,7 @@ impl PosixLikeReader {
                     let reader = Box::new(Cursor::new(cached_object_contents));
                     self.tokenizer
                         .set_new_reader(reader, DataEventType::Delete)?;
-                    let result = ReadResult::NewSource(old_metadata.clone().into());
+                    let result = ReadResult::NewSource(old_metadata.into());
                     self.current_action = Some(action.unwrap().into());
                     return Ok(Some(result));
                 }

@@ -1,6 +1,7 @@
 // Copyright © 2026 Pathway
 
 use log::error;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,10 +82,90 @@ impl FileLikeMetadata {
     }
 
     /// Checks if file contents could have been changed.
+    ///
+    /// `ScannerTag` and `OwnerInterner::is_changed` mirror exactly the fields
+    /// compared here. If this method changes, they must be updated in sync.
     pub fn is_changed(&self, other: &FileLikeMetadata) -> bool {
         self.modified_at != other.modified_at
             || self.size != other.size
             || self.owner != other.owner
+    }
+}
+
+/// A compact digest of `FileLikeMetadata` holding only the fields that
+/// `FileLikeMetadata::is_changed` compares. The posix-like scanners keep one
+/// tag per watched object in RAM, so it must stay small and heap-free: the
+/// owner string is replaced by an id interned in `OwnerInterner`, and the
+/// optional modification time is manually unpacked into a value plus a
+/// `has_mtime` flag — `Option<u64>` has no niche and would inflate the
+/// struct from 24 to 32 bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScannerTag {
+    modified_at: u64, // Meaningful only when `has_mtime`; 0 otherwise.
+    size: u64,
+    owner_id: u32,
+    has_mtime: bool,
+}
+
+// The tag is held once per watched object of the scanned corpora, multiplied
+// by the hash map load factor, so every byte counts. If a new field makes it
+// legitimately larger, update this assertion consciously.
+const _: () = assert!(std::mem::size_of::<ScannerTag>() == 24);
+
+impl ScannerTag {
+    fn modified_at(&self) -> Option<u64> {
+        self.has_mtime.then_some(self.modified_at)
+    }
+}
+
+const NO_OWNER_ID: u32 = 0;
+
+/// Maps owner strings to compact ids for `ScannerTag`. A corpus typically has
+/// only a handful of distinct owners, so the side table stays tiny. Ids are
+/// never reused: entries are kept even after the last object of an owner is
+/// gone.
+#[derive(Debug, Default)]
+pub struct OwnerInterner {
+    owner_ids: HashMap<String, u32>,
+}
+
+impl OwnerInterner {
+    /// Builds the in-RAM tag for a metadata entry, interning its owner.
+    pub fn tag(&mut self, metadata: &FileLikeMetadata) -> ScannerTag {
+        ScannerTag {
+            modified_at: metadata.modified_at.unwrap_or(0),
+            has_mtime: metadata.modified_at.is_some(),
+            size: metadata.size,
+            owner_id: self.intern_owner(metadata.owner.as_deref()),
+        }
+    }
+
+    /// Mirrors `FileLikeMetadata::is_changed` for a stored tag and the actual
+    /// metadata of the object. An owner that was never interned can't be equal
+    /// to any stored owner, hence it always compares as changed.
+    pub fn is_changed(&self, stored: &ScannerTag, actual: &FileLikeMetadata) -> bool {
+        stored.modified_at() != actual.modified_at
+            || stored.size != actual.size
+            || self.lookup_owner(actual.owner.as_deref()) != Some(stored.owner_id)
+    }
+
+    fn intern_owner(&mut self, owner: Option<&str>) -> u32 {
+        let Some(owner) = owner else {
+            return NO_OWNER_ID;
+        };
+        if let Some(id) = self.owner_ids.get(owner) {
+            return *id;
+        }
+        let id = u32::try_from(self.owner_ids.len() + 1).expect("too many distinct owners");
+        self.owner_ids.insert(owner.to_string(), id);
+        id
+    }
+
+    fn lookup_owner(&self, owner: Option<&str>) -> Option<u32> {
+        match owner {
+            None => Some(NO_OWNER_ID),
+            Some(owner) => self.owner_ids.get(owner).copied(),
+        }
     }
 }
 
@@ -272,4 +353,62 @@ fn metadata_time_to_unix_timestamp(timestamp: Option<SystemTime>) -> Option<u64>
     timestamp
         .and_then(|timestamp| timestamp.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata(modified_at: Option<u64>, size: u64, owner: Option<&str>) -> FileLikeMetadata {
+        FileLikeMetadata {
+            created_at: None,
+            modified_at,
+            owner: owner.map(String::from),
+            path: "/data/file.txt".to_string(),
+            size,
+            seen_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_scanner_tag_mirrors_is_changed() {
+        let mut interner = OwnerInterner::default();
+        let cases = [
+            metadata(Some(10), 4, Some("alice")),
+            metadata(Some(10), 4, Some("bob")),
+            metadata(Some(10), 4, None),
+            metadata(Some(11), 4, Some("alice")),
+            metadata(Some(10), 5, Some("alice")),
+            metadata(None, 4, Some("alice")),
+            // `Some(0)` must stay distinct from `None`: the tag stores the
+            // missing modification time as 0 plus a separate flag.
+            metadata(Some(0), 4, Some("alice")),
+        ];
+        let tags: Vec<_> = cases.iter().map(|m| interner.tag(m)).collect();
+        for (stored, tag) in cases.iter().zip(&tags) {
+            for actual in &cases {
+                assert_eq!(
+                    interner.is_changed(tag, actual),
+                    stored.is_changed(actual),
+                    "tag comparison diverged from FileLikeMetadata::is_changed for {stored:?} vs {actual:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_scanner_tag_unknown_owner_counts_as_changed() {
+        let mut interner = OwnerInterner::default();
+        let stored = metadata(Some(10), 4, Some("alice"));
+        let tag = interner.tag(&stored);
+        // An owner string never seen by the interner can't match any stored id.
+        assert!(interner.is_changed(&tag, &metadata(Some(10), 4, Some("charlie"))));
+        assert!(interner.is_changed(&tag, &metadata(Some(10), 4, None)));
+        assert!(!interner.is_changed(&tag, &metadata(Some(10), 4, Some("alice"))));
+
+        let stored_ownerless = metadata(Some(10), 4, None);
+        let tag_ownerless = interner.tag(&stored_ownerless);
+        assert!(interner.is_changed(&tag_ownerless, &metadata(Some(10), 4, Some("charlie"))));
+        assert!(!interner.is_changed(&tag_ownerless, &metadata(Some(10), 4, None)));
+    }
 }

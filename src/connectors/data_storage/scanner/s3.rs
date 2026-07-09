@@ -327,9 +327,9 @@ impl S3Scanner {
                 seen_object_keys.insert(object.key.clone());
                 let actual_metadata = FileLikeMetadata::from_s3_object(object);
                 let object_key = object.key.as_bytes();
-                if let Some(stored_metadata) = cached_object_storage.stored_metadata(object_key) {
-                    let needs_pending_action =
-                        are_deletions_enabled && stored_metadata.is_changed(&actual_metadata);
+                if let Some(stored_tag) = cached_object_storage.stored_tag(object_key) {
+                    let needs_pending_action = are_deletions_enabled
+                        && cached_object_storage.is_changed(stored_tag, &actual_metadata);
                     if needs_pending_action {
                         self.pending_modification_download_tasks
                             .push(actual_metadata);

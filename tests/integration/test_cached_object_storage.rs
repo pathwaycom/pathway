@@ -33,17 +33,14 @@ fn check_storage_has_object(
     metadata: &FileLikeMetadata,
 ) -> eyre::Result<()> {
     assert!(storage.contains_object(uri));
-    assert_eq!(storage.get_object(uri)?, contents);
-    assert_eq!(
-        storage
-            .stored_metadata(uri)
-            .expect("Metadata must be present"),
-        metadata
-    );
+    let (stored_contents, stored_metadata) = storage.get_object_with_metadata(uri)?;
+    assert_eq!(stored_contents, contents);
+    assert_eq!(stored_metadata, *metadata);
+    let stored_tag = storage.stored_tag(uri).expect("Tag must be present");
+    assert!(!storage.is_changed(stored_tag, metadata));
     let mut is_uri_found = false;
-    for (stored_uri, stored_metadata) in storage.get_iter() {
-        if uri == stored_uri {
-            assert!(stored_metadata == metadata);
+    for (stored_uri, _) in storage.get_iter() {
+        if uri == stored_uri.as_ref() {
             is_uri_found = true;
         }
     }
@@ -53,11 +50,92 @@ fn check_storage_has_object(
 
 fn check_storage_doesnt_have_object(storage: &CachedObjectStorage, uri: &[u8]) -> eyre::Result<()> {
     assert!(!storage.contains_object(uri));
-    assert!(storage.get_object(uri).is_err());
-    assert!(storage.stored_metadata(uri).is_none());
+    assert!(storage.get_object_with_metadata(uri).is_err());
+    assert!(storage.stored_tag(uri).is_none());
     for (stored_uri, _) in storage.get_iter() {
-        assert!(uri != stored_uri);
+        assert!(uri != stored_uri.as_ref());
     }
+    Ok(())
+}
+
+#[test]
+fn test_tag_change_detection_semantics() -> eyre::Result<()> {
+    let test_storage = tempdir()?;
+    let backend = FilesystemKVStorage::new(test_storage.path())?;
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+
+    let document = create_mock_document();
+    let metadata = create_mock_storage_metadata();
+    storage.place_object(b"a", &document, metadata.clone())?;
+
+    let tag = *storage.stored_tag(b"a").expect("Tag must be present");
+    assert!(!storage.is_changed(&tag, &metadata));
+
+    let mut size_changed = metadata.clone();
+    size_changed.size += 1;
+    assert!(storage.is_changed(&tag, &size_changed));
+
+    let mut time_changed = metadata.clone();
+    time_changed.modified_at = metadata.modified_at.map(|t| t + 1);
+    assert!(storage.is_changed(&tag, &time_changed));
+
+    // The path is the map key and takes no part in the comparison,
+    // exactly as in `FileLikeMetadata::is_changed`.
+    let mut path_changed = metadata.clone();
+    path_changed.path = "/some/other/path".to_string();
+    assert!(!storage.is_changed(&tag, &path_changed));
+
+    Ok(())
+}
+
+// The durable snapshot format (metadata event batches + blob files) must stay
+// readable across versions: the in-RAM `ScannerTag` snapshot and the ephemeral
+// by-uri SQLite store are rebuilt from these batches on every start. The
+// fixture was generated at commit e2a12c25f6 (before the `ScannerTag`
+// introduction) by the following sequence, with `FileLikeMetadata` taken from
+// a tempfile via `from_fs_meta`:
+//   place_object(b"/data/fixture/a.txt", b"contents of a v1", ...)  // version 1
+//   place_object(b"/data/fixture/b.txt", b"contents of b", ...)     // version 2
+//   place_object(b"/data/fixture/a.txt", b"contents of a v2", ...)  // version 3
+//   place_object(b"/data/fixture/c.txt", b"contents of c", ...)     // version 4
+//   remove_object(b"/data/fixture/c.txt")                           // version 5
+// followed by a forced state upload.
+#[test]
+fn test_reads_snapshot_written_by_older_version() -> eyre::Result<()> {
+    // Recovery may repack or delete batches, so operate on a copy of the fixture.
+    let fixture_path = Path::new("tests/data/old_format_cached_objects_snapshot");
+    let test_storage = tempdir()?;
+    for entry in std::fs::read_dir(fixture_path)? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), test_storage.path().join(entry.file_name()))?;
+    }
+
+    let backend = FilesystemKVStorage::new(test_storage.path())?;
+    let mut storage = CachedObjectStorage::new(Box::new(backend))?;
+    storage.start_from_stable_version(5)?;
+
+    let (contents, metadata) = storage.get_object_with_metadata(b"/data/fixture/a.txt")?;
+    assert_eq!(contents, b"contents of a v2");
+    assert_eq!(metadata.path, "/data/fixture/a.txt");
+    check_storage_has_object(
+        &storage,
+        b"/data/fixture/a.txt",
+        b"contents of a v2",
+        &metadata,
+    )?;
+
+    let (contents, metadata) = storage.get_object_with_metadata(b"/data/fixture/b.txt")?;
+    assert_eq!(contents, b"contents of b");
+    assert_eq!(metadata.path, "/data/fixture/b.txt");
+    check_storage_has_object(
+        &storage,
+        b"/data/fixture/b.txt",
+        b"contents of b",
+        &metadata,
+    )?;
+
+    check_storage_doesnt_have_object(&storage, b"/data/fixture/c.txt")?;
+
     Ok(())
 }
 
