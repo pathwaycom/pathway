@@ -791,7 +791,10 @@ def test_no_match_is_empty_list():
 
 @pw.udf
 def fake_embedder(x: str) -> list[float]:
-    return [0.0, 1.0, float(ord(x[0])) / 5.0]
+    # orthogonal vectors: distances stay distinct under f16 quantization/SIMD
+    embedding = [0.0, 0.0, 0.0]
+    embedding[ord(x[0]) % 3] = 1.0
+    return embedding
 
 
 @pytest.mark.parametrize(
