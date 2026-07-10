@@ -186,7 +186,13 @@ fn apply_to_fragment<K, V, T, R, St, Sc, C, P>(
                 },
             );
             input_cursor.map_times(input_storage, |ts, r| {
-                let t = if let Some(time) = time { time } else { ts };
+                // The arrangement may already contain entries with times greater
+                // than the threshold-change time; never move an update back in time.
+                let t = if let Some(time) = time {
+                    max(time, ts)
+                } else {
+                    ts
+                };
                 let r = if negate {
                     r.clone().negate()
                 } else {
