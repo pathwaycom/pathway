@@ -84,7 +84,7 @@ def test_airbyte_full_refresh_streams(tmp_path):
         mode="streaming",
         execution_type="local",
         enforce_method="venv",
-        refresh_interval_ms=100,
+        refresh_interval=0.1,
     )
     pw.io.jsonlines.write(table, output_path)
 

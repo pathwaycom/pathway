@@ -105,6 +105,7 @@ AIRBYTE_FAKER_CONNECTION_REL_PATH = "connections/faker.yaml"
 # post-exit check. Five seconds is several times the worst-case default settling
 # lag of the systems we test against.
 POST_EXIT_GRACE_PERIOD_SEC = 5.0
+PROCESS_TERMINATE_TIMEOUT_SEC = 30.0
 
 
 def skip_on_multiple_workers() -> None:
@@ -683,6 +684,26 @@ assert_stream_split_into_groups_wo_index_types = run_graph_and_validate_result(
 )
 
 
+def terminate_process(p: multiprocessing.Process) -> None:
+    """Terminate a test child process without risking an unbounded wait.
+
+    A child that doesn't react to SIGTERM (e.g. stuck in uninterruptible I/O
+    on a stalled filesystem) must not hang the test run forever: escalate to
+    SIGKILL and give up loudly instead of blocking the whole CI job.
+    """
+    p.terminate()
+    p.join(PROCESS_TERMINATE_TIMEOUT_SEC)
+    if p.is_alive():
+        print(
+            f"Process {p.pid} did not exit after SIGTERM, killing it",
+            file=sys.stderr,
+        )
+        p.kill()
+        p.join(PROCESS_TERMINATE_TIMEOUT_SEC)
+        if p.is_alive():
+            raise RuntimeError(f"Process {p.pid} is still alive after SIGKILL")
+
+
 def run(**kwargs):
     apply_defaults_for_run_kwargs(kwargs)
     pw.run(**kwargs)
@@ -802,8 +823,7 @@ def wait_result_with_checker(
                 time.sleep(5.0)  # allow a little gap to persist state
 
             for p in handles:
-                p.terminate()
-                p.join()
+                terminate_process(p)
 
 
 def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):

@@ -88,6 +88,7 @@ use std::future::Future;
 use std::io::{BufWriter, Read};
 use std::mem::take;
 use std::os::unix::prelude::*;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -4170,6 +4171,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> Vec<DataRow> {
     telemetry_config = TelemetryConfig::default(),
     terminate_on_error = true,
     max_expression_batch_size = 1024,
+    udf_cache_directory = None,
 ))]
 pub fn run_with_new_graph(
     py: Python,
@@ -4184,6 +4186,7 @@ pub fn run_with_new_graph(
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
 ) -> PyResult<Vec<Vec<DataRow>>> {
     LOGGING_RESET_HANDLE.reset();
     defer! {
@@ -4192,16 +4195,6 @@ pub fn run_with_new_graph(
     let config = Config::from_env()
         .map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.bind(py).clone(), msg.to_string()))?;
     let license = License::new(license_key)?;
-    let persistence_config = {
-        if let Some(persistence_config) = persistence_config {
-            let persistence_config = persistence_config.prepare()?;
-            persistence_config.validate(&license)?;
-            Some(persistence_config)
-        } else {
-            None
-        }
-    };
-    let is_persisted = persistence_config.is_some();
     // All workers must agree on the timestamp of the initial ("start-up") batch.
     // Within one process this is naturally shared, but separate processes of the
     // same run each call `run` on their own, so the launcher (`pathway spawn`, the
@@ -4213,6 +4206,18 @@ pub fn run_with_new_graph(
         .map_or_else(Timestamp::new_from_current_time, |ms| {
             Timestamp((ms / 2) * 2)
         });
+    let persistence_config = {
+        if let Some(persistence_config) = persistence_config {
+            let persistence_config = persistence_config
+                .prepare()?
+                .with_run_start_timestamp(timestamp_at_start);
+            persistence_config.validate(&license)?;
+            Some(persistence_config)
+        } else {
+            None
+        }
+    };
+    let is_persisted = persistence_config.is_some();
 
     let telemetry_config = EngineTelemetryConfig::create(
         &license,
@@ -4266,6 +4271,7 @@ pub fn run_with_new_graph(
                 telemetry_config,
                 terminate_on_error,
                 max_expression_batch_size,
+                udf_cache_directory,
             )
         })
     })??;
@@ -6623,6 +6629,12 @@ impl DataStorage {
                             &readers_group_name.clone(),
                             async_nats::jetstream::consumer::pull::Config {
                                 durable_name: Some(readers_group_name),
+                                // Restrict the consumer to the requested topic.
+                                // A JetStream stream can span several subjects,
+                                // so without this filter the consumer would
+                                // deliver every subject in the stream instead of
+                                // just the one the user asked to read.
+                                filter_subject: topic.clone(),
                                 ..Default::default()
                             },
                         )

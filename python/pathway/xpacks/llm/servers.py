@@ -54,11 +54,11 @@ class BaseRestServer:
         for which ``cache_strategy`` is set.
 
         Args:
-            threaded: if True, the server will be run in a new thread.
-            with_cache: if True, caching will be enabled for the UDFs for which ``cache_strategy``
+            threaded: if ``True``, the server will be run in a new thread.
+            with_cache: if ``True``, caching will be enabled for the UDFs for which ``cache_strategy``
                 is set.
             cache_backend: backend used for caching. Only relevant if ``with_cache`` is
-                set to True.
+                set to ``True``.
             **kwargs: optional kwargs to be passed to ``pw.run``.
         """
 

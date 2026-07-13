@@ -21,6 +21,7 @@ def run(
     terminate_on_error: bool | None = None,
     max_expression_batch_size: int = 1024,
     event_loop: asyncio.AbstractEventLoop | None = None,
+    udf_cache_directory: str | None = None,
 ) -> None:
     """Runs the computation graph.
 
@@ -46,6 +47,15 @@ def run(
             If not specified, a new event loop is created and closed automatically.
             When running the graph multiple times with async UDFs that use ``InMemoryCache``,
             the same event loop must be provided to all runs to avoid runtime errors.
+        udf_cache_directory: if set, the memoization cache of non-deterministic
+            UDFs (results stored so that row deletions replay the originally produced
+            values) is kept in SQLite files in this directory instead of in memory, so
+            memory usage does not grow with the number of cached results. The files are
+            a runtime working set, recreated on every run and removed on shutdown; with
+            persistence enabled, snapshots remain the source of truth on restart. Note
+            that on many systems ``/tmp`` is a RAM-backed ``tmpfs`` — point this at a
+            real disk to actually save memory. If ``None`` (default), the cache is kept
+            in memory.
     """
     GraphRunner(
         parse_graph.G,
@@ -58,6 +68,7 @@ def run(
         terminate_on_error=terminate_on_error,
         max_expression_batch_size=max_expression_batch_size,
         event_loop=event_loop,
+        udf_cache_directory=udf_cache_directory,
         _stacklevel=4,
     ).run_outputs()
 
@@ -74,6 +85,7 @@ def run_all(
     terminate_on_error: bool | None = None,
     max_expression_batch_size: int = 1024,
     event_loop: asyncio.AbstractEventLoop | None = None,
+    udf_cache_directory: str | None = None,
 ) -> None:
     """Runs the computation graph with disabled tree-shaking optimization.
 
@@ -99,6 +111,15 @@ def run_all(
             If not specified, a new event loop is created and closed automatically.
             When running the graph multiple times with async UDFs that use ``InMemoryCache``,
             the same event loop must be provided to all runs to avoid runtime errors.
+        udf_cache_directory: if set, the memoization cache of non-deterministic
+            UDFs (results stored so that row deletions replay the originally produced
+            values) is kept in SQLite files in this directory instead of in memory, so
+            memory usage does not grow with the number of cached results. The files are
+            a runtime working set, recreated on every run and removed on shutdown; with
+            persistence enabled, snapshots remain the source of truth on restart. Note
+            that on many systems ``/tmp`` is a RAM-backed ``tmpfs`` — point this at a
+            real disk to actually save memory. If ``None`` (default), the cache is kept
+            in memory.
     """
     GraphRunner(
         parse_graph.G,
@@ -111,5 +132,6 @@ def run_all(
         terminate_on_error=terminate_on_error,
         max_expression_batch_size=max_expression_batch_size,
         event_loop=event_loop,
+        udf_cache_directory=udf_cache_directory,
         _stacklevel=4,
     ).run_all()

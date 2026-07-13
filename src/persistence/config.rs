@@ -95,6 +95,7 @@ pub struct PersistenceManagerOuterConfig {
     continue_after_replay: bool,
     pub worker_scaling_enabled: bool,
     pub workload_tracking_window: Duration,
+    run_start_timestamp: Option<Timestamp>,
 }
 
 impl PersistenceManagerOuterConfig {
@@ -115,7 +116,17 @@ impl PersistenceManagerOuterConfig {
             continue_after_replay,
             worker_scaling_enabled,
             workload_tracking_window,
+            run_start_timestamp: None,
         }
+    }
+
+    /// The shared start timestamp of the current run. Checkpoint commits are
+    /// clamped to it, so that a run never certifies a time range produced by
+    /// an earlier (possibly crashed) run.
+    #[must_use]
+    pub fn with_run_start_timestamp(mut self, run_start_timestamp: Timestamp) -> Self {
+        self.run_start_timestamp = Some(run_start_timestamp);
+        self
     }
 
     pub fn into_inner(self, worker_id: usize, total_workers: usize) -> PersistenceManagerConfig {
@@ -147,6 +158,7 @@ pub struct PersistenceManagerConfig {
     pub continue_after_replay: bool,
     pub worker_id: usize,
     pub snapshot_interval: Duration,
+    pub run_start_timestamp: Option<Timestamp>,
     total_workers: usize,
 }
 
@@ -202,6 +214,7 @@ impl PersistenceManagerConfig {
             persistence_mode: outer_config.persistence_mode,
             continue_after_replay: outer_config.continue_after_replay,
             snapshot_interval: outer_config.snapshot_interval,
+            run_start_timestamp: outer_config.run_start_timestamp,
             worker_id,
             total_workers,
         }

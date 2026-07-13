@@ -65,7 +65,7 @@ def read(
             committed and pushed into Pathway Live Data Framework's computation graph.
         json_field_paths: If the format is JSON, this field allows to map field names
             into path in the field. For the field which require such mapping, it should be
-            given in the format `<field_name>: <path to be mapped>`, where the path to
+            given in the format ``<field_name>: <path to be mapped>``, where the path to
             be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         parallel_readers: number of copies of the reader to work in parallel. In case

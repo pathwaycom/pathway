@@ -263,24 +263,34 @@ pub fn create_persistence_manager(
     fs_path: &Path,
     recreate: bool,
 ) -> Arc<Mutex<WorkerPersistentStorage>> {
+    create_persistence_manager_with_run_start(fs_path, recreate, None)
+}
+
+pub fn create_persistence_manager_with_run_start(
+    fs_path: &Path,
+    recreate: bool,
+    run_start_timestamp: Option<Timestamp>,
+) -> Arc<Mutex<WorkerPersistentStorage>> {
     if recreate {
         let _ = std::fs::remove_dir_all(fs_path);
     }
 
+    let mut outer_config = PersistenceManagerOuterConfig::new(
+        Duration::ZERO,
+        PersistentStorageConfig::Filesystem(fs_path.to_path_buf()),
+        SnapshotAccess::Full,
+        PersistenceMode::Batch,
+        true,
+        false,
+        Duration::ZERO,
+    );
+    if let Some(run_start_timestamp) = run_start_timestamp {
+        outer_config = outer_config.with_run_start_timestamp(run_start_timestamp);
+    }
+
     Arc::new(Mutex::new(
-        WorkerPersistentStorage::new(
-            PersistenceManagerOuterConfig::new(
-                Duration::ZERO,
-                PersistentStorageConfig::Filesystem(fs_path.to_path_buf()),
-                SnapshotAccess::Full,
-                PersistenceMode::Batch,
-                true,
-                false,
-                Duration::ZERO,
-            )
-            .into_inner(0, 1),
-        )
-        .expect("Failed to create persistence manager"),
+        WorkerPersistentStorage::new(outer_config.into_inner(0, 1))
+            .expect("Failed to create persistence manager"),
     ))
 }
 

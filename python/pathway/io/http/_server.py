@@ -103,7 +103,7 @@ class EndpointExamples:
 
         Args:
             id: Short and unique ID for the example. It is used for naming the example
-                within the Open API schema. By using `default` as an ID, you can set the example
+                within the Open API schema. By using ``default`` as an ID, you can set the example
                 default for the readers, while users will be able to select another ones via the
                 dropdown menu.
             summary: Human-readable summary of the example, describing what is shown.
@@ -503,10 +503,10 @@ class PathwayWebserver(PathwayServer):
     Args:
         host: TCP/IP host or a sequence of hosts for the created endpoint.
         port: Port for the created endpoint.
-        with_schema_endpoint: If set to True, the server will also provide ``/_schema``
+        with_schema_endpoint: If set to ``True``, the server will also provide ``/_schema``
             endpoint containing Open API 3.0.3 schema for the handlers generated with
             ``pw.io.http.rest_connector`` calls.
-        with_cors: If set to True, the server will allow cross-origin requests on the
+        with_cors: If set to ``True``, the server will allow cross-origin requests on the
             added endpoints.
     """
 
@@ -752,10 +752,10 @@ def rest_connector(
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway Live Data Framework's computation graph;
-        keep_queries: whether to keep queries after processing; defaults to False. [deprecated]
+        keep_queries: whether to keep queries after processing; defaults to ``False``. [deprecated]
         delete_completed_queries: whether to send a deletion entry after the query is processed.
           Allows to remove it from the system if it is stored by operators such as ``join`` or ``groupby``;
-        request_validator: a callable that can verify requests. A return value of `None` accepts payload.
+        request_validator: a callable that can verify requests. A return value of ``None`` accepts payload.
           Any other returned value is treated as error and used as the response. Any exception is
           caught and treated as validation failure.
         cache_strategy: one of available request caching strategies or None if no caching is required.
@@ -770,7 +770,7 @@ def rest_connector(
     Example:
 
     Let's consider the following example: there is a collection of words that are
-    received through HTTP REST endpoint `/uppercase` located at `127.0.0.1`, port `9999`.
+    received through HTTP REST endpoint ``/uppercase`` located at ``127.0.0.1``, port ``9999``.
     The Pathway Live Data Framework program processes this table by converting these words to the upper case.
     This conversion result must be provided to the user on the output.
 
@@ -793,7 +793,7 @@ def rest_connector(
     ...     schema=WordsSchema,
     ... )
 
-    Finally, you can define the logic that takes the input table `words`, calculates
+    Finally, you can define the logic that takes the input table ``words``, calculates
     the result in the form of a table, and provides it for the endpoint's output:
 
     >>> uppercase_words = words.select(
@@ -805,7 +805,7 @@ def rest_connector(
     Please note that you don't need to create another web server object if you need to
     have more than one endpoint running on the same host and port. For example, if you need
     to create another endpoint that converts words to lower case, in the same way, you
-    need to reuse the existing `webserver` object. That is, the configuration would start
+    need to reuse the existing ``webserver`` object. That is, the configuration would start
     with:
 
     >>> words_for_lowercase, response_writer_for_lowercase = pw.io.http.rest_connector(

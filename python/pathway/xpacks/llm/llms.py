@@ -67,7 +67,7 @@ def _prep_message_log(messages: list[dict], verbose: bool) -> str:
     """
     Prepare logs from OpenAI messages.
 
-    If `verbose` is `True`, shorten OpenAI chat logs by redacting images.
+    If ``verbose`` is ``True``, shorten OpenAI chat logs by redacting images.
     Otherwise, truncate the logs.
 
     Returns:
@@ -106,7 +106,7 @@ class OpenAIChat(BaseChat):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: ID of the model to use. See the
@@ -120,17 +120,17 @@ class OpenAIChat(BaseChat):
 
             `See more information about frequency and presence penalties.
             <https://platform.openai.com/docs/guides/text-generation/parameter-details>`_
-        function_call: Deprecated in favor of `tool_choice`.
+        function_call: Deprecated in favor of ``tool_choice``.
 
-            Controls which (if any) function is called by the model. `none` means the model
-            will not call a function and instead generates a message. `auto` means the model
+            Controls which (if any) function is called by the model. ``none`` means the model
+            will not call a function and instead generates a message. ``auto`` means the model
             can pick between generating a message or calling a function. Specifying a
             particular function via `{"name": "my_function"}` forces the model to call that
             function.
 
-            `none` is the default when no functions are present. `auto` is the default if
+            ``none`` is the default when no functions are present. ``auto`` is the default if
             functions are present.
-        functions: Deprecated in favor of `tools`.
+        functions: Deprecated in favor of ``tools``.
 
             A list of functions the model may generate JSON inputs for.
         logit_bias: Modify the likelihood of specified tokens appearing in the completion.
@@ -142,8 +142,8 @@ class OpenAIChat(BaseChat):
             increase likelihood of selection; values like -100 or 100 should result in a ban
             or exclusive selection of the relevant token.
         logprobs: Whether to return log probabilities of the output tokens or not. If true,
-            returns the log probabilities of each output token returned in the `content` of
-            `message`. This option is currently not available on the `gpt-4-vision-preview`
+            returns the log probabilities of each output token returned in the ``content`` of
+            ``message``. This option is currently not available on the ``gpt-4-vision-preview``
             model.
         max_tokens: The maximum number of [tokens](/tokenizer) that can be generated in the chat
             completion.
@@ -154,7 +154,7 @@ class OpenAIChat(BaseChat):
             for counting tokens.
         n: How many chat completion choices to generate for each input message. Note that
             you will be charged based on the number of generated tokens across all of the
-            choices. Keep `n` as `1` to minimize costs.
+            choices. Keep ``n`` as ``1`` to minimize costs.
         presence_penalty: Number between -2.0 and 2.0. Positive values penalize new tokens based on
             whether they appear in the text so far, increasing the model's likelihood to
             talk about new topics.
@@ -172,12 +172,12 @@ class OpenAIChat(BaseChat):
             generate an unending stream of whitespace until the generation reaches the token
             limit, resulting in a long-running and seemingly "stuck" request. Also note that
             the message content may be partially cut off if `finish_reason="length"`, which
-            indicates the generation exceeded `max_tokens` or the conversation exceeded the
+            indicates the generation exceeded ``max_tokens`` or the conversation exceeded the
             max context length.
         seed: This feature is in Beta. If specified, our system will make a best effort to
-            sample deterministically, such that repeated requests with the same `seed` and
+            sample deterministically, such that repeated requests with the same ``seed`` and
             parameters should return the same result. Determinism is not guaranteed, and you
-            should refer to the `system_fingerprint` response parameter to monitor changes
+            should refer to the ``system_fingerprint`` response parameter to monitor changes
             in the backend.
         stop: Up to 4 sequences where the API will stop generating further tokens.
         stream: If set, partial message deltas will be sent, like in ChatGPT. Tokens will be
@@ -191,27 +191,27 @@ class OpenAIChat(BaseChat):
             make the output more random, while lower values like 0.2 will make it more
             focused and deterministic.
 
-            We generally recommend altering this or `top_p` but not both.
-        tool_choice: Controls which (if any) function is called by the model. `none` means the model
-            will not call a function and instead generates a message. `auto` means the model
+            We generally recommend altering this or ``top_p`` but not both.
+        tool_choice: Controls which (if any) function is called by the model. ``none`` means the model
+            will not call a function and instead generates a message. ``auto`` means the model
             can pick between generating a message or calling a function. Specifying a
             particular function via
             `{"type: "function", "function": {"name": "my_function"}}` forces the model to
             call that function.
 
-            `none` is the default when no functions are present. `auto` is the default if
+            ``none`` is the default when no functions are present. ``auto`` is the default if
             functions are present.
         tools: A list of tools the model may call. Currently, only functions are supported as a
             tool. Use this to provide a list of functions the model may generate JSON inputs
             for.
         top_logprobs: An integer between 0 and 5 specifying the number of most likely tokens to return
-            at each token position, each with an associated log probability. `logprobs` must
-            be set to `true` if this parameter is used.
+            at each token position, each with an associated log probability. ``logprobs`` must
+            be set to ``true`` if this parameter is used.
         top_p: An alternative to sampling with temperature, called nucleus sampling, where the
             model considers the results of the tokens with top_p probability mass. So 0.1
             means only the tokens comprising the top 10% probability mass are considered.
 
-            We generally recommend altering this or `temperature` but not both.
+            We generally recommend altering this or ``temperature`` but not both.
         user: A unique identifier representing your end-user, which can help OpenAI to monitor
             and detect abuse.
             `Learn more <https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids>`_.
@@ -222,7 +222,7 @@ class OpenAIChat(BaseChat):
 
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None in the constructor.
+    To specify the ``model`` in the UDF call, set it to ``None`` in the constructor.
 
     Example:
 
@@ -253,13 +253,15 @@ class OpenAIChat(BaseChat):
     ):
         with optional_imports("xpack-llm"):
             import openai  # noqa:F401
-        executor = _prepare_executor(
-            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
-        )
+        # Retries are applied inside `__wrapped__` (see there) rather than at the
+        # executor level, so that direct `__wrapped__` calls are covered too —
+        # the client below has its own retries disabled (`max_retries=0`).
+        executor = _prepare_executor(async_mode=async_mode, capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or udfs.NoRetryStrategy()
         self.kwargs.update(openai_kwargs)
         api_key = self.kwargs.pop("api_key", None)
         base_url = self.kwargs.pop("base_url", None)
@@ -287,7 +289,9 @@ class OpenAIChat(BaseChat):
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
-        ret = await self.client.chat.completions.create(messages=messages_decoded, **kwargs)  # type: ignore
+        ret = await self.retry_strategy.invoke(
+            self.client.chat.completions.create, messages=messages_decoded, **kwargs  # type: ignore
+        )
         response: str | None = ret.choices[0].message.content
 
         if response is not None:
@@ -338,7 +342,7 @@ class LiteLLMChat(BaseChat):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: ID of the model to use. Check the
@@ -355,7 +359,7 @@ class LiteLLMChat(BaseChat):
     `LiteLLM documentation <https://docs.litellm.ai/docs/completion/input>`_.
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None in the constructor.
+    To specify the ``model`` in the UDF call, set it to ``None`` in the constructor.
 
     Example:
 
@@ -476,7 +480,7 @@ class HFPipelineChat(BaseChat):
             For possible arguments check
             `the HuggingFace documentation <https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline>`_.
 
-    `call_kwargs` can be overridden during application, all other arguments need
+    ``call_kwargs`` can be overridden during application, all other arguments need
     to be specified during class construction.
 
     Example:
@@ -629,7 +633,7 @@ class CohereChat(BaseChat):
     Returns answer and cited docs as tuple[str, list[dict]]. Cited docs is empty list if
     there are no citations.
 
-    Model defaults to `command`.
+    Model defaults to ``command``.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
     construction. All other arguments can be overridden during application.
@@ -641,7 +645,7 @@ class CohereChat(BaseChat):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: name of the model to use. Check the
@@ -902,13 +906,14 @@ class BedrockChat(BaseChat):
         with optional_imports("xpack-llm"):
             import aioboto3  # noqa:F401
 
-        executor = _prepare_executor(
-            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
-        )
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls are covered too.
+        executor = _prepare_executor(async_mode=async_mode, capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or udfs.NoRetryStrategy()
 
         self.kwargs.update(bedrock_kwargs)
         if model_id is not None:
@@ -968,26 +973,31 @@ class BedrockChat(BaseChat):
         if "stop_sequences" in kwargs:
             inference_config["stopSequences"] = kwargs.pop("stop_sequences")
 
-        async with self._session.client("bedrock-runtime") as client:
-            converse_kwargs = {
-                "modelId": model_id,
-                "messages": bedrock_messages,
-                "inferenceConfig": inference_config,
-            }
+        converse_kwargs = {
+            "modelId": model_id,
+            "messages": bedrock_messages,
+            "inferenceConfig": inference_config,
+        }
 
-            # Extract model-specific parameters (like top_k) into additionalModelRequestFields
-            additional_fields = {}
-            for arg in self._MODEL_SPECIFIC_ARGS:
-                if arg in kwargs:
-                    additional_fields[arg] = kwargs.pop(arg)
+        # Extract model-specific parameters (like top_k) into additionalModelRequestFields
+        additional_fields = {}
+        for arg in self._MODEL_SPECIFIC_ARGS:
+            if arg in kwargs:
+                additional_fields[arg] = kwargs.pop(arg)
 
-            if additional_fields:
-                converse_kwargs["additionalModelRequestFields"] = additional_fields
+        if additional_fields:
+            converse_kwargs["additionalModelRequestFields"] = additional_fields
 
-            if system_prompts:
-                converse_kwargs["system"] = system_prompts
+        if system_prompts:
+            converse_kwargs["system"] = system_prompts
 
-            response = await client.converse(**converse_kwargs)
+        # The client is recreated on each attempt: after a failure it may be
+        # left in a broken state, so the retry covers its creation as well.
+        async def _converse():
+            async with self._session.client("bedrock-runtime") as client:
+                return await client.converse(**converse_kwargs)
+
+        response = await self.retry_strategy.invoke(_converse)
 
         # Extract response content
         output = response.get("output", {})
@@ -1045,7 +1055,7 @@ class BedrockChat(BaseChat):
 def prompt_chat_single_qa(question: str) -> pw.Json:
     """
     Create chat prompt messages for single question answering. A string with a question
-    is converted into one-element list with a dictionary with keys `role` and `content`.
+    is converted into one-element list with a dictionary with keys ``role`` and ``content``.
 
     Args:
         question (ColumnExpression[str]): a column with questions to be transformed into prompts

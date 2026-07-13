@@ -19,6 +19,7 @@ import pytest
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.graph_runner.async_utils import new_event_loop
+from pathway.internals.parse_graph import G
 from pathway.internals.udfs.executors import Executor
 from pathway.tests.utils import (
     T,
@@ -26,7 +27,10 @@ from pathway.tests.utils import (
     assert_table_equality,
     assert_table_equality_wo_index,
     assert_table_equality_wo_types,
+    needs_multiprocessing_fork,
+    run,
     run_all,
+    wait_result_with_checker,
     warns_here,
     xfail_on_multiple_threads,
 )
@@ -1795,3 +1799,291 @@ def test_propagate_none_batch(sync: bool):
             """,
         ),
     )
+
+
+@pytest.fixture(params=[False, True], ids=["in_memory_cache", "on_disk_cache"])
+def udf_cache_kwargs(request, tmp_path: pathlib.Path) -> dict[str, str]:
+    if request.param:
+        return {"udf_cache_directory": str(tmp_path / "udf-cache")}
+    return {}
+
+
+@pytest.mark.parametrize("sync", [True, False])
+def test_non_deterministic_udf_replays_original_values_with_on_disk_cache(
+    sync: bool, udf_cache_kwargs: dict[str, str]
+) -> None:
+    # A counter-based UDF would return a different value if recomputed, so the
+    # test verifies that a retraction replays the originally produced value,
+    # both with the in-memory cache and with the on-disk (SQLite) cache.
+    # The counter is kept per input value: each key is processed by a single
+    # worker in time order, so the expected values don't depend on how rows
+    # are distributed between workers.
+    counts: dict[int, int] = {}
+
+    if sync:
+
+        @pw.udf
+        def foo(a: int) -> int:
+            counts[a] = counts.get(a, 0) + 1
+            return 10 * a + counts[a]
+
+    else:
+
+        @pw.udf
+        async def foo(a: int) -> int:
+            counts[a] = counts.get(a, 0) + 1
+            return 10 * a + counts[a]
+
+    input = T(
+        """
+        a | __time__ | __diff__
+        1 |     2    |     1
+        1 |     4    |    -1
+        1 |     6    |     1
+        2 |     8    |     1
+        1 |    10    |    -1
+        """,
+        id_from=["a"],
+    )
+
+    res = input.select(a=pw.this.a, x=foo(pw.this.a))
+
+    assert_stream_equality(
+        res,
+        T(
+            """
+            a | x  | __time__ | __diff__
+            1 | 11 |     2    |     1
+            1 | 11 |     4    |    -1
+            1 | 12 |     6    |     1
+            2 | 21 |     8    |     1
+            1 | 12 |    10    |    -1
+            """,
+            id_from=["a"],
+        ),
+        **udf_cache_kwargs,
+    )
+
+
+def test_append_only_udf_values_served_from_on_disk_cache(
+    udf_cache_kwargs: dict[str, str],
+) -> None:
+    # An append-only column in a non-append-only table exercises the branch
+    # that reads the cached value without removing it: every row change after
+    # the first computation is served the originally computed value. The
+    # counter is kept per input value, so the expected values don't depend on
+    # how rows are distributed between workers; a recomputation would be
+    # visible as an increased counter part of the value.
+    class Schema(pw.Schema):
+        a: int = pw.column_definition(append_only=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+          | a | b | __time__ | __diff__
+        1 | 1 | 2 |     2    |     1
+        2 | 2 | 3 |     4    |     1
+        1 | 1 | 2 |     6    |    -1
+        1 | 1 | 4 |     6    |     1
+        3 | 3 | 5 |     8    |     1
+        3 | 3 | 5 |    10    |    -1
+        3 | 3 | 6 |    10    |     1
+    """,
+        schema=Schema,
+    )
+
+    counts: dict[int, int] = {}
+
+    @pw.udf
+    def f(a: int) -> int:
+        counts[a] = counts.get(a, 0) + 1
+        return 10 * a + counts[a]
+
+    result = t.select(a=f(pw.this.a), b=pw.this.b)
+
+    expected = pw.debug.table_from_markdown(
+        """
+          | a  | b | __time__ | __diff__
+        1 | 11 | 2 |     2    |     1
+        2 | 21 | 3 |     4    |     1
+        1 | 11 | 2 |     6    |    -1
+        1 | 11 | 4 |     6    |     1
+        3 | 31 | 5 |     8    |     1
+        3 | 31 | 5 |    10    |    -1
+        3 | 31 | 6 |    10    |     1
+    """,
+        _new_universe=True,
+    )
+
+    assert_stream_equality(result, expected, **udf_cache_kwargs)
+    assert counts == {1: 1, 2: 1, 3: 1}
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="stale file sweep uses /proc")
+def test_udf_cache_directory_ignores_stale_files_and_cleans_up(
+    tmp_path: pathlib.Path,
+) -> None:
+    cache_dir = tmp_path / "udf-cache"
+    cache_dir.mkdir()
+    # A file left over by a crashed run of another process (a pid larger than
+    # pid_max is never alive) has to be removed and never read.
+    stale_file = cache_dir / "run-999999999-worker-0-op-0.sqlite"
+    stale_file.write_bytes(b"leftover garbage from a crashed run")
+    # A file left over by a crashed run with the same pid has to be wiped on
+    # open instead of being read.
+    own_leftover = cache_dir / f"run-{os.getpid()}-worker-0-op-0.sqlite"
+    own_leftover.write_bytes(b"not a valid database")
+
+    @pw.udf
+    def inc(a: int) -> int:
+        return a + 1
+
+    input = T(
+        """
+        a | __time__ | __diff__
+        1 |     2    |     1
+        2 |     4    |     1
+        1 |     6    |    -1
+        """,
+        id_from=["a"],
+    )
+
+    result = input.select(ret=inc(pw.this.a))
+
+    assert_table_equality_wo_index(
+        result,
+        T(
+            """
+            ret
+            3
+            """,
+        ),
+        udf_cache_directory=str(cache_dir),
+    )
+    assert not stale_file.exists()
+    assert list(cache_dir.glob("*.sqlite")) == []
+
+
+def test_udf_cache_directory_multiple_workers(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    cache_dir = tmp_path / "udf-cache"
+    monkeypatch.setenv("PATHWAY_THREADS", "2")
+
+    cache_files_seen: set[str] = set()
+
+    @pw.udf
+    def inc(a: int) -> int:
+        cache_files_seen.update(path.name for path in cache_dir.glob("*.sqlite"))
+        return a + 1
+
+    rows = "\n".join(f"{i} | {2 * i} | 1" for i in range(1, 21))
+    deletions = "\n".join(f"{i} | {100 + 2 * i} | -1" for i in range(1, 21, 2))
+    input = T(
+        f"""
+        a | __time__ | __diff__
+        {rows}
+        {deletions}
+        """,
+        id_from=["a"],
+    )
+
+    result = input.select(ret=inc(pw.this.a))
+
+    expected_rows = "\n".join(f"{i + 1}" for i in range(2, 21, 2))
+    assert_table_equality_wo_index(
+        result,
+        T(
+            f"""
+            ret
+            {expected_rows}
+            """,
+        ),
+        udf_cache_directory=str(cache_dir),
+    )
+    # Each worker owns a distinct cache file.
+    pid = os.getpid()
+    assert cache_files_seen == {
+        f"run-{pid}-worker-0-op-0.sqlite",
+        f"run-{pid}-worker-1-op-0.sqlite",
+    }
+    assert list(cache_dir.glob("*.sqlite")) == []
+
+
+def test_non_deterministic_udf_expected_deletion_error_with_on_disk_cache(
+    udf_cache_kwargs: dict[str, str],
+) -> None:
+    # A second insertion of a key whose result is still cached (without a
+    # deletion in between) has to be reported as an error.
+    @pw.udf
+    def inc(a: int) -> int:
+        return a + 1
+
+    input = T(
+        """
+          | a | __time__ | __diff__
+        1 | 1 |     2    |     1
+        2 | 5 |     2    |     1
+        2 | 5 |     4    |    -1
+        1 | 2 |     6    |     1
+        """
+    )
+
+    input.select(ret=inc(pw.this.a))
+
+    with pytest.raises(
+        api.EngineError,
+        match=re.escape("Expected deletion of a row with key"),
+    ):
+        run_all(**udf_cache_kwargs)
+
+
+@needs_multiprocessing_fork
+def test_udf_cache_directory_multiple_processes(
+    tmp_path: pathlib.Path, port: int
+) -> None:
+    cache_dir = tmp_path / "udf-cache"
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    input_path.write_text("a\n" + "\n".join(str(i) for i in range(1, 11)) + "\n")
+
+    class InputSchema(pw.Schema):
+        a: int
+
+    class OutputSchema(pw.Schema):
+        ret: int
+
+    def target():
+        t = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+
+        @pw.udf
+        def inc(a: int) -> int:
+            return a + 1
+
+        res = t.select(ret=inc(pw.this.a))
+        pw.io.csv.write(res, output_path)
+        run(udf_cache_directory=str(cache_dir))
+
+    def checker() -> bool:
+        if not output_path.exists():
+            return False
+        try:
+            G.clear()
+            result = pw.io.csv.read(output_path, schema=OutputSchema, mode="static")
+            expected = pw.debug.table_from_markdown(
+                "ret\n" + "\n".join(str(i + 1) for i in range(1, 11))
+            )
+            assert_table_equality_wo_index(result, expected)
+            return True
+        except AssertionError:
+            return False
+
+    wait_result_with_checker(
+        checker,
+        30,
+        target=target,
+        processes=2,
+        first_port=port,
+    )
+    # Each process removes its own cache files on shutdown.
+    assert list(cache_dir.glob("*.sqlite")) == []

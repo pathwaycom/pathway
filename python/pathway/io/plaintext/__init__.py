@@ -39,12 +39,12 @@ def read(
             objects to be read. The connector will read the contents of all matching files as well
             as recursively read the contents of all matching folders.
         mode: Denotes how the engine polls the new data from the source. Currently
-            "streaming" and "static" are supported. If set to "streaming" the engine will wait for
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
             the updates in the specified directory. It will track file additions, deletions, and
             modifications and reflect these events in the state. For example, if a file was deleted,
-            "streaming" mode will also remove rows obtained by reading this file from the table. On
-            the other hand, the "static" mode will only consider the available data and ingest all
-            of it in one commit. The default value is "streaming".
+            ``"streaming"`` mode will also remove rows obtained by reading this file from the table. On
+            the other hand, the ``"static"`` mode will only consider the available data and ingest all
+            of it in one commit. The default value is ``"streaming"``.
         object_pattern: Unix shell style pattern for filtering only certain files in the
             directory. Ignored in case a path to a single file is specified. This value will be
             deprecated soon, please use glob pattern in ``path`` instead.

@@ -21,10 +21,23 @@ from pathway.tests.utils import (
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
+    terminate_process,
     wait_result_with_checker,
     write_csv,
     write_lines,
 )
+
+_next_forward_mtime = 0.0
+
+
+def _rewrite_file(path, lines):
+    """Write an input file with a strictly increasing mtime, so that a
+    same-size rewrite is always seen as a change despite the
+    second-granularity mtime tracking. Harmless for new files."""
+    global _next_forward_mtime
+    write_lines(path, lines)
+    _next_forward_mtime = max(_next_forward_mtime + 2, time.time() + 2)
+    os.utime(path, (_next_forward_mtime, _next_forward_mtime))
 
 
 @pytest.mark.parametrize(
@@ -84,8 +97,7 @@ def test_groupby_count(persistence_mode, tmp_path):
         CsvPathwayChecker(expected, output_path, id_from=["w"]), 10, target=None, step=1
     )
     time.sleep(2)  # sleep needed to save persistence state (see snapshot_interval_ms)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
     file3 = """
     w
@@ -113,8 +125,7 @@ def test_groupby_count(persistence_mode, tmp_path):
         CsvPathwayChecker(expected, output_path, id_from=["w"]), 10, target=None, step=1
     )
     time.sleep(2)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
     file5 = """
     w
@@ -142,8 +153,7 @@ def test_groupby_count(persistence_mode, tmp_path):
         CsvPathwayChecker(expected, output_path, id_from=["w"]), 10, target=None
     )
     time.sleep(2)
-    p.terminate()
-    p.join()
+    terminate_process(p)
 
 
 # Each run is denoted by a scenario.
@@ -282,6 +292,7 @@ def get_one_table_runner(
     mode: api.PersistenceMode,
     logic: Callable[[pw.Table], pw.Table],
     schema: type[pw.Schema],
+    run_kwargs: dict | None = None,
 ) -> tuple[Callable[[list[str], set[str]], None], pathlib.Path]:
     input_path = tmp_path / "1"
     os.makedirs(input_path)
@@ -302,7 +313,8 @@ def get_one_table_runner(
             persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(persistent_storage_path),
                 persistence_mode=mode,
-            )
+            ),
+            **(run_kwargs or {}),
         )
         assert_sets_equality_from_path(output_path, expected)
 
@@ -648,8 +660,16 @@ def test_deduplicate(tmp_path, mode, name):
     "mode", [api.PersistenceMode.OPERATOR_PERSISTING]
 )  # api.PersistenceMode.PERSISTING doesn't work as it replays the data without storing UDF results
 @pytest.mark.parametrize("sync", [True, False])
+@pytest.mark.parametrize("on_disk_cache", [False, True])
 @only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
-def test_non_deterministic_udf(tmp_path, mode, sync):
+def test_non_deterministic_udf(tmp_path, mode, sync, on_disk_cache):
+    # With the on-disk cache enabled, the memoized UDF results live in SQLite files
+    # in the directory passed to pw.run; on every restart the cache is
+    # rebuilt there from the operator snapshots and retractions replay the
+    # restored values.
+    cache_dir = tmp_path / "udf-cache"
+    run_kwargs = {"udf_cache_directory": str(cache_dir)} if on_disk_cache else {}
+
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
         b: int
@@ -675,9 +695,16 @@ def test_non_deterministic_udf(tmp_path, mode, sync):
     def logic(t: pw.Table) -> pw.Table:
         return t.select(pw.this.a, x=foo(pw.this.b))
 
-    run, input_path = get_one_table_runner(tmp_path, mode, logic, InputSchema)
+    run, input_path = get_one_table_runner(
+        tmp_path, mode, logic, InputSchema, run_kwargs=run_kwargs
+    )
 
     run(["a,b", "1,2"], {"1,1,1"})
+    if on_disk_cache:
+        assert cache_dir.is_dir()
+        # The on-disk cache is a runtime working set only: its files are removed on
+        # shutdown and the cache is rebuilt from the operator snapshots.
+        assert list(cache_dir.glob("*.sqlite")) == []
     os.remove(input_path / "1")
     run(["a,b", "1,3"], {"1,1,-1", "1,2,1"})
     run(["a,b", "2,4"], {"2,3,1"})
@@ -1090,3 +1117,186 @@ def test_from_streams(tmp_path, mode):
     run(["a,b", "4,7"], ["a,b"], {"4,7,1"})
     run(["a,b", "3,6"], ["a,b", "4,7"], {"3,5,-1", "3,6,1", "4,7,-1"})
     run(["a,b"], ["a,b", "3,6"], {"3,6,-1"})
+
+
+@pytest.mark.parametrize(
+    "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
+)
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_join_with_id_two_sources(tmp_path, mode):
+    """Join with id=left.id across two persisted sources.
+
+    The two sources restore and continue independently on restart, so this
+    checks that data arriving after recovery (new files as well as modified
+    ones) stays consistent across sources: every left row must meet its right
+    row within one minibatch, and an update of the right side must retract the
+    old joined row instead of being reported as a duplicate.
+    """
+
+    class ValSchema(pw.Schema):
+        label: str
+        val: int
+
+    class BonusSchema(pw.Schema):
+        label: str
+        add: int
+
+    val_path = tmp_path / "vals"
+    bonus_path = tmp_path / "bonus"
+    os.makedirs(val_path)
+    os.makedirs(bonus_path)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    def do_run(expected):
+        G.clear()
+        t = pw.io.csv.read(val_path, schema=ValSchema, mode="static")
+        bonus = pw.io.csv.read(bonus_path, schema=BonusSchema, mode="static")
+        joined = t.join(bonus, t.label == bonus.label, id=t.id).select(
+            t.label, s=t.val + bonus.add
+        )
+        pw.io.csv.write(joined, output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=mode,
+            )
+        )
+        assert_sets_equality_from_path(output_path, expected)
+
+    # Run 1: initial data in both sources
+    write_lines(val_path / "a.csv", ["label,val", "a,10"])
+    write_lines(bonus_path / "a.csv", ["label,add", "a,30"])
+    do_run({"a,40,1"})
+
+    # Run 2: new row appears in both sources
+    write_lines(val_path / "b.csv", ["label,val", "b,5"])
+    write_lines(bonus_path / "b.csv", ["label,add", "b,50"])
+    do_run({"b,55,1"})
+
+    # Run 3: right-side row modified — the old joined row must be retracted
+    _rewrite_file(bonus_path / "a.csv", ["label,add", "a,95"])
+    do_run({"a,40,-1", "a,105,1"})
+
+
+@pytest.mark.parametrize(
+    "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
+)
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_join_left_with_id_two_sources(tmp_path, mode):
+    """Left join with id=left.id across two persisted sources.
+
+    An unmatched left row is emitted padded with None; when its right row
+    arrives in a later run (after a restart), the outer row must be retracted
+    and replaced with the joined row instead of being reported as a duplicate,
+    and later updates of the right side must keep retracting cleanly.
+    """
+
+    class ValSchema(pw.Schema):
+        label: str
+        val: int
+
+    class BonusSchema(pw.Schema):
+        label: str
+        add: int
+
+    val_path = tmp_path / "vals"
+    bonus_path = tmp_path / "bonus"
+    os.makedirs(val_path)
+    os.makedirs(bonus_path)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    def do_run(expected):
+        G.clear()
+        t = pw.io.csv.read(val_path, schema=ValSchema, mode="static")
+        bonus = pw.io.csv.read(bonus_path, schema=BonusSchema, mode="static")
+        joined = t.join_left(bonus, t.label == bonus.label, id=t.id).select(
+            t.label, s=pw.coalesce(bonus.add, 0) + t.val
+        )
+        pw.io.csv.write(joined, output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=mode,
+            )
+        )
+        assert_sets_equality_from_path(output_path, expected)
+
+    # Run 1: a left row without a matching right row — emitted as an outer row
+    write_lines(val_path / "a.csv", ["label,val", "a,10"])
+    do_run({"a,10,1"})
+
+    # Run 2: the matching right row arrives — the outer row must be retracted
+    # and replaced with the joined row; a fresh unmatched left row must still
+    # produce an outer row
+    write_lines(bonus_path / "a.csv", ["label,add", "a,30"])
+    write_lines(val_path / "b.csv", ["label,val", "b,5"])
+    do_run({"a,10,-1", "a,40,1", "b,5,1"})
+
+    # Run 3: right-side row modified — the old joined row must be retracted
+    _rewrite_file(bonus_path / "a.csv", ["label,add", "a,95"])
+    do_run({"a,40,-1", "a,105,1"})
+
+
+@pytest.mark.parametrize(
+    "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
+)
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_ix_two_sources(tmp_path, mode):
+    """ix (pointer lookup) across two persisted sources.
+
+    Every pointer produced from the left source must resolve in the right
+    source within one minibatch — including right after a restart, when both
+    sources recover independently, and for rows arriving or changing after
+    the recovery.
+    """
+
+    class ValSchema(pw.Schema):
+        label: str
+        val: int
+
+    class BonusSchema(pw.Schema):
+        label: str
+        add: int
+
+    val_path = tmp_path / "vals"
+    bonus_path = tmp_path / "bonus"
+    os.makedirs(val_path)
+    os.makedirs(bonus_path)
+    output_path = tmp_path / "out.csv"
+    pstorage_path = tmp_path / "PStorage"
+
+    def do_run(expected):
+        G.clear()
+        t = pw.io.csv.read(val_path, schema=ValSchema, mode="static")
+        bonus = pw.io.csv.read(
+            bonus_path, schema=BonusSchema, mode="static"
+        ).with_id_from(pw.this.label)
+        t2 = t.with_columns(bptr=bonus.pointer_from(t.label))
+        res = t2.select(t2.label, s=t2.val + bonus.ix(t2.bptr).add)
+        pw.io.csv.write(res, output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path),
+                persistence_mode=mode,
+            )
+        )
+        assert_sets_equality_from_path(output_path, expected)
+
+    # Run 1: initial data
+    write_lines(val_path / "1.csv", ["label,val", "a,10", "b,5"])
+    write_lines(bonus_path / "1.csv", ["label,add", "a,30", "b,50"])
+    do_run({"a,40,1", "b,55,1"})
+
+    # Run 2: new row in both sources
+    write_lines(val_path / "2.csv", ["label,val", "c,7"])
+    write_lines(bonus_path / "2.csv", ["label,add", "c,100"])
+    do_run({"c,107,1"})
+
+    # Run 3: right-side row modified
+    _rewrite_file(bonus_path / "1.csv", ["label,add", "a,90", "b,50"])
+    do_run({"a,40,-1", "a,100,1"})

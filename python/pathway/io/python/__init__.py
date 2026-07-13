@@ -379,7 +379,7 @@ def _are_deletions_reachable(subject) -> bool:
     false-negatives, but should suffice for the most common cases.
 
     If the user wants to override the behavior, it's still possible with a manual
-    override of `_deletions_enabled` method.
+    override of ``_deletions_enabled`` method.
 
     Limitations:
     - Only detects direct calls: self._buffer.put((PythonConnectorEventType.DELETE, ...))
@@ -697,7 +697,7 @@ class _BaseConnectorObserver:
 
 class ConnectorObserver(_BaseConnectorObserver, ABC):
     """An abstract class for creating custom Python writers.
-    At least `on_change` method must be implemented.
+    At least ``on_change`` method must be implemented.
     Use with :py:func:`~pathway.io.python.write`.
     """
 
@@ -724,7 +724,7 @@ class ConnectorObserver(_BaseConnectorObserver, ABC):
 
 class AsyncConnectorObserver(_BaseConnectorObserver, ABC):
     """An abstract class for creating custom Python async writers.
-    At least `on_change` method must be implemented.
+    At least ``on_change`` method must be implemented.
     Use with :py:func:`~pathway.io.python.write`.
     """
 

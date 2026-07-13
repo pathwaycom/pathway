@@ -5,9 +5,8 @@ import os
 import subprocess
 import sys
 import textwrap
-import types as builtin_types
 import typing
-from typing import Any, Union, get_args, get_origin
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,6 +17,7 @@ from utils import (
     SimpleObject,
     _compare_input_and_output,
     _make_type_check_observer,
+    generate_pkey_item_schema_code,
 )
 
 import pathway as pw
@@ -82,81 +82,6 @@ _MSSQL_CDC_SCRIPT = textwrap.dedent(
             raise
     """
 )
-
-
-def _type_to_str(t: Any) -> str:
-    """Return a Python source expression for *t* suitable for exec'd schema code."""
-    if t is type(None):
-        return "None"
-    if t is typing.Any:
-        return "Any"
-    if t in (int, float, bool, str, bytes):
-        return t.__name__
-    if t is pw.Pointer:
-        return "pw.Pointer"
-    if t is pw.Json:
-        return "pw.Json"
-    if t is pw.Duration:
-        return "pw.Duration"
-    if t is pw.DateTimeNaive:
-        return "pw.DateTimeNaive"
-    if t is pw.DateTimeUtc:
-        return "pw.DateTimeUtc"
-
-    origin = get_origin(t)
-    args = get_args(t)
-
-    if origin is Union or (
-        hasattr(builtin_types, "UnionType") and isinstance(t, builtin_types.UnionType)
-    ):
-        return " | ".join(_type_to_str(a) for a in args)
-
-    if origin is list:
-        return f"list[{_type_to_str(args[0])}]"
-
-    if origin is tuple:
-        return f"tuple[{', '.join(_type_to_str(a) for a in args)}]"
-
-    if origin is np.ndarray:
-        dims_arg, scalar_arg = args
-        scalar_str = _type_to_str(scalar_arg)
-        if dims_arg is None:
-            return f"np.ndarray[None, {scalar_str}]"
-        return f"np.ndarray[{_type_to_str(dims_arg)}, {scalar_str}]"
-
-    # pw.PyObjectWrapper[X]
-    if origin is pw.PyObjectWrapper and args:
-        return f"pw.PyObjectWrapper[{args[0].__name__}]"
-
-    if hasattr(t, "__name__"):
-        return t.__name__
-    return repr(t)
-
-
-def _generate_schema_code(ItemType: Any) -> str:
-    """Return Python source that defines InputSchemaWithPkey for the given type."""
-    item_type_str = _type_to_str(ItemType)
-    lines = []
-    # Import inner class of PyObjectWrapper if it comes from utils
-    origin = get_origin(ItemType)
-    if origin is np.ndarray:
-        lines.append("import numpy as np")
-        lines.append("from typing import Any")
-    if origin is pw.PyObjectWrapper:
-        args = get_args(ItemType)
-        if args:
-            inner = args[0]
-            module = getattr(inner, "__module__", "builtins")
-            if not module.startswith(("builtins", "pathway")):
-                lines.append(f"from utils import {inner.__name__}")
-    if lines:
-        lines.append("")
-    lines += [
-        "class InputSchemaWithPkey(pw.Schema):",
-        "    pkey: int = pw.column_definition(primary_key=True)",
-        f"    item: {item_type_str}",
-    ]
-    return "\n".join(lines)
 
 
 def _start_mssql_cdc_worker(
@@ -406,7 +331,7 @@ def _test_mssql_streaming(
     proc = _start_mssql_cdc_worker(
         input_table_name,
         output_table_name,
-        _generate_schema_code(ItemType),
+        generate_pkey_item_schema_code(ItemType),
     )
 
     streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)

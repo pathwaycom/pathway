@@ -60,6 +60,7 @@ class GraphRunner:
         terminate_on_error: bool | None = None,
         max_expression_batch_size: int = 1024,
         event_loop: asyncio.AbstractEventLoop | None = None,
+        udf_cache_directory: str | None = None,
         _stacklevel: int = 1,
     ) -> None:
         pathway_config = get_pathway_config()
@@ -82,6 +83,7 @@ class GraphRunner:
         self.terminate_on_error = terminate_on_error
         self.max_expression_batch_size = max_expression_batch_size
         self.event_loop = event_loop
+        self.udf_cache_directory = udf_cache_directory
         if not self.terminate_on_error:
             warnings.warn(
                 "terminate_on_error=False mode is experimental",
@@ -222,6 +224,7 @@ class GraphRunner:
                             license_key=self.license_key,
                             terminate_on_error=self.terminate_on_error,
                             max_expression_batch_size=self.max_expression_batch_size,
+                            udf_cache_directory=self.udf_cache_directory,
                         )
                     except api.EngineErrorWithTrace as e:
                         error, frame = e.args

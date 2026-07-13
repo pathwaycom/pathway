@@ -179,6 +179,18 @@ impl WorkerPersistentStorage {
             ),
             TotalFrontier::Done => TotalFrontier::Done,
         };
+        // Never commit a threshold before this run's start: the normalization
+        // rounds down and could otherwise certify times produced by an earlier
+        // crashed run, whose half-uploaded snapshot leftovers would then be
+        // treated as committed state on the next recovery.
+        if let (TotalFrontier::At(timestamp), Some(run_start_timestamp)) = (
+            normalized_finalized_timestamp,
+            self.config.run_start_timestamp,
+        ) {
+            if timestamp < run_start_timestamp {
+                return Ok(());
+            }
+        }
         let timestamp_updated = normalized_finalized_timestamp != self.last_finalized_timestamp();
         if timestamp_updated {
             let mut commit_data =

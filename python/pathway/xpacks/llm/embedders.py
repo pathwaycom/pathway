@@ -12,7 +12,11 @@ import numpy as np
 import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm._utils import _coerce_sync, _extract_value_inside_dict
+from pathway.xpacks.llm._utils import (
+    _build_async_twelvelabs_client,
+    _coerce_sync,
+    _extract_value_inside_dict,
+)
 from pathway.xpacks.llm.constants import OPENAI_EMBEDDERS_MAX_TOKENS
 
 __all__ = [
@@ -21,6 +25,7 @@ __all__ = [
     "SentenceTransformerEmbedder",
     "GeminiEmbedder",
     "BedrockEmbedder",
+    "MarengoEmbedder",
 ]
 
 
@@ -118,7 +123,7 @@ class OpenAIEmbedder(BaseEmbedder):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: ID of the model to use. You can use the
@@ -132,10 +137,10 @@ class OpenAIEmbedder(BaseEmbedder):
             If set, only documents that are longer than model's supported context will be truncated.
             Can be ``"start"``, ``"end"`` or ``None``. ``"start"`` will keep the first part of the text
             and remove the rest. ``"end"`` will keep the last part of the text.
-            If `None`, no truncation will be applied to any of the documents, this may cause API exceptions.
+            If ``None``, no truncation will be applied to any of the documents, this may cause API exceptions.
         batch_size: maximum size of a single batch to be sent to the embedder. Bigger
             batches may reduce the time needed for embedding.
-        encoding_format: The format to return the embeddings in. Can be either `float` or
+        encoding_format: The format to return the embeddings in. Can be either ``float`` or
             `base64 <https://pypi.org/project/pybase64/>`_.
         user: A unique identifier representing your end-user, which can help OpenAI to monitor
             and detect abuse.
@@ -146,7 +151,7 @@ class OpenAIEmbedder(BaseEmbedder):
         timeout: Timeout for requests, in seconds
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None.
+    To specify the ``model`` in the UDF call, set it to ``None``.
 
     Example:
 
@@ -188,10 +193,14 @@ class OpenAIEmbedder(BaseEmbedder):
             import openai  # noqa:F401
 
         _monkeypatch_openai_async()
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
+        # are covered too — the client's own retries are disabled below.
+        executor = udfs.async_executor(capacity=capacity)
         super().__init__(
             executor=executor, cache_strategy=cache_strategy, max_batch_size=batch_size
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
         self.truncation_keep_strategy = truncation_keep_strategy
         self.kwargs = dict(openai_kwargs)
         self.api_key = self.kwargs.pop("api_key", None)
@@ -247,7 +256,9 @@ class OpenAIEmbedder(BaseEmbedder):
 
             async def embed_single(input, kwargs) -> np.ndarray:
                 kwargs = {**constant_kwargs, **kwargs}
-                ret = await self.client.embeddings.create(input=[input], **kwargs)  # type: ignore
+                ret = await self.retry_strategy.invoke(
+                    self.client.embeddings.create, input=[input], **kwargs  # type: ignore
+                )
                 return np.array(ret.data[0].embedding)
 
             list_of_per_row_kwargs = [
@@ -264,7 +275,9 @@ class OpenAIEmbedder(BaseEmbedder):
             return result_list
 
         else:
-            ret = await self.client.embeddings.create(input=inputs, **constant_kwargs)
+            ret = await self.retry_strategy.invoke(
+                self.client.embeddings.create, input=inputs, **constant_kwargs
+            )
             return [np.array(datum.embedding) for datum in ret.data]
 
     @staticmethod
@@ -326,7 +339,7 @@ class OpenAIEmbedder(BaseEmbedder):
 
 
 class LiteLLMEmbedder(BaseEmbedder):
-    """Pathway Live Data Framework wrapper for `litellm.embedding`.
+    """Pathway Live Data Framework wrapper for ``litellm.embedding``.
 
     Model has to be specified either in constructor call or in each application, no default
     is provided. The capacity, retry_strategy and cache_strategy need to be specified
@@ -339,7 +352,7 @@ class LiteLLMEmbedder(BaseEmbedder):
             Defaults to the `ExponentialRetryStrategy
             <https://pathway.com/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy>`_.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
         model: The embedding model to use.
@@ -354,7 +367,7 @@ class LiteLLMEmbedder(BaseEmbedder):
         custom_llm_provider: The custom llm provider.
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None.
+    To specify the ``model`` in the UDF call, set it to ``None``.
 
     Example:
 
@@ -394,11 +407,15 @@ class LiteLLMEmbedder(BaseEmbedder):
             import litellm  # noqa:F401
 
         _monkeypatch_openai_async()
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
+        # are covered too.
+        executor = udfs.async_executor(capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
         self.kwargs = dict(llmlite_kwargs)
         if model is not None:
             self.kwargs["model"] = model
@@ -415,7 +432,9 @@ class LiteLLMEmbedder(BaseEmbedder):
 
         kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
-        ret = await litellm.aembedding(input=[input or "."], **kwargs)
+        ret = await self.retry_strategy.invoke(
+            litellm.aembedding, input=[input or "."], **kwargs
+        )
         return np.array(ret.data[0]["embedding"])
 
 
@@ -473,7 +492,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
 
         Args:
             input: mandatory, the string to embed.
-            **kwargs: optional parameters for `encode` method. If unset defaults from the constructor
+            **kwargs: optional parameters for ``encode`` method. If unset defaults from the constructor
               will be taken. For possible arguments check
               `the Sentence-Transformers documentation
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
@@ -530,10 +549,11 @@ class GeminiEmbedder(BaseEmbedder):
         cache_strategy: Defines the caching mechanism. To enable caching,
             a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
-            for more information. Defaults to None.
+            for more information. Defaults to ``None``.
         model: ID of the model to use. Check the
             `Gemini documentation <https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding>`_
-            for list of available models. To specify the `model` in the UDF call, set it to None in the constructor.
+            for list of available models. To specify the ``model`` in the UDF call, set it
+            to ``None`` in the constructor.
         api_key: API key for Gemini API services. Can be provided in the constructor,
             in ``__call__`` or by setting ``GOOGLE_API_KEY`` environment variable
         gemini_kwargs: any other arguments accepted by gemini embedding service. Check
@@ -673,11 +693,15 @@ class BedrockEmbedder(BaseEmbedder):
         with optional_imports("xpack-llm"):
             import aioboto3  # noqa:F401
 
-        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        # Retries are applied inside `__wrapped__` rather than at the executor
+        # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
+        # are covered too.
+        executor = udfs.async_executor(capacity=capacity)
         super().__init__(
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
 
         self.kwargs = dict(bedrock_kwargs)
         if model_id is not None:
@@ -730,17 +754,20 @@ class BedrockEmbedder(BaseEmbedder):
             # Generic format - try Titan-style
             request_body = {"inputText": input}
 
-        async with self._session.client("bedrock-runtime") as client:
-            response = await client.invoke_model(
-                modelId=model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
+        # The client is recreated on each attempt: after a failure it may be
+        # left in a broken state, so the retry covers its creation as well.
+        async def _invoke_model():
+            async with self._session.client("bedrock-runtime") as client:
+                response = await client.invoke_model(
+                    modelId=model_id,
+                    body=json.dumps(request_body),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+                response_body = await response["body"].read()
+                return json.loads(response_body)
 
-            # Read and parse response
-            response_body = await response["body"].read()
-            result = json.loads(response_body)
+        result = await self.retry_strategy.invoke(_invoke_model)
 
         # Extract embedding based on model type
         if "titan" in model_id.lower():
@@ -753,3 +780,120 @@ class BedrockEmbedder(BaseEmbedder):
             embedding = result.get("embedding", result.get("embeddings", [[]])[0])
 
         return np.array(embedding)
+
+
+DEFAULT_MARENGO_MODEL = "marengo3.0"
+MARENGO_EMBEDDING_DIMENSION = 512
+
+
+class MarengoEmbedder(BaseEmbedder):
+    """Embed text using the TwelveLabs Marengo multimodal embedding model.
+
+    Marengo returns 512-dimensional embeddings in a shared multimodal space, so the
+    text it produces is directly comparable with image, audio and video embeddings
+    from the same model. This makes it a natural retriever embedder for pipelines
+    that index video with :class:`TwelveLabsVideoParser`.
+
+    Args:
+        model: Marengo model name. Defaults to ``"marengo3.0"``.
+        api_key: TwelveLabs API key. If ``None``, the SDK reads it from the
+            ``TWELVELABS_API_KEY`` environment variable.
+        capacity: Maximum number of concurrent requests to the TwelveLabs API.
+            Defaults to 16, which stays clear of the API rate limits; raise it
+            if your account allows more.
+        retry_strategy: Strategy for handling retries. Defaults to
+            :py:class:`~pathway.udfs.ExponentialBackoffRetryStrategy`.
+        cache_strategy: Pathway caching strategy. Defaults to ``None``. In
+            production consider ``pw.udfs.DiskCache()`` so restarts do not
+            re-embed all documents.
+        embedding_dimension: Dimension of the embeddings reported to index
+            factories without calling the API. Defaults to 512 (all current
+            Marengo models). Pass ``None`` to probe the API with a live request
+            instead.
+
+    Example:
+
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.embedders import MarengoEmbedder  # doctest: +SKIP
+    >>> embedder = MarengoEmbedder(cache_strategy=pw.udfs.DiskCache())  # doctest: +SKIP
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_MARENGO_MODEL,
+        api_key: str | None = None,
+        capacity: int | None = 16,
+        retry_strategy: (
+            udfs.AsyncRetryStrategy | None
+        ) = pw.udfs.ExponentialBackoffRetryStrategy(),
+        cache_strategy: udfs.CacheStrategy | None = None,
+        embedding_dimension: int | None = MARENGO_EMBEDDING_DIMENSION,
+    ):
+        # Retries are applied inside the per-request helpers rather than at the
+        # executor level, so that the setup-time dimension probe is covered too.
+        executor = udfs.async_executor(capacity=capacity)
+        # Marengo embeds one text per request, so keep batches at size 1.
+        super().__init__(
+            executor=executor, cache_strategy=cache_strategy, max_batch_size=1
+        )
+        self.retry_strategy = retry_strategy or pw.udfs.NoRetryStrategy()
+        self.model = model
+        self.embedding_dimension = embedding_dimension
+        self._api_key = api_key
+        self._aclient = None
+
+    @property
+    def aclient(self):
+        if self._aclient is None:
+            self._aclient = _build_async_twelvelabs_client(self._api_key)
+        return self._aclient
+
+    def get_embedding_dimension(self, **kwargs) -> int:
+        """Return the embedding dimension (512 for Marengo).
+
+        By default this returns the known dimension from ``embedding_dimension``
+        without any network call, so building the pipeline does not depend on
+        the TwelveLabs API being reachable. When the embedder is constructed
+        with ``embedding_dimension=None``, the dimension is probed with a single
+        request instead — a one-time, setup-time call, not on the per-document
+        hot path (the base implementation cannot be reused for the probe
+        because this embedder's ``__wrapped__`` takes a batch of strings, not a
+        single string).
+        """
+        if self.embedding_dimension is not None:
+            return self.embedding_dimension
+        return len(_coerce_sync(self._probe_embedding)())
+
+    async def _probe_embedding(self) -> np.ndarray:
+        # The setup-time probe runs in its own short-lived event loop (via
+        # `_coerce_sync`), so it uses a throwaway client: the cached `aclient`
+        # must only ever bind to the executor's loop used by the hot path.
+        client = _build_async_twelvelabs_client(self._api_key)
+        resp = await self.retry_strategy.invoke(
+            client.embed.create, model_name=self.model, text="."
+        )
+        return np.array(resp.text_embedding.segments[0].float_, dtype=np.float32)
+
+    async def _aembed_one(self, text: str) -> np.ndarray:
+        resp = await self.retry_strategy.invoke(
+            self.aclient.embed.create, model_name=self.model, text=text
+        )
+        vector = resp.text_embedding.segments[0].float_
+        return np.array(vector, dtype=np.float32)
+
+    async def __wrapped__(self, inputs: list[str], **kwargs) -> list[np.ndarray]:
+        """Embed the given texts with Marengo.
+
+        Marengo embeds one text per request, so the requests are issued
+        concurrently on the async TwelveLabs client (``AsyncTwelveLabs``) rather
+        than serially, keeping the embedding hot path non-blocking.
+
+        Args:
+            inputs: the strings to embed.
+
+        Returns:
+            A list of 512-dimensional ``numpy`` arrays, one per input string.
+        """
+
+        return list(await asyncio.gather(*[self._aembed_one(t) for t in inputs]))

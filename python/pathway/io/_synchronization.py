@@ -6,6 +6,7 @@ from pathway.internals.datasource import GenericDataSource
 from pathway.internals.expression import ColumnReference
 from pathway.internals.operator import InputOperator
 from pathway.internals.parse_graph import G
+from pathway.io._utils import DurationLike, as_duration_seconds
 
 _SUPPORTED_COLUMN_DTYPES = [
     dtype.INT,
@@ -46,12 +47,13 @@ class SynchronizedColumn:
         column: Reference to the column that will participate in synchronization.
         priority: The priority of this column when reading data. Defaults to ``0``.
         idle_duration: Optional duration after which an idle source is temporarily
-            excluded from the group.
+            excluded from the group. Given as a number of seconds or a
+            ``datetime.timedelta`` / ``pw.Duration``.
     """
 
     column: ColumnReference
     priority: int = 0
-    idle_duration: datetime.timedelta | None = None
+    idle_duration: DurationLike | None = None
 
 
 def register_input_synchronization_group(
@@ -255,6 +257,10 @@ def register_input_synchronization_group(
             column = synchronized_column.column
             priority = synchronized_column.priority
             idle_duration = synchronized_column.idle_duration
+            if idle_duration is not None:
+                idle_duration = datetime.timedelta(
+                    seconds=as_duration_seconds(idle_duration, "idle_duration")
+                )
 
         column_types.add(column._column.dtype)
         _check_column_type(column, max_difference)

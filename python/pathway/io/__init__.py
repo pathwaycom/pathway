@@ -54,7 +54,7 @@ from pathway.io._synchronization import (
     SynchronizedColumn,
     register_input_synchronization_group,
 )
-from pathway.io._utils import CsvParserSettings
+from pathway.io._utils import CsvParserSettings, DurationLike
 
 __all__ = [
     "airbyte",
@@ -63,6 +63,7 @@ __all__ = [
     "clickhouse",
     "csv",
     "CsvParserSettings",
+    "DurationLike",
     "debezium",
     "elasticsearch",
     "fs",

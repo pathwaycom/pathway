@@ -65,11 +65,11 @@ class LLMReranker:
     Args:
         llm: Chat instance to be called during reranking.
         prompt_template: str or Callable[[str, str], str] or pw.UDF. Template to be used for
-            generating prompt for the LLM. Defaults to `prompts.prompt_rerank`.
-            The prompt template should accept two arguments, `doc` and `query`. The prompt
+            generating prompt for the LLM. Defaults to ``prompts.prompt_rerank``.
+            The prompt template should accept two arguments, ``doc`` and ``query``. The prompt
             should ask the LLM to return jsonl with an attribute 'score'.
         response_parser: pw.UDF or Callable[[str], float]. Function to parse the response from the LLM.
-            Must take a string as input and return a float. Defaults to `prompts.parse_score_json`.
+            Must take a string as input and return a float. Defaults to ``prompts.parse_score_json``.
     Example:
 
     >>> import pathway as pw
@@ -169,7 +169,7 @@ class CrossEncoderReranker(pw.UDF):
     Args:
         model_name: Embedding model to be used.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
 
@@ -234,7 +234,7 @@ class EncoderReranker(pw.UDF):
     Args:
         model_name: Embedding model to be used.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
 

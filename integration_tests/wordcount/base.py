@@ -18,6 +18,7 @@ from azure.storage.blob import BlobServiceClient
 
 DEFAULT_INPUT_SIZE = 5000000
 COMMIT_LINE = "*COMMIT*\n"
+MAX_STREAMING_WAIT_SEC = 900
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
 AZURE_STORAGE_NAME = "azure"
@@ -91,6 +92,39 @@ class PStoragePath:
                 )
             else:
                 break
+
+
+def try_read_output_word_counts(output_path) -> dict[str, int] | None:
+    """Read the latest per-word counts from the output CSV.
+
+    Returns None if the file can't be interpreted yet, e.g. the header hasn't
+    been written. Rows that can't be parsed (e.g. the trailing line of a write
+    that is still in progress) are skipped: they will be re-read complete on
+    the next poll.
+    """
+    word_counts: dict[str, int] = {}
+    try:
+        with open(output_path) as f:
+            header = f.readline()
+            if not header.endswith("\n"):
+                return None
+            column_names = header.strip().replace('"', "").split(",")
+            try:
+                word_column_index = column_names.index("word")
+                count_column_index = column_names.index("count")
+            except ValueError:
+                return None
+            for row in f:
+                tokens = row.strip().replace('"', "").split(",")
+                try:
+                    word = tokens[word_column_index].strip('"')
+                    count = int(tokens[count_column_index])
+                except (IndexError, ValueError):
+                    continue
+                word_counts[word] = count
+    except FileNotFoundError:
+        return None
+    return word_counts
 
 
 def check_output_correctness(
@@ -225,6 +259,28 @@ def check_output_correctness(
     return input_word_counts == output_word_counts
 
 
+def get_pinned_cpu_list(n_cpus: int) -> str:
+    """CPU list for taskset, offset by the pytest-xdist worker index.
+
+    Every test pins its pathway processes to exactly `n_cpus` cores so that
+    the multi-worker configurations stay meaningful. The offset spreads
+    concurrently running tests over the machine: without it every parallel
+    xdist worker pins its pathway processes to the same cores 0..n_cpus-1,
+    where they serialize (a single core ends up time-slicing all the "1-1"
+    runs of the suite) while the rest of the machine stays idle. That both
+    inflates the suite duration and stretches every timing window the
+    harness relies on (output stability, static-mode wait).
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    try:
+        worker_id = int(worker.removeprefix("gw"))
+    except ValueError:
+        worker_id = 0
+    total_cpus = os.cpu_count() or n_cpus
+    start = worker_id * n_cpus
+    return ",".join(str((start + i) % total_cpus) for i in range(n_cpus))
+
+
 def start_pw_computation(
     *,
     n_threads,
@@ -243,7 +299,7 @@ def start_pw_computation(
         + f"--mode {mode} --pstorage-type {pstorage_type} --persistence_mode {persistence_mode}"
     )
     n_cpus = n_threads * n_processes
-    cpu_list = ",".join([str(x) for x in range(n_cpus)])
+    cpu_list = get_pinned_cpu_list(n_cpus)
     command = f"taskset --cpu-list {cpu_list} python {pw_wordcount_path}"
     run_args = command.split()
 
@@ -280,6 +336,7 @@ def get_pw_program_run_time(
     pstorage_type,
     persistence_mode,
     first_port,
+    expected_word_counts=None,
 ):
     needs_pw_program_launch = True
     n_retries = 0
@@ -314,7 +371,32 @@ def get_pw_program_run_time(
                     if time.time() - time_start > 180:
                         raise
                     continue
-                if modified_at > time_start and time.time() - modified_at > 60:
+
+                is_output_stable = (
+                    modified_at > time_start and time.time() - modified_at > 60
+                )
+
+                # The output being stable for a while is not enough to conclude
+                # that the computation has finished: the engine may legitimately
+                # stay silent for longer than the stability window, e.g. while it
+                # re-ingests a whole input file after a recovery — a single
+                # atomic block that produces no output until it's complete. When
+                # the expected counts are known, also require the output to
+                # converge to them before stopping the program.
+                if expected_word_counts is not None:
+                    has_converged = (
+                        try_read_output_word_counts(output_path) == expected_word_counts
+                    )
+                else:
+                    has_converged = True
+                timed_out = time.time() - time_start > MAX_STREAMING_WAIT_SEC
+                if timed_out and not has_converged:
+                    warnings.warn(
+                        "The output hasn't converged to the expected word counts "
+                        f"in {MAX_STREAMING_WAIT_SEC} seconds; "
+                        "stopping the program anyway"
+                    )
+                if (is_output_stable and has_converged) or timed_out:
                     for process_handle in process_handles:
                         process_handle.kill()
                     needs_polling = False
@@ -427,16 +509,19 @@ def generate_input(
     input_size: int,
     commit_frequency: int,
     dictionary: list[str],
-) -> None:
+) -> dict[str, int]:
+    word_counts: dict[str, int] = {}
     with open(file_name, "w") as fw:
         for seq_line_id in range(input_size):
             word = random.choice(dictionary)
+            word_counts[word] = word_counts.get(word, 0) + 1
             dataset_line_dict = {"word": word}
             dataset_line = json.dumps(dataset_line_dict)
             fw.write(dataset_line + "\n")
             if (seq_line_id + 1) % commit_frequency == 0:
                 # fw.write(COMMIT_LINE)
                 pass
+    return word_counts
 
 
 def generate_next_input(
@@ -445,17 +530,17 @@ def generate_next_input(
     input_size: int | None = None,
     dictionary: list[str] | None = None,
     commit_frequency: int | None = None,
-) -> str:
+) -> tuple[str, dict[str, int]]:
     file_name = os.path.join(inputs_path, str(time.time()))
 
-    generate_input(
+    word_counts = generate_input(
         file_name=file_name,
         input_size=input_size or DEFAULT_INPUT_SIZE,
         commit_frequency=commit_frequency or 100000,
         dictionary=dictionary or DICTIONARY,
     )
 
-    return file_name
+    return file_name, word_counts
 
 
 def do_test_persistent_wordcount(
@@ -474,9 +559,12 @@ def do_test_persistent_wordcount(
 
     with PStoragePath(pstorage_type, tmp_path) as pstorage_path:
         reset_runtime(inputs_path, output_path, pstorage_path, pstorage_type)
+        expected_word_counts: dict[str, int] = {}
         for n_run in range(n_backfilling_runs):
             print(f"Run {n_run}: generating input")
-            latest_input_name = generate_next_input(inputs_path)
+            latest_input_name, input_word_counts = generate_next_input(inputs_path)
+            for word, count in input_word_counts.items():
+                expected_word_counts[word] = expected_word_counts.get(word, 0) + count
 
             print(f"Run {n_run}: running pathway program")
             elapsed = get_pw_program_run_time(
@@ -489,6 +577,7 @@ def do_test_persistent_wordcount(
                 pstorage_type=pstorage_type,
                 persistence_mode=persistence_mode,
                 first_port=first_port,
+                expected_word_counts=expected_word_counts,
             )
             print(f"Run {n_run}: pathway time elapsed {elapsed}")
 

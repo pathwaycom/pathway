@@ -105,13 +105,10 @@ pub struct Connector {
     // timestamp, so all parallel readers agree on one minibatch for the initial
     // snapshot (see `advance_time` / the `FinishedSource` handling).
     timestamp_at_start: Timestamp,
-    // Whether the start-up batch must be coordinated across readers. This is only
-    // meaningful when several readers run in parallel (each on its own wall clock):
-    // they must agree on the boundary of the initial snapshot. With a single reader
-    // there is nothing to coordinate, so we keep the plain wall-clock behavior —
-    // crucially, this is also the case whenever persistence is enabled, where the
-    // read always runs on one worker and recovery must stay byte-for-byte identical
-    // to the long-standing single-reader path.
+    // True when the start-up batch must be kept at the shared
+    // `timestamp_at_start` until the auto-commit timer / source completion:
+    // set upfront for parallel readers of one source, and turned on after
+    // persistence recovery for single readers (see `RewindFinishSentinel`).
     coordinate_startup_batch: bool,
     num_columns: usize,
     current_frontier: OffsetAntichain,
@@ -488,6 +485,12 @@ impl Connector {
                     consecutive_errors += 1;
                     if consecutive_errors > reader.max_allowed_consecutive_errors() {
                         error_reporter.report(EngineError::ReaderFailed(Box::new(error)));
+                        // The reported error takes the whole pipeline down, and
+                        // the error path of the run never joins connector
+                        // threads — without this `break` the thread outlives
+                        // the run, retrying and logging the same error forever
+                        // in the host process.
+                        break;
                     }
                     // Pause before the loop retries `read()`, growing the delay
                     // while errors persist (see `error_backoff` above).
@@ -884,21 +887,14 @@ impl Connector {
                 ReadResult::Finished => {}
                 ReadResult::FinishedSource { commit_possibility } => {
                     *commit_allowed = commit_possibility.commit_allowed();
-                    // With several parallel readers, keep the start-up batch
-                    // together: while we are still at the shared `timestamp_at_start`,
-                    // don't let per-file wall-clock advances split the initial
-                    // snapshot across minibatches. Otherwise parallel readers, each
-                    // advancing on their own wall clock, would disagree on the
-                    // boundary and expose stateful operators (e.g. `iterate`) to
-                    // partial input. The batch is closed instead by the auto-commit
-                    // timer / source completion. Forced commits (synchronization
-                    // groups) still advance.
-                    //
-                    // With a single reader (always the case under persistence) there
-                    // is nothing to coordinate, so we keep the original wall-clock
-                    // behavior to leave the persisted recovery path unchanged.
+                    // Don't split the coordinated start-up batch on per-file
+                    // wall-clock advances: it is closed by the auto-commit timer,
+                    // `*COMMIT*` messages, forced commits or source completion.
+                    // Without an auto-commit timer a streaming source might have
+                    // none of these, so there we do let `FinishedSource` close it.
                     let in_startup_batch = self.coordinate_startup_batch
-                        && self.current_timestamp <= self.timestamp_at_start;
+                        && self.current_timestamp <= self.timestamp_at_start
+                        && self.commit_duration.is_some();
                     let commit_needed = commit_possibility.commit_forced()
                         || (!in_startup_batch && self.has_clock_advanced());
                     if *commit_allowed && commit_needed {
@@ -951,28 +947,22 @@ impl Connector {
                 self.current_frontier = restored_frontier;
 
                 if needs_time_advancement {
-                    if self.coordinate_startup_batch {
-                        // Advance to the shared `timestamp_at_start` (not each
-                        // worker's own wall clock), so every parallel reader opens
-                        // the start-up batch at the very same timestamp.
-                        let target = self.timestamp_at_start;
-                        let time_advanced = self.advance_time_to(ctx.input_session, target);
-                        ctx.connector_monitor.borrow_mut().commit();
-                        if let Some(snapshot_writer) = ctx.snapshot_writer {
-                            snapshot_writer
-                                .lock()
-                                .unwrap()
-                                .write(&SnapshotEvent::AdvanceTime(
-                                    time_advanced,
-                                    self.current_frontier.clone(),
-                                ));
-                        }
-                    } else {
-                        // Single reader (always the case under persistence): keep the
-                        // original wall-clock advancement so the persisted recovery
-                        // path is unchanged.
-                        let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                        self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
+                    // Open the start-up batch at the shared `timestamp_at_start`,
+                    // so every source sees post-recovery data at one timestamp —
+                    // otherwise cross-source operators (ix, join with id=...)
+                    // hit spurious "key missing" errors on restart.
+                    self.coordinate_startup_batch = true;
+                    let target = self.timestamp_at_start;
+                    let time_advanced = self.advance_time_to(ctx.input_session, target);
+                    ctx.connector_monitor.borrow_mut().commit();
+                    if let Some(snapshot_writer) = ctx.snapshot_writer {
+                        snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&SnapshotEvent::AdvanceTime(
+                                time_advanced,
+                                self.current_frontier.clone(),
+                            ));
                     }
                 }
                 info!(

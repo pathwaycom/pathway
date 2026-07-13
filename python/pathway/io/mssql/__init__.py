@@ -25,7 +25,7 @@ from pathway.schema import schema_builder
 
 def _validate_identifier(arg_name: str, value: str) -> None:
     """Reject empty / NUL-containing identifiers up-front so users see a
-    clear `ValueError` at call time instead of an opaque SQL Server parse
+    clear ``ValueError`` at call time instead of an opaque SQL Server parse
     error (`[]` is not a legal bracket-quoted identifier; embedded NUL
     bytes corrupt the TDS stream).
     """

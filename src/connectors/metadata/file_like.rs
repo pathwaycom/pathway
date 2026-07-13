@@ -1,6 +1,7 @@
 // Copyright © 2026 Pathway
 
 use log::error;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,10 +82,90 @@ impl FileLikeMetadata {
     }
 
     /// Checks if file contents could have been changed.
+    ///
+    /// `ScannerTag` and `OwnerInterner::is_changed` mirror exactly the fields
+    /// compared here. If this method changes, they must be updated in sync.
     pub fn is_changed(&self, other: &FileLikeMetadata) -> bool {
         self.modified_at != other.modified_at
             || self.size != other.size
             || self.owner != other.owner
+    }
+}
+
+/// A compact digest of `FileLikeMetadata` holding only the fields that
+/// `FileLikeMetadata::is_changed` compares. The posix-like scanners keep one
+/// tag per watched object in RAM, so it must stay small and heap-free: the
+/// owner string is replaced by an id interned in `OwnerInterner`, and the
+/// optional modification time is manually unpacked into a value plus a
+/// `has_mtime` flag — `Option<u64>` has no niche and would inflate the
+/// struct from 24 to 32 bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScannerTag {
+    modified_at: u64, // Meaningful only when `has_mtime`; 0 otherwise.
+    size: u64,
+    owner_id: u32,
+    has_mtime: bool,
+}
+
+// The tag is held once per watched object of the scanned corpora, multiplied
+// by the hash map load factor, so every byte counts. If a new field makes it
+// legitimately larger, update this assertion consciously.
+const _: () = assert!(std::mem::size_of::<ScannerTag>() == 24);
+
+impl ScannerTag {
+    fn modified_at(&self) -> Option<u64> {
+        self.has_mtime.then_some(self.modified_at)
+    }
+}
+
+const NO_OWNER_ID: u32 = 0;
+
+/// Maps owner strings to compact ids for `ScannerTag`. A corpus typically has
+/// only a handful of distinct owners, so the side table stays tiny. Ids are
+/// never reused: entries are kept even after the last object of an owner is
+/// gone.
+#[derive(Debug, Default)]
+pub struct OwnerInterner {
+    owner_ids: HashMap<String, u32>,
+}
+
+impl OwnerInterner {
+    /// Builds the in-RAM tag for a metadata entry, interning its owner.
+    pub fn tag(&mut self, metadata: &FileLikeMetadata) -> ScannerTag {
+        ScannerTag {
+            modified_at: metadata.modified_at.unwrap_or(0),
+            has_mtime: metadata.modified_at.is_some(),
+            size: metadata.size,
+            owner_id: self.intern_owner(metadata.owner.as_deref()),
+        }
+    }
+
+    /// Mirrors `FileLikeMetadata::is_changed` for a stored tag and the actual
+    /// metadata of the object. An owner that was never interned can't be equal
+    /// to any stored owner, hence it always compares as changed.
+    pub fn is_changed(&self, stored: &ScannerTag, actual: &FileLikeMetadata) -> bool {
+        stored.modified_at() != actual.modified_at
+            || stored.size != actual.size
+            || self.lookup_owner(actual.owner.as_deref()) != Some(stored.owner_id)
+    }
+
+    fn intern_owner(&mut self, owner: Option<&str>) -> u32 {
+        let Some(owner) = owner else {
+            return NO_OWNER_ID;
+        };
+        if let Some(id) = self.owner_ids.get(owner) {
+            return *id;
+        }
+        let id = u32::try_from(self.owner_ids.len() + 1).expect("too many distinct owners");
+        self.owner_ids.insert(owner.to_string(), id);
+        id
+    }
+
+    fn lookup_owner(&self, owner: Option<&str>) -> Option<u32> {
+        match owner {
+            None => Some(NO_OWNER_ID),
+            Some(owner) => self.owner_ids.get(owner).copied(),
+        }
     }
 }
 
@@ -100,8 +181,19 @@ mod file_owner {
     use crate::retry::{execute_with_retries, RetryConfig};
 
     const ERROR_THROTTLE_INTERVAL_PER_UID: Duration = Duration::from_mins(1);
+
+    // NSS configuration can change at runtime (e.g. sssd coming up), so a
+    // "UID not found" answer is only cached for a limited time. Positive
+    // entries are kept forever.
+    const NEGATIVE_CACHE_TTL: Duration = Duration::from_mins(1);
+
+    enum CachedResolution {
+        Found(String),
+        NotFound(Instant),
+    }
+
     thread_local! {
-        static UID_USER_CACHE: RefCell<HashMap<u32, String>> = RefCell::new(HashMap::new());
+        static UID_USER_CACHE: RefCell<HashMap<u32, CachedResolution>> = RefCell::new(HashMap::new());
         static LAST_ERROR_REPORTED_AT: RefCell<HashMap<u32, Instant>> = RefCell::new(HashMap::new());
     }
 
@@ -120,44 +212,133 @@ mod file_owner {
         });
     }
 
-    fn cache_user_name(uid: u32, user_name: String) {
+    fn cache_resolution(uid: u32, resolution: CachedResolution) {
         UID_USER_CACHE.with(|cache| {
-            cache.borrow_mut().insert(uid, user_name);
+            cache.borrow_mut().insert(uid, resolution);
         });
     }
 
-    fn get_cached_user_name(uid: u32) -> Option<String> {
-        UID_USER_CACHE.with(|cache| cache.borrow().get(&uid).cloned())
+    /// Returns the still-valid cached entry for the UID, if any. Expired
+    /// negative entries are evicted and reported as a cache miss.
+    fn get_cached_resolution(uid: u32) -> Option<CachedResolution> {
+        UID_USER_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            match cache.get(&uid) {
+                Some(CachedResolution::Found(name)) => Some(CachedResolution::Found(name.clone())),
+                Some(CachedResolution::NotFound(cached_at)) => {
+                    if cached_at.elapsed() < NEGATIVE_CACHE_TTL {
+                        Some(CachedResolution::NotFound(*cached_at))
+                    } else {
+                        cache.remove(&uid);
+                        None
+                    }
+                }
+                None => None,
+            }
+        })
+    }
+
+    fn get_owner_impl(
+        uid: u32,
+        resolve: impl FnMut() -> nix::Result<Option<String>>,
+    ) -> Option<String> {
+        match get_cached_resolution(uid) {
+            Some(CachedResolution::Found(name)) => return Some(name),
+            Some(CachedResolution::NotFound(_)) => return None,
+            None => {}
+        }
+
+        // Retries handle transient resolver errors (EINTR/EAGAIN/NSS
+        // hiccups); a clean "not found" is `Ok(None)` and returns from
+        // `execute_with_retries` immediately, without retry sleeps.
+        let user = execute_with_retries(
+            resolve,
+            RetryConfig::new(Duration::from_millis(50), 1.5, Duration::from_millis(10)),
+            5,
+        );
+        match user {
+            Ok(Some(name)) => {
+                cache_resolution(uid, CachedResolution::Found(name.clone()));
+                Some(name)
+            }
+            Ok(None) => {
+                cache_resolution(uid, CachedResolution::NotFound(Instant::now()));
+                if need_to_report_error(uid) {
+                    warn!("UID {uid} not found in system user database");
+                    mark_error_reported(uid);
+                }
+                None
+            }
+            Err(err) => {
+                // Errors are transient by assumption and aren't cached.
+                if need_to_report_error(uid) {
+                    error!("Failed to resolve user name for UID {uid}: {err}");
+                    mark_error_reported(uid);
+                }
+                None
+            }
+        }
     }
 
     pub fn get_owner(metadata: &std::fs::Metadata) -> Option<String> {
         let uid = metadata.uid();
+        get_owner_impl(
+            uid,
+            || Ok(User::from_uid(uid.into())?.map(|user| user.name)),
+        )
+    }
 
-        if let Some(cached_user_name) = get_cached_user_name(uid) {
-            return Some(cached_user_name);
-        }
+    #[cfg(test)]
+    mod tests {
+        use super::{get_owner_impl, ERROR_THROTTLE_INTERVAL_PER_UID, NEGATIVE_CACHE_TTL};
 
-        let user = execute_with_retries(
-            || User::from_uid(uid.into()),
-            RetryConfig::new(Duration::from_millis(50), 1.5, Duration::from_millis(10)),
-            5,
-        );
-        if let Ok(Some(user)) = user {
-            let name = user.name.clone();
-            cache_user_name(uid, name.clone());
-            return Some(name);
-        }
+        // Caches are thread-local and each test runs on its own thread, but
+        // distinct UIDs keep the tests independent regardless of the runner.
+        const UNMAPPED_UID: u32 = 3_000_000_001;
+        const MAPPED_UID: u32 = 3_000_000_002;
+        const FAILING_UID: u32 = 3_000_000_003;
 
-        if need_to_report_error(uid) {
-            match user {
-                Ok(None) => warn!("UID {uid} not found in system user database"),
-                Err(err) => error!("Failed to resolve user name for UID {uid}: {err}"),
-                Ok(Some(_)) => unreachable!(),
+        #[test]
+        fn test_unmapped_uid_is_resolved_once_per_ttl() {
+            assert!(NEGATIVE_CACHE_TTL <= ERROR_THROTTLE_INTERVAL_PER_UID);
+            let mut resolver_calls = 0;
+            for _ in 0..100 {
+                let owner = get_owner_impl(UNMAPPED_UID, || {
+                    resolver_calls += 1;
+                    Ok(None)
+                });
+                assert_eq!(owner, None);
             }
-            mark_error_reported(uid);
+            assert_eq!(resolver_calls, 1);
         }
 
-        None
+        #[test]
+        fn test_mapped_uid_is_resolved_once_and_cached() {
+            let mut resolver_calls = 0;
+            for _ in 0..100 {
+                let owner = get_owner_impl(MAPPED_UID, || {
+                    resolver_calls += 1;
+                    Ok(Some("pathway".to_string()))
+                });
+                assert_eq!(owner, Some("pathway".to_string()));
+            }
+            assert_eq!(resolver_calls, 1);
+        }
+
+        #[test]
+        fn test_resolver_errors_are_retried_and_not_cached() {
+            let mut resolver_calls = 0;
+            let owner = get_owner_impl(FAILING_UID, || {
+                resolver_calls += 1;
+                Err(nix::errno::Errno::EAGAIN)
+            });
+            assert_eq!(owner, None);
+            assert_eq!(resolver_calls, 6); // the initial attempt + 5 retries
+
+            // A subsequent successful resolution isn't shadowed by the failure.
+            let owner = get_owner_impl(FAILING_UID, || Ok(Some("pathway".to_string())));
+            assert_eq!(owner, Some("pathway".to_string()));
+        }
     }
 }
 
@@ -172,4 +353,62 @@ fn metadata_time_to_unix_timestamp(timestamp: Option<SystemTime>) -> Option<u64>
     timestamp
         .and_then(|timestamp| timestamp.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata(modified_at: Option<u64>, size: u64, owner: Option<&str>) -> FileLikeMetadata {
+        FileLikeMetadata {
+            created_at: None,
+            modified_at,
+            owner: owner.map(String::from),
+            path: "/data/file.txt".to_string(),
+            size,
+            seen_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_scanner_tag_mirrors_is_changed() {
+        let mut interner = OwnerInterner::default();
+        let cases = [
+            metadata(Some(10), 4, Some("alice")),
+            metadata(Some(10), 4, Some("bob")),
+            metadata(Some(10), 4, None),
+            metadata(Some(11), 4, Some("alice")),
+            metadata(Some(10), 5, Some("alice")),
+            metadata(None, 4, Some("alice")),
+            // `Some(0)` must stay distinct from `None`: the tag stores the
+            // missing modification time as 0 plus a separate flag.
+            metadata(Some(0), 4, Some("alice")),
+        ];
+        let tags: Vec<_> = cases.iter().map(|m| interner.tag(m)).collect();
+        for (stored, tag) in cases.iter().zip(&tags) {
+            for actual in &cases {
+                assert_eq!(
+                    interner.is_changed(tag, actual),
+                    stored.is_changed(actual),
+                    "tag comparison diverged from FileLikeMetadata::is_changed for {stored:?} vs {actual:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_scanner_tag_unknown_owner_counts_as_changed() {
+        let mut interner = OwnerInterner::default();
+        let stored = metadata(Some(10), 4, Some("alice"));
+        let tag = interner.tag(&stored);
+        // An owner string never seen by the interner can't match any stored id.
+        assert!(interner.is_changed(&tag, &metadata(Some(10), 4, Some("charlie"))));
+        assert!(interner.is_changed(&tag, &metadata(Some(10), 4, None)));
+        assert!(!interner.is_changed(&tag, &metadata(Some(10), 4, Some("alice"))));
+
+        let stored_ownerless = metadata(Some(10), 4, None);
+        let tag_ownerless = interner.tag(&stored_ownerless);
+        assert!(interner.is_changed(&tag_ownerless, &metadata(Some(10), 4, Some("charlie"))));
+        assert!(!interner.is_changed(&tag_ownerless, &metadata(Some(10), 4, None)));
+    }
 }

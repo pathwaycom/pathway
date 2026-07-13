@@ -28,6 +28,8 @@ from pathway.io._utils import (
     STATUS_DOWNLOADED,
     STATUS_SIZE_LIMIT_EXCEEDED,
     STATUS_SYMLINKS_NOT_SUPPORTED,
+    DurationLike,
+    as_duration_seconds,
 )
 from pathway.io.python import ConnectorSubject
 
@@ -425,7 +427,7 @@ class _GDriveTree:
 class _GDriveSubject(ConnectorSubject):
     _credentials_factory: Callable[[], ServiceCredentials]
     _root: str
-    _refresh_interval: int
+    _refresh_interval: float
     _mode: str
     _only_metadata: bool
     _append_metadata: bool
@@ -437,7 +439,7 @@ class _GDriveSubject(ConnectorSubject):
         *,
         credentials_factory: Callable[[], ServiceCredentials],
         root: str,
-        refresh_interval: int,
+        refresh_interval: float,
         mode: str,
         only_metadata: bool,
         with_metadata: bool,
@@ -520,7 +522,7 @@ def read(
     mode: Literal["streaming", "static"] = "streaming",
     format: Literal["binary", "only_metadata"] = "binary",
     object_size_limit: int | None = None,
-    refresh_interval: int = 30,
+    refresh_interval: DurationLike = 30,
     service_user_credentials_file: str | PathLike,
     with_metadata: bool = False,
     file_name_pattern: list | str | None = None,
@@ -553,7 +555,8 @@ def read(
             column with the objects' metadata, without downloading the objects themselves.
         object_size_limit: Maximum size (in bytes) of a file that will be processed by
             this connector or ``None`` if no filtering by size should be made;
-        refresh_interval: time in seconds between scans. Applicable if mode is set to ``"streaming"``.
+        refresh_interval: time between scans, given as a number of seconds or a
+            ``datetime.timedelta`` / ``pw.Duration``. Applicable if mode is set to ``"streaming"``.
         service_user_credentials_file: Google API service user json file. Please follow the instructions
             provided in the `developer's user guide
             <https://pathway.com/developers/user-guide/connect/connectors/gdrive-connector/#setting-up-google-drive>`_
@@ -600,7 +603,7 @@ def read(
     subject = _GDriveSubject(
         credentials_factory=credentials_factory,
         root=object_id,
-        refresh_interval=refresh_interval,
+        refresh_interval=as_duration_seconds(refresh_interval, "refresh_interval"),
         mode=mode,
         only_metadata=only_provide_metadata,
         with_metadata=with_metadata or only_provide_metadata,

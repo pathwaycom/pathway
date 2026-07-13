@@ -6,7 +6,7 @@ use std::ops::ControlFlow;
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::input::InputSession;
@@ -94,6 +94,10 @@ where
         &self,
         collection: PersistableCollection<S>,
     ) -> PersistableCollection<S>;
+    /// The complement of `filter_out_persisted`: keep only the entries loaded
+    /// from persistence (T=0). Empty result when persistence is disabled.
+    fn keep_only_persisted(&self, collection: PersistableCollection<S>)
+        -> PersistableCollection<S>;
     fn maybe_persist_with_logic(
         &self,
         collection: Collection<S, (Key, Value), isize>,
@@ -109,6 +113,10 @@ where
         Option<std::thread::JoinHandle<()>>,
     )>;
     fn next_state_id(&mut self) -> u64;
+    /// Separate counter for iterate's extra-table snapshots: consuming ids from
+    /// `next_state_id` would shift the persistent ids of every operator built
+    /// after an iterate, orphaning snapshots of pre-existing deployments.
+    fn next_extra_state_id(&mut self) -> u64;
 }
 
 pub struct EmptyPersistenceWrapper;
@@ -145,7 +153,18 @@ where
         collection
     }
 
+    fn keep_only_persisted(
+        &self,
+        collection: PersistableCollection<S>,
+    ) -> PersistableCollection<S> {
+        generic_keep_nothing(collection)
+    }
+
     fn next_state_id(&mut self) -> u64 {
+        0
+    }
+
+    fn next_extra_state_id(&mut self) -> u64 {
         0
     }
 
@@ -342,10 +361,102 @@ impl_conversion!(
     isize
 );
 
+/// Dispatch a `PersistableCollection` to a per-variant callee — either a free
+/// helper (`helper(&c)`) or a method (`self.method(&c, args…)`) — so the
+/// per-variant match is written once.
+macro_rules! dispatch_persistable_collection {
+    (@call $c:ident, $helper:ident) => {
+        $helper(&$c)
+    };
+    (@call $c:ident, $self:ident.$method:ident($($arg:expr),*)) => {
+        $self.$method(&$c, $($arg),*)
+    };
+    ($collection:expr, $($callee:tt)+) => {
+        match $collection {
+            PersistableCollection::KeyValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyIntSumState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyFloatSumState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyArraySumState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyMinState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyMaxState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyArgMinState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyArgMaxState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyAnyState(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionOrderderFloatIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionValueKeyIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionVecValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionVecOptionValueKeyValue(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionKeyValue(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::SortingCellIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyMaybeUpdateIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyKeyIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyKeyValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyIsizeIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyKeyValueKeyValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyVecValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyTupleIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+            PersistableCollection::KeyOptionValueValueIsize(c) => {
+                dispatch_persistable_collection!(@call c, $($callee)+)
+            }
+        }
+    };
+}
+
 pub struct TimestampBasedPersistenceWrapper {
     persistence_config: PersistenceManagerConfig,
     worker_persistent_storage: SharedWorkerPersistentStorage,
     persisted_states_count: u64,
+    extra_states_count: u64,
 }
 
 impl TimestampBasedPersistenceWrapper {
@@ -357,6 +468,7 @@ impl TimestampBasedPersistenceWrapper {
             persistence_config,
             worker_persistent_storage,
             persisted_states_count: 0,
+            extra_states_count: 0,
         })
     }
 
@@ -382,6 +494,39 @@ impl TimestampBasedPersistenceWrapper {
         let (result, poller, thread_handle) = collection.persist_named(name, reader, writer);
         Ok((result.into(), Some(poller), Some(thread_handle)))
     }
+}
+
+fn generic_empty<S, D, R>(collection: &Collection<S, D, R>) -> PersistableCollection<S>
+where
+    S: MaybeTotalScope,
+    D: ExchangeData + Shard,
+    R: ExchangeData + Semigroup,
+    Collection<S, D, R>: Into<PersistableCollection<S>>,
+{
+    collection.inner.filter(|_| false).as_collection().into()
+}
+
+fn generic_keep_nothing<S>(collection: PersistableCollection<S>) -> PersistableCollection<S>
+where
+    S: MaybeTotalScope,
+{
+    dispatch_persistable_collection!(collection, generic_empty)
+}
+
+fn generic_keep_only_persisted<S, D, R>(
+    collection: &Collection<S, D, R>,
+) -> PersistableCollection<S>
+where
+    S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
+    D: ExchangeData + Shard,
+    R: ExchangeData + Semigroup,
+    Collection<S, D, R>: Into<PersistableCollection<S>>,
+{
+    collection
+        .inner
+        .filter(|(_data, time, _diff)| time.is_from_persistence())
+        .as_collection()
+        .into()
 }
 
 fn generic_filter_out_persisted<S, D, R>(
@@ -421,166 +566,24 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
         Option<Poller>,
         Option<std::thread::JoinHandle<()>>,
     )> {
-        match collection {
-            PersistableCollection::KeyValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyIntSumState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyFloatSumState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyArraySumState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyMinState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyMaxState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyArgMinState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyArgMaxState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyAnyState(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionOrderderFloatIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionValueKeyIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionVecValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionVecOptionValueKeyValue(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionKeyValue(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::SortingCellIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyMaybeUpdateIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyKeyIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyKeyValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyIsizeIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyKeyValueKeyValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyVecValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyTupleIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-            PersistableCollection::KeyOptionValueValueIsize(collection) => {
-                self.generic_maybe_persist(&collection, name, persistent_id)
-            }
-        }
+        dispatch_persistable_collection!(
+            collection,
+            self.generic_maybe_persist(name, persistent_id)
+        )
     }
 
     fn filter_out_persisted(
         &self,
         collection: PersistableCollection<S>,
     ) -> PersistableCollection<S> {
-        match collection {
-            PersistableCollection::KeyValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyIntSumState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyFloatSumState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyArraySumState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyMinState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyMaxState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyArgMinState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyArgMaxState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyAnyState(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionOrderderFloatIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionValueKeyIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionVecValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionVecOptionValueKeyValue(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionKeyValue(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::SortingCellIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyMaybeUpdateIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyKeyIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyKeyValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyIsizeIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyKeyValueKeyValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyVecValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyTupleIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-            PersistableCollection::KeyOptionValueValueIsize(collection) => {
-                generic_filter_out_persisted(&collection)
-            }
-        }
+        dispatch_persistable_collection!(collection, generic_filter_out_persisted)
+    }
+
+    fn keep_only_persisted(
+        &self,
+        collection: PersistableCollection<S>,
+    ) -> PersistableCollection<S> {
+        dispatch_persistable_collection!(collection, generic_keep_only_persisted)
     }
 
     fn maybe_persist_with_logic(
@@ -618,6 +621,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             &processed,
             &format!("Persist: {name}"),
             writer,
+            None,
             move |(key, value)| (key, purge(value)),
         );
         Ok((collection_after_saving, Some(poller), Some(thread_handle)))
@@ -626,6 +630,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
     fn next_state_id(&mut self) -> u64 {
         self.persisted_states_count += 1;
         self.persisted_states_count
+    }
+
+    fn next_extra_state_id(&mut self) -> u64 {
+        self.extra_states_count += 1;
+        self.extra_states_count
     }
 }
 
@@ -736,10 +745,14 @@ where
     (state, poller, thread_handle)
 }
 
+/// `test_write_delay` is a test-only chaos hook: it delays handing data over
+/// to the snapshot writer, to regression-test that checkpoint commits wait
+/// for off-datapath persisted streams (see `gate_persistence_commit_on_stream`).
 pub(super) fn persist_state<S, D, R>(
     collection: &Collection<S, D, R>,
     name: &str,
     writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
+    test_write_delay: Option<Duration>,
     purge: impl Fn(D) -> D + 'static,
 ) -> Collection<S, D, R>
 where
@@ -749,9 +762,12 @@ where
     R: ExchangeData + Semigroup,
 {
     let exchange = Exchange::new(move |(data, _time, _diff): &(D, S::Timestamp, R)| data.shard());
+    let scope_for_activator = collection.scope();
     collection
         .inner
-        .unary_frontier(exchange, name, |_capability, _info| {
+        .unary_frontier(exchange, name, move |_capability, info| {
+            let activator = scope_for_activator.activator_for(&info.address[..]);
+            let mut delay_until: Option<Instant> = None;
             // The opreator streams input to output.
             // It holds capabilities, only drop them if the input frontier advances.
             // Without holding the capabities, frontier can advance in output connectors
@@ -789,6 +805,21 @@ where
                         capabilities.push(Reverse(CapabilityOrdWrapper(capability.delayed(time))));
                     }
                 });
+
+                // Test-only chaos hook: postpone the write (and the capability
+                // release below) to open the race window between this operator
+                // and the sink-driven checkpoint commit. Re-armed per batch.
+                if let Some(delay) = test_write_delay {
+                    if !times_in_data.is_empty() {
+                        let now = Instant::now();
+                        let until = *delay_until.get_or_insert(now + delay);
+                        if now < until {
+                            activator.activate_after(until - now);
+                            return;
+                        }
+                        delay_until = None;
+                    }
+                }
 
                 let mut writer_local = writer.lock().unwrap();
                 while !times_in_data.is_empty() {
@@ -853,7 +884,9 @@ where
             .filter(|(_data, time, _diff)| !time.is_from_persistence())
             .as_collection();
         let collection_after_saving =
-            persist_state(&filtered_self.concat(&state), name, writer, |data| data);
+            persist_state(&filtered_self.concat(&state), name, writer, None, |data| {
+                data
+            });
         (collection_after_saving, poller, thread_handle)
     }
 }
@@ -940,10 +973,13 @@ where
                     logic(state, new)
                 }
             });
-        let collection_after_saving =
-            persist_state(&reduced, &format!("Persist: {name}"), writer, |key_state| {
-                key_state
-            });
+        let collection_after_saving = persist_state(
+            &reduced,
+            &format!("Persist: {name}"),
+            writer,
+            None,
+            |key_state| key_state,
+        );
         (collection_after_saving, poller, thread_handle)
     }
 }

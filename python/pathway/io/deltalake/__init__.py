@@ -26,8 +26,10 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     SNAPSHOT_OUTPUT_TABLE_TYPE,
+    DurationLike,
     _get_unique_name,
     _prepare_s3_connection_settings,
+    as_duration_seconds,
     internal_connector_mode,
     read_schema,
 )
@@ -114,11 +116,14 @@ class TableOptimizer:
             that defines how values in the tracked column are interpreted.
         quick_access_window: All partition values older than this window
             will be compressed using the ``OPTIMIZE`` Delta Lake operation, followed by
-            ``VACUUM``.
+            ``VACUUM``. Given as a number of seconds or a ``datetime.timedelta`` /
+            ``pw.Duration``.
         compression_frequency: Determines how often the compression process
             is triggered. If a compression attempt fails, it will be retried immediately
-            without waiting.
-        retention_period: Retention period for the ``VACUUM`` operation.
+            without waiting. Given as a number of seconds or a ``datetime.timedelta`` /
+            ``pw.Duration``.
+        retention_period: Retention period for the ``VACUUM`` operation. Given as a
+            number of seconds or a ``datetime.timedelta`` / ``pw.Duration``.
         remove_old_checkpoints: If ``True``, Pathway Live Data Framework will keep only the most recent
             checkpoint file to reduce storage usage.
 
@@ -156,11 +161,20 @@ class TableOptimizer:
         self,
         tracked_column: ColumnReference,
         time_format: str,
-        quick_access_window: datetime.timedelta,
-        compression_frequency: datetime.timedelta,
-        retention_period: datetime.timedelta = datetime.timedelta(0),
+        quick_access_window: DurationLike,
+        compression_frequency: DurationLike,
+        retention_period: DurationLike = datetime.timedelta(0),
         remove_old_checkpoints: bool = False,
     ):
+        quick_access_window = datetime.timedelta(
+            seconds=as_duration_seconds(quick_access_window, "quick_access_window")
+        )
+        compression_frequency = datetime.timedelta(
+            seconds=as_duration_seconds(compression_frequency, "compression_frequency")
+        )
+        retention_period = datetime.timedelta(
+            seconds=as_duration_seconds(retention_period, "retention_period")
+        )
         self.compression_frequency = compression_frequency
         self.engine_rule = api.DeltaOptimizerRule(
             field_name=tracked_column.name,
@@ -548,7 +562,7 @@ def write(
         partition_columns: Partition columns for the table. Used if the table is created by
             the Pathway Live Data Framework.
         min_commit_frequency: Specifies the minimum time interval between two data commits in
-            storage, measured in milliseconds. If set to None, finalized minibatches will
+            storage, measured in milliseconds. If set to ``None``, finalized minibatches will
             be committed as soon as possible. Keep in mind that each commit in Delta Lake
             creates a new file and writes an entry in the transaction log. Therefore, it
             is advisable to limit the frequency of commits to reduce the overhead of

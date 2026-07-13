@@ -14,6 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
+use crate::connectors::metadata::file_like::{OwnerInterner, ScannerTag};
 use crate::connectors::metadata::FileLikeMetadata;
 use crate::persistence::backends::{Error as PersistenceError, PersistenceBackend};
 
@@ -49,6 +50,21 @@ const SMALL_BATCH_BLOB_LENGTH: usize = 262_144;
 const LARGE_BATCH_EVENTS_COUNT: usize = 100_000;
 const LARGE_BATCH_BLOB_LENGTH: usize = 200_000_000;
 
+/// Blob length threshold that starts an eager background upload of the
+/// current batch, without waiting for the next logical time commit.
+///
+/// The commit protocol saves the metadata only after all cached object
+/// uploads are durable, so any blob that is still pending at commit time
+/// blocks the commit — and with it the advancement of the persistent
+/// frontier — for the whole duration of the upload. A large object (e.g. a
+/// whole input file cached by a filesystem-like connector) is placed here
+/// before it is tokenized, while the first possible commit happens only
+/// after the file is ingested in full. Starting the upload at placement time
+/// lets it proceed in the background of the ingestion, so the commit only
+/// has to await the (usually empty) remainder instead of a multi-second
+/// upload of the entire blob.
+const EAGER_UPLOAD_BLOB_LENGTH: usize = 16_777_216;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum EventType {
     Update(FileLikeMetadata),
@@ -61,6 +77,7 @@ struct BlobSegment {
     version: CachedObjectVersion,
     object_blob_start: usize,
     object_blob_len: usize,
+    metadata: FileLikeMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,13 +91,16 @@ struct MetadataEvent {
 }
 
 impl MetadataEvent {
-    pub fn as_blob_segment(&self) -> BlobSegment {
-        assert!(matches!(self.type_, EventType::Update(_)));
+    pub fn into_blob_segment(self) -> BlobSegment {
+        let EventType::Update(metadata) = self.type_ else {
+            panic!("only update events can be converted into blob segments");
+        };
         BlobSegment {
-            uri: self.uri.clone(),
+            uri: self.uri,
             version: self.version,
             object_blob_start: self.object_blob_start,
             object_blob_len: self.object_blob_len,
+            metadata,
         }
     }
 
@@ -232,11 +252,6 @@ impl EventsBatch {
     }
 }
 
-struct RepackWithDependencies<'a> {
-    repack: &'a mut BatchRepackProcessor,
-    metadata_snapshot: &'a HashMap<Uri, FileLikeMetadata>,
-}
-
 pub struct BatchRepackProcessor {
     tombstones_by_batch: HashMap<CachedObjectsBatchId, Vec<TombstoneEvent>>,
     current_batch: EventsBatch,
@@ -286,13 +301,9 @@ impl BatchRepackProcessor {
         segments: &[BlobSegment],
         blobs: &[u8],
         backend: &dyn PersistenceBackend,
-        metadata_snapshot: &HashMap<Uri, FileLikeMetadata>,
     ) -> Result<(), PersistenceError> {
         for segment in segments {
-            let full_metadata = metadata_snapshot
-                .get(&segment.uri)
-                .expect("inconsistent metadata snapshot")
-                .clone();
+            let full_metadata = segment.metadata.clone();
             let metadata_event = MetadataEvent {
                 uri: segment.uri.clone(),
                 version: segment.version,
@@ -319,7 +330,6 @@ impl BatchRepackProcessor {
         segments: &[BlobSegment],
         blobs: &[u8],
         backend: &dyn PersistenceBackend,
-        metadata_snapshot: &HashMap<Uri, FileLikeMetadata>,
     ) -> Result<(), PersistenceError> {
         let total_useful_length: usize = segments.iter().map(|s| s.object_blob_len).sum::<usize>();
 
@@ -330,7 +340,7 @@ impl BatchRepackProcessor {
 
         info!("Batch {original_batch_id} useful length reduced: {} -> {total_useful_length}. It is subject for compression.", blobs.len());
         self.add_tombstones_to_compressed_batch(original_batch_id, backend)?;
-        self.add_segments_to_compressed_batch(segments, blobs, backend, metadata_snapshot)?;
+        self.add_segments_to_compressed_batch(segments, blobs, backend)?;
         self.batches_for_removal.push(original_batch_id);
         Ok(())
     }
@@ -560,7 +570,8 @@ impl CachedObjectsExternalAccessor {
         self.current_blobs.append(&mut blob);
         self.has_changes = true;
 
-        if self.current_batch.is_large_batch() {
+        let needs_eager_upload = self.current_blobs.len() >= EAGER_UPLOAD_BLOB_LENGTH;
+        if self.current_batch.is_large_batch() || needs_eager_upload {
             let current_upload = Self::start_upload_with_backend(
                 self.backend.as_ref(),
                 &mut self.current_batch,
@@ -598,7 +609,7 @@ impl CachedObjectsExternalAccessor {
         batch_id: CachedObjectsBatchId,
         segments: &[BlobSegment],
         object_snapshot: &Mutex<&mut SqliteObjectsSnapshot>,
-        repack_with_dependencies: &Mutex<RepackWithDependencies>,
+        repack: &Mutex<&mut BatchRepackProcessor>,
     ) -> Result<(), PersistenceError> {
         let key = Self::cached_objects_path(batch_id);
         let compressed_blobs = backend.get_value(&key)?;
@@ -608,12 +619,8 @@ impl CachedObjectsExternalAccessor {
         object_snapshot.insert_segments(segments, &blobs)?;
         drop(object_snapshot);
 
-        let mut repack_guard = repack_with_dependencies.lock().unwrap();
-        let RepackWithDependencies {
-            repack,
-            metadata_snapshot,
-        } = &mut *repack_guard;
-        repack.maybe_repack_batch(batch_id, segments, &blobs, backend, metadata_snapshot)?;
+        let mut repack = repack.lock().unwrap();
+        repack.maybe_repack_batch(batch_id, segments, &blobs, backend)?;
 
         Ok(())
     }
@@ -628,11 +635,12 @@ impl CachedObjectsExternalAccessor {
 }
 
 const SQLITE_CREATE_CACHE_SQL: &str =
-    "CREATE TABLE IF NOT EXISTS objects (uri BLOB PRIMARY KEY, contents BLOB NOT NULL);";
-const SQLITE_UPSERT_SQL: &str = "INSERT OR REPLACE INTO objects (uri, contents) VALUES (?1, ?2)";
+    "CREATE TABLE IF NOT EXISTS objects (uri BLOB PRIMARY KEY, contents BLOB NOT NULL, metadata BLOB NOT NULL);";
+const SQLITE_UPSERT_SQL: &str =
+    "INSERT OR REPLACE INTO objects (uri, contents, metadata) VALUES (?1, ?2, ?3)";
 const SQLITE_DELETE_SQL: &str = "DELETE FROM objects WHERE uri = ?1";
-const SQLITE_GET_SQL: &str = "SELECT contents FROM objects WHERE uri = ?1";
-const SQLITE_INSERT_SQL: &str = "INSERT INTO objects (uri, contents) VALUES (?1, ?2)";
+const SQLITE_GET_WITH_METADATA_SQL: &str = "SELECT contents, metadata FROM objects WHERE uri = ?1";
+const SQLITE_INSERT_SQL: &str = "INSERT INTO objects (uri, contents, metadata) VALUES (?1, ?2, ?3)";
 
 #[derive(Debug)]
 pub struct SqliteObjectsSnapshot {
@@ -691,20 +699,37 @@ impl SqliteObjectsSnapshot {
         })
     }
 
-    fn insert(&mut self, uri: UriRef, contents: &[u8]) -> Result<(), PersistenceError> {
-        self.conn
-            .execute(SQLITE_UPSERT_SQL, params![uri, contents])?;
+    fn insert(
+        &mut self,
+        uri: UriRef,
+        contents: &[u8],
+        metadata: &FileLikeMetadata,
+    ) -> Result<(), PersistenceError> {
+        let serialized_metadata = serialize_metadata(metadata)?;
+        self.conn.execute(
+            SQLITE_UPSERT_SQL,
+            params![uri, contents, serialized_metadata],
+        )?;
         Ok(())
     }
 
-    fn insert_segments(&mut self, segments: &[BlobSegment], blobs: &[u8]) -> rusqlite::Result<()> {
+    fn insert_segments(
+        &mut self,
+        segments: &[BlobSegment],
+        blobs: &[u8],
+    ) -> Result<(), PersistenceError> {
         let sqlite_tx = self.conn.unchecked_transaction()?;
         {
             let mut sqlite_stmt = sqlite_tx.prepare_cached(SQLITE_INSERT_SQL)?;
             for segment in segments {
                 let object_slice = &blobs[segment.object_blob_start
                     ..segment.object_blob_start + segment.object_blob_len];
-                sqlite_stmt.execute(rusqlite::params![segment.uri, object_slice])?;
+                let serialized_metadata = serialize_metadata(&segment.metadata)?;
+                sqlite_stmt.execute(rusqlite::params![
+                    segment.uri,
+                    object_slice,
+                    serialized_metadata
+                ])?;
             }
         }
         sqlite_tx.commit()?;
@@ -719,19 +744,43 @@ impl SqliteObjectsSnapshot {
         Ok(())
     }
 
-    fn get(&self, uri: UriRef) -> Result<Vec<u8>, PersistenceError> {
-        let result: Option<Vec<u8>> = self
+    fn get_with_metadata(
+        &self,
+        uri: UriRef,
+    ) -> Result<(Vec<u8>, FileLikeMetadata), PersistenceError> {
+        let result: Option<(Vec<u8>, Vec<u8>)> = self
             .conn
-            .query_row(SQLITE_GET_SQL, params![uri], |row| row.get(0))
+            .query_row(SQLITE_GET_WITH_METADATA_SQL, params![uri], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .optional()?;
 
-        result.ok_or(PersistenceError::NoCachedObject)
+        let (contents, serialized_metadata) = result.ok_or(PersistenceError::NoCachedObject)?;
+        Ok((contents, deserialize_metadata(&serialized_metadata)?))
     }
+}
+
+fn serialize_metadata(metadata: &FileLikeMetadata) -> Result<Vec<u8>, PersistenceError> {
+    bincode::serialize(metadata).map_err(|err| PersistenceError::Bincode(*err))
+}
+
+fn deserialize_metadata(serialized: &[u8]) -> Result<FileLikeMetadata, PersistenceError> {
+    bincode::deserialize(serialized).map_err(|err| PersistenceError::Bincode(*err))
 }
 
 pub struct CachedObjectStorage {
     external_accessor: Arc<Mutex<CachedObjectsExternalAccessor>>,
-    metadata_snapshot: HashMap<Uri, FileLikeMetadata>,
+
+    // The in-RAM freshness index: probed for every watched object on every
+    // scan cycle, so it must stay in memory with O(1) lookups. It is also
+    // the memory hot spot on large corpora, hence it stores compact
+    // `ScannerTag`s instead of full `FileLikeMetadata`, keyed by `Box<[u8]>`
+    // rather than `Uri` (the boxed slice has no capacity field, saving 8
+    // bytes per key header). The full metadata is kept on disk, in
+    // `objects_snapshot`, next to the object contents.
+    metadata_snapshot: HashMap<Box<[u8]>, ScannerTag>,
+    owner_interner: OwnerInterner,
+
     objects_snapshot: SqliteObjectsSnapshot,
     current_version: CachedObjectVersion,
 }
@@ -744,6 +793,7 @@ impl CachedObjectStorage {
                 EMPTY_STORAGE_BATCH_ID + 1,
             ))),
             metadata_snapshot: HashMap::new(),
+            owner_interner: OwnerInterner::default(),
             objects_snapshot: SqliteObjectsSnapshot::new()?,
             current_version: EMPTY_STORAGE_VERSION + 1,
         })
@@ -877,16 +927,30 @@ impl CachedObjectStorage {
         self.metadata_snapshot.contains_key(uri)
     }
 
-    pub fn get_iter(&self) -> Iter<'_, Uri, FileLikeMetadata> {
+    pub fn get_iter(&self) -> Iter<'_, Box<[u8]>, ScannerTag> {
         self.metadata_snapshot.iter()
     }
 
-    pub fn stored_metadata(&self, uri: UriRef) -> Option<&FileLikeMetadata> {
+    pub fn stored_tag(&self, uri: UriRef) -> Option<&ScannerTag> {
         self.metadata_snapshot.get(uri)
     }
 
-    pub fn get_object(&self, uri: UriRef) -> Result<Vec<u8>, PersistenceError> {
-        self.objects_snapshot.get(uri)
+    /// Mirrors `FileLikeMetadata::is_changed` for a stored tag and the
+    /// actual metadata of the corresponding object.
+    pub fn is_changed(&self, stored: &ScannerTag, actual: &FileLikeMetadata) -> bool {
+        self.owner_interner.is_changed(stored, actual)
+    }
+
+    /// Reads the full stored copy of an object — contents and metadata —
+    /// from the on-disk snapshot. This is a per-event disk read (a
+    /// deletion or a modification being emitted), never a part of the
+    /// per-cycle comparison path — the comparisons go through `stored_tag`
+    /// and `is_changed`.
+    pub fn get_object_with_metadata(
+        &self,
+        uri: UriRef,
+    ) -> Result<(Vec<u8>, FileLikeMetadata), PersistenceError> {
+        self.objects_snapshot.get_with_metadata(uri)
     }
 
     pub fn actual_version(&self) -> CachedObjectVersion {
@@ -910,14 +974,16 @@ impl CachedObjectStorage {
             actual_batch_ids.insert(event.batch_id);
 
             match event.type_ {
-                EventType::Update(ref metadata) => {
-                    let blob_segment = event.as_blob_segment();
+                EventType::Update(_) => {
+                    let batch_id = event.batch_id;
+                    let blob_segment = event.into_blob_segment();
+                    let tag = self.owner_interner.tag(&blob_segment.metadata);
+                    self.metadata_snapshot
+                        .insert(Box::from(blob_segment.uri.as_slice()), tag);
                     segments_for_download
-                        .entry(event.batch_id)
+                        .entry(batch_id)
                         .or_default()
                         .push(blob_segment);
-
-                    self.metadata_snapshot.insert(event.uri, metadata.clone());
                 }
                 EventType::Delete => {
                     let tombstone = event.as_tombstone();
@@ -979,28 +1045,18 @@ impl CachedObjectStorage {
         // Once a batch is downloaded and uncompressed, we extract the parts that create
         // the objects snapshot, and send the actual events to the repack processor if
         // needed.
-        let repack_with_dependencies = RepackWithDependencies {
-            repack: &mut repack,
-            metadata_snapshot: &self.metadata_snapshot,
-        };
         Self::build_objects_snapshot(
             &workers,
             backend.as_ref(),
             segments_for_download,
             downloaded_blobs,
             &Mutex::new(&mut self.objects_snapshot),
-            &Mutex::new(repack_with_dependencies),
+            &Mutex::new(&mut repack),
         )?;
 
         // Compress the batches that contain only tombstone events, and therefore not a part of segments.
         for batch_id in batches_with_tombstones_only {
-            repack.maybe_repack_batch(
-                *batch_id,
-                &[],
-                &[],
-                backend.as_ref(),
-                &self.metadata_snapshot,
-            )?;
+            repack.maybe_repack_batch(*batch_id, &[], &[], backend.as_ref())?;
         }
 
         // Finish of the procedure.The objects snapshot is built, the fragmented batches are rebuilt.
@@ -1020,7 +1076,7 @@ impl CachedObjectStorage {
         mut segments_for_download: HashMap<CachedObjectsBatchId, Vec<BlobSegment>>,
         downloaded_blobs: HashMap<CachedObjectsBatchId, Vec<u8>>,
         object_snapshot: &Mutex<&mut SqliteObjectsSnapshot>,
-        repack_with_dependencies: &Mutex<RepackWithDependencies>,
+        repack: &Mutex<&mut BatchRepackProcessor>,
     ) -> Result<(), PersistenceError> {
         for (batch_id, blobs) in downloaded_blobs {
             let Some(segments) = segments_for_download.remove(&batch_id) else {
@@ -1032,18 +1088,8 @@ impl CachedObjectStorage {
                 object_snapshot.insert_segments(&segments, &blobs)?;
             }
             {
-                let mut repack_guard = repack_with_dependencies.lock().unwrap();
-                let RepackWithDependencies {
-                    repack,
-                    metadata_snapshot,
-                } = &mut *repack_guard;
-                repack.maybe_repack_batch(
-                    batch_id,
-                    &segments,
-                    &blobs,
-                    backend,
-                    metadata_snapshot,
-                )?;
+                let mut repack = repack.lock().unwrap();
+                repack.maybe_repack_batch(batch_id, &segments, &blobs, backend)?;
             }
         }
 
@@ -1056,7 +1102,7 @@ impl CachedObjectStorage {
                         *batch_id,
                         batch_segments.as_slice(),
                         object_snapshot,
-                        repack_with_dependencies,
+                        repack,
                     )
                 })
                 .collect()
@@ -1097,12 +1143,15 @@ impl CachedObjectStorage {
     ) -> Result<(), PersistenceError> {
         match event.type_ {
             EventType::Update(metadata) => {
-                self.objects_snapshot.insert(&event.uri, contents)?;
-                self.metadata_snapshot.insert(event.uri, metadata);
+                let tag = self.owner_interner.tag(&metadata);
+                self.objects_snapshot
+                    .insert(&event.uri, contents, &metadata)?;
+                self.metadata_snapshot
+                    .insert(event.uri.into_boxed_slice(), tag);
             }
             EventType::Delete => {
                 self.objects_snapshot.remove(&event.uri)?;
-                self.metadata_snapshot.remove(&event.uri);
+                self.metadata_snapshot.remove(event.uri.as_slice());
             }
         }
         Ok(())
