@@ -152,6 +152,8 @@ def put_object_into_storage(storage, path, contents):
         "s3": put_aws_object,
         "minio": put_minio_object,
     }
+    if storage not in put_object_methods:
+        raise ValueError(f"Storage type '{storage}' unsupported in tests")
     return put_object_methods[storage](path, contents)
 
 
@@ -160,6 +162,8 @@ def delete_object_from_storage(storage, path):
         "s3": delete_aws_object,
         "minio": delete_minio_object,
     }
+    if storage not in delete_object_methods:
+        raise ValueError(f"Storage type '{storage}' unsupported in tests")
     return delete_object_methods[storage](path)
 
 
