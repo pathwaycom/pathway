@@ -1385,7 +1385,22 @@ class WeaviateContext:
     vector dimension is not pinned at creation time — Weaviate fixes it from the
     first object written — so :meth:`create_collection` ignores the ``dimension``
     argument it accepts for parity with the other vector-store contexts.
+
+    Connecting goes through :meth:`_connect`, which lifts the client's startup
+    timeout and retries. The client's default two-second budget for the startup
+    gRPC health check is easily exceeded by a single Weaviate instance shared by
+    many parallel xdist workers (each also running a Pathway engine that hammers
+    it), and the readiness probe the container exposes only covers the REST
+    endpoint — so the gRPC listener can still be busy when the tests start. A
+    slow health check is back-pressure, not a broken server, so it is waited out
+    rather than turned into a spurious test error.
     """
+
+    # Generous startup budget plus retries: the health check answers in
+    # milliseconds when the server is idle, so this only comes into play when
+    # the instance is saturated.
+    _INIT_TIMEOUT = 60
+    _MAX_ATTEMPTS = 5
 
     def __init__(
         self,
@@ -1401,15 +1416,34 @@ class WeaviateContext:
 
     def _connect(self):
         import weaviate
+        from weaviate.classes.init import AdditionalConfig, Timeout
 
-        return weaviate.connect_to_custom(
-            http_host=self.host,
-            http_port=self.http_port,
-            http_secure=False,
-            grpc_host=self.host,
-            grpc_port=self.grpc_port,
-            grpc_secure=False,
-        )
+        last_exc: Exception | None = None
+        for attempt in range(self._MAX_ATTEMPTS):
+            try:
+                return weaviate.connect_to_custom(
+                    http_host=self.host,
+                    http_port=self.http_port,
+                    http_secure=False,
+                    grpc_host=self.host,
+                    grpc_port=self.grpc_port,
+                    grpc_secure=False,
+                    additional_config=AdditionalConfig(
+                        timeout=Timeout(init=self._INIT_TIMEOUT)
+                    ),
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt + 1 == self._MAX_ATTEMPTS:
+                    break
+                delay = min(1.0 * (2**attempt), 8.0)
+                logging.warning(
+                    f"Weaviate connection attempt {attempt + 1}/{self._MAX_ATTEMPTS} "
+                    f"failed, retrying in {delay:.1f}s: {exc}"
+                )
+                time.sleep(delay)
+        assert last_exc is not None
+        raise last_exc
 
     def create_collection(
         self, collection_name: str, *, dimension: int = WEAVIATE_VECTOR_DIM
