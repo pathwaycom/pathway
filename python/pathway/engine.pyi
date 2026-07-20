@@ -1018,7 +1018,6 @@ class QdrantParams:
         self,
         url: str,
         collection_name: str,
-        vector_field_index: int,
         api_key: str | None = None,
         batch_size: int = 256,
     ) -> None: ...

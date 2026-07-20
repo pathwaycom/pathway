@@ -31,11 +31,8 @@ pub fn build_qdrant_client(
 }
 
 /// Ensure a collection exists, creating it with a single `Cosine`-distance
-/// vector of the given size if it does not.
-///
-/// Shared between the KNN index and the output connector: both create a missing
-/// collection with the same vector configuration, so a pipeline that indexes and
-/// one that writes agree on the collection layout.
+/// vector of the given size if it does not. Used by the KNN index; the output
+/// connector never creates collections — its collection schema is authoritative.
 pub fn ensure_collection_with_cosine(
     runtime: &tokio::runtime::Runtime,
     client: &Qdrant,

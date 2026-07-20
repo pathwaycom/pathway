@@ -7,6 +7,7 @@ import tempfile
 import time
 import types as builtin_types
 import uuid
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Union, cast, get_args, get_origin
@@ -1232,33 +1233,86 @@ class QdrantContext:
         self._collections: list[str] = []
 
     def create_collection(
-        self, collection_name: str, *, dimension: int = QDRANT_VECTOR_DIM, distance=None
+        self,
+        collection_name: str,
+        *,
+        dense: dict[str, int] | None = None,
+        sparse: Sequence[str] = (),
+        multivector: dict[str, int] | None = None,
+        unnamed_dimension: int | None = None,
+        distance=None,
     ) -> None:
-        """Create a collection with the given vector dimension and distance.
+        """Create a collection with the given named vector slots.
+
+        ``dense`` maps slot names to dimensions and defaults to a single slot
+        named ``"vector"`` of dimension ``QDRANT_VECTOR_DIM`` (pass ``dense={}``
+        together with no other slots to create a collection without vector
+        slots). ``sparse`` slots are configured with the IDF modifier — the
+        hybrid-search setup the connector targets. ``multivector`` slots carry a
+        multivector config (unsupported by the connector, used to test the
+        loud failure). ``unnamed_dimension`` creates the legacy single unnamed
+        vector instead of named slots.
 
         Defaults to Euclidean distance so that stored vectors are returned
         verbatim — Qdrant normalizes vectors when the collection uses Cosine
         distance, which would break exact vector comparisons in the tests.
         """
-        from qdrant_client.models import Distance, VectorParams
+        from qdrant_client.models import (
+            Distance,
+            Modifier,
+            MultiVectorComparator,
+            MultiVectorConfig,
+            SparseVectorParams,
+            VectorParams,
+        )
+
+        distance = distance or Distance.EUCLID
+        if unnamed_dimension is not None:
+            self.client.create_collection(
+                collection_name,
+                vectors_config=VectorParams(size=unnamed_dimension, distance=distance),
+            )
+            return
+
+        if dense is None and not sparse and not multivector:
+            dense = {"vector": QDRANT_VECTOR_DIM}
+        named_config = {
+            slot: VectorParams(size=dimension, distance=distance)
+            for slot, dimension in (dense or {}).items()
+        }
+        for slot, dimension in (multivector or {}).items():
+            named_config[slot] = VectorParams(
+                size=dimension,
+                distance=distance,
+                multivector_config=MultiVectorConfig(
+                    comparator=MultiVectorComparator.MAX_SIM
+                ),
+            )
+        sparse_config = {
+            slot: SparseVectorParams(modifier=Modifier.IDF) for slot in sparse
+        } or None
 
         self.client.create_collection(
             collection_name,
-            vectors_config=VectorParams(
-                size=dimension, distance=distance or Distance.EUCLID
-            ),
+            vectors_config=named_config,
+            sparse_vectors_config=sparse_config,
         )
 
     def query_all(
         self, collection_name: str, *, with_vectors: bool = True
     ) -> list[dict]:
-        """Return every point as its payload, with the vector added under
-        ``"vector"``.
+        """Return every point as its payload merged with its named vectors.
+
+        Vector slot names equal column names, so each vector lands in the row
+        under its slot name: dense vectors as ``list[float]``, sparse vectors as
+        a list of ``(index, weight)`` tuples sorted by index.
 
         The Qdrant point id is the connector-generated UUID derived from the
         Pathway row key, so it is not asserted on directly; the row's own
         identifier columns live in the payload.
         """
+        from qdrant_client.models import SparseVector
+
         points, _ = self.client.scroll(
             collection_name,
             limit=100000,
@@ -1269,9 +1323,38 @@ class QdrantContext:
         for point in points:
             row: dict = dict(point.payload or {})
             if with_vectors and point.vector is not None:
-                row["vector"] = list(point.vector)
+                assert isinstance(point.vector, dict)  # named vectors only
+                for slot, vector in point.vector.items():
+                    if isinstance(vector, SparseVector):
+                        row[slot] = sorted(zip(vector.indices, vector.values))
+                    else:
+                        row[slot] = list(vector)
             result.append(row)
         return result
+
+    def sparse_query(
+        self,
+        collection_name: str,
+        slot: str,
+        pairs: Sequence[tuple[int, float]],
+        *,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Query the given sparse vector slot and return the payloads of the
+        matching points, best score first."""
+        from qdrant_client.models import SparseVector
+
+        response = self.client.query_points(
+            collection_name,
+            query=SparseVector(
+                indices=[index for index, _ in pairs],
+                values=[weight for _, weight in pairs],
+            ),
+            using=slot,
+            with_payload=True,
+            limit=limit,
+        )
+        return [dict(point.payload or {}) for point in response.points]
 
     def count(self, collection_name: str) -> int:
         return self.client.count(collection_name, exact=True).count
@@ -1282,9 +1365,8 @@ class QdrantContext:
         return name
 
     def close(self) -> None:
-        # Drop every collection the test touched (whether created directly or
-        # auto-created by the connector) before closing, so collections do not
-        # accumulate on the shared Qdrant container.
+        # Drop every collection the test touched before closing, so collections
+        # do not accumulate on the shared Qdrant container.
         for collection_name in self._collections:
             try:
                 self.client.delete_collection(collection_name)

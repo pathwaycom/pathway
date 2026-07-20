@@ -1,9 +1,12 @@
 // Copyright © 2026 Pathway
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::take;
 
-use qdrant_client::qdrant::{DeletePointsBuilder, PointId, PointStruct, UpsertPointsBuilder};
+use qdrant_client::qdrant::vectors_config::Config as VectorsConfigVariant;
+use qdrant_client::qdrant::{
+    DeletePointsBuilder, NamedVectors, PointId, PointStruct, UpsertPointsBuilder, Vector,
+};
 use qdrant_client::Qdrant;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::runtime::Runtime as TokioRuntime;
@@ -11,8 +14,7 @@ use uuid::Uuid;
 
 use crate::connectors::data_format::{serialize_value_to_json, FormatterContext};
 use crate::connectors::{WriteError, Writer};
-use crate::engine::{Key, Value};
-use crate::external_integration::qdrant_integration::ensure_collection_with_cosine;
+use crate::engine::{Key, Type, Value};
 use crate::python_api::ValueField;
 
 /// Errors specific to the Qdrant output connector. Surfaced to the engine
@@ -24,22 +26,152 @@ pub enum QdrantWriteError {
     Client(#[from] qdrant_client::QdrantError),
 
     #[error(
-        "the column selected as the Qdrant vector holds a value of type that is not a \
-         list[float] or a 1-D numeric array: {0}"
+        "Qdrant collection \"{0}\" does not exist. The connector never creates collections: \
+         create it beforehand with the desired named vector configuration \
+         (the collection schema defines which table columns are written as vectors)"
     )]
-    NotAVector(Value),
+    CollectionNotFound(String),
 
-    #[error("the column selected as the Qdrant vector contains a non-numeric element: {0}")]
-    NonNumericVectorElement(Value),
-
-    #[error("the column selected as the Qdrant vector holds a {0}-dimensional array; only 1-D vectors are supported")]
-    MultiDimensionalVector(usize),
+    #[error("Qdrant did not return the configuration of collection \"{0}\"")]
+    MissingCollectionConfig(String),
 
     #[error(
-        "the column selected as the Qdrant vector contains a non-finite element \
-         (NaN or infinity)"
+        "Qdrant collection \"{0}\" is configured with a single unnamed vector. \
+         The connector requires named vector slots: recreate the collection with \
+         a named dense (and optionally sparse) vector configuration"
     )]
-    NonFiniteVectorElement,
+    UnnamedVectorSlot(String),
+
+    #[error(
+        "Qdrant collection \"{0}\" declares no vector slots. Recreate it with at \
+         least one named dense or sparse vector slot"
+    )]
+    NoVectorSlots(String),
+
+    #[error(
+        "Qdrant collection \"{collection}\" declares a {kind} vector slot \"{slot}\", \
+         but the table has no column named \"{slot}\". Vector slots are bound to \
+         table columns by name"
+    )]
+    SlotWithoutColumn {
+        collection: String,
+        slot: String,
+        kind: &'static str,
+    },
+
+    #[error(
+        "Qdrant collection declares a {expected_kind} vector slot \"{slot}\", which \
+         requires a column \"{slot}\" of type {expected_dtype}, but the table column \
+         \"{slot}\" has type {actual_dtype}"
+    )]
+    SlotKindMismatch {
+        slot: String,
+        expected_kind: &'static str,
+        expected_dtype: &'static str,
+        actual_dtype: String,
+    },
+
+    #[error(
+        "Qdrant collection declares a multivector slot \"{0}\"; multivectors \
+         (list[list[float]] columns) are not supported by the Qdrant output connector yet"
+    )]
+    MultivectorNotImplemented(String),
+
+    #[error(
+        "the vector in column \"{column}\" has dimension {actual}, but the Qdrant \
+         dense vector slot \"{column}\" expects dimension {expected}"
+    )]
+    DenseDimensionMismatch {
+        column: String,
+        expected: u64,
+        actual: usize,
+    },
+
+    #[error(
+        "the column \"{0}\" bound to a Qdrant dense vector slot holds a value that \
+         is not a list[float] or a 1-D numeric array: {1}"
+    )]
+    NotAVector(String, Value),
+
+    #[error("the vector in column \"{0}\" contains a non-numeric element: {1}")]
+    NonNumericVectorElement(String, Value),
+
+    #[error(
+        "the column \"{0}\" bound to a Qdrant dense vector slot holds a \
+         {1}-dimensional array; only 1-D vectors are supported"
+    )]
+    MultiDimensionalVector(String, usize),
+
+    #[error("the vector in column \"{0}\" contains a non-finite element (NaN or infinity)")]
+    NonFiniteVectorElement(String),
+
+    #[error(
+        "the column \"{0}\" bound to a Qdrant sparse vector slot holds a value that \
+         is not a list[tuple[int, float]]: {1}"
+    )]
+    NotASparseVector(String, Value),
+
+    #[error(
+        "the sparse vector in column \"{0}\" contains index {1}, which does not fit \
+         the u32 range Qdrant requires for sparse vector indices"
+    )]
+    SparseIndexOutOfRange(String, i64),
+}
+
+/// The vector-capable kinds a column's static dtype can map to. Derived from
+/// the engine [`Type`] of each output column; columns mapping to `None` go to
+/// the point payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VectorKind {
+    /// `list[float]` or a 1-D numeric `numpy.ndarray`.
+    Dense,
+    /// `list[tuple[int, float]]` — pairs of (index, weight).
+    Sparse,
+    /// `list[list[float]]` — reserved for Qdrant multivectors, not implemented.
+    Multi,
+}
+
+fn vector_kind_of(dtype: &Type) -> Option<VectorKind> {
+    match dtype {
+        Type::List(element) => match element.as_ref() {
+            Type::Float => Some(VectorKind::Dense),
+            Type::Tuple(fields)
+                if fields.len() == 2 && fields[0] == Type::Int && fields[1] == Type::Float =>
+            {
+                Some(VectorKind::Sparse)
+            }
+            Type::List(inner) if **inner == Type::Float => Some(VectorKind::Multi),
+            _ => None,
+        },
+        // Any ndarray column is a dense candidate: the value-level extraction
+        // still rejects non-numeric or multi-dimensional arrays. A bare
+        // `np.ndarray` annotation arrives as `Array(Any)`, so requiring a
+        // numeric element type here would reject the common spelling.
+        Type::Array(_, _) => Some(VectorKind::Dense),
+        _ => None,
+    }
+}
+
+/// A vector slot declared by the collection, bound to the same-named table
+/// column at startup.
+enum SlotBinding {
+    Dense {
+        name: String,
+        column_index: usize,
+        dimension: u64,
+    },
+    Sparse {
+        name: String,
+        column_index: usize,
+    },
+}
+
+impl SlotBinding {
+    fn column_index(&self) -> usize {
+        match self {
+            Self::Dense { column_index, .. } | Self::Sparse { column_index, .. } => *column_index,
+        }
+    }
 }
 
 /// A pending per-key operation within the current minibatch. Keyed by the
@@ -48,7 +180,7 @@ pub enum QdrantWriteError {
 /// arrives as a `-1` of the old row followed by a `+1` of the new one, both
 /// carrying the same key).
 ///
-/// The upsert payload is boxed because a [`PointStruct`] (vector + payload) is
+/// The upsert payload is boxed because a [`PointStruct`] (vectors + payload) is
 /// far larger than the bare [`PointId`] of a delete.
 enum QdrantOp {
     Upsert(Box<PointStruct>),
@@ -75,70 +207,188 @@ pub struct QdrantWriter {
     client: Qdrant,
     collection_name: String,
     value_fields: Vec<ValueField>,
-    vector_field_index: usize,
+    // Vector slots declared by the collection, bound to same-named columns.
+    slots: Vec<SlotBinding>,
+    // Column indices not bound to any vector slot; these form the payload.
+    payload_indices: Vec<usize>,
     batch_size: usize,
-    // Vector dimension observed from the first upserted point, used to create
-    // the collection on demand if it does not already exist.
-    observed_dimension: Option<u64>,
-    // Set once the collection is known to exist (either it already did, or it
-    // was created from `observed_dimension`).
-    collection_ready: bool,
     // Net effect per key for the current minibatch.
     pending: HashMap<Key, QdrantOp>,
 }
 
 impl QdrantWriter {
+    /// Introspect the collection and bind its vector slots to table columns.
+    ///
+    /// The collection schema is the single source of truth: every declared slot
+    /// must have a same-named column of the matching kind, and any violation
+    /// fails loudly here — at startup — rather than degrading at write time.
     pub fn new(
         runtime: TokioRuntime,
         client: Qdrant,
         collection_name: String,
         value_fields: Vec<ValueField>,
-        vector_field_index: usize,
         batch_size: usize,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, QdrantWriteError> {
+        let slots = Self::bind_slots(&runtime, &client, &collection_name, &value_fields)?;
+        let bound_indices: HashSet<usize> = slots.iter().map(SlotBinding::column_index).collect();
+        let payload_indices = (0..value_fields.len())
+            .filter(|index| !bound_indices.contains(index))
+            .collect();
+        Ok(Self {
             runtime,
             client,
             collection_name,
             value_fields,
-            vector_field_index,
+            slots,
+            payload_indices,
             batch_size,
-            observed_dimension: None,
-            collection_ready: false,
             pending: HashMap::new(),
-        }
+        })
     }
 
-    /// Extract the vector column value as the `Vec<f32>` Qdrant stores.
-    fn extract_vector(value: &Value) -> Result<Vec<f32>, QdrantWriteError> {
-        let vector = Self::extract_vector_components(value)?;
+    fn bind_slots(
+        runtime: &TokioRuntime,
+        client: &Qdrant,
+        collection_name: &str,
+        value_fields: &[ValueField],
+    ) -> Result<Vec<SlotBinding>, QdrantWriteError> {
+        if !runtime.block_on(client.collection_exists(collection_name))? {
+            return Err(QdrantWriteError::CollectionNotFound(
+                collection_name.to_string(),
+            ));
+        }
+        let info = runtime.block_on(client.collection_info(collection_name))?;
+        let params = info
+            .result
+            .and_then(|result| result.config)
+            .and_then(|config| config.params)
+            .ok_or_else(|| {
+                QdrantWriteError::MissingCollectionConfig(collection_name.to_string())
+            })?;
+
+        let mut dense_slots = match params.vectors_config.and_then(|config| config.config) {
+            None => Vec::new(),
+            Some(VectorsConfigVariant::Params(_)) => {
+                return Err(QdrantWriteError::UnnamedVectorSlot(
+                    collection_name.to_string(),
+                ));
+            }
+            Some(VectorsConfigVariant::ParamsMap(map)) => map.map.into_iter().collect::<Vec<_>>(),
+        };
+        let mut sparse_slots: Vec<String> = params
+            .sparse_vectors_config
+            .map(|config| config.map.into_keys().collect())
+            .unwrap_or_default();
+        // The maps arrive in random order; sort so validation reports the same
+        // slot first on every run.
+        dense_slots.sort_by(|(left, _), (right, _)| left.cmp(right));
+        sparse_slots.sort_unstable();
+
+        if dense_slots.is_empty() && sparse_slots.is_empty() {
+            return Err(QdrantWriteError::NoVectorSlots(collection_name.to_string()));
+        }
+
+        let mut slots = Vec::with_capacity(dense_slots.len() + sparse_slots.len());
+        for (slot_name, vector_params) in dense_slots {
+            if vector_params.multivector_config.is_some() {
+                return Err(QdrantWriteError::MultivectorNotImplemented(slot_name));
+            }
+            let column_index = Self::bind_column(
+                value_fields,
+                collection_name,
+                &slot_name,
+                VectorKind::Dense,
+                "dense",
+                "list[float] (or a 1-D numeric numpy.ndarray)",
+            )?;
+            slots.push(SlotBinding::Dense {
+                name: slot_name,
+                column_index,
+                dimension: vector_params.size,
+            });
+        }
+        for slot_name in sparse_slots {
+            let column_index = Self::bind_column(
+                value_fields,
+                collection_name,
+                &slot_name,
+                VectorKind::Sparse,
+                "sparse",
+                "list[tuple[int, float]]",
+            )?;
+            slots.push(SlotBinding::Sparse {
+                name: slot_name,
+                column_index,
+            });
+        }
+        Ok(slots)
+    }
+
+    /// Find the column with the slot's name and check its dtype kind.
+    fn bind_column(
+        value_fields: &[ValueField],
+        collection_name: &str,
+        slot_name: &str,
+        expected_kind: VectorKind,
+        kind_name: &'static str,
+        expected_dtype: &'static str,
+    ) -> Result<usize, QdrantWriteError> {
+        let column_index = value_fields
+            .iter()
+            .position(|field| field.name == slot_name)
+            .ok_or_else(|| QdrantWriteError::SlotWithoutColumn {
+                collection: collection_name.to_string(),
+                slot: slot_name.to_string(),
+                kind: kind_name,
+            })?;
+        let dtype = &value_fields[column_index].type_;
+        if vector_kind_of(dtype) != Some(expected_kind) {
+            return Err(QdrantWriteError::SlotKindMismatch {
+                slot: slot_name.to_string(),
+                expected_kind: kind_name,
+                expected_dtype,
+                actual_dtype: dtype.to_string(),
+            });
+        }
+        Ok(column_index)
+    }
+
+    /// Extract a dense vector column value as the `Vec<f32>` Qdrant stores.
+    fn extract_dense(value: &Value, column: &str) -> Result<Vec<f32>, QdrantWriteError> {
+        let vector = Self::extract_dense_components(value, column)?;
         // Qdrant silently accepts NaN/infinity, but one such point makes the
         // whole collection unreadable to standard clients, so reject it here.
-        if vector.iter().any(|v| !v.is_finite()) {
-            return Err(QdrantWriteError::NonFiniteVectorElement);
+        if vector.iter().any(|component| !component.is_finite()) {
+            return Err(QdrantWriteError::NonFiniteVectorElement(column.to_string()));
         }
         Ok(vector)
     }
 
-    fn extract_vector_components(value: &Value) -> Result<Vec<f32>, QdrantWriteError> {
+    fn extract_dense_components(value: &Value, column: &str) -> Result<Vec<f32>, QdrantWriteError> {
         match value {
             Value::FloatArray(array) => {
                 if array.ndim() != 1 {
-                    return Err(QdrantWriteError::MultiDimensionalVector(array.ndim()));
+                    return Err(QdrantWriteError::MultiDimensionalVector(
+                        column.to_string(),
+                        array.ndim(),
+                    ));
                 }
                 // Iterate rather than `as_slice()`: a non-contiguous array (e.g. a
                 // reversed view or a column of a 2-D array) has no backing slice,
                 // so `as_slice()` returns `None` and an `unwrap_or(&[])` would
                 // silently drop every element, producing a 0-dimensional vector.
                 #[allow(clippy::cast_possible_truncation)]
-                Ok(array.iter().map(|v| *v as f32).collect())
+                Ok(array.iter().map(|component| *component as f32).collect())
             }
             Value::IntArray(array) => {
                 if array.ndim() != 1 {
-                    return Err(QdrantWriteError::MultiDimensionalVector(array.ndim()));
+                    return Err(QdrantWriteError::MultiDimensionalVector(
+                        column.to_string(),
+                        array.ndim(),
+                    ));
                 }
                 #[allow(clippy::cast_precision_loss)]
-                Ok(array.iter().map(|v| *v as f32).collect())
+                Ok(array.iter().map(|component| *component as f32).collect())
             }
             Value::Tuple(items) => items
                 .iter()
@@ -147,43 +397,101 @@ impl QdrantWriter {
                     Value::Float(f) => Ok(f64::from(*f) as f32),
                     #[allow(clippy::cast_precision_loss)]
                     Value::Int(i) => Ok(*i as f32),
-                    other => Err(QdrantWriteError::NonNumericVectorElement(other.clone())),
+                    other => Err(QdrantWriteError::NonNumericVectorElement(
+                        column.to_string(),
+                        other.clone(),
+                    )),
                 })
                 .collect(),
-            other => Err(QdrantWriteError::NotAVector(other.clone())),
+            other => Err(QdrantWriteError::NotAVector(
+                column.to_string(),
+                other.clone(),
+            )),
         }
     }
 
-    /// Build the point payload from every column except the vector column.
-    fn build_payload(&self, values: &[Value]) -> Result<JsonMap<String, JsonValue>, WriteError> {
-        let mut payload = JsonMap::with_capacity(self.value_fields.len().saturating_sub(1));
-        for (index, (field, value)) in self.value_fields.iter().zip(values.iter()).enumerate() {
-            if index == self.vector_field_index {
-                continue;
+    /// Extract a sparse vector column value as the (indices, weights) pair
+    /// Qdrant stores. Weights are sent raw (e.g. term frequencies): the IDF
+    /// modifier, when configured on the slot, is applied server-side.
+    fn extract_sparse(
+        value: &Value,
+        column: &str,
+    ) -> Result<(Vec<u32>, Vec<f32>), QdrantWriteError> {
+        let Value::Tuple(pairs) = value else {
+            return Err(QdrantWriteError::NotASparseVector(
+                column.to_string(),
+                value.clone(),
+            ));
+        };
+        let mut indices = Vec::with_capacity(pairs.len());
+        let mut weights = Vec::with_capacity(pairs.len());
+        for pair in pairs.iter() {
+            let Value::Tuple(pair_items) = pair else {
+                return Err(QdrantWriteError::NotASparseVector(
+                    column.to_string(),
+                    value.clone(),
+                ));
+            };
+            let [Value::Int(index), Value::Float(weight)] = pair_items.as_ref() else {
+                return Err(QdrantWriteError::NotASparseVector(
+                    column.to_string(),
+                    value.clone(),
+                ));
+            };
+            let index = u32::try_from(*index)
+                .map_err(|_| QdrantWriteError::SparseIndexOutOfRange(column.to_string(), *index))?;
+            #[allow(clippy::cast_possible_truncation)]
+            let weight = f64::from(*weight) as f32;
+            if !weight.is_finite() {
+                return Err(QdrantWriteError::NonFiniteVectorElement(column.to_string()));
             }
-            payload.insert(field.name.clone(), serialize_value_to_json(value)?);
+            indices.push(index);
+            weights.push(weight);
+        }
+        Ok((indices, weights))
+    }
+
+    /// Build the named vectors of a point: one entry per declared slot, dense
+    /// and sparse written atomically in the same upsert.
+    fn build_vectors(&self, values: &[Value]) -> Result<NamedVectors, QdrantWriteError> {
+        let mut vectors = NamedVectors::default();
+        for slot in &self.slots {
+            match slot {
+                SlotBinding::Dense {
+                    name,
+                    column_index,
+                    dimension,
+                } => {
+                    let dense = Self::extract_dense(&values[*column_index], name)?;
+                    if dense.len() as u64 != *dimension {
+                        return Err(QdrantWriteError::DenseDimensionMismatch {
+                            column: name.clone(),
+                            expected: *dimension,
+                            actual: dense.len(),
+                        });
+                    }
+                    vectors = vectors.add_vector(name.clone(), Vector::new_dense(dense));
+                }
+                SlotBinding::Sparse { name, column_index } => {
+                    let (indices, weights) = Self::extract_sparse(&values[*column_index], name)?;
+                    vectors =
+                        vectors.add_vector(name.clone(), Vector::new_sparse(indices, weights));
+                }
+            }
+        }
+        Ok(vectors)
+    }
+
+    /// Build the point payload from every column not bound to a vector slot.
+    fn build_payload(&self, values: &[Value]) -> Result<JsonMap<String, JsonValue>, WriteError> {
+        let mut payload = JsonMap::with_capacity(self.payload_indices.len());
+        for &index in &self.payload_indices {
+            payload.insert(
+                self.value_fields[index].name.clone(),
+                serialize_value_to_json(&values[index])?,
+            );
         }
         Ok(payload)
-    }
-
-    fn ensure_collection(&mut self) -> Result<(), WriteError> {
-        if self.collection_ready {
-            return Ok(());
-        }
-        // Without an observed vector the dimension is unknown, so a missing
-        // collection cannot be created yet; an existing collection still
-        // accepts the deletes that triggered this flush.
-        if let Some(dimension) = self.observed_dimension {
-            ensure_collection_with_cosine(
-                &self.runtime,
-                &self.client,
-                &self.collection_name,
-                dimension,
-            )
-            .map_err(QdrantWriteError::from)?;
-            self.collection_ready = true;
-        }
-        Ok(())
     }
 }
 
@@ -191,10 +499,9 @@ impl Writer for QdrantWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         match data.diff {
             1 => {
-                let vector = Self::extract_vector(&data.values[self.vector_field_index])?;
-                self.observed_dimension.get_or_insert(vector.len() as u64);
+                let vectors = self.build_vectors(&data.values)?;
                 let payload = self.build_payload(&data.values)?;
-                let point = PointStruct::new(key_to_point_id(data.key), vector, payload);
+                let point = PointStruct::new(key_to_point_id(data.key), vectors, payload);
                 self.pending
                     .insert(data.key, QdrantOp::Upsert(Box::new(point)));
             }
@@ -217,7 +524,6 @@ impl Writer for QdrantWriter {
         if self.pending.is_empty() {
             return Ok(());
         }
-        self.ensure_collection()?;
 
         let mut to_delete: Vec<PointId> = Vec::new();
         let mut to_upsert: Vec<PointStruct> = Vec::new();
@@ -233,7 +539,7 @@ impl Writer for QdrantWriter {
                 // Deletes before upserts so that, across the chunk boundaries,
                 // a delete never races ahead of a re-insertion of the same key.
                 // `wait(true)` makes the server apply each request before
-                // responding, so an error (e.g. a vector-dimension mismatch) is
+                // responding, so an error (e.g. a sparse index conflict) is
                 // reported synchronously instead of being swallowed by an async
                 // queue — the sink must not report success for points the server
                 // later rejects.

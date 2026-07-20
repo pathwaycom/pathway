@@ -121,6 +121,7 @@ use crate::connectors::data_storage::mssql::MssqlWriter;
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
 use crate::connectors::data_storage::pinecone::PineconeWriter;
+use crate::connectors::data_storage::qdrant::QdrantWriteError;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
@@ -4602,30 +4603,29 @@ impl ElasticSearchAuth {
     }
 }
 
-/// Connection and layout parameters for the Qdrant output connector. Carried as
-/// one [`DataStorage`] field so the giant storage constructor stays untouched:
+/// Connection parameters for the Qdrant output connector. Carried as one
+/// [`DataStorage`] field so the giant storage constructor stays untouched:
 /// the URL and (optional) API key locate the instance, `collection_name` names
-/// the target, `vector_field_index` says which value column holds the point
-/// vector (all other columns become the point payload), and `batch_size` bounds
-/// the number of points sent per upsert/delete request.
+/// the target, and `batch_size` bounds the number of points sent per
+/// upsert/delete request. Which columns are written as vectors is not
+/// configured here: the writer introspects the collection's named vector slots
+/// and binds them to same-named table columns.
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Debug)]
 pub struct QdrantParams {
     url: String,
     collection_name: String,
     api_key: Option<String>,
-    vector_field_index: usize,
     batch_size: usize,
 }
 
 #[pymethods]
 impl QdrantParams {
     #[new]
-    #[pyo3(signature = (url, collection_name, vector_field_index, api_key = None, batch_size = 256))]
+    #[pyo3(signature = (url, collection_name, api_key = None, batch_size = 256))]
     fn new(
         url: String,
         collection_name: String,
-        vector_field_index: usize,
         api_key: Option<String>,
         batch_size: usize,
     ) -> Self {
@@ -4633,7 +4633,6 @@ impl QdrantParams {
             url,
             collection_name,
             api_key,
-            vector_field_index,
             batch_size,
         }
     }
@@ -7514,9 +7513,15 @@ impl DataStorage {
             client,
             qdrant_params.collection_name.clone(),
             data_format.value_fields_vec(py),
-            qdrant_params.vector_field_index,
             qdrant_params.batch_size,
-        );
+        )
+        .map_err(|e| match e {
+            QdrantWriteError::MultivectorNotImplemented(_) => {
+                PyNotImplementedError::new_err(e.to_string())
+            }
+            QdrantWriteError::Client(_) => PyIOError::new_err(e.to_string()),
+            _ => PyValueError::new_err(e.to_string()),
+        })?;
         Ok(Box::new(writer))
     }
 
