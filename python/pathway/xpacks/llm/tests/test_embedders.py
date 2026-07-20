@@ -237,3 +237,56 @@ async def test_marengo_embedder_wrapped_retries_transient_errors():
     assert len(result) == 1
     assert result[0].shape == (2,)
     assert create.await_count == 2
+
+
+# ===== `get_embedding_dimension` =====
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [("text-embedding-3-small", 1536), ("text-embedding-3-large", 3072)],
+)
+def test_openai_embedder_dimension_of_known_model_sends_no_request(
+    model: str, expected: int
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(model=model, api_key="mock-key")
+    create = AsyncMock(side_effect=AssertionError("should not be called"))
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    assert embedder.get_embedding_dimension() == expected
+    assert create.await_count == 0
+
+
+def test_openai_embedder_dimension_of_unknown_model_is_computed():
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(
+        model="custom-embedder", api_key="mock-key", truncation_keep_strategy=None
+    )
+    response = MagicMock()
+    response.data = [MagicMock(embedding=[0.1, 0.2, 0.3])]
+    create = AsyncMock(return_value=response)
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    assert embedder.get_embedding_dimension() == 3
+    assert create.await_count == 1
+
+
+def test_openai_embedder_dimension_with_shortened_vectors_is_computed():
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(
+        model="text-embedding-3-large", api_key="mock-key", dimensions=2
+    )
+    response = MagicMock()
+    response.data = [MagicMock(embedding=[0.1, 0.2])]
+    create = AsyncMock(return_value=response)
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    assert embedder.get_embedding_dimension() == 2
+    assert create.await_count == 1

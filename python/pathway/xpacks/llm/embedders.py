@@ -17,7 +17,10 @@ from pathway.xpacks.llm._utils import (
     _coerce_sync,
     _extract_value_inside_dict,
 )
-from pathway.xpacks.llm.constants import OPENAI_EMBEDDERS_MAX_TOKENS
+from pathway.xpacks.llm.constants import (
+    OPENAI_EMBEDDERS_DIMENSIONS,
+    OPENAI_EMBEDDERS_MAX_TOKENS,
+)
 
 __all__ = [
     "OpenAIEmbedder",
@@ -326,12 +329,22 @@ class OpenAIEmbedder(BaseEmbedder):
         return tokenizer.decode(tokens)
 
     def get_embedding_dimension(self, **kwargs):
-        """Computes number of embedder's dimensions by asking the embedder to embed ``"."``.
+        """Returns the number of embedder's dimensions.
+
+        For known models the answer is taken from a lookup table, so that no request
+        is sent. Otherwise it is computed by asking the embedder to embed ``"."``.
 
         Args:
             **kwargs: parameters of the embedder, if unset defaults from the constructor
               will be taken.
         """
+        model = kwargs.get("model", self.kwargs.get("model"))
+        # an explicit `dimensions` shortens the vectors, so the lookup table
+        # no longer applies
+        dimensions = kwargs.get("dimensions", self.kwargs.get("dimensions"))
+        if dimensions is None and model in OPENAI_EMBEDDERS_DIMENSIONS:
+            return OPENAI_EMBEDDERS_DIMENSIONS[model]
+
         kwargs_as_list = {k: [v] for k, v in kwargs.items()}
         n_dimensions = len(_coerce_sync(self.__wrapped__)(["."], **kwargs_as_list)[0])
         self.client = None

@@ -1,54 +1,15 @@
 # Copyright © 2026 Pathway
 
-import asyncio
-import functools
 import inspect
 import os
-import threading
 from collections.abc import Callable
 from typing import Any
 
 import pathway as pw
 from pathway.internals.udfs.executors import Executor, FullyAsyncExecutor
 from pathway.internals.udfs.retries import AsyncRetryStrategy
+from pathway.internals.udfs.utils import _coerce_sync, _run_async  # noqa: F401
 from pathway.optional_import import optional_imports
-
-
-# https://stackoverflow.com/a/75094151
-class _RunThread(threading.Thread):
-    def __init__(self, coroutine):
-        self.coroutine = coroutine
-        self.result = None
-        super().__init__()
-
-    def run(self):
-        self.result = asyncio.run(self.coroutine)
-
-
-def _run_async(coroutine):
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        thread = _RunThread(coroutine)
-        thread.start()
-        thread.join()
-        return thread.result
-    else:
-        return asyncio.run(coroutine)
-
-
-def _coerce_sync(func: Callable) -> Callable:
-    if asyncio.iscoroutinefunction(func):
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            return _run_async(func(*args, **kwargs))
-
-        return wrapper
-    else:
-        return func
 
 
 def _check_model_accepts_arg(model_name: str, provider: str | None, arg: str):

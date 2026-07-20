@@ -21,6 +21,7 @@ from pathway.internals import api
 from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.internals.parse_graph import G
 from pathway.internals.udfs.executors import Executor
+from pathway.internals.udfs.utils import _run_async
 from pathway.tests.utils import (
     T,
     assert_stream_equality,
@@ -2087,3 +2088,25 @@ def test_udf_cache_directory_multiple_processes(
     )
     # Each process removes its own cache files on shutdown.
     assert list(cache_dir.glob("*.sqlite")) == []
+
+
+def test_run_async_in_thread_returns_result():
+    async def coroutine():
+        return 42
+
+    async def main():
+        # a running loop makes `_run_async` delegate to a separate thread
+        assert _run_async(coroutine()) == 42
+
+    asyncio.run(main())
+
+
+def test_run_async_in_thread_reraises_exception():
+    async def coroutine():
+        raise ValueError("boom")
+
+    async def main():
+        with pytest.raises(ValueError, match="boom"):
+            _run_async(coroutine())
+
+    asyncio.run(main())
