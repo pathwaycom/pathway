@@ -4756,6 +4756,19 @@ dependencies = [
 
 [[package]]
 name = "hyper-tls"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6183ddfa99b85da61a140bea0efc93fdf56ceaa041b37d553518030827f9905"
+dependencies = [
+ "bytes",
+ "hyper 0.14.30",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+]
+
+[[package]]
+name = "hyper-tls"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
@@ -7847,7 +7860,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.6.0",
  "hyper-rustls 0.27.3",
- "hyper-tls",
+ "hyper-tls 0.6.0",
  "hyper-util",
  "js-sys",
  "log",
@@ -8004,18 +8017,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6679da8efaf4c6f0c161de0961dfe95fb6e9049c398d6fbdada2639f053aedb"
 dependencies = [
  "async-trait",
- "attohttpc",
  "aws-creds",
  "aws-region",
  "base64 0.21.7",
  "bytes",
  "cfg-if",
+ "futures",
  "hex",
  "hmac 0.12.1",
  "http 0.2.12",
+ "hyper 0.14.30",
+ "hyper-tls 0.5.0",
  "log",
  "maybe-async",
  "md5 0.7.0",
+ "native-tls",
  "percent-encoding",
  "quick-xml 0.30.0",
  "serde",
@@ -8024,6 +8040,9 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "time",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-stream",
  "url",
 ]
 

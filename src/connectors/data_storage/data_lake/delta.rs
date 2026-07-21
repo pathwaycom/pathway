@@ -759,15 +759,21 @@ impl LakeBatchWriter for DeltaBatchWriter {
 
 pub enum ObjectDownloader {
     Local,
-    S3(Box<S3Bucket>),
+    // The runtime is owned by the downloader (and dropped with it) so it does
+    // not outlive the process that created it — see `s3_runtime`.
+    S3 {
+        bucket: Box<S3Bucket>,
+        runtime: TokioRuntime,
+    },
 }
 
 impl ObjectDownloader {
     fn download_object(&self, path: &str) -> Result<File, ReadError> {
         let obj = match self {
             Self::Local => File::open(path)?,
-            Self::S3(bucket) => {
-                let contents = S3Scanner::download_object_from_path_and_bucket(path, bucket)?;
+            Self::S3 { bucket, runtime } => {
+                let contents =
+                    S3Scanner::download_object_from_path_and_bucket(runtime, path, bucket)?;
                 let mut tempfile = tempfile()?;
                 tempfile.write_all(contents.bytes())?;
                 tempfile.flush()?;

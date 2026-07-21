@@ -6545,7 +6545,10 @@ impl DataStorage {
 
     fn object_downloader(&self) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
-            Ok(ObjectDownloader::S3(Box::new(self.s3_bucket()?)))
+            Ok(ObjectDownloader::S3 {
+                bucket: Box::new(self.s3_bucket()?),
+                runtime: crate::s3_runtime::build_s3_runtime(),
+            })
         } else {
             Ok(ObjectDownloader::Local)
         }
