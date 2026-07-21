@@ -698,8 +698,9 @@ class NeonContext(WireProtocolSupporterContext):
         # The ``neon_local`` proxy provisions a fresh ephemeral branch when its
         # container starts; the upstream compute can take several seconds to
         # become routable, and the proxy may briefly refuse connections in that
-        # window. The compose dependency is therefore ``service_started`` (not
-        # ``service_healthy``), so wait for the endpoint here with bounded
+        # window. Compose health-gates the suite on the proxy's listener, but
+        # the proxy can still restart mid-run (its ``on-failure`` policy after
+        # an upstream blip), so also wait for the endpoint here with bounded
         # backoff — the same approach ``_connect_to_mysql`` uses for the MySQL
         # init window.
         deadline = time.monotonic() + timeout_sec
