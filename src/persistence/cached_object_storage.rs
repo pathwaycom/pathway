@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-use crate::connectors::metadata::file_like::{OwnerInterner, ScannerTag};
+use crate::connectors::metadata::file_like::{IdentityInterner, ScannerTag};
 use crate::connectors::metadata::FileLikeMetadata;
 use crate::persistence::backends::{Error as PersistenceError, PersistenceBackend};
 
@@ -765,7 +765,20 @@ fn serialize_metadata(metadata: &FileLikeMetadata) -> Result<Vec<u8>, Persistenc
 }
 
 fn deserialize_metadata(serialized: &[u8]) -> Result<FileLikeMetadata, PersistenceError> {
-    bincode::deserialize(serialized).map_err(|err| PersistenceError::Bincode(*err))
+    bincode::deserialize(serialized)
+        .or_else(|_| {
+            bincode::deserialize::<FileLikeMetadataV1>(serialized).map(|v1| {
+                FileLikeMetadata::from_v1(
+                    v1.created_at,
+                    v1.modified_at,
+                    v1.owner,
+                    v1.path,
+                    v1.size,
+                    v1.seen_at,
+                )
+            })
+        })
+        .map_err(|err| PersistenceError::Bincode(*err))
 }
 
 pub struct CachedObjectStorage {
@@ -779,7 +792,7 @@ pub struct CachedObjectStorage {
     // bytes per key header). The full metadata is kept on disk, in
     // `objects_snapshot`, next to the object contents.
     metadata_snapshot: HashMap<Box<[u8]>, ScannerTag>,
-    owner_interner: OwnerInterner,
+    identity_interner: IdentityInterner,
 
     objects_snapshot: SqliteObjectsSnapshot,
     current_version: CachedObjectVersion,
@@ -793,7 +806,7 @@ impl CachedObjectStorage {
                 EMPTY_STORAGE_BATCH_ID + 1,
             ))),
             metadata_snapshot: HashMap::new(),
-            owner_interner: OwnerInterner::default(),
+            identity_interner: IdentityInterner::default(),
             objects_snapshot: SqliteObjectsSnapshot::new()?,
             current_version: EMPTY_STORAGE_VERSION + 1,
         })
@@ -833,8 +846,11 @@ impl CachedObjectStorage {
             }
 
             let object = external_accessor.backend.get_value(&key)?;
-            let mut batch: EventsBatch =
-                bincode::deserialize(&object).map_err(|err| PersistenceError::Bincode(*err))?;
+            let mut batch: EventsBatch = bincode::deserialize(&object)
+                .or_else(|_| {
+                    bincode::deserialize::<EventsBatchV1>(&object).map(EventsBatchV1::into_v2)
+                })
+                .map_err(|err| PersistenceError::Bincode(*err))?;
             assert!(batch.is_sorted);
 
             // The object can be removed in one of the following cases:
@@ -938,7 +954,7 @@ impl CachedObjectStorage {
     /// Mirrors `FileLikeMetadata::is_changed` for a stored tag and the
     /// actual metadata of the corresponding object.
     pub fn is_changed(&self, stored: &ScannerTag, actual: &FileLikeMetadata) -> bool {
-        self.owner_interner.is_changed(stored, actual)
+        self.identity_interner.is_changed(stored, actual)
     }
 
     /// Reads the full stored copy of an object — contents and metadata —
@@ -977,7 +993,7 @@ impl CachedObjectStorage {
                 EventType::Update(_) => {
                     let batch_id = event.batch_id;
                     let blob_segment = event.into_blob_segment();
-                    let tag = self.owner_interner.tag(&blob_segment.metadata);
+                    let tag = self.identity_interner.tag(&blob_segment.metadata);
                     self.metadata_snapshot
                         .insert(Box::from(blob_segment.uri.as_slice()), tag);
                     segments_for_download
@@ -1143,7 +1159,7 @@ impl CachedObjectStorage {
     ) -> Result<(), PersistenceError> {
         match event.type_ {
             EventType::Update(metadata) => {
-                let tag = self.owner_interner.tag(&metadata);
+                let tag = self.identity_interner.tag(&metadata);
                 self.objects_snapshot
                     .insert(&event.uri, contents, &metadata)?;
                 self.metadata_snapshot
@@ -1160,5 +1176,72 @@ impl CachedObjectStorage {
     fn next_available_version(&mut self) -> u64 {
         self.current_version += 1;
         self.current_version - 1
+    }
+}
+
+// Below are V1 structs for backward compatibility to parse old formats and trigger cache misses
+
+#[derive(Deserialize)]
+struct FileLikeMetadataV1 {
+    created_at: Option<u64>,
+    modified_at: Option<u64>,
+    owner: Option<String>,
+    path: String,
+    size: u64,
+    seen_at: u64,
+}
+
+#[derive(Deserialize)]
+struct EventsBatchV1 {
+    batch_id: CachedObjectsBatchId,
+    events: Vec<MetadataEventV1>,
+    #[serde(default = "default_true")]
+    is_sorted: bool,
+}
+
+#[derive(Deserialize)]
+struct MetadataEventV1 {
+    uri: Uri,
+    version: CachedObjectVersion,
+    type_: EventTypeV1,
+    batch_id: CachedObjectsBatchId,
+    object_blob_start: usize,
+    object_blob_len: usize,
+}
+
+#[derive(Deserialize)]
+enum EventTypeV1 {
+    Update(FileLikeMetadataV1),
+    Delete,
+}
+
+impl EventsBatchV1 {
+    fn into_v2(self) -> EventsBatch {
+        EventsBatch {
+            batch_id: self.batch_id,
+            events: self
+                .events
+                .into_iter()
+                .map(|e| MetadataEvent {
+                    uri: e.uri,
+                    version: e.version,
+                    type_: match e.type_ {
+                        EventTypeV1::Update(meta) => EventType::Update(FileLikeMetadata::from_v1(
+                            meta.created_at,
+                            meta.modified_at,
+                            meta.owner,
+                            meta.path,
+                            meta.size,
+                            meta.seen_at,
+                        )),
+                        EventTypeV1::Delete => EventType::Delete,
+                    },
+                    batch_id: e.batch_id,
+                    object_blob_start: e.object_blob_start,
+                    object_blob_len: e.object_blob_len,
+                })
+                .collect(),
+            is_sorted: self.is_sorted,
+        }
     }
 }

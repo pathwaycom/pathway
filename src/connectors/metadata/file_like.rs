@@ -34,6 +34,11 @@ pub struct FileLikeMetadata {
     // Record acquisition time. Required for the real-time indexer processes
     // to determine the gap between finding file and indexing it.
     seen_at: u64,
+
+    pub mtime_ns: Option<u64>,
+    pub etag: Option<String>,
+    pub inode: Option<u64>,
+    pub ctime_ns: Option<u64>,
 }
 
 impl FileLikeMetadata {
@@ -42,6 +47,28 @@ impl FileLikeMetadata {
         let modified_at = metadata_time_to_unix_timestamp(meta.modified().ok());
         let owner = file_owner::get_owner(meta);
 
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+            .or_else(|| modified_at.map(|m| m * 1_000_000_000));
+
+        #[cfg(unix)]
+        let (inode, ctime_ns) = {
+            use std::os::unix::fs::MetadataExt;
+            let ctime_seconds = u64::try_from(meta.ctime()).unwrap_or(0);
+            let ctime_nanoseconds = u64::try_from(meta.ctime_nsec()).unwrap_or(0);
+            let ctime_ns = if meta.ctime() >= 0 {
+                Some(ctime_seconds * 1_000_000_000 + ctime_nanoseconds)
+            } else {
+                None
+            };
+            (Some(meta.ino()), ctime_ns)
+        };
+        #[cfg(not(unix))]
+        let (inode, ctime_ns) = (None, None);
+
         Self {
             created_at,
             modified_at,
@@ -49,6 +76,10 @@ impl FileLikeMetadata {
             path: path.to_string_lossy().to_string(),
             size: meta.len(),
             seen_at: current_unix_timestamp_secs(),
+            mtime_ns,
+            etag: None,
+            inode,
+            ctime_ns,
         }
     }
 
@@ -78,6 +109,34 @@ impl FileLikeMetadata {
             path: object.key.clone(),
             size: object.size,
             seen_at: current_unix_timestamp_secs(),
+            mtime_ns: None,
+            etag: object.e_tag.clone(),
+            inode: None,
+            ctime_ns: None,
+        }
+    }
+
+    /// Constructs a `FileLikeMetadata` from a V1 (legacy) deserialized record,
+    /// setting all fields introduced after V1 to `None`.
+    pub fn from_v1(
+        created_at: Option<u64>,
+        modified_at: Option<u64>,
+        owner: Option<String>,
+        path: String,
+        size: u64,
+        seen_at: u64,
+    ) -> Self {
+        Self {
+            created_at,
+            modified_at,
+            owner,
+            path,
+            size,
+            seen_at,
+            mtime_ns: None,
+            etag: None,
+            inode: None,
+            ctime_ns: None,
         }
     }
 
@@ -89,82 +148,118 @@ impl FileLikeMetadata {
         self.modified_at != other.modified_at
             || self.size != other.size
             || self.owner != other.owner
+            || self.mtime_ns != other.mtime_ns
+            || self.etag != other.etag
+            || self.inode != other.inode
+            || self.ctime_ns != other.ctime_ns
     }
 }
 
 /// A compact digest of `FileLikeMetadata` holding only the fields that
 /// `FileLikeMetadata::is_changed` compares. The posix-like scanners keep one
 /// tag per watched object in RAM, so it must stay small and heap-free: the
-/// owner string is replaced by an id interned in `OwnerInterner`, and the
-/// optional modification time is manually unpacked into a value plus a
-/// `has_mtime` flag — `Option<u64>` has no niche and would inflate the
-/// struct from 24 to 32 bytes.
+/// string identifiers (owner/etag) are replaced by an id interned in
+/// `IdentityInterner`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ScannerTag {
-    modified_at: u64, // Meaningful only when `has_mtime`; 0 otherwise.
-    size: u64,
-    owner_id: u32,
-    has_mtime: bool,
+pub enum ScannerTag {
+    Posix {
+        mtime_ns: u64, // Fallback to modified_at * 1_000_000_000 if absent
+        size: u64,
+        identity_id: u32,
+        inode: u64,
+        ctime_ns: u64,
+    },
+    S3 {
+        last_modified: u64,
+        size: u64,
+        identity_id: u32,
+    },
 }
 
-// The tag is held once per watched object of the scanned corpora, multiplied
-// by the hash map load factor, so every byte counts. If a new field makes it
-// legitimately larger, update this assertion consciously.
-const _: () = assert!(std::mem::size_of::<ScannerTag>() == 24);
+const _: () = assert!(std::mem::size_of::<ScannerTag>() == 40);
 
-impl ScannerTag {
-    fn modified_at(&self) -> Option<u64> {
-        self.has_mtime.then_some(self.modified_at)
-    }
-}
+const NO_IDENTITY_ID: u32 = 0;
 
-const NO_OWNER_ID: u32 = 0;
-
-/// Maps owner strings to compact ids for `ScannerTag`. A corpus typically has
-/// only a handful of distinct owners, so the side table stays tiny. Ids are
-/// never reused: entries are kept even after the last object of an owner is
-/// gone.
+/// Maps identity strings (owner or etag) to compact ids for `ScannerTag`.
 #[derive(Debug, Default)]
-pub struct OwnerInterner {
-    owner_ids: HashMap<String, u32>,
+pub struct IdentityInterner {
+    identity_ids: HashMap<String, u32>,
 }
 
-impl OwnerInterner {
-    /// Builds the in-RAM tag for a metadata entry, interning its owner.
+impl IdentityInterner {
+    /// Builds the in-RAM tag for a metadata entry, interning its identity.
     pub fn tag(&mut self, metadata: &FileLikeMetadata) -> ScannerTag {
-        ScannerTag {
-            modified_at: metadata.modified_at.unwrap_or(0),
-            has_mtime: metadata.modified_at.is_some(),
-            size: metadata.size,
-            owner_id: self.intern_owner(metadata.owner.as_deref()),
+        if metadata.path.starts_with("s3://")
+            || metadata.path.starts_with("s3a://")
+            || metadata.etag.is_some()
+        {
+            ScannerTag::S3 {
+                last_modified: metadata.modified_at.unwrap_or(0),
+                size: metadata.size,
+                identity_id: self.intern_identity(metadata.etag.as_deref()),
+            }
+        } else {
+            let mtime_ns = metadata
+                .mtime_ns
+                .unwrap_or_else(|| metadata.modified_at.unwrap_or(0) * 1_000_000_000);
+            ScannerTag::Posix {
+                mtime_ns,
+                size: metadata.size,
+                identity_id: self.intern_identity(metadata.owner.as_deref()),
+                inode: metadata.inode.unwrap_or(0),
+                ctime_ns: metadata.ctime_ns.unwrap_or(0),
+            }
         }
     }
 
     /// Mirrors `FileLikeMetadata::is_changed` for a stored tag and the actual
-    /// metadata of the object. An owner that was never interned can't be equal
-    /// to any stored owner, hence it always compares as changed.
+    /// metadata of the object.
     pub fn is_changed(&self, stored: &ScannerTag, actual: &FileLikeMetadata) -> bool {
-        stored.modified_at() != actual.modified_at
-            || stored.size != actual.size
-            || self.lookup_owner(actual.owner.as_deref()) != Some(stored.owner_id)
+        match stored {
+            ScannerTag::Posix {
+                mtime_ns,
+                size,
+                identity_id,
+                inode,
+                ctime_ns,
+            } => {
+                let actual_mtime_ns = actual
+                    .mtime_ns
+                    .unwrap_or_else(|| actual.modified_at.unwrap_or(0) * 1_000_000_000);
+                *mtime_ns != actual_mtime_ns
+                    || *size != actual.size
+                    || *inode != actual.inode.unwrap_or(0)
+                    || *ctime_ns != actual.ctime_ns.unwrap_or(0)
+                    || self.lookup_identity(actual.owner.as_deref()) != Some(*identity_id)
+            }
+            ScannerTag::S3 {
+                last_modified,
+                size,
+                identity_id,
+            } => {
+                *last_modified != actual.modified_at.unwrap_or(0)
+                    || *size != actual.size
+                    || self.lookup_identity(actual.etag.as_deref()) != Some(*identity_id)
+            }
+        }
     }
 
-    fn intern_owner(&mut self, owner: Option<&str>) -> u32 {
-        let Some(owner) = owner else {
-            return NO_OWNER_ID;
+    fn intern_identity(&mut self, identity: Option<&str>) -> u32 {
+        let Some(identity) = identity else {
+            return NO_IDENTITY_ID;
         };
-        if let Some(id) = self.owner_ids.get(owner) {
+        if let Some(id) = self.identity_ids.get(identity) {
             return *id;
         }
-        let id = u32::try_from(self.owner_ids.len() + 1).expect("too many distinct owners");
-        self.owner_ids.insert(owner.to_string(), id);
+        let id = u32::try_from(self.identity_ids.len() + 1).expect("too many distinct identities");
+        self.identity_ids.insert(identity.to_string(), id);
         id
     }
 
-    fn lookup_owner(&self, owner: Option<&str>) -> Option<u32> {
-        match owner {
-            None => Some(NO_OWNER_ID),
-            Some(owner) => self.owner_ids.get(owner).copied(),
+    fn lookup_identity(&self, identity: Option<&str>) -> Option<u32> {
+        match identity {
+            None => Some(NO_IDENTITY_ID),
+            Some(identity) => self.identity_ids.get(identity).copied(),
         }
     }
 }
@@ -367,12 +462,16 @@ mod tests {
             path: "/data/file.txt".to_string(),
             size,
             seen_at: 0,
+            mtime_ns: None,
+            etag: None,
+            inode: None,
+            ctime_ns: None,
         }
     }
 
     #[test]
     fn test_scanner_tag_mirrors_is_changed() {
-        let mut interner = OwnerInterner::default();
+        let mut interner = IdentityInterner::default();
         let cases = [
             metadata(Some(10), 4, Some("alice")),
             metadata(Some(10), 4, Some("bob")),
@@ -398,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_scanner_tag_unknown_owner_counts_as_changed() {
-        let mut interner = OwnerInterner::default();
+        let mut interner = IdentityInterner::default();
         let stored = metadata(Some(10), 4, Some("alice"));
         let tag = interner.tag(&stored);
         // An owner string never seen by the interner can't match any stored id.
