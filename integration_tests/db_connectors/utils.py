@@ -1766,6 +1766,10 @@ class ElasticsearchContext:
     # connection should be retried rather than failing the test.
     _REQUEST_TIMEOUT = 120
     _MAX_ATTEMPTS = 8
+    # Overall budget for creating one index, spanning retries of server-side
+    # 503s (master pending-task queue timeouts under suite-wide load). Matches
+    # the `_wait_for_index_active` deadline.
+    _CREATE_INDEX_DEADLINE = 120.0
 
     def __init__(self, base_url: str = ELASTICSEARCH_URL):
         self.base_url = base_url.rstrip("/")
@@ -1811,22 +1815,45 @@ class ElasticsearchContext:
         # Track the index up-front so cleanup runs even if a retried create
         # actually succeeded server-side before a read timeout surfaced.
         self._created_indices.append(index_name)
-        # `wait_for_active_shards=1` makes the create wait for the primary shard
-        # to be active before returning (see `_wait_for_index_active` for why).
-        response = self._request(
-            "PUT",
-            f"/{index_name}",
-            json={"mappings": mappings},
-            params={"wait_for_active_shards": 1},
-        )
-        # A create that timed out after succeeding, then retried, comes back as
-        # "already exists" — treat that as success.
-        if response.status_code == 400 and (
-            "resource_already_exists_exception" in response.text
-        ):
-            self._wait_for_index_active(index_name)
-            return index_name
-        response.raise_for_status()
+        deadline = time.monotonic() + self._CREATE_INDEX_DEADLINE
+        attempt = 0
+        while True:
+            # `wait_for_active_shards=1` makes the create wait for the primary
+            # shard to be active before returning (see `_wait_for_index_active`
+            # for why). `master_timeout` bounds how long the create task may sit
+            # in the master's pending-task queue before ES gives up with a 503;
+            # raise it above the 30s default so a busy node gets to process the
+            # task on the first try more often.
+            response = self._request(
+                "PUT",
+                f"/{index_name}",
+                json={"mappings": mappings},
+                params={
+                    "wait_for_active_shards": 1,
+                    "master_timeout": "60s",
+                    "timeout": "60s",
+                },
+            )
+            # A create that timed out after succeeding, then retried, comes back
+            # as "already exists" — treat that as success.
+            if response.status_code == 400 and (
+                "resource_already_exists_exception" in response.text
+            ):
+                break
+            # 503 means the master could not process the create in time
+            # (`process_cluster_event_timeout_exception`: its pending-task queue
+            # is backed up while the whole suite hammers the single small-heap
+            # node). On that timeout ES drops the task from the queue — the
+            # index will *not* appear later (verified against 8.17.0) — so the
+            # only way the create ever happens is to retry it here. The
+            # "already exists" branch above still covers a transport-level
+            # retry in `_request` racing a create that actually landed.
+            if response.status_code == 503 and time.monotonic() < deadline:
+                time.sleep(min(0.5 * (2**attempt), 8.0))
+                attempt += 1
+                continue
+            response.raise_for_status()
+            break
         self._wait_for_index_active(index_name)
         return index_name
 
