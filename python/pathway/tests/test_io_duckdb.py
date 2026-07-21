@@ -14,11 +14,9 @@ import pytest
 
 import pathway as pw
 from pathway.tests.utils import (
-    ExceptionAwareThread,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
-    wait_result_with_checker,
     write_lines,
 )
 
@@ -814,6 +812,35 @@ def _read_only_row_count(db_path: str, table_name: str) -> int | None:
         con.close()
 
 
+# Starting a pipeline in a separate process is not instant: forking, engine
+# start-up and the license check all happen before the first row can reach the
+# database, and on a loaded CI machine that adds up to seconds. Waiting for the
+# pipeline to come up therefore gets its own generous budget, separate from the
+# budget for observing the writes themselves — with one shared deadline a slow
+# start-up would eat the time meant for the data and the test would fail for a
+# reason that has nothing to do with what it checks.
+PIPELINE_STARTUP_TIMEOUT_SEC = 60.0
+BATCH_VISIBLE_TIMEOUT_SEC = 30.0
+
+
+def _wait_for_row_count(
+    db_path: str, table_name: str, expected: int, timeout_sec: float
+):
+    """Poll the database with short-lived read-only connections until it holds
+    ``expected`` rows, reporting the last observed state on timeout."""
+    deadline = time.monotonic() + timeout_sec
+    last_seen = None
+    while time.monotonic() < deadline:
+        last_seen = _read_only_row_count(db_path, table_name)
+        if last_seen == expected:
+            return
+        time.sleep(0.1)
+    pytest.fail(
+        f"read-only readers never saw {expected} row(s) in {table_name!r} within "
+        f"{timeout_sec}s; the last probe saw {last_seen!r}"
+    )
+
+
 @only_with_license_key
 def test_detach_rejects_in_memory_database():
     table = pw.debug.table_from_markdown(
@@ -932,36 +959,29 @@ def test_detach_allows_concurrent_readonly_reader(tmp_path: pathlib.Path):
         detach_between_batches=True,
     )
 
-    def stream_inputs():
-        write_lines(
-            inputs_path / "one.jsonl",
-            [json.dumps({"value": value}) for value in first_batch],
+    write_lines(
+        inputs_path / "one.jsonl",
+        [json.dumps({"value": value}) for value in first_batch],
+    )
+
+    pathway_process = multiprocessing.Process(target=run)
+    pathway_process.start()
+    try:
+        _wait_for_row_count(
+            db_path, "t", len(first_batch), PIPELINE_STARTUP_TIMEOUT_SEC
         )
-        # Hold the second batch back until a read-only reader in this (parent)
-        # process has actually seen the first one committed.
-        deadline = time.monotonic() + 20.0
-        while time.monotonic() < deadline:
-            if _read_only_row_count(db_path, "t") == len(first_batch):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(
-                "no read-only connection managed to read the first batch while "
-                "the detaching writer was streaming"
-            )
+        # The second batch is held back until a read-only reader has actually
+        # seen the first one committed, so the reads above provably happened
+        # mid-run and not after the writer was done.
         write_lines(
             inputs_path / "two.jsonl",
             [json.dumps({"value": value}) for value in second_batch],
         )
-
-    stream_thread = ExceptionAwareThread(target=stream_inputs, daemon=True)
-    stream_thread.start()
-    total = len(first_batch) + len(second_batch)
-    wait_result_with_checker(
-        lambda: _read_only_row_count(db_path, "t") == total,
-        30,
-    )
-    stream_thread.join()
+        total = len(first_batch) + len(second_batch)
+        _wait_for_row_count(db_path, "t", total, BATCH_VISIBLE_TIMEOUT_SEC)
+    finally:
+        pathway_process.terminate()
+        pathway_process.join()
 
 
 @only_with_license_key
@@ -1001,7 +1021,7 @@ def test_default_mode_keeps_file_locked_while_running(tmp_path: pathlib.Path):
     try:
         # The writer creates the database file when it opens it, so the file
         # showing up means the (lazily-opened, held) connection exists.
-        deadline = time.monotonic() + 20.0
+        deadline = time.monotonic() + PIPELINE_STARTUP_TIMEOUT_SEC
         while time.monotonic() < deadline and not os.path.exists(db_path):
             time.sleep(0.05)
         assert os.path.exists(db_path), "the writer never opened the database"
