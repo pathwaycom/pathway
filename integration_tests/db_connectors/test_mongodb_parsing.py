@@ -69,11 +69,53 @@ _MONGODB_STREAM_SCRIPT = textwrap.dedent(
 )
 
 
+class MongoDBStreamWorker:
+    """The streaming reader pipeline, running in a separate interpreter.
+
+    Owns the subprocess and its log so that a reader which never starts — or
+    which dies mid-test — is reported as such, with its output attached,
+    instead of surfacing as an unexplained "no rows ever arrived" timeout.
+    """
+
+    def __init__(self, proc: subprocess.Popen, log_path: str):
+        self.proc = proc
+        self.log_path = log_path
+
+    def log_contents(self) -> str:
+        try:
+            with open(self.log_path) as f:
+                return f.read()
+        except OSError as e:
+            return f"<unreadable log {self.log_path}: {e}>"
+
+    def status(self) -> str:
+        exit_code = self.proc.poll()
+        state = "running" if exit_code is None else f"exited with {exit_code}"
+        return (
+            f"reader subprocess (pid {self.proc.pid}) {state}; "
+            f"log ({self.log_path}):\n{self.log_contents()}"
+        )
+
+    def raise_if_dead(self) -> None:
+        """Abort the test as soon as the reader is gone.
+
+        A streaming reader is expected to stay alive for the whole test, so its
+        exit — whatever the code — means no further row will ever be delivered
+        and waiting out the remaining timeout only delays the report.
+        """
+        if self.proc.poll() is not None:
+            raise AssertionError(f"MongoDB {self.status()}")
+
+    def terminate(self) -> None:
+        self.proc.terminate()
+        self.proc.wait()
+
+
 def _start_mongodb_stream_worker(
     input_collection: str,
     output_collection: str,
     schema_code: str,
-) -> subprocess.Popen:
+) -> MongoDBStreamWorker:
     cfg = json.dumps(
         {
             "connection_string": MONGODB_CONNECTION_STRING,
@@ -90,32 +132,51 @@ def _start_mongodb_stream_worker(
     log_path = log_file.name
     log_file.close()
     print(f"[MongoDB stream subprocess log: {log_path}]", flush=True)
-    proc = subprocess.Popen(
-        [sys.executable, "-c", _MONGODB_STREAM_SCRIPT, cfg],
-        env=os.environ,
-        stdout=open(log_path, "w"),
-        stderr=subprocess.STDOUT,
-    )
-    return proc
+    with open(log_path, "w") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _MONGODB_STREAM_SCRIPT, cfg],
+            env=os.environ,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return MongoDBStreamWorker(proc, log_path)
 
 
 class MongoDBRowCountChecker:
 
     def __init__(
-        self, mongodb: MongoDBContext, collection_name: str, n_rows_expected: int
+        self,
+        mongodb: MongoDBContext,
+        collection_name: str,
+        n_rows_expected: int,
+        worker: MongoDBStreamWorker | None = None,
     ):
         self.mongodb = mongodb
         self.collection_name = collection_name
         self.n_rows_expected = n_rows_expected
+        self.worker = worker
+        self.n_rows_seen = 0
 
     def __call__(self) -> bool:
+        if self.worker is not None:
+            self.worker.raise_if_dead()
         try:
             rows = self.mongodb.get_full_collection(self.collection_name)
         except Exception as e:
             print("Exception:", e)
             return False
+        self.n_rows_seen = len(rows)
         print(f"Rows seen: {len(rows)} Rows expected: {self.n_rows_expected}")
         return len(rows) == self.n_rows_expected
+
+    def provide_information_on_failure(self) -> str:
+        details = (
+            f"collection {self.collection_name}: {self.n_rows_seen} rows seen, "
+            f"{self.n_rows_expected} expected"
+        )
+        if self.worker is not None:
+            details += f"\n{self.worker.status()}"
+        return details
 
 
 def _create_table(ItemType: Any, input_rows: list[dict]) -> pw.Table:
@@ -207,18 +268,18 @@ def _test_mongodb_streaming(
             }
         )
 
+    # Start the reader subprocess first so it has time to connect and deliver
+    # the snapshot rows before streaming_target starts polling for them. The
+    # per-item type check that the observer used to perform here is covered by
+    # the static phase above (same items, same schema) and by
+    # ``_compare_input_and_output`` on the delivered rows below.
+    worker = _start_mongodb_stream_worker(
+        input_table_name,
+        output_table_name,
+        generate_pkey_item_schema_code(ItemType, primary_key=False),
+    )
+
     def streaming_target():
-        # Wait until the reader has delivered its initial snapshot to the output
-        # before inserting anything new. The MongoDB reader's change-stream
-        # catch-up only finishes once it sees consecutive empty getMores, which
-        # never happens while rows are being inserted concurrently — so starting
-        # these inserts before the snapshot lands can stall the reader's
-        # initialization indefinitely and nothing is ever delivered.
-        wait_result_with_checker(
-            MongoDBRowCountChecker(mongodb, output_table_name, len(items)),
-            60,
-            target=None,
-        )
         for index, row in enumerate(input_rows):
             wait_result_with_checker(
                 MongoDBRowCountChecker(
@@ -239,30 +300,40 @@ def _test_mongodb_streaming(
             )
             run()
 
-    # Start the reader subprocess first so it has time to connect and deliver
-    # the snapshot rows before streaming_target starts polling for them. The
-    # per-item type check that the observer used to perform here is covered by
-    # the static phase above (same items, same schema) and by
-    # ``_compare_input_and_output`` on the delivered rows below.
-    proc = _start_mongodb_stream_worker(
-        input_table_name,
-        output_table_name,
-        generate_pkey_item_schema_code(ItemType, primary_key=False),
-    )
-
-    streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
-    streaming_thread.start()
-
     try:
+        # Phase 1 — the reader's initial snapshot. Nothing is inserted until it
+        # has landed: the reader's change-stream catch-up only finishes once it
+        # sees consecutive empty getMores, which never happens while rows are
+        # being inserted concurrently, so inserting earlier can stall the
+        # reader's initialization indefinitely.
+        #
+        # This phase gets a budget of its own rather than sharing one with the
+        # streaming phase below. Everything the reader needs to start — a fresh
+        # interpreter, importing pathway, building the pipeline, connecting to
+        # the replica set — happens inside it, and under the parallelism the
+        # suite runs at that start-up cost is both large and highly variable.
+        # Measuring it against a single deadline shared with the row-delivery
+        # phase left the latter with whatever was not spent starting up, i.e.
+        # sometimes nothing at all.
         wait_result_with_checker(
-            MongoDBRowCountChecker(mongodb, output_table_name, 2 * len(input_rows)),
-            60,
+            MongoDBRowCountChecker(mongodb, output_table_name, len(items), worker),
+            120,
+            target=None,
+        )
+
+        # Phase 2 — rows inserted while the reader tails the collection.
+        streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
+        streaming_thread.start()
+        wait_result_with_checker(
+            MongoDBRowCountChecker(
+                mongodb, output_table_name, 2 * len(input_rows), worker
+            ),
+            120,
             target=None,
         )
         streaming_thread.join()
     finally:
-        proc.terminate()
-        proc.wait()
+        worker.terminate()
 
     output_rows = mongodb.get_full_collection(output_table_name)
 
