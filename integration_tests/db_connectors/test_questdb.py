@@ -202,6 +202,10 @@ def test_questdb_output_stream(designated_timestamp_policy, tmp_path, questdb):
         len(input_items), questdb, table_name=table_name, column_names=["name"]
     )
     wait_result_with_checker(checker, 30)
+    # Join before reading the results back: the streaming thread polls the same
+    # QuestDB context, and its last poll can outlive the checker above. Joining
+    # also surfaces any failure it hit instead of silently discarding it.
+    t.join()
     table_reread = questdb.get_table_contents(
         table_name,
         ["name", "count", "price", "available"],

@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import tempfile
+import threading
 import time
 import types as builtin_types
 import uuid
@@ -454,6 +455,16 @@ class WireProtocolSupporterContext:
         )
         self.connection.autocommit = True
         self.cursor = self.connection.cursor()
+        # A single psycopg2 cursor holds one result set and one read position,
+        # so it must not be used by two threads at once: an ``execute`` in one
+        # thread replaces the result set the other thread is about to
+        # ``fetchall``, which then returns the wrong rows -- or none at all,
+        # because the interleaved fetch already consumed them. Tests routinely
+        # stream input from a helper thread (whose progress checker polls this
+        # context) while the main thread queries the same context, so every
+        # statement issued through this class takes this lock and holds it for
+        # the whole execute + fetch.
+        self._lock = threading.RLock()
 
     def get_table_schema(
         self, table_name: str, schema: str = "public"
@@ -467,8 +478,9 @@ class WireProtocolSupporterContext:
             WHERE table_name = %s AND table_schema = %s
             ORDER BY ordinal_position;
         """
-        self.cursor.execute(query, (table_name, schema))
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute(query, (table_name, schema))
+            rows = self.cursor.fetchall()
 
         schema_props = {}
         for column_name, type_name, is_nullable in rows:
@@ -495,7 +507,8 @@ class WireProtocolSupporterContext:
                 field_values.append(str(value))
         condition = f'INSERT INTO {table_name} ({",".join(field_names)}) VALUES ({",".join(field_values)})'
         print(f"Inserting a row: {condition}")
-        self.cursor.execute(condition)
+        with self._lock:
+            self.cursor.execute(condition)
 
     def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
         table_name = self.random_table_name()
@@ -533,9 +546,10 @@ class WireProtocolSupporterContext:
             fields.append("time BIGINT NOT NULL")
             fields.append("diff BIGINT NOT NULL")
 
-        self.cursor.execute(
-            f'CREATE TABLE IF NOT EXISTS {table_name} ({",".join(fields)})'
-        )
+        with self._lock:
+            self.cursor.execute(
+                f'CREATE TABLE IF NOT EXISTS {table_name} ({",".join(fields)})'
+            )
 
         return table_name
 
@@ -553,8 +567,9 @@ class WireProtocolSupporterContext:
             return value
 
         select_query = f'SELECT {",".join(column_names)} FROM {table_name};'
-        self.cursor.execute(select_query)
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute(select_query)
+            rows = self.cursor.fetchall()
         result = []
         for row in rows:
             row_map = {}
@@ -569,7 +584,8 @@ class WireProtocolSupporterContext:
         return result
 
     def execute_sql(self, query: str):
-        self.cursor.execute(query)
+        with self._lock:
+            self.cursor.execute(query)
 
     def execute_sql_with_retry(self, query: str, max_retries: int = 6) -> None:
         """``execute_sql`` with retry on PostgreSQL catalog concurrency
@@ -592,7 +608,8 @@ class WireProtocolSupporterContext:
         )
         for attempt in range(max_retries):
             try:
-                self.cursor.execute(query)
+                with self._lock:
+                    self.cursor.execute(query)
                 return
             except psycopg2.Error as e:
                 msg = str(e)
@@ -601,7 +618,8 @@ class WireProtocolSupporterContext:
                 # The cursor may be in an aborted state after the
                 # failed transaction. Recreate it before retrying.
                 try:
-                    self.cursor = self.connection.cursor()
+                    with self._lock:
+                        self.cursor = self.connection.cursor()
                 except Exception:
                     pass
                 time.sleep(0.1 * (1.5**attempt) + random.uniform(0, 0.05))

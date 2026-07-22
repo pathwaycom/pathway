@@ -119,6 +119,9 @@ def test_dynamodb_streaming(dynamodb, tmp_path):
     t.start()
     checker = EntryCountChecker(len(inputs), dynamodb, table_name=table_name)
     wait_result_with_checker(checker, 30)
+    # Joining surfaces a failure of the streaming thread instead of silently
+    # discarding it.
+    t.join()
 
 
 @pytest.mark.parametrize("append_init_mode", ["default", "create_if_not_exists"])
