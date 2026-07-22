@@ -2992,6 +2992,21 @@ def _pinecone_plaintext_host(host: str) -> str:
     return "http://" + host
 
 
+def _pinecone_sparse_pairs(vector: Any) -> list[tuple[int, float]]:
+    """The fetched record's sparse (index, weight) pairs, empty when it has none."""
+    sparse = getattr(vector, "sparse_values", None)
+    if sparse is None:
+        return []
+    return [
+        (int(index), round(float(weight), 4))
+        for index, weight in zip(sparse.indices, sparse.values)
+    ]
+
+
+class PineconeSparseUnsupported(Exception):
+    """The Pinecone deployment under test cannot host sparse indexes."""
+
+
 class PineconeContext:
     """Test helper around a `Pinecone Local <https://docs.pinecone.io/guides/operations/local-development>`_ instance.
 
@@ -3044,6 +3059,31 @@ class PineconeContext:
         self._created.append(index_name)
         self._wait_until_ready(index_name)
 
+    def create_sparse_index(self, index_name: str) -> None:
+        """Create a sparse index (always ``dotproduct``, and dimensionless).
+
+        Raises ``PineconeSparseUnsupported`` when the deployment under test
+        cannot host sparse indexes; callers turn that into a skip with an
+        explicit reason.
+
+        The local emulator does implement sparse indexes, but only under
+        ``X-Pinecone-Api-Version: 2025-01``: its image (``v1.0.0.rc0``, built
+        2025-02) knows no other version string and falls back to a dense-only
+        schema for every one of them, so under the ``2025-10`` the connector
+        pins it requires a ``dimension`` here and rejects sparse records later.
+        """
+        try:
+            self.client.create_index(
+                name=index_name,
+                metric="dotproduct",
+                vector_type="sparse",
+                spec=self._ServerlessSpec(cloud="aws", region="us-east-1"),
+            )
+        except Exception as e:
+            raise PineconeSparseUnsupported(str(e)) from e
+        self._created.append(index_name)
+        self._wait_until_ready(index_name)
+
     def _wait_until_ready(self, index_name: str, timeout: float = 30.0) -> None:
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -3068,11 +3108,31 @@ class PineconeContext:
         )
         return {
             key: {
-                "values": [round(float(x), 4) for x in vec.values],
+                "values": [round(float(x), 4) for x in (vec.values or [])],
+                "sparse_values": _pinecone_sparse_pairs(vec),
                 "metadata": dict(vec.metadata) if vec.metadata else {},
             }
             for key, vec in res.vectors.items()
         }
+
+    def query_sparse(
+        self,
+        index_name: str,
+        pairs: list[tuple[int, float]],
+        *,
+        top_k: int = 10,
+        namespace: str = "",
+    ) -> list[tuple[str, float]]:
+        """Run a sparse query and return the (id, score) hits, best first."""
+        res = self._data_index(index_name).query(
+            sparse_vector={
+                "indices": [index for index, _ in pairs],
+                "values": [weight for _, weight in pairs],
+            },
+            top_k=top_k,
+            namespace=namespace,
+        )
+        return [(match["id"], float(match["score"])) for match in res["matches"]]
 
     def wait_for_count(
         self, index_name: str, expected: int, namespace: str = "", timeout: float = 60.0

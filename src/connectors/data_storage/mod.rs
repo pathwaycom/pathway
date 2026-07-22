@@ -24,6 +24,7 @@ pub mod rabbitmq;
 pub mod scanner;
 pub mod sharding;
 pub mod sqlite;
+pub mod vectors;
 pub mod weaviate;
 
 pub use file::FileWriter;

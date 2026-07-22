@@ -1,7 +1,16 @@
 # Copyright © 2026 Pathway
 
+from __future__ import annotations
+
+import json
+import multiprocessing
+import queue
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import cast
+
 import numpy as np
 import pytest
+from utils import PineconeSparseUnsupported
 
 import pathway as pw
 from pathway.internals.parse_graph import G
@@ -838,3 +847,360 @@ def test_write_accepts_all_supported_metadata_types():
         pytest.fail(f"a valid configuration was rejected by a guardrail: {e}")
     except Exception:
         pass  # connect failure is expected — the guards accepted the schema
+
+
+class _SparseSchema(pw.Schema):
+    id: int = pw.column_definition(primary_key=True)
+    vector: list[tuple[int, float]]
+
+
+def _write_sparse_vectors(pinecone, index_name, rows, *, is_stream=False):
+    G.clear()
+    table = pw.debug.table_from_rows(_SparseSchema, rows, is_stream=is_stream)
+    pw.io.pinecone.write(
+        table,
+        index_name=index_name,
+        primary_key=table.id,
+        vector=table.vector,
+        api_key=pinecone.api_key,
+        host=pinecone.control_host,
+    )
+    run()
+
+
+def _sparse_index(pinecone) -> str:
+    """A freshly created sparse index, or a skip naming why it can't be created."""
+    index_name = pinecone.generate_index_name()
+    try:
+        pinecone.create_sparse_index(index_name)
+    except PineconeSparseUnsupported as e:
+        pytest.skip(
+            "the Pinecone deployment under test cannot host sparse indexes: "
+            f"{e} (the local emulator serves them only under API version "
+            "2025-01, not under the 2025-10 the connector pins)"
+        )
+    return index_name
+
+
+def test_write_sparse_vectors(pinecone):
+    """A list[tuple[int, float]] vector column lands in a sparse index as
+    sparse_values, and a sparse query scores the records by the stored weights."""
+    index_name = _sparse_index(pinecone)
+
+    rows = [
+        (1, [(7, 2.0), (21, 1.0)]),
+        (2, [(7, 0.5)]),
+    ]
+    _write_sparse_vectors(pinecone, index_name, rows)
+
+    assert pinecone.wait_for_count(index_name, 2) == 2
+    fetched = pinecone.fetch(index_name, [1, 2])
+    assert fetched["1"]["sparse_values"] == [(7, 2.0), (21, 1.0)]
+    assert fetched["2"]["sparse_values"] == [(7, 0.5)]
+    # A sparse index scores by the dot product of the stored weights, so the
+    # record with the larger weight on term 7 ranks first.
+    hits = pinecone.query_sparse(index_name, [(7, 1.0)])
+    assert [record_id for record_id, _ in hits] == ["1", "2"]
+    scores = dict(hits)
+    assert scores["1"] == pytest.approx(2.0, abs=1e-3)
+    assert scores["2"] == pytest.approx(0.5, abs=1e-3)
+
+
+def test_write_sparse_update_replaces_the_record(pinecone):
+    """Updating a row replaces the record's sparse_values instead of duplicating it."""
+    index_name = _sparse_index(pinecone)
+
+    rows = [
+        (1, [(7, 2.0)], 2, 1),
+        (1, [(7, 2.0)], 4, -1),
+        (1, [(9, 3.0)], 4, 1),
+    ]
+    _write_sparse_vectors(pinecone, index_name, rows, is_stream=True)
+
+    assert pinecone.wait_for_count(index_name, 1) == 1
+    assert pinecone.fetch(index_name, [1])["1"]["sparse_values"] == [(9, 3.0)]
+
+
+def test_write_sparse_delete_removes_the_record(pinecone):
+    """A row removed from the table is deleted from the sparse index."""
+    index_name = _sparse_index(pinecone)
+
+    rows = [
+        (1, [(7, 2.0)], 2, 1),
+        (2, [(9, 1.0)], 2, 1),
+        (1, [(7, 2.0)], 4, -1),
+    ]
+    _write_sparse_vectors(pinecone, index_name, rows, is_stream=True)
+
+    assert pinecone.wait_for_count(index_name, 1) == 1
+    assert set(pinecone.fetch(index_name, [1, 2])) == {"2"}
+
+
+def test_write_empty_sparse_vector(pinecone):
+    """A sparse vector with no pairs is valid and stored as an empty sparse_values."""
+    index_name = _sparse_index(pinecone)
+
+    _write_sparse_vectors(pinecone, index_name, [(1, [])])
+
+    assert pinecone.wait_for_count(index_name, 1) == 1
+    assert pinecone.fetch(index_name, [1])["1"]["sparse_values"] == []
+
+
+@pytest.mark.parametrize("index", [-1, 2**32, 2**40])
+def test_write_rejects_sparse_index_outside_u32_range(pinecone, index):
+    """A sparse index that does not fit u32 is reported, never silently truncated."""
+    index_name = _sparse_index(pinecone)
+
+    with pytest.raises(Exception, match="u32 range"):
+        _write_sparse_vectors(pinecone, index_name, [(1, [(index, 1.0)])])
+
+
+@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
+def test_write_rejects_non_finite_sparse_weight(pinecone, weight):
+    """A NaN or infinite sparse weight is rejected with an error naming the column."""
+    index_name = _sparse_index(pinecone)
+
+    with pytest.raises(Exception, match="non-finite"):
+        _write_sparse_vectors(pinecone, index_name, [(1, [(7, weight)])])
+
+
+def test_write_rejects_dense_vector_column_on_sparse_index(pinecone):
+    """A dense vector column pointed at a sparse index fails before any data flows."""
+    index_name = _sparse_index(pinecone)
+
+    with pytest.raises(Exception, match="dense vector.*sparse index"):
+        _write_vectors(pinecone, index_name, [(1, [1.0, 0.0, 0.0])])
+
+
+def test_write_rejects_sparse_vector_column_on_dense_index(pinecone):
+    """A sparse vector column pointed at a dense index fails before any data flows."""
+    # Only meaningful where the control plane reports the index's vector type;
+    # the emulator does not, so pair this with the sparse-index check above.
+    _sparse_index(pinecone)
+    index_name = pinecone.generate_index_name()
+    pinecone.create_index(index_name)
+
+    with pytest.raises(Exception, match="sparse vector.*dense index"):
+        _write_sparse_vectors(pinecone, index_name, [(1, [(7, 2.0)])])
+
+
+def test_write_rejects_multivector_column():
+    """A list[list[float]] column has no Pinecone counterpart and is refused."""
+
+    class MultivectorSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[list[float]]
+
+    G.clear()
+    table = pw.debug.table_from_rows(MultivectorSchema, [(1, [[1.0, 2.0], [3.0, 4.0]])])
+    with pytest.raises(NotImplementedError, match="multivector"):
+        pw.io.pinecone.write(
+            table,
+            index_name="i",
+            primary_key=table.id,
+            vector=table.vector,
+            api_key="k",
+        )
+
+
+def test_write_accepts_sparse_vector_column():
+    """A sparse vector column passes the up-front guards.
+
+    As in ``test_write_accepts_all_supported_metadata_types``, the pipeline then
+    targets an unreachable host, so the only accepted outcome is a
+    non-``ValueError`` failure — a ``ValueError`` would mean the guardrail
+    wrongly rejected a valid sparse schema.
+    """
+    G.clear()
+    table = pw.debug.table_from_rows(_SparseSchema, [(1, [(7, 2.0)])])
+    try:
+        pw.io.pinecone.write(
+            table,
+            index_name="i",
+            primary_key=table.id,
+            vector=table.vector,
+            api_key="k",
+            host="http://127.0.0.1:1",
+        )
+        run()
+    except ValueError as e:
+        pytest.fail(f"a valid sparse configuration was rejected by a guardrail: {e}")
+    except Exception:
+        pass  # connect failure is expected — the guards accepted the schema
+
+
+class _PineconeStub:
+    """A minimal stand-in for the Pinecone REST API.
+
+    The local emulator serves sparse indexes only under an API version the
+    connector does not pin (see ``_sparse_index``), so the tests above skip
+    wherever a real sparse index is needed. This stub keeps the sparse *write
+    path* covered end-to-end regardless: it answers ``describe_index`` with a
+    chosen ``vector_type`` and
+    records the request bodies the connector sends, so the tests can assert on
+    the records themselves.
+
+    It runs in a separate *process*: the engine holds the GIL while it talks to
+    Pinecone, so a server thread in the test process would never get to answer.
+    """
+
+    def __init__(self, vector_type: str | None = None) -> None:
+        self._vector_type = vector_type
+        self.upserts: list[dict] = []
+        self.deletes: list[str] = []
+
+    def _serve(self, port_queue, request_queue) -> None:
+        vector_type = self._vector_type
+
+        class Handler(BaseHTTPRequestHandler):
+            def _reply(self, payload: dict) -> None:
+                body = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:  # describe_index
+                _, port = cast(tuple[str, int], self.server.server_address)
+                index = {
+                    "name": self.path.rsplit("/", 1)[-1],
+                    "host": f"127.0.0.1:{port}",
+                }
+                if vector_type is not None:
+                    index["vector_type"] = vector_type
+                self._reply(index)
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length))
+                if self.path.endswith("/upsert"):
+                    request_queue.put(("upsert", payload["vectors"]))
+                else:
+                    request_queue.put(("delete", payload["ids"]))
+                self._reply({})
+
+            def log_message(self, *args) -> None:  # keep the test output clean
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port_queue.put(server.server_address[1])
+        server.serve_forever()
+
+    @property
+    def control_host(self) -> str:
+        return f"http://127.0.0.1:{self._port}"
+
+    def __enter__(self) -> _PineconeStub:
+        context = multiprocessing.get_context("fork")
+        port_queue = context.Queue()
+        self._request_queue = context.Queue()
+        self._process = context.Process(
+            target=self._serve, args=(port_queue, self._request_queue), daemon=True
+        )
+        self._process.start()
+        self._port = port_queue.get(timeout=30)
+        return self
+
+    def __exit__(self, *args) -> None:
+        # Every request has been answered by the time the pipeline returns, so
+        # what is still in the queue is the complete history.
+        while True:
+            try:
+                kind, payload = self._request_queue.get(timeout=1.0)
+            except queue.Empty:
+                break
+            if kind == "upsert":
+                self.upserts.extend(payload)
+            else:
+                self.deletes.extend(payload)
+        self._process.terminate()
+        self._process.join()
+
+    def record(self, record_id: str) -> dict:
+        matching = [record for record in self.upserts if record["id"] == record_id]
+        assert matching, f"no record with id {record_id!r} was upserted"
+        return matching[-1]
+
+
+def _write_to_stub(stub, schema, rows, *, is_stream=False):
+    G.clear()
+    table = pw.debug.table_from_rows(schema, rows, is_stream=is_stream)
+    pw.io.pinecone.write(
+        table,
+        index_name="stub-index",
+        primary_key=table.id,
+        vector=table.vector,
+        api_key="k",
+        host=stub.control_host,
+    )
+    run()
+
+
+def test_sparse_column_is_written_as_sparse_values():
+    """A sparse vector column produces records carrying sparse_values only."""
+    with _PineconeStub(vector_type="sparse") as stub:
+        _write_to_stub(stub, _SparseSchema, [(1, [(7, 2.0), (21, 0.5)])])
+
+    record = stub.record("1")
+    # camelCase: the Pinecone data plane spells the field `sparseValues`, and a
+    # snake_case spelling is read as a record carrying no vector at all.
+    assert record["sparseValues"] == {"indices": [7, 21], "values": [2.0, 0.5]}
+    assert "values" not in record
+
+
+def test_empty_sparse_column_is_written_as_empty_sparse_values():
+    with _PineconeStub(vector_type="sparse") as stub:
+        _write_to_stub(stub, _SparseSchema, [(1, [])])
+
+    assert stub.record("1")["sparseValues"] == {"indices": [], "values": []}
+
+
+def test_dense_column_is_written_as_dense_values():
+    """The dense path is unchanged: a dense record carries `values` and nothing else."""
+    with _PineconeStub(vector_type="dense") as stub:
+        _write_to_stub(stub, _VectorSchema, [(1, [1.0, 0.0, 0.5])])
+
+    record = stub.record("1")
+    assert record["values"] == [1.0, 0.0, 0.5]
+    assert "sparseValues" not in record
+
+
+def test_sparse_record_is_deleted_when_its_row_is_removed():
+    with _PineconeStub(vector_type="sparse") as stub:
+        _write_to_stub(
+            stub,
+            _SparseSchema,
+            [(1, [(7, 2.0)], 2, 1), (1, [(7, 2.0)], 4, -1)],
+            is_stream=True,
+        )
+
+    assert stub.deletes == ["1"]
+
+
+def test_dense_column_on_a_sparse_index_fails_before_writing_anything():
+    with _PineconeStub(vector_type="sparse") as stub:
+        with pytest.raises(Exception, match="dense vector.*sparse index"):
+            _write_to_stub(stub, _VectorSchema, [(1, [1.0, 0.0, 0.0])])
+
+    assert stub.upserts == []
+
+
+def test_sparse_column_on_a_dense_index_fails_before_writing_anything():
+    with _PineconeStub(vector_type="dense") as stub:
+        with pytest.raises(Exception, match="sparse vector.*dense index"):
+            _write_to_stub(stub, _SparseSchema, [(1, [(7, 2.0)])])
+
+    assert stub.upserts == []
+
+
+def test_sparse_column_is_written_when_the_index_kind_is_not_reported():
+    """Deployments that do not report `vector_type` still get sparse records.
+
+    The column's type decides the record shape; the index kind is only a
+    cross-check, so its absence must not silently fall back to a dense record.
+    """
+    with _PineconeStub(vector_type=None) as stub:
+        _write_to_stub(stub, _SparseSchema, [(1, [(7, 2.0)])])
+
+    assert stub.record("1")["sparseValues"] == {"indices": [7], "values": [2.0]}

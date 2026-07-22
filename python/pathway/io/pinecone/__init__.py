@@ -52,11 +52,23 @@ def _check_primary_key_dtype(name: str, dtype: dt.DType) -> None:
     )
 
 
-def _check_vector_dtype(name: str, dtype: dt.DType) -> None:
-    """Reject a ``vector`` whose type is not a numeric list / array.
+def _is_sparse_pair(dtype: dt.DType) -> bool:
+    """Whether ``dtype`` is the ``tuple[int, float]`` of a sparse (index, weight) pair."""
+    return (
+        isinstance(dtype, dt.Tuple)
+        and len(dtype.args) == 2
+        and dtype.args[0] == dt.INT
+        and dtype.args[1] == dt.FLOAT
+    )
 
-    Mirrors the runtime ``PineconeError::InvalidVector`` guard so a wrong column
-    type fails at ``write()`` time rather than once data flows.
+
+def _check_vector_dtype(name: str, dtype: dt.DType) -> None:
+    """Reject a ``vector`` that is neither a dense nor a sparse vector column.
+
+    A dense vector is a numeric list / array, a sparse one a
+    ``list[tuple[int, float]]`` of ``(index, weight)`` pairs. Mirrors the runtime
+    ``PineconeError::InvalidVector`` / ``InvalidSparseVector`` guards so a wrong
+    column type fails at ``write()`` time rather than once data flows.
     """
     if _is_statically_unknown(dtype):
         return
@@ -65,13 +77,24 @@ def _check_vector_dtype(name: str, dtype: dt.DType) -> None:
             f"vector column {name!r} is nullable (type {dtype}); every row must "
             "carry a vector, so the column cannot be optional."
         )
-    if isinstance(dtype, (dt.List, dt.Array)) and _is_numeric(dtype.wrapped):
+    if isinstance(dtype, dt.List):
+        inner = dtype.wrapped
+        if _is_numeric(inner) or _is_sparse_pair(inner):
+            return
+        if isinstance(inner, (dt.List, dt.Array)):
+            raise NotImplementedError(
+                f"vector column {name!r} has type {dtype}, which is a multivector; "
+                "a Pinecone record carries a single dense or sparse vector, so "
+                "multivectors are not supported."
+            )
+    if isinstance(dtype, dt.Array) and _is_numeric(dtype.wrapped):
         return
     if isinstance(dtype, dt.Tuple) and all(_is_numeric(arg) for arg in dtype.args):
         return
     raise ValueError(
         f"vector column {name!r} has unsupported type {dtype}; a Pinecone vector "
-        "must be a list[float] or a 1-D float array."
+        "must be a list[float] or a 1-D float array (dense), or a "
+        "list[tuple[int, float]] of (index, weight) pairs (sparse)."
     )
 
 
@@ -134,17 +157,36 @@ def write(
     guarantee that, writing then runs on a single worker and a collision (two rows
     with the same id) raises an error rather than silently overwriting.
 
-    The ``vector`` column provides the dense embedding and every remaining column —
-    or just the columns listed in ``metadata_columns`` — is stored as record
-    metadata. ``None`` metadata values are dropped; a metadata value of a type
-    Pinecone cannot store raises an error naming the offending column. See the
-    connector documentation for the full type-conversion table. For
-    high-dimensional vectors, ``batch_size`` may be reduced automatically so a
+    The ``vector`` column provides the vector written to the index, and its type
+    decides which kind of record is written:
+
+    - a ``list[float]`` (or 1-D ``numpy.ndarray``) column is written as the
+      record's dense ``values`` and requires a *dense* index;
+    - a ``list[tuple[int, float]]`` column of ``(index, weight)`` pairs is written
+      as the record's ``sparse_values`` and requires a *sparse* index. Weights are
+      sent raw (e.g. term frequencies): a sparse index scores by the dot product
+      of the stored weights, so IDF weighting, if wanted, is applied upstream;
+    - a ``list[list[float]]`` (multivector) column raises ``NotImplementedError``,
+      since a Pinecone record carries a single vector.
+
+    A Pinecone index holds vectors of one kind only, so a hybrid (dense + sparse)
+    setup is two indexes: create both, then attach two ``write()`` calls to the
+    same table — one naming the dense column and one naming the sparse column.
+    The same record ids then land in both indexes, so the two result sets can be
+    fused client-side. See the example below.
+
+    Every remaining column — or just the columns listed in ``metadata_columns`` —
+    is stored as record metadata. ``None`` metadata values are dropped; a metadata
+    value of a type Pinecone cannot store raises an error naming the offending
+    column. See the connector documentation for the full type-conversion table.
+    For high-dimensional vectors, ``batch_size`` may be reduced automatically so a
     single request stays within Pinecone's size limit.
 
-    The target index must already exist before the pipeline starts and its
-    dimension must match the length of the produced vectors; the connector does not
-    create it.
+    The target index must already exist before the pipeline starts; the connector
+    never creates it. For a dense index its dimension must match the length of the
+    produced vectors. If the index's kind does not match the ``vector`` column's
+    type, the connector fails at start-up with an error naming the index, the
+    column, and both kinds.
 
     Args:
         table: The table to write.
@@ -157,8 +199,11 @@ def write(
             internal row key is used as the id — always unique and written in
             parallel across workers — but the ids are then Pathway's internal
             keys rather than your own values.
-        vector: A column reference holding the dense embedding (``list[float]`` or
-            a 1-D ``numpy.ndarray``). The column must belong to ``table``.
+        vector: A column reference holding the vector to write. Either a dense
+            embedding (``list[float]`` or a 1-D ``numpy.ndarray``), written to a
+            dense index, or a sparse vector (``list[tuple[int, float]]`` of
+            ``(index, weight)`` pairs), written to a sparse index. The column must
+            belong to ``table``.
         api_key: Pinecone API key. When ``None``, the ``PINECONE_API_KEY``
             environment variable is used.
         host: Control-plane host. Leave as ``None`` for Pinecone cloud
@@ -232,6 +277,61 @@ def write(
     upserts the two records, and from then on keeps the index in sync with any
     later change to ``table``:
 
+    >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)  # doctest: +SKIP
+
+    For hybrid retrieval you need two indexes, since a Pinecone index stores
+    vectors of one kind: the dense one you already have, plus a sparse one
+    (``vector_type="sparse"``, which is always scored by ``dotproduct`` and takes
+    no dimension):
+
+    >>> pc.create_index(  # doctest: +SKIP
+    ...     name="docs-sparse",
+    ...     metric="dotproduct",
+    ...     vector_type="sparse",
+    ...     spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    ... )
+
+    The table now carries both vectors — the dense embedding and, say, BM25 term
+    weights as ``(token_id, weight)`` pairs:
+
+    >>> class HybridSchema(pw.Schema):
+    ...     doc_id: str = pw.column_definition(primary_key=True)
+    ...     embedding: list[float]
+    ...     bm25: list[tuple[int, float]]
+    ...     title: str
+    ...
+    >>> table = pw.debug.table_from_rows(
+    ...     HybridSchema,
+    ...     [
+    ...         ("a", [0.1, 0.2, 0.3, 0.4], [(7, 2.0), (21, 1.0)], "First"),
+    ...         ("b", [0.5, 0.6, 0.7, 0.8], [(3, 1.0)], "Second"),
+    ...     ],
+    ... )
+
+    Attach one ``write()`` per index off that single table, each naming the column
+    it writes. Both calls use the same ``primary_key``, so a document lands in the
+    two indexes under the same record id — that is what lets you fuse the dense
+    and the sparse result lists at query time. ``metadata_columns`` is spelled out
+    here because the default would try to store the *other* vector column as
+    metadata, which Pinecone cannot hold. Additions, updates, and deletions are
+    propagated to both indexes:
+
+    >>> pw.io.pinecone.write(   # doctest: +SKIP
+    ...     table,
+    ...     index_name="docs",
+    ...     primary_key=table.doc_id,
+    ...     vector=table.embedding,
+    ...     metadata_columns=[table.title],
+    ...     api_key="YOUR_API_KEY",
+    ... )
+    >>> pw.io.pinecone.write(   # doctest: +SKIP
+    ...     table,
+    ...     index_name="docs-sparse",
+    ...     primary_key=table.doc_id,
+    ...     vector=table.bm25,
+    ...     metadata_columns=[table.title],
+    ...     api_key="YOUR_API_KEY",
+    ... )
     >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)  # doctest: +SKIP
     """
     _check_entitlements("pinecone")

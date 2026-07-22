@@ -13,8 +13,9 @@ use tokio::runtime::Runtime as TokioRuntime;
 use uuid::Uuid;
 
 use crate::connectors::data_format::{serialize_value_to_json, FormatterContext};
+use crate::connectors::data_storage::vectors::{vector_kind_of, VectorKind};
 use crate::connectors::{WriteError, Writer};
-use crate::engine::{Key, Type, Value};
+use crate::engine::{Key, Value};
 use crate::python_api::ValueField;
 
 /// Errors specific to the Qdrant output connector. Surfaced to the engine
@@ -116,40 +117,6 @@ pub enum QdrantWriteError {
          the u32 range Qdrant requires for sparse vector indices"
     )]
     SparseIndexOutOfRange(String, i64),
-}
-
-/// The vector-capable kinds a column's static dtype can map to. Derived from
-/// the engine [`Type`] of each output column; columns mapping to `None` go to
-/// the point payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VectorKind {
-    /// `list[float]` or a 1-D numeric `numpy.ndarray`.
-    Dense,
-    /// `list[tuple[int, float]]` — pairs of (index, weight).
-    Sparse,
-    /// `list[list[float]]` — reserved for Qdrant multivectors, not implemented.
-    Multi,
-}
-
-fn vector_kind_of(dtype: &Type) -> Option<VectorKind> {
-    match dtype {
-        Type::List(element) => match element.as_ref() {
-            Type::Float => Some(VectorKind::Dense),
-            Type::Tuple(fields)
-                if fields.len() == 2 && fields[0] == Type::Int && fields[1] == Type::Float =>
-            {
-                Some(VectorKind::Sparse)
-            }
-            Type::List(inner) if **inner == Type::Float => Some(VectorKind::Multi),
-            _ => None,
-        },
-        // Any ndarray column is a dense candidate: the value-level extraction
-        // still rejects non-numeric or multi-dimensional arrays. A bare
-        // `np.ndarray` annotation arrives as `Array(Any)`, so requiring a
-        // numeric element type here would reject the common spelling.
-        Type::Array(_, _) => Some(VectorKind::Dense),
-        _ => None,
-    }
 }
 
 /// A vector slot declared by the collection, bound to the same-named table
@@ -293,14 +260,8 @@ impl QdrantWriter {
             if vector_params.multivector_config.is_some() {
                 return Err(QdrantWriteError::MultivectorNotImplemented(slot_name));
             }
-            let column_index = Self::bind_column(
-                value_fields,
-                collection_name,
-                &slot_name,
-                VectorKind::Dense,
-                "dense",
-                "list[float] (or a 1-D numeric numpy.ndarray)",
-            )?;
+            let column_index =
+                Self::bind_column(value_fields, collection_name, &slot_name, VectorKind::Dense)?;
             slots.push(SlotBinding::Dense {
                 name: slot_name,
                 column_index,
@@ -313,8 +274,6 @@ impl QdrantWriter {
                 collection_name,
                 &slot_name,
                 VectorKind::Sparse,
-                "sparse",
-                "list[tuple[int, float]]",
             )?;
             slots.push(SlotBinding::Sparse {
                 name: slot_name,
@@ -330,8 +289,6 @@ impl QdrantWriter {
         collection_name: &str,
         slot_name: &str,
         expected_kind: VectorKind,
-        kind_name: &'static str,
-        expected_dtype: &'static str,
     ) -> Result<usize, QdrantWriteError> {
         let column_index = value_fields
             .iter()
@@ -339,14 +296,14 @@ impl QdrantWriter {
             .ok_or_else(|| QdrantWriteError::SlotWithoutColumn {
                 collection: collection_name.to_string(),
                 slot: slot_name.to_string(),
-                kind: kind_name,
+                kind: expected_kind.name(),
             })?;
         let dtype = &value_fields[column_index].type_;
         if vector_kind_of(dtype) != Some(expected_kind) {
             return Err(QdrantWriteError::SlotKindMismatch {
                 slot: slot_name.to_string(),
-                expected_kind: kind_name,
-                expected_dtype,
+                expected_kind: expected_kind.name(),
+                expected_dtype: expected_kind.expected_dtype(),
                 actual_dtype: dtype.to_string(),
             });
         }
