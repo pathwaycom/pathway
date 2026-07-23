@@ -4614,6 +4614,51 @@ def test_python_subject_deletions_enabled_defaults():
     assert not pw.io.python._are_deletions_reachable(str)
 
 
+def test_python_subject_inspection_leaves_properties_unevaluated():
+    # Building the computation graph inspects the subject's attributes to find out
+    # whether the connector can produce deletions. A property may do arbitrary work -
+    # the SharePoint connector opens an authenticated session in one of them - so the
+    # inspection has to resolve attributes without evaluating them. Otherwise the
+    # graph construction performs the property's side effects, outside of any error
+    # handling the connector itself has.
+    evaluations = 0
+
+    class SubjectWithExpensiveProperty(pw.io.python.ConnectorSubject):
+        @property
+        def _session(self):
+            nonlocal evaluations
+            evaluations += 1
+            raise RuntimeError("this property has side effects")
+
+        def run(self):
+            self.next_bytes(b"data")
+
+    subject = SubjectWithExpensiveProperty()
+    assert not subject._deletions_enabled
+    assert evaluations == 0
+
+    pw.io.python.read(subject, format="binary")
+    assert evaluations == 0
+
+
+def test_python_subject_with_properties_still_reports_deletions():
+    # Resolving attributes statically must not blind the inspection to deletions
+    # performed by the subject's regular methods.
+    class SubjectWithPropertyAndRemovals(pw.io.python.ConnectorSubject):
+        @property
+        def _session(self):
+            raise RuntimeError("this property has side effects")
+
+        def run(self):
+            self.next_bytes(b"data")
+            self.drop_entry()
+
+        def drop_entry(self):
+            self._remove(None, b"data")
+
+    assert SubjectWithPropertyAndRemovals()._deletions_enabled
+
+
 def test_worker_count_scaling_error(tmp_path):
     table = pw.io.plaintext.read(tmp_path)
     pw.io.null.write(table)

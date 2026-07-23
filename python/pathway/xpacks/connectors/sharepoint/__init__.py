@@ -24,9 +24,50 @@ from pathway.optional_import import optional_imports
 
 with optional_imports("xpack-sharepoint"):
     from office365.sharepoint.client_context import ClientContext
+    from requests.exceptions import RequestException
 
 from typing import Any, Literal
 from urllib.parse import quote, urlparse
+
+QUERY_MAX_ATTEMPTS = 5
+QUERY_RETRY_INTERVAL_SECONDS = 5
+
+
+def _execute_with_retries(query):
+    """Runs a prepared SharePoint query, retrying transient failures.
+
+    ``execute_query_retry`` only retries ``ClientRequestException`` by default, so a
+    connection-level problem - an unreachable network, a DNS hiccup, a reset socket -
+    propagates from the very first attempt, even though the next one would most likely
+    succeed. ``RequestException`` is the base class of both, hence widening the tuple
+    covers HTTP errors and connection errors alike.
+
+    The library also swallows the last failure instead of re-raising it, which would
+    leave the caller with a silently incomplete result. The failure callback is what
+    tells "gave up" apart from "succeeded", so that the error can be surfaced.
+    """
+    last_error: Exception | None = None
+    failed_attempts = 0
+
+    def on_failure(attempt: int, error: Exception) -> None:
+        nonlocal last_error, failed_attempts
+        last_error = error
+        failed_attempts = attempt
+        logging.warning(
+            f"SharePoint query failed (attempt {attempt} of {QUERY_MAX_ATTEMPTS}): "
+            f"{error}. Retrying in {QUERY_RETRY_INTERVAL_SECONDS} seconds..."
+        )
+
+    query.execute_query_retry(
+        max_retry=QUERY_MAX_ATTEMPTS,
+        timeout_secs=QUERY_RETRY_INTERVAL_SECONDS,
+        failure_callback=on_failure,
+        exceptions=(RequestException,),
+    )
+    if failed_attempts == QUERY_MAX_ATTEMPTS:
+        assert last_error is not None
+        raise last_error
+    return query
 
 
 class _SharePointEntryMeta:
@@ -110,7 +151,7 @@ class _SharePointScanner:
         root_folder = self._context.web.get_folder_by_server_relative_path(
             self._root_path
         )
-        files = root_folder.get_files(self._recursive).execute_query_retry()
+        files = _execute_with_retries(root_folder.get_files(self._recursive))
 
         updated_entries = []
         deleted_entries = []
@@ -137,7 +178,7 @@ class _SharePointScanner:
                 elif size_limit_exceeded:
                     content = b""
                 else:
-                    content = file.get_content().execute_query_retry().value
+                    content = _execute_with_retries(file.get_content()).value
                 updated_entries.append((content, metadata))
                 self._stored_metadata[metadata.path] = metadata
             seen_objects.add(metadata.path)
@@ -259,7 +300,7 @@ class _ContextWrapper:
         )
         current_web = context.web
         context.load(current_web)
-        context.execute_query_retry()
+        _execute_with_retries(context)
         return context
 
 

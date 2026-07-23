@@ -384,6 +384,8 @@ def _are_deletions_reachable(subject) -> bool:
     Limitations:
     - Only detects direct calls: self._buffer.put((PythonConnectorEventType.DELETE, ...))
     - May miss aliased or dynamic calls
+    - Attributes are resolved statically, so a method reached through a property is
+      not followed
     - Returns False on parsing errors
     """
 
@@ -496,13 +498,22 @@ def _are_deletions_reachable(subject) -> bool:
         if name == "_deletions_enabled":
             continue
         try:
-            subject_method = getattr(subject, name)
+            # The attribute is resolved statically on purpose: a plain ``getattr``
+            # evaluates properties, and a connector's property may well perform I/O.
+            # The SharePoint subject, for instance, authenticates against the site
+            # and queries it in ``_context``, so a plain ``getattr`` turned this
+            # inspection into a network round trip that ran while the computation
+            # graph was still being built - outside of any of the connector's own
+            # error handling. Inspecting a subject must have no side effects.
+            subject_method = inspect.getattr_static(subject, name)
             if callable(subject_method):
                 methods[name] = subject_method
         except AttributeError:
             continue
 
-    return is_removal_api_found(subject.run, methods, visited=set())
+    return is_removal_api_found(
+        inspect.getattr_static(subject, "run"), methods, visited=set()
+    )
 
 
 @check_arg_types
