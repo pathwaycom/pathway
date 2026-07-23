@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Literal
+import logging
+from typing import Any, Iterable, Literal, Optional
 
 from pathway.internals import api, datasink, datasource, dtype as dt
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -18,6 +19,7 @@ from pathway.io._utils import (
     init_mode_from_str,
     read_schema,
 )
+from pathway.schema import schema_builder
 
 
 @check_arg_types
@@ -25,7 +27,7 @@ from pathway.io._utils import (
 def read(
     connection_string: str,
     table_name: str,
-    schema: type[Schema],
+    schema: type[Schema] | None = None,
     *,
     mode: Literal["static", "streaming"] = "streaming",
     server_id: int | None = None,
@@ -183,6 +185,63 @@ for the MySQL database. It must include the database name, e.g.
     >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
     """
     _check_entitlements("mysql")
+
+    if schema is None:
+        try:
+            from pathway.engine import mysql_explore_schema
+
+            columns_data, pk_columns = mysql_explore_schema(
+                connection_string, table_name
+            )
+            schema_columns = {}
+            for col_name, udt_name, is_nullable in columns_data:
+                udt_name_lower = udt_name.lower()
+                mapping = {
+                    "tinyint": int,
+                    "smallint": int,
+                    "mediumint": int,
+                    "int": int,
+                    "bigint": int,
+                    "float": float,
+                    "double": float,
+                    "decimal": float,
+                    "char": str,
+                    "varchar": str,
+                    "text": str,
+                    "mediumtext": str,
+                    "longtext": str,
+                    "json": str,
+                }
+                py_type = mapping.get(udt_name_lower, Any)
+                if is_nullable and py_type is not Any:
+                    py_type = Optional[py_type]
+
+                is_pk = col_name in pk_columns
+                from pathway.internals.schema import column_definition
+
+                schema_columns[col_name] = column_definition(
+                    dtype=py_type,
+                    primary_key=is_pk,
+                )
+
+            if not pk_columns:
+                logging.getLogger(__name__).warning(
+                    f"No primary key found for {table_name} during schema exploration. "
+                    "Falling back to auto-generated row identifiers. "
+                    "This may cause issues in streaming mode if the table is not append-only."
+                )
+
+            schema_name_class = (
+                "".join(c.capitalize() for c in table_name.split("_")) + "Schema"
+            )
+            schema = schema_builder(schema_columns, name=schema_name_class)
+            logging.getLogger(__name__).info(
+                f"Derived schema for {table_name}:\n{schema}"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to explore schema automatically: {e}. Please provide an explicit schema."
+            ) from e
 
     schema, api_schema = read_schema(schema)
 

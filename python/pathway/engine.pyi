@@ -1231,3 +1231,19 @@ class PyObjectWrapper(Generic[T]):
     def _create_with_serializer(
         value: T, *, serializer: PyObjectWrapperSerializer | None = None
     ) -> PyObjectWrapper[T]: ...
+
+def postgres_explore_schema(
+    connection_string: str,
+    schema_name: str | None,
+    table_name: str,
+    ssl_mode: str,
+    ssl_cert_path: str | None,
+) -> tuple[list[tuple[str, str, bool]], list[str]]: ...
+def mysql_explore_schema(
+    connection_string: str,
+    table_name: str,
+) -> tuple[list[tuple[str, str, bool]], list[str]]: ...
+def mssql_explore_schema(
+    connection_string: str,
+    full_table_name: str,
+) -> tuple[list[tuple[str, str, bool]], list[str]]: ...

@@ -5424,7 +5424,7 @@ def test_sequence_get_unchecked_fixed_length_errors():
     with pytest.raises(
         IndexError,
         match=(
-            re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}.")
+            re.escape(f"Index 2 out of range for a tuple of type {tuple[int, int]}.")
         ),
     ):
         t2.select(i=pw.this.tup[2])
@@ -5452,7 +5452,7 @@ def test_sequence_get_checked_fixed_length_errors():
     with pytest.warns(
         match=(
             "(?s)"  # make dot match newlines
-            + re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}. ")
+            + re.escape(f"Index 2 out of range for a tuple of type {tuple[int, int]}. ")
             + ".*"
             + re.escape("Consider using just the default value without .get().")
         ),
