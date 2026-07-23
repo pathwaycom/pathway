@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-use crate::connectors::metadata::file_like::{IdentityInterner, ScannerTag};
+use crate::connectors::metadata::file_like::{OwnerInterner, ScannerTag};
 use crate::connectors::metadata::FileLikeMetadata;
 use crate::persistence::backends::{Error as PersistenceError, PersistenceBackend};
 
@@ -792,7 +792,7 @@ pub struct CachedObjectStorage {
     // bytes per key header). The full metadata is kept on disk, in
     // `objects_snapshot`, next to the object contents.
     metadata_snapshot: HashMap<Box<[u8]>, ScannerTag>,
-    identity_interner: IdentityInterner,
+    owner_interner: OwnerInterner,
 
     objects_snapshot: SqliteObjectsSnapshot,
     current_version: CachedObjectVersion,
@@ -806,7 +806,7 @@ impl CachedObjectStorage {
                 EMPTY_STORAGE_BATCH_ID + 1,
             ))),
             metadata_snapshot: HashMap::new(),
-            identity_interner: IdentityInterner::default(),
+            owner_interner: OwnerInterner::default(),
             objects_snapshot: SqliteObjectsSnapshot::new()?,
             current_version: EMPTY_STORAGE_VERSION + 1,
         })
@@ -954,7 +954,7 @@ impl CachedObjectStorage {
     /// Mirrors `FileLikeMetadata::is_changed` for a stored tag and the
     /// actual metadata of the corresponding object.
     pub fn is_changed(&self, stored: &ScannerTag, actual: &FileLikeMetadata) -> bool {
-        self.identity_interner.is_changed(stored, actual)
+        self.owner_interner.is_changed(stored, actual)
     }
 
     /// Reads the full stored copy of an object — contents and metadata —
@@ -993,7 +993,7 @@ impl CachedObjectStorage {
                 EventType::Update(_) => {
                     let batch_id = event.batch_id;
                     let blob_segment = event.into_blob_segment();
-                    let tag = self.identity_interner.tag(&blob_segment.metadata);
+                    let tag = self.owner_interner.tag(&blob_segment.metadata);
                     self.metadata_snapshot
                         .insert(Box::from(blob_segment.uri.as_slice()), tag);
                     segments_for_download
@@ -1159,7 +1159,7 @@ impl CachedObjectStorage {
     ) -> Result<(), PersistenceError> {
         match event.type_ {
             EventType::Update(metadata) => {
-                let tag = self.identity_interner.tag(&metadata);
+                let tag = self.owner_interner.tag(&metadata);
                 self.objects_snapshot
                     .insert(&event.uri, contents, &metadata)?;
                 self.metadata_snapshot
