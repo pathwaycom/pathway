@@ -583,6 +583,18 @@ class WireProtocolSupporterContext:
                 result.sort(key=lambda item: item[sort_by])
         return result
 
+    def count_rows(self, table_name: str) -> int:
+        """Server-side ``SELECT count(*)``, serialized on the context lock.
+
+        Checkers must use this instead of touching ``self.cursor`` directly:
+        an unguarded execute/fetch pair interleaves with whatever another
+        thread runs through the same cursor and reads the wrong result set
+        (see the lock's comment in ``__init__``).
+        """
+        with self._lock:
+            self.cursor.execute(f'SELECT count(*) FROM "{table_name}"')
+            return self.cursor.fetchone()[0]
+
     def execute_sql(self, query: str):
         with self._lock:
             self.cursor.execute(query)
@@ -2393,7 +2405,7 @@ class MssqlContext:
                 return
             except pymssql.exceptions.OperationalError as e:
                 message = str(e)
-                # Two distinct transient failures, both of which SQL Server
+                # Three distinct transient failures, all of which SQL Server
                 # asks the caller to resubmit:
                 #  - 1205: the proc was picked as a deadlock victim on CDC
                 #    system-table locks;
@@ -2403,9 +2415,19 @@ class MssqlContext:
                 #    enabling CDC concurrently right after server start both
                 #    attempt the create — the loser fails, and on resubmit
                 #    finds the table in place and succeeds.
+                #  - 14258 (wrapped in 22832/22836): sp_cdc_add_job ran while
+                #    the SQL Server Agent service was still starting — the
+                #    server's healthcheck passes before the Agent is up, and
+                #    the Agent also restarts whenever the container's
+                #    on-failure restart policy reboots mssql mid-suite. The
+                #    error text itself says "Try again later." — the mssql-init
+                #    compose job pre-creates the CDC jobs so this path is
+                #    normally never taken, and this retry is the backstop.
                 transient = (
                     "1205" in message
                     or "There is already an object named 'cdc_jobs'" in message
+                    or "Cannot perform this operation while SQLServerAgent is starting"
+                    in message
                 )
                 if attempt < max_retries - 1 and transient:
                     delay = retry_delay * (1.25**attempt) + random.uniform(
@@ -2728,8 +2750,9 @@ class RowCountChecker:
 
     def __call__(self) -> bool:
         try:
-            self.db_context.cursor.execute(f'SELECT count(*) FROM "{self.table_name}"')
-            return self.db_context.cursor.fetchone()[0] >= self.n_expected_entries
+            return (
+                self.db_context.count_rows(self.table_name) >= self.n_expected_entries
+            )
         except Exception:
             return False
 
