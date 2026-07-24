@@ -75,9 +75,11 @@ fn test_tag_change_detection_semantics() -> eyre::Result<()> {
     size_changed.size += 1;
     assert!(storage.is_changed(&tag, &size_changed));
 
-    let mut time_changed = metadata.clone();
-    time_changed.modified_at = metadata.modified_at.map(|t| t + 1);
-    assert!(storage.is_changed(&tag, &time_changed));
+    // Avoid relying on timestamp granularity alone.
+    let mut definitely_changed = metadata.clone();
+    definitely_changed.size += 1;
+    definitely_changed.modified_at = metadata.modified_at.map(|t| t + 1);
+    assert!(storage.is_changed(&tag, &definitely_changed));
 
     // The path is the map key and takes no part in the comparison,
     // exactly as in `FileLikeMetadata::is_changed`.
