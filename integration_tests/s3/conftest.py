@@ -6,6 +6,34 @@ from botocore.exceptions import ClientError
 
 from .base import MINIO_BUCKET_NAME, MINIO_S3_ENDPOINT_URL
 
+# Env vars that the deltalake S3 backend copies from `storage_options` into the
+# process environment when a Delta table is opened (S3StorageOptions::from_map
+# calls ensure_env_var for each of these) and never removes. After a MinIO
+# Delta test runs in a worker, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY hold the
+# MinIO keys, and any later test in the same worker that lets `pw.io.s3.read`
+# autodetect its credentials sends those keys to real AWS and fails with
+# 403 InvalidAccessKeyId. The endpoint is not among the copied vars, so the
+# request goes to AWS itself, not to MinIO.
+_LEAKABLE_AWS_ENV_VARS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_PROFILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_aws_credential_env(monkeypatch):
+    # Start every test with a clean credential environment so that credential
+    # autodetection resolves deterministically (from the mounted ~/.aws
+    # profile) regardless of which Delta tests ran earlier in this worker.
+    for var in _LEAKABLE_AWS_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_minio_bucket():

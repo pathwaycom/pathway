@@ -115,6 +115,10 @@ def test_streaming_from_deltalake(credentials, tmp_path, s3_path):
     )
     pw.io.csv.write(table, output_path)
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 60)
+    # The writer thread outlives the checker by up to its final sleep; join it
+    # so its Delta writes (which mutate the process-wide AWS env vars, see
+    # conftest) cannot bleed into the next test scheduled on this worker.
+    t.join()
 
 
 @pytest.mark.parametrize(
