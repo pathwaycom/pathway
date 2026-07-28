@@ -1158,7 +1158,7 @@ def test_no_pstorage(tmp_path: pathlib.Path):
 def test_name_not_assigned_autogenerate(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     write_lines(input_path, "test_data")
-    pstorage_path = tmp_path / "PStrorage"
+    pstorage_path = tmp_path / "PStorage"
 
     write_lines(input_path, "test_data")
 
@@ -4306,10 +4306,12 @@ def test_fs_metadata_only(tmp_path, scenario):
     pw.io.jsonlines.write(table, output_path)
 
     stream_thread = ExceptionAwareThread(target=stream_inputs, daemon=True)
-    stream_thread.start()
     pathway_process = multiprocessing.Process(target=run)
     try:
+        # Fork the Pathway process before starting the writer thread so the
+        # child is not forked mid-write (see test_streaming_from_deltalake).
         pathway_process.start()
+        stream_thread.start()
 
         # Wait for the scenario to complete
         stream_thread.join()

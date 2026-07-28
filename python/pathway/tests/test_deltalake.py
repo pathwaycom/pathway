@@ -288,8 +288,12 @@ def test_streaming_from_deltalake(tmp_path, with_backfilling_thresholds):
     stream_thread = ExceptionAwareThread(target=create_new_versions, args=(1, 10))
     pathway_process = multiprocessing.Process(target=run)
     try:
-        stream_thread.start()
+        # Fork the Pathway process before starting the writer thread: forking
+        # while another thread is inside a native Delta write can leave the
+        # child with an inconsistently-held lock, and it then hangs before
+        # constructing the sink (no output file ever appears).
         pathway_process.start()
+        stream_thread.start()
 
         # Wait for the scenario to complete
         stream_thread.join()
@@ -818,11 +822,11 @@ def test_deltalake_decimal_column_str_roundtrip(tmp_path: pathlib.Path):
     # Seed source with decimal(38, 10), then create a destination table sharing the
     # same schema so the writer's decimal-coercion path can kick in. We seed `dst`
     # with a single throw-away row and then have Pathway overwrite/append the real
-    # data; the fact that Pathway's `str` input is materialised as the column's
+    # data; the fact that Pathway's `str` input is materialized as the column's
     # unscaled integer is what we're verifying.
     # Use precision/scale that's expressive enough to test the cast — values that
     # don't round-trip through f64 — but small enough that the values fit cleanly
-    # in i64 (deltalake-rs serialises Delta-log min/max stats for very large
+    # in i64 (deltalake-rs serializes Delta-log min/max stats for very large
     # Decimal128 values via f64, which is itself lossy and a separate issue).
     test_values = [
         _decimal.Decimal("0.1000000000"),
@@ -987,7 +991,7 @@ def test_deltalake_read_external_decimal_columns_as_str(tmp_path: pathlib.Path):
     # Read everything as string so pandas's numeric inference doesn't strip trailing zeros.
     result = pd.read_csv(output_path, dtype={"v": str}).set_index("k")
     # decimal(38, 10) → 10 digits after the decimal point, with the unscaled integer
-    # serialised exactly. Negative sign and leading-zero padding both survive.
+    # serialized exactly. Negative sign and leading-zero padding both survive.
     assert result.loc[1, "v"] == "0.1000000000"
     assert result.loc[2, "v"] == "-12345.6789012345"
     assert result.loc[3, "v"] == "1234567890123456789012345678.9012345678"
