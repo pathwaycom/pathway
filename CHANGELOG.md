@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- Bumped the `beartype` dependency upper bound from `< 0.16.0` to `< 0.22.9` to allow installation with recent Beartype releases. Closes #243.
+
 ## [0.32.0] - 2026-07-29
 
 ### Added
