@@ -93,6 +93,15 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+          # numkong's SME feature probes pass on Apple clang 16, but compiling
+          # the actual SME kernels crashes its frontend; NEON kernels stay on.
+          # Drop once the runner's CommandLineTools are upgraded past clang 16.
+          NK_TARGET_SME: "0"
+          NK_TARGET_SME2: "0"
+          NK_TARGET_SMEF64: "0"
+          NK_TARGET_SMEHALF: "0"
+          NK_TARGET_SMEBI32: "0"
+          NK_TARGET_SMELUT2: "0"
         with:
           command: build
           args: --release --strip -i python3.10
