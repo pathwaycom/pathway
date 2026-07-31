@@ -5,10 +5,7 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Fixed
-- Bumped the `beartype` dependency upper bound from `< 0.16.0` to `< 0.22.9` to allow installation with recent Beartype releases. Closes #243.
-
-## [0.32.0] - 2026-07-29
+## [0.32.1] - 2026-07-29
 
 ### Added
 - `pw.io.chroma.write` writes a Pathway table to a [Chroma](https://www.trychroma.com/) collection, keeping the collection in sync with the table as rows are added, changed, and removed. The columns are mapped onto Chroma's record fields explicitly: the optional `primary_key` becomes the record id (when omitted, the row's internal Pathway key is used instead), `embedding` the vector, the optional `document` column the stored text, and `metadata_columns` the record metadata. The collection must already exist. The server is addressed with `host`/`port` (plus `ssl`, `headers`, `tenant`, and `database` for authenticated deployments such as Chroma Cloud).
@@ -49,6 +46,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Under `pw.PersistenceMode.OPERATOR_PERSISTING`, joins that preserve the left side's keys (`id=left.id`), including `join_left`, no longer misreport a row update arriving after a restart as a duplicate key. Previously the update was logged as a duplicate-key error and the affected row was replaced with an error value.
 - With persistence enabled, a pipeline that is restarted more than once in quick succession no longer risks losing input rows. A restarted run could commit a checkpoint whose logical time fell into the previous (killed) run's range, accidentally certifying that run's partially-written state: the next restart then resumed from input offsets whose data was missing from the persisted operator state, so those rows were never replayed. Checkpoint commits are now clamped to the current run's own time range.
 - With persistence enabled, data read right after a restart (new or modified files) now enters the computation at one shared timestamp across all input sources. Previously each source resumed on its own clock, and cross-source operators with key contracts (`.ix`, join with `id=...`, `with_universe_of`) could observe intermediate states, producing spurious "key missing" or duplicate-key errors on restart. When `autocommit_duration_ms=None` is set explicitly, the previous per-source behavior is kept, since there is no timer to close the shared start-up batch.
+- Bumped the `beartype` dependency upper bound from `< 0.16.0` to `< 0.22.9` to allow installation with recent Beartype releases. Closes #243.
 
 ## [0.31.1] - 2026-06-12
 
