@@ -7,7 +7,7 @@ use log::{info, warn};
 use pyo3::pyclass;
 
 #[derive(Debug, Clone, Copy)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ConnectorStats {
     #[pyo3(get, set)]
     pub num_messages_from_start: usize,

@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct OperatorStats {
     #[pyo3(get, set)]
     pub time: Option<Timestamp>,
@@ -42,7 +42,7 @@ impl OperatorStats {
 }
 
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ProberStats {
     #[pyo3(get, set)]
     pub input_stats: OperatorStats,
@@ -57,7 +57,7 @@ pub struct ProberStats {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct CountStats {
     #[pyo3(get)]
     total_rows: isize,

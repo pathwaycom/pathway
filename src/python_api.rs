@@ -56,7 +56,7 @@ use pyo3::exceptions::{
     PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
 };
 use pyo3::pyclass::CompareOp;
-use pyo3::sync::{GILOnceCell, GILProtected};
+use pyo3::sync::{MutexExt, PyOnceLock};
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
 use pyo3::{intern, PyTypeInfo};
 use pyo3::{prelude::*, IntoPyObjectExt};
@@ -79,7 +79,6 @@ use scopeguard::defer;
 use send_wrapper::SendWrapper;
 use serde_json::Value as JsonValue;
 use std::borrow::Borrow;
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -246,7 +245,7 @@ async fn build_rabbitmq_environment(
 use crate::connectors::data_storage::rabbitmq::probe_last_offset;
 use crate::external_integration::qdrant_integration::build_qdrant_client;
 
-static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+static CONVERT: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
 fn get_convert_python_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     CONVERT
@@ -268,8 +267,10 @@ macro_rules! pytodo {
     };
 }
 
-impl<'py> FromPyObject<'py> for Key {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Key {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<Pointer>>()?.0)
     }
 }
@@ -326,7 +327,7 @@ fn value_from_pandas_timedelta(ob: &Bound<PyAny>) -> PyResult<Value> {
 fn value_json_from_py_any(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let json_str = get_convert_python_module(py).call_method1(intern!(py, "_json_dumps"), (ob,))?;
-    let json_str = json_str.downcast::<PyString>()?.to_str()?;
+    let json_str = json_str.cast::<PyString>()?.to_str()?;
     let json: JsonValue = serde_json::from_str(json_str)
         .map_err(|e| PyValueError::new_err(format!("malformed json: {e}")))?;
     Ok(Value::from(json))
@@ -462,14 +463,11 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
         Type::Float => ob.extract::<f64>().ok().map(Value::from),
         Type::Pointer => ob.extract::<Key>().ok().map(Value::from),
         Type::String => ob
-            .downcast::<PyString>()
+            .cast::<PyString>()
             .ok()
             .and_then(|s| s.to_str().ok())
             .map(Value::from),
-        Type::Bytes => ob
-            .downcast::<PyBytes>()
-            .ok()
-            .map(|b| Value::from(b.as_bytes())),
+        Type::Bytes => ob.cast::<PyBytes>().ok().map(|b| Value::from(b.as_bytes())),
         Type::DateTimeNaive | Type::DateTimeUtc => Some(extract_datetime(ob, type_)?),
         Type::Duration => {
             // XXX: check types, not names
@@ -522,7 +520,7 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
             Some(Value::from(values.as_slice()))
         }
         Type::PyObjectWrapper => {
-            let value = if let Ok(ob) = ob.downcast::<PyObjectWrapper>() {
+            let value = if let Ok(ob) = ob.cast::<PyObjectWrapper>() {
                 ob.get().as_internal(ob.py())
             } else {
                 PyObjectWrapper::new(ob.clone().unbind()).as_internal(ob.py())
@@ -540,8 +538,10 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
     extracted.ok_or_else(|| py_type_error(ob, type_))
 }
 
-impl<'py> FromPyObject<'py> for Value {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Value {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let py = ob.py();
         if ob.is_none() {
             Ok(Value::None)
@@ -549,9 +549,9 @@ impl<'py> FromPyObject<'py> for Value {
             Ok(Value::Error)
         } else if ob.is_exact_instance_of::<Pending>() {
             Ok(Value::Pending)
-        } else if let Ok(s) = ob.downcast_exact::<PyString>() {
+        } else if let Ok(s) = ob.cast_exact::<PyString>() {
             Ok(Value::from(s.to_str()?))
-        } else if let Ok(b) = ob.downcast_exact::<PyBytes>() {
+        } else if let Ok(b) = ob.cast_exact::<PyBytes>() {
             Ok(Value::from(b.as_bytes()))
         } else if ob.is_exact_instance_of::<PyInt>() {
             Ok(Value::Int(
@@ -564,14 +564,14 @@ impl<'py> FromPyObject<'py> for Value {
                     .expect("type conversion should work for float")
                     .into(),
             ))
-        } else if let Ok(b) = ob.downcast_exact::<PyBool>() {
+        } else if let Ok(b) = ob.cast_exact::<PyBool>() {
             Ok(Value::Bool(b.is_true()))
         } else if ob.is_exact_instance_of::<Pointer>() {
             Ok(Value::Pointer(
                 ob.extract::<Key>()
                     .expect("type conversion should work for Key"),
             ))
-        } else if is_pathway_json(ob)? {
+        } else if is_pathway_json(&ob)? {
             value_json_from_py_any(&ob.getattr(intern!(py, "value"))?)
         } else if let Ok(b) = ob.extract::<bool>() {
             // Fallback checks from now on
@@ -594,28 +594,28 @@ impl<'py> FromPyObject<'py> for Value {
             Ok(Value::Float(f.into()))
         } else if let Ok(k) = ob.extract::<Key>() {
             Ok(Value::Pointer(k))
-        } else if let Ok(s) = ob.downcast::<PyString>() {
+        } else if let Ok(s) = ob.cast::<PyString>() {
             Ok(s.to_str()?.into())
-        } else if let Ok(bytes) = ob.downcast::<PyBytes>() {
+        } else if let Ok(bytes) = ob.cast::<PyBytes>() {
             Ok(Value::Bytes(bytes.as_bytes().into()))
         } else if let Ok(t) = ob.extract::<Vec<Self>>() {
             Ok(Value::from(t.as_slice()))
-        } else if let Ok(dict) = ob.downcast::<PyDict>() {
-            value_json_from_py_any(dict)
-        } else if let Ok(ob) = ob.downcast::<PyObjectWrapper>() {
+        } else if let Ok(dict) = ob.cast::<PyDict>() {
+            value_json_from_py_any(dict.as_any())
+        } else if let Ok(ob) = ob.cast::<PyObjectWrapper>() {
             Ok(Value::from(ob.get().as_internal(ob.py())))
         } else {
             // XXX: check types, not names
             let type_name_bound = ob.get_type().qualname()?;
             let type_name = type_name_bound.to_str()?;
             if type_name == "datetime" {
-                return value_from_python_datetime(ob);
+                return value_from_python_datetime(&ob);
             } else if type_name == "timedelta" {
-                return value_from_python_timedelta(ob);
+                return value_from_python_timedelta(&ob);
             } else if matches!(type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
-                return value_from_pandas_timestamp(ob);
+                return value_from_pandas_timestamp(&ob);
             } else if matches!(type_name, "Timedelta" | "Duration") {
-                return value_from_pandas_timedelta(ob);
+                return value_from_pandas_timedelta(&ob);
             }
 
             if let Ok(vec) = ob.extract::<Vec<Bound<PyAny>>>() {
@@ -675,8 +675,10 @@ impl<'py> IntoPyObject<'py> for Value {
     }
 }
 
-impl<'py> FromPyObject<'py> for Reducer {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Reducer {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReducer>>()?.0.clone())
     }
 }
@@ -690,8 +692,10 @@ impl<'py> IntoPyObject<'py> for Reducer {
     }
 }
 
-impl<'py> FromPyObject<'py> for Type {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Type {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PathwayType>>()?.0.clone())
     }
 }
@@ -705,8 +709,10 @@ impl<'py> IntoPyObject<'py> for Type {
     }
 }
 
-impl<'py> FromPyObject<'py> for ReadMethod {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ReadMethod {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReadMethod>>()?.0)
     }
 }
@@ -720,8 +726,10 @@ impl<'py> IntoPyObject<'py> for ReadMethod {
     }
 }
 
-impl<'py> FromPyObject<'py> for ConnectorMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ConnectorMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyConnectorMode>>()?.0)
     }
 }
@@ -735,8 +743,10 @@ impl<'py> IntoPyObject<'py> for ConnectorMode {
     }
 }
 
-impl<'py> FromPyObject<'py> for SslMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SslMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySslMode>>()?.0)
     }
 }
@@ -750,8 +760,10 @@ impl<'py> IntoPyObject<'py> for SslMode {
     }
 }
 
-impl<'py> FromPyObject<'py> for SessionType {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SessionType {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySessionType>>()?.0)
     }
 }
@@ -765,8 +777,10 @@ impl<'py> IntoPyObject<'py> for SessionType {
     }
 }
 
-impl<'py> FromPyObject<'py> for PythonConnectorEventType {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for PythonConnectorEventType {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyPythonConnectorEventType>>()?.0)
     }
 }
@@ -780,8 +794,10 @@ impl<'py> IntoPyObject<'py> for PythonConnectorEventType {
     }
 }
 
-impl<'py> FromPyObject<'py> for DebeziumDBType {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for DebeziumDBType {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyDebeziumDBType>>()?.0)
     }
 }
@@ -795,8 +811,10 @@ impl<'py> IntoPyObject<'py> for DebeziumDBType {
     }
 }
 
-impl<'py> FromPyObject<'py> for KeyGenerationPolicy {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for KeyGenerationPolicy {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyKeyGenerationPolicy>>()?.0)
     }
 }
@@ -810,8 +828,10 @@ impl<'py> IntoPyObject<'py> for KeyGenerationPolicy {
     }
 }
 
-impl<'py> FromPyObject<'py> for MonitoringLevel {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for MonitoringLevel {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyMonitoringLevel>>()?.0)
     }
 }
@@ -825,8 +845,10 @@ impl<'py> IntoPyObject<'py> for MonitoringLevel {
     }
 }
 
-impl<'py> FromPyObject<'py> for TableWriterInitMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for TableWriterInitMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyTableWriterInitMode>>()?.0)
     }
 }
@@ -846,7 +868,7 @@ impl From<EngineError> for PyErr {
             Ok(error) => return error,
             Err(other) => error = other,
         }
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if let EngineError::WithTrace { inner, trace } = error {
                 let inner = PyErr::from(EngineError::from(inner));
                 let args = (inner, trace);
@@ -897,9 +919,12 @@ fn check_identity<T>(a: &Py<T>, b: &Py<T>, msg: &'static str) -> PyResult<()> {
 
 fn from_py_iterable<'py, T>(iterable: &Bound<'py, PyAny>) -> PyResult<Vec<T>>
 where
-    T: FromPyObject<'py>,
+    T: FromPyObjectOwned<'py>,
 {
-    iterable.try_iter()?.map(|obj| obj?.extract()).collect()
+    iterable
+        .try_iter()?
+        .map(|obj| obj?.extract().map_err(Into::into))
+        .collect()
 }
 
 fn engine_tables_from_py_iterable(iterable: &Bound<PyAny>) -> PyResult<Vec<EngineLegacyTable>> {
@@ -916,7 +941,7 @@ pub fn generic_alias_class_getitem<'py>(
     cls: &Bound<'py, PyType>,
     item: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+    static GENERIC_ALIAS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     let py = cls.py();
     GENERIC_ALIAS
@@ -977,15 +1002,15 @@ impl Pointer {
 #[pyclass(module = "pathway.engine", frozen)]
 struct PyObjectWrapper {
     #[pyo3(get)]
-    value: PyObject,
-    serializer: Option<PyObject>,
+    value: Py<PyAny>,
+    serializer: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl PyObjectWrapper {
     #[new]
     #[pyo3(signature = (value))]
-    fn new(value: PyObject) -> Self {
+    fn new(value: Py<PyAny>) -> Self {
         Self {
             value,
             serializer: None,
@@ -994,7 +1019,7 @@ impl PyObjectWrapper {
 
     #[staticmethod]
     #[pyo3(signature = (value, *, serializer=None), name="_create_with_serializer")]
-    fn create_with_serializer(value: PyObject, serializer: Option<PyObject>) -> Self {
+    fn create_with_serializer(value: Py<PyAny>, serializer: Option<Py<PyAny>>) -> Self {
         Self { value, serializer }
     }
 
@@ -1010,7 +1035,7 @@ impl PyObjectWrapper {
         generic_alias_class_getitem(cls, item)
     }
 
-    fn __getnewargs__(&self, py: Python<'_>) -> (PyObject,) {
+    fn __getnewargs__(&self, py: Python<'_>) -> (Py<PyAny>,) {
         (self.value.clone_ref(py),)
     }
 }
@@ -1049,8 +1074,10 @@ impl PyWindow {
     }
 }
 
-impl<'py> FromPyObject<'py> for WindowProperties {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for WindowProperties {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyWindow>>()?.inner.clone())
     }
 }
@@ -1128,7 +1155,7 @@ impl PyReducer {
 
 fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {
     Arc::new(move |state, values| {
-        Python::with_gil(|py| Ok(combine.bind(py).call1((state, values))?.extract()?))
+        Python::attach(|py| Ok(combine.bind(py).call1((state, values))?.extract()?))
     })
 }
 
@@ -1155,8 +1182,10 @@ impl PyConnectorGroupDescriptor {
     }
 }
 
-impl<'py> FromPyObject<'py> for ConnectorGroupDescriptor {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ConnectorGroupDescriptor {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyConnectorGroupDescriptor>>()?.0.clone())
     }
 }
@@ -1194,8 +1223,10 @@ impl PyReducerData {
     }
 }
 
-impl<'py> FromPyObject<'py> for ReducerData {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ReducerData {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReducerData>>()?.0.clone())
     }
 }
@@ -1222,8 +1253,10 @@ impl PyExpressionData {
     }
 }
 
-impl<'py> FromPyObject<'py> for ExpressionData {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ExpressionData {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyExpressionData>>()?.0.clone())
     }
 }
@@ -1268,8 +1301,10 @@ impl PyUnaryOperator {
     pub const NEG: UnaryOperator = UnaryOperator::Neg;
 }
 
-impl<'py> FromPyObject<'py> for UnaryOperator {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for UnaryOperator {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyUnaryOperator>>()?.0)
     }
 }
@@ -1327,8 +1362,10 @@ impl PyBinaryOperator {
     pub const MATMUL: BinaryOperator = BinaryOperator::MatMul;
 }
 
-impl<'py> FromPyObject<'py> for BinaryOperator {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for BinaryOperator {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyBinaryOperator>>()?.0)
     }
 }
@@ -1475,7 +1512,7 @@ fn start_async_task(
     event_loop: &Py<PyAny>,
     function: &Py<PyAny>,
     args: Bound<'_, PyTuple>,
-) -> PyResult<impl Future<Output = PyResult<PyObject>> + Send> {
+) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send> {
     let py = args.py();
     let event_loop = event_loop.clone_ref(py);
     let awaitable = function.call1(py, args)?;
@@ -1517,7 +1554,7 @@ impl PyExpression {
         let n_args = args.len();
         let expression = if let Some(max_batch_size) = max_batch_size {
             let logic = move |batches: Vec<Vec<Vec<Value>>>| {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     batches
                         .into_iter()
                         .map(|batch| {
@@ -1542,7 +1579,7 @@ impl PyExpression {
             AnyExpression::Apply(func, args.into())
         } else {
             let func = Box::new(move |input: &[&[Value]]| {
-                Python::with_gil(|py| -> Vec<DynResult<Value>> {
+                Python::attach(|py| -> Vec<DynResult<Value>> {
                     input
                         .iter()
                         .map(|input_i| {
@@ -1585,7 +1622,7 @@ impl PyExpression {
                 let future = if !input.is_empty() && input[0].is_empty() {
                     None
                 } else {
-                    Some(Python::with_gil(|py| {
+                    Some(Python::attach(|py| {
                         start_async_task(&event_loop, &function, PyTuple::new(py, input)?)
                     }))
                 };
@@ -1593,7 +1630,7 @@ impl PyExpression {
                 Box::pin(async {
                     if let Some(future) = future {
                         let results = future?.await?;
-                        Python::with_gil(|py| {
+                        Python::attach(|py| {
                             Ok(results
                                 .extract::<Vec<Bound<PyAny>>>(py)?
                                 .into_iter()
@@ -1632,7 +1669,7 @@ impl PyExpression {
                     // Thanks to that only a single future type is returned and there's no need to Box the closure.
                     None
                 } else {
-                    Some(Python::with_gil(|py| {
+                    Some(Python::attach(|py| {
                         start_async_task(&event_loop, &function, PyTuple::new(py, input_i)?)
                     }))
                 };
@@ -1641,7 +1678,7 @@ impl PyExpression {
                 Box::pin(async {
                     if let Some(future) = future {
                         let result = future?.await?;
-                        Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
+                        Python::attach(move |py| Ok(extract_value(result.bind(py), &dtype)?))
                     } else {
                         Ok(Value::None)
                     }
@@ -2208,8 +2245,10 @@ impl PyFieldSource {
     pub const PAYLOAD: FieldSource = FieldSource::Payload;
 }
 
-impl<'py> FromPyObject<'py> for FieldSource {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for FieldSource {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyFieldSource>>()?.0)
     }
 }
@@ -2269,7 +2308,7 @@ impl PySslMode {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct TlsSettings {
     #[pyo3(get)]
     mode: SslMode,
@@ -2403,7 +2442,13 @@ pub struct Universe {
 impl Universe {
     fn new<'py>(scope: &Bound<'py, Scope>, handle: UniverseHandle) -> PyResult<Bound<'py, Self>> {
         let py = scope.py();
-        if let Some(universe) = scope.borrow().universes.get(py).borrow().get(&handle) {
+        if let Some(universe) = scope
+            .borrow()
+            .universes
+            .lock_py_attached(py)
+            .unwrap()
+            .get(&handle)
+        {
             return Ok(universe.bind(py).clone());
         }
         let res = Bound::new(
@@ -2416,8 +2461,8 @@ impl Universe {
         scope
             .borrow()
             .universes
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone().unbind());
         Ok(res)
     }
@@ -2435,9 +2480,9 @@ pub struct ComplexColumn;
 
 impl ComplexColumn {
     fn output_universe(self_: &Bound<Self>) -> Option<Py<Universe>> {
-        if let Ok(_column) = self_.downcast_exact::<Column>() {
+        if let Ok(_column) = self_.cast_exact::<Column>() {
             None
-        } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
+        } else if let Ok(computer) = self_.cast_exact::<Computer>() {
             let py = computer.py();
             let computer = computer.get();
             computer.is_output.then(|| computer.universe.clone_ref(py))
@@ -2447,9 +2492,9 @@ impl ComplexColumn {
     }
 
     fn to_engine(self_: &Bound<Self>) -> EngineComplexColumn {
-        if let Ok(column) = self_.downcast_exact::<Column>() {
+        if let Ok(column) = self_.cast_exact::<Column>() {
             EngineComplexColumn::Column(column.borrow().handle)
-        } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
+        } else if let Ok(computer) = self_.cast_exact::<Computer>() {
             Computer::to_engine(computer)
         } else {
             unreachable!("Unknown ComplexColumn subclass");
@@ -2472,7 +2517,7 @@ impl Column {
         let py = universe.py();
         let universe_ref = universe.borrow();
         let scope = universe_ref.scope.borrow(py);
-        if let Some(column) = scope.columns.get(py).borrow().get(&handle) {
+        if let Some(column) = scope.columns.lock_py_attached(py).unwrap().get(&handle) {
             let column = column.bind(py).clone();
             assert!(column.get().universe.is(universe));
             return Ok(column);
@@ -2489,8 +2534,8 @@ impl Column {
         )?;
         scope
             .columns
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone().unbind());
         Ok(res)
     }
@@ -2587,7 +2632,13 @@ pub struct Table {
 impl Table {
     fn new(scope: &Bound<Scope>, handle: TableHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
-        if let Some(table) = scope.borrow().tables.get(py).borrow().get(&handle) {
+        if let Some(table) = scope
+            .borrow()
+            .tables
+            .lock_py_attached(py)
+            .unwrap()
+            .get(&handle)
+        {
             return Ok(table.clone_ref(py));
         }
         let res = Py::new(
@@ -2600,8 +2651,8 @@ impl Table {
         scope
             .borrow()
             .tables
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone_ref(py));
         Ok(res)
     }
@@ -2616,7 +2667,13 @@ pub struct ErrorLog {
 impl ErrorLog {
     fn new(scope: &Bound<Scope>, handle: ErrorLogHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
-        if let Some(error_log) = scope.borrow().error_logs.get(py).borrow().get(&handle) {
+        if let Some(error_log) = scope
+            .borrow()
+            .error_logs
+            .lock_py_attached(py)
+            .unwrap()
+            .get(&handle)
+        {
             return Ok(error_log.clone_ref(py));
         }
         let res = Py::new(
@@ -2629,8 +2686,8 @@ impl ErrorLog {
         scope
             .borrow()
             .error_logs
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone_ref(py));
         Ok(res)
     }
@@ -2654,9 +2711,7 @@ mod error {
     }
 
     pub static ERROR: Lazy<Py<Error>> = Lazy::new(|| {
-        Python::with_gil(|py| {
-            Py::new(py, Error(InnerError)).expect("creating ERROR should not fail")
-        })
+        Python::attach(|py| Py::new(py, Error(InnerError)).expect("creating ERROR should not fail"))
     });
 }
 use error::{Error, ERROR};
@@ -2678,15 +2733,17 @@ mod pending {
     }
 
     pub static PENDING: Lazy<Py<Pending>> = Lazy::new(|| {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             Py::new(py, Pending(InnerPending)).expect("creating PENDING should not fail")
         })
     });
 }
 use pending::{Pending, PENDING};
 
-impl<'py> FromPyObject<'py> for ColumnPath {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ColumnPath {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let py = ob.py();
         if ob.getattr(intern!(py, "is_key")).is_ok_and(|is_key| {
             is_key
@@ -2709,7 +2766,7 @@ impl<'py> FromPyObject<'py> for ColumnPath {
 }
 
 static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.MissingValueError").unwrap(),
@@ -2722,7 +2779,7 @@ static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 });
 
 static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.EngineError").unwrap(),
@@ -2735,7 +2792,7 @@ static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 });
 
 static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.EngineErrorWithTrace").unwrap(),
@@ -2748,7 +2805,7 @@ static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 });
 
 static OTHER_WORKER_ERROR: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.OtherWorkerError").unwrap(),
@@ -2894,7 +2951,7 @@ impl Computer {
             EngineComputer::Method {
                 logic: Box::new(move |engine_context, args| {
                     let engine_context = SendWrapper::new(engine_context);
-                    Ok(Python::with_gil(|py| {
+                    Ok(Python::attach(|py| {
                         let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, args)
                     })?)
@@ -2910,7 +2967,7 @@ impl Computer {
             EngineComputer::Attribute {
                 logic: Box::new(move |engine_context| {
                     let engine_context = SendWrapper::new(engine_context);
-                    Ok(Python::with_gil(|py| {
+                    Ok(Python::attach(|py| {
                         let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, &[])
                     })?)
@@ -2936,19 +2993,19 @@ pub struct Scope {
     timestamp_at_start: Timestamp,
 
     // empty_universe: Lazy<Py<Universe>>,
-    universes: GILProtected<RefCell<HashMap<UniverseHandle, Py<Universe>>>>,
-    columns: GILProtected<RefCell<HashMap<ColumnHandle, Py<Column>>>>,
-    tables: GILProtected<RefCell<HashMap<TableHandle, Py<Table>>>>,
-    error_logs: GILProtected<RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>>,
-    unique_names: GILProtected<RefCell<HashSet<UniqueName>>>,
-    event_loop: PyObject,
-    total_connectors: GILProtected<RefCell<usize>>,
+    universes: Mutex<HashMap<UniverseHandle, Py<Universe>>>,
+    columns: Mutex<HashMap<ColumnHandle, Py<Column>>>,
+    tables: Mutex<HashMap<TableHandle, Py<Table>>>,
+    error_logs: Mutex<HashMap<ErrorLogHandle, Py<ErrorLog>>>,
+    unique_names: Mutex<HashSet<UniqueName>>,
+    event_loop: Py<PyAny>,
+    total_connectors: Mutex<usize>,
 }
 
 impl Scope {
     fn new(
         parent: Option<Py<Self>>,
-        event_loop: PyObject,
+        event_loop: Py<PyAny>,
         license: Option<License>,
         is_persisted: bool,
         timestamp_at_start: Timestamp,
@@ -2958,22 +3015,22 @@ impl Scope {
             license,
             is_persisted,
             graph: SendWrapper::new(ScopedGraph::new()),
-            universes: GILProtected::new(RefCell::new(HashMap::new())),
-            columns: GILProtected::new(RefCell::new(HashMap::new())),
-            tables: GILProtected::new(RefCell::new(HashMap::new())),
-            error_logs: GILProtected::new(RefCell::new(HashMap::new())),
-            unique_names: GILProtected::new(RefCell::new(HashSet::new())),
+            universes: Mutex::new(HashMap::new()),
+            columns: Mutex::new(HashMap::new()),
+            tables: Mutex::new(HashMap::new()),
+            error_logs: Mutex::new(HashMap::new()),
+            unique_names: Mutex::new(HashSet::new()),
             event_loop,
-            total_connectors: GILProtected::new(RefCell::new(0)),
+            total_connectors: Mutex::new(0),
             timestamp_at_start,
         }
     }
 
     fn clear_caches(&self, py: Python<'_>) {
-        self.universes.get(py).borrow_mut().clear();
-        self.columns.get(py).borrow_mut().clear();
-        self.tables.get(py).borrow_mut().clear();
-        self.error_logs.get(py).borrow_mut().clear();
+        self.universes.lock_py_attached(py).unwrap().clear();
+        self.columns.lock_py_attached(py).unwrap().clear();
+        self.tables.lock_py_attached(py).unwrap().clear();
+        self.error_logs.lock_py_attached(py).unwrap().clear();
     }
 
     fn register_unique_name(
@@ -2984,8 +3041,8 @@ impl Scope {
         if let Some(unique_name) = &unique_name {
             let is_unique_id = self
                 .unique_names
-                .get(py)
-                .borrow_mut()
+                .lock_py_attached(py)
+                .unwrap()
                 .insert((*unique_name).clone());
             if !is_unique_id {
                 return Err(PyValueError::new_err(format!(
@@ -3020,7 +3077,7 @@ impl Scope {
     }
 
     #[getter]
-    pub fn event_loop(&self, py: Python<'_>) -> PyObject {
+    pub fn event_loop(&self, py: Python<'_>) -> Py<PyAny> {
         self.event_loop.clone_ref(py)
     }
 
@@ -3084,7 +3141,11 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
-        *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
+        *self_
+            .borrow()
+            .total_connectors
+            .lock_py_attached(py)
+            .unwrap() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
@@ -3201,7 +3262,7 @@ impl Scope {
             BatchWrapper::WithGil,
             Arc::new(Expression::Any(AnyExpression::Apply(
                 Box::new(move |input| {
-                    Python::with_gil(|py| -> Vec<DynResult<_>> {
+                    Python::attach(|py| -> Vec<DynResult<_>> {
                         input
                             .iter()
                             .map(|input_i| {
@@ -3603,7 +3664,7 @@ impl Scope {
             .try_iter()?
             .map(|column| {
                 let column = column?;
-                let column = column.downcast()?;
+                let column = column.cast()?;
                 let restricted = Self::restrict_column(self_, universe, column)?;
                 Ok(restricted.unbind())
             })
@@ -3962,7 +4023,11 @@ impl Scope {
         let py = self_.py();
 
         let callbacks = build_subscribe_callback(on_change, on_time_end, on_end, None);
-        *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
+        *self_
+            .borrow()
+            .total_connectors
+            .lock_py_attached(py)
+            .unwrap() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
@@ -4067,7 +4132,7 @@ fn build_subscribe_callback(
 
     let builder = if let Some(event_loop) = event_loop {
         builder.on_data_async(Box::new(move |key, values, time, diff| {
-            let future = Python::with_gil(|py| {
+            let future = Python::attach(|py| {
                 let args = (key, PyTuple::new(py, values)?, time, diff).into_pyobject(py)?;
                 start_async_task(&event_loop, &on_change, args)
             });
@@ -4081,7 +4146,7 @@ fn build_subscribe_callback(
         builder
             .wrapper(BatchWrapper::WithGil)
             .on_data(Box::new(move |key, values, time, diff| {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     on_change.call1(py, (key, PyTuple::new(py, values)?, time, diff))?;
                     Ok(())
                 })
@@ -4090,13 +4155,13 @@ fn build_subscribe_callback(
 
     builder
         .on_time_end(Box::new(move |new_time| {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 on_time_end.call1(py, (new_time,))?;
                 Ok(())
             })
         }))
         .on_end(Box::new(move || {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 on_end.call0(py)?;
                 Ok(())
             })
@@ -4176,9 +4241,9 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> Vec<DataRow> {
 ))]
 pub fn run_with_new_graph(
     py: Python,
-    logic: PyObject,
-    event_loop: PyObject,
-    stats_monitor: Option<PyObject>,
+    logic: Py<PyAny>,
+    event_loop: Py<PyAny>,
+    stats_monitor: Option<Py<PyAny>>,
     ignore_asserts: bool,
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
@@ -4232,12 +4297,12 @@ pub fn run_with_new_graph(
 
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         let scope_license = license.clone();
-        py.allow_threads(|| {
+        py.detach(|| {
             run_with_new_dataflow_graph(
                 move |graph| {
                     let thread_state = PythonThreadState::new();
 
-                    let captured_tables = Python::with_gil(|py| {
+                    let captured_tables = Python::attach(|py| {
                         let our_scope = &Bound::new(
                             py,
                             Scope::new(
@@ -4337,7 +4402,7 @@ pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct AzureBlobStorageSettings {
     account: String,
     password: String,
@@ -4363,7 +4428,7 @@ impl AzureBlobStorageSettings {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone, Debug)]
 pub struct AwsS3Settings {
     bucket_name: Option<String>,
@@ -4849,7 +4914,12 @@ impl ElasticSearchReaderParams {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, name = "DeltaOptimizerRule")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "DeltaOptimizerRule"
+)]
 pub struct PyDeltaOptimizerRule {
     field_name: String,
     time_format: String,
@@ -4918,7 +4988,12 @@ fn relax_mqtt_packet_size_limits(options: &mut MqttOptions, uri: &str) {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, name = "MqttSettings")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "MqttSettings"
+)]
 pub struct MqttSettings {
     qos: MqttQoS,
     retain: bool,
@@ -4947,7 +5022,7 @@ impl MqttSettings {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct PsqlReplicationSettings {
     connection_string: String,
     publication_name: String,
@@ -4981,7 +5056,7 @@ impl PsqlReplicationSettings {
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct DataStorage {
     storage_type: String,
     path: Option<String>,
@@ -5075,8 +5150,10 @@ impl PyPersistenceMode {
     pub const OPERATOR_PERSISTING: PersistenceMode = PersistenceMode::OperatorPersisting;
 }
 
-impl<'py> FromPyObject<'py> for PersistenceMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for PersistenceMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyPersistenceMode>>()?.0)
     }
 }
@@ -5105,8 +5182,10 @@ impl PySnapshotAccess {
     pub const OFFSETS_ONLY: SnapshotAccess = SnapshotAccess::OffsetsOnly;
 }
 
-impl<'py> FromPyObject<'py> for SnapshotAccess {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SnapshotAccess {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySnapshotAccess>>()?.0)
     }
 }
@@ -5120,7 +5199,7 @@ impl<'py> IntoPyObject<'py> for SnapshotAccess {
     }
 }
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct PersistenceConfig {
     snapshot_interval: ::std::time::Duration,
     backend: DataStorage,
@@ -5193,7 +5272,7 @@ impl PersistenceConfig {
 }
 
 #[derive(Clone, Debug, Default)]
-#[pyclass(module = "pathway.engine", frozen, get_all)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, get_all)]
 pub struct TelemetryConfig {
     monitoring_server: Option<String>,
     detailed_metrics_dir: Option<String>,
@@ -5276,8 +5355,10 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
     }
 }
 
-impl<'py> FromPyObject<'py> for SnapshotEvent {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SnapshotEvent {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySnapshotEvent>>()?.0.clone())
     }
 }
@@ -5348,7 +5429,7 @@ impl PythonSubject {
     }
 }
 
-#[pyclass(module = "pathway.engine")]
+#[pyclass(from_py_object, module = "pathway.engine")]
 #[derive(Clone)]
 pub struct ValueField {
     #[pyo3(get)]
@@ -5401,7 +5482,7 @@ impl ValueField {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, get_all)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, get_all)]
 pub struct BackfillingThreshold {
     pub field: String,
     pub threshold: Value,
@@ -5426,7 +5507,12 @@ impl BackfillingThreshold {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, name = "SchemaRegistrySettings")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "SchemaRegistrySettings"
+)]
 pub struct PySchemaRegistrySettings {
     urls: Vec<String>,
     token_authorization: Option<String>,
@@ -5874,7 +5960,7 @@ impl DataFormat {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct IcebergCatalogSettings {
     type_: String,
     uri: Option<String>,
@@ -6020,7 +6106,7 @@ impl IcebergCatalogSettings {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct CsvParserSettings {
     pub delimiter: u8,
     pub quote: u8,
@@ -6599,7 +6685,7 @@ impl DataStorage {
         let uri = self.path()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
         let runtime = create_async_tokio_runtime()?;
-        let connector_index = *scope.total_connectors.get(py).borrow();
+        let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
         let readers_group_name = format!("pathway-reader-{connector_index}");
 
         let poller = if let Some(js_stream_name) = &self.js_stream_name {
@@ -8008,7 +8094,7 @@ impl DataFormat {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct ColumnProperties(Arc<EngineColumnProperties>);
 
@@ -8037,7 +8123,7 @@ impl ColumnProperties {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen, subclass)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, subclass)]
 #[derive(Clone)]
 pub struct TableProperties(Arc<EngineTableProperties>);
 
@@ -8085,7 +8171,7 @@ impl TableProperties {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct ConnectorProperties {
     #[pyo3(get)]
@@ -8160,7 +8246,7 @@ impl ConnectorProperties {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct Trace {
     #[pyo3(get)]
@@ -8192,8 +8278,10 @@ impl Trace {
     }
 }
 
-impl<'py> FromPyObject<'py> for EngineTrace {
-    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for EngineTrace {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let Trace {
             file_name,
             line_number,
@@ -8244,7 +8332,7 @@ mod done {
     pub struct Done(InnerDone);
 
     pub static DONE: Lazy<Py<Done>> = Lazy::new(|| {
-        Python::with_gil(|py| Py::new(py, Done(InnerDone)).expect("creating DONE should not fail"))
+        Python::attach(|py| Py::new(py, Done(InnerDone)).expect("creating DONE should not fail"))
     });
 }
 use done::{Done, DONE};
@@ -8269,15 +8357,17 @@ impl Done {
     }
 }
 
-impl<'py, T> FromPyObject<'py> for TotalFrontier<T>
+impl<'a, 'py, T> FromPyObject<'a, 'py> for TotalFrontier<T>
 where
-    T: FromPyObject<'py>,
+    T: FromPyObjectOwned<'py>,
 {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         if ob.is_instance_of::<Done>() {
             Ok(TotalFrontier::Done)
         } else {
-            Ok(TotalFrontier::At(ob.extract()?))
+            Ok(TotalFrontier::At(ob.extract().map_err(Into::into)?))
         }
     }
 }
@@ -8381,7 +8471,7 @@ fn run_with_wakeup_receiver<R>(
             #[allow(clippy::redundant_closure_for_method_calls)]
             wakeup_sender
                 .send(Box::new(|| {
-                    Python::with_gil(|py| py.check_signals()).map_err(DynError::from)
+                    Python::attach(|py| py.check_signals()).map_err(DynError::from)
                 }))
                 .unwrap_or(());
         })?;

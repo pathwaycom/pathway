@@ -17,7 +17,12 @@ use crate::external_integration::ExternalIndexFactory;
 use crate::{engine::ColumnPath, python_api::Table};
 
 #[derive(Clone)]
-#[pyclass(module = "pathway.engine", frozen, name = "ExternalIndexFactory")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "ExternalIndexFactory"
+)]
 pub struct PyExternalIndexFactory {
     pub inner: Arc<dyn ExternalIndexFactory>,
 }
@@ -201,8 +206,10 @@ impl PyUSearchMetricKind {
     pub const SORENSEN: USearchMetricKind = USearchMetricKind(MetricKind::Sorensen);
 }
 
-impl<'py> FromPyObject<'py> for USearchMetricKind {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for USearchMetricKind {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyUSearchMetricKind>>()?.0)
     }
 }
@@ -232,8 +239,10 @@ impl PyBruteForceKnnMetricKind {
     pub const COS: BruteForceKnnMetricKind = BruteForceKnnMetricKind::Cos;
 }
 
-impl<'py> FromPyObject<'py> for BruteForceKnnMetricKind {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for BruteForceKnnMetricKind {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyBruteForceKnnMetricKind>>()?.0)
     }
 }

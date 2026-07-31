@@ -95,7 +95,7 @@ use persist::{
     OldOrNew, PersistableCollection, PersistedStatefulReduce, PersistenceWrapper,
     TimestampBasedPersistenceWrapper,
 };
-use pyo3::PyObject;
+use pyo3::{Py, PyAny};
 use serde::{Deserialize, Serialize};
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::{Filter, Inspect, Probe};
@@ -7294,7 +7294,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     finish: impl Fn(R) -> R2 + Send + Sync + 'static,
     config: Config,
     mut wakeup_receiver: Option<WakeupReceiver>,
-    stats_monitor: Option<PyObject>,
+    stats_monitor: Option<Py<PyAny>>,
     ignore_asserts: bool,
     monitoring_level: MonitoringLevel,
     with_http_server: bool,

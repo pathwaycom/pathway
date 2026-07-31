@@ -183,7 +183,7 @@ impl ColumnPath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[pyclass(module = "pathway.engine", frozen, get_all)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, get_all)]
 pub struct DataRow {
     pub key: Key,
     pub values: Vec<Value>,
@@ -463,7 +463,7 @@ impl BatchWrapper {
     pub fn run<R>(&self, logic: impl FnOnce() -> R) -> R {
         match self {
             BatchWrapper::None => logic(),
-            BatchWrapper::WithGil => Python::with_gil(|_| logic()),
+            BatchWrapper::WithGil => Python::attach(|_| logic()),
         }
     }
 }

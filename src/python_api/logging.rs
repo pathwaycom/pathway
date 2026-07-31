@@ -164,8 +164,8 @@ impl Log for Logger {
             // No need to flush anything if nothing was ever sent
             return;
         };
-        Python::with_gil(|py| {
-            py.allow_threads(|| {
+        Python::attach(|py| {
+            py.detach(|| {
                 let (ack_sender, ack_receiver) = channel::bounded(1);
                 if let Ok(()) = sender.send(Message::Flush(ack_sender)) {
                     ack_receiver.recv().unwrap_or(());

@@ -151,8 +151,10 @@ mod python_conversions {
         }
     }
 
-    impl<'py> FromPyObject<'py> for Timestamp {
-        fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+    impl<'a, 'py> FromPyObject<'a, 'py> for Timestamp {
+        type Error = PyErr;
+
+        fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
             ob.extract().map(Self)
         }
     }

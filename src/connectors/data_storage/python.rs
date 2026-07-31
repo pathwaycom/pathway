@@ -113,7 +113,7 @@ const PW_OFFSET_FIELD_NAME: &str = "_pw_offset";
 
 impl Reader for PythonReader {
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             self.subject
                 .borrow(py)
                 .on_persisted_run
@@ -135,7 +135,7 @@ impl Reader for PythonReader {
 
         self.total_entries_read = *total_entries_read;
         if !raw_external_offset.is_empty() {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let data: Vec<u8> = raw_external_offset.to_vec();
                 let py_external_offset = PyBytes::new(py, &data).unbind().into_any();
                 self.subject
@@ -152,14 +152,14 @@ impl Reader for PythonReader {
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
         if !self.is_initialized {
-            Python::with_gil(|py| self.subject.borrow(py).start.call0(py))?;
+            Python::attach(|py| self.subject.borrow(py).start.call0(py))?;
             self.is_initialized = true;
         }
         if self.is_finished {
             return Ok(ReadResult::Finished);
         }
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let (py_event, key, objects): (
                 PythonConnectorEventType,
                 Option<Value>,

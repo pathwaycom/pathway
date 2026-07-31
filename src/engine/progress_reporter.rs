@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use arc_swap::ArcSwapOption;
-use pyo3::{PyObject, Python};
+use pyo3::{Py, PyAny, Python};
 
 use crate::engine::dataflow::monitoring::ProberStats;
 use crate::python_api::threads::PythonThreadState;
@@ -24,7 +24,7 @@ impl Runner {
     fn run(
         printing_period: Duration,
         stats: &Arc<ArcSwapOption<ProberStats>>,
-        stats_monitor: PyObject,
+        stats_monitor: Py<PyAny>,
     ) -> Runner {
         let should_finish = Arc::new(AtomicBool::new(false));
         let thread_handle = {
@@ -44,7 +44,7 @@ impl Runner {
                                     .as_millis(),
                             )
                             .unwrap();
-                            Python::with_gil(|py| {
+                            Python::attach(|py| {
                                 stats_monitor
                                     .call_method1(
                                         py,
@@ -83,7 +83,7 @@ impl Drop for Runner {
 pub fn maybe_run_reporter(
     monitoring_level: MonitoringLevel,
     graph: &dyn Graph,
-    stats_monitor: Option<PyObject>,
+    stats_monitor: Option<Py<PyAny>>,
 ) -> Option<Runner> {
     if monitoring_level != MonitoringLevel::None {
         if let Some(stats_monitor) = stats_monitor {
