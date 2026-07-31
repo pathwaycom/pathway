@@ -2558,7 +2558,7 @@ pub enum ReplicationError {
     Query(#[from] postgres::Error),
 
     #[error("Modification of a non-append-only table: {0:?}")]
-    AppendOnlyNotRespected(ChangeEvent),
+    AppendOnlyNotRespected(Box<ChangeEvent>),
 
     #[error(
         "Table {schema}.{table} has no primary key; non-append-only tables without a primary key are not supported"
@@ -3453,7 +3453,7 @@ impl WalReader {
                 EventType::Truncate(_) | EventType::Update { .. } | EventType::Delete { .. }
             )
         {
-            return Err(ReplicationError::AppendOnlyNotRespected(event));
+            return Err(ReplicationError::AppendOnlyNotRespected(Box::new(event)));
         }
 
         Ok(match event.event_type {
