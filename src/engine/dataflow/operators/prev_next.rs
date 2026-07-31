@@ -587,7 +587,7 @@ where
 {
     log::debug!(
         "insert {:?}, with carried entry {carry_entry:?}",
-        &batch_iter.peek().unwrap()
+        batch_iter.peek().unwrap()
     );
     debug_assert!(key_valid(batch_iter));
     let key = peek_key(batch_iter);
@@ -650,7 +650,7 @@ where
         log::debug!(
             "bb.push_insert_replace key {:?}, val {:?}",
             prev,
-            &(prev_prev.clone(), Some(key.clone()))
+            (prev_prev.clone(), Some(key.clone()))
         );
 
         push_insert_replace(
@@ -707,7 +707,7 @@ fn handle_one_instance<
     while key_valid(batch_iter) && unary_instance_filter(peek_key(batch_iter)) {
         log::debug!(
             "repr {:?} current {:?} ",
-            &instance_representative,
+            instance_representative,
             peek_key(batch_iter)
         );
 

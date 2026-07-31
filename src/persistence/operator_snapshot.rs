@@ -118,7 +118,7 @@ fn get_chunks(keys: Vec<String>, threshold_time: TotalFrontier<Timestamp>) -> Ch
             if chunk.time < max_time_per_level[chunk.level] {
                 too_old.push(chunk);
             } else {
-                assert!(chunk.time == max_time_per_level[chunk.level]);
+                assert_eq!(chunk.time, max_time_per_level[chunk.level]);
                 current.push(chunk);
             }
         }

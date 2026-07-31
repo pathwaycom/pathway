@@ -3754,7 +3754,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         if set_id {
-            assert!(grouping_columns_paths.len() == 1);
+            assert_eq!(grouping_columns_paths.len(), 1);
         }
         let table = self
             .tables

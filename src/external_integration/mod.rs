@@ -465,7 +465,7 @@ where
             .zip(answers)
             .filter_map(
                 |((key, (query, limit, current_upper_bound, expr)), (key2, results))| {
-                    assert!(**key == key2);
+                    assert_eq!(**key, key2);
                     match results {
                         Err(error) => {
                             responses.push((**key, Err(error)));
