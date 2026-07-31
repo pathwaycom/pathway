@@ -1,9 +1,9 @@
 //! Hierarchical organization of timely dataflow graphs.
 
-use crate::progress::{Timestamp, Operate, Source, Target};
+use crate::communication::Allocate;
 use crate::order::Product;
 use crate::progress::timestamp::Refines;
-use crate::communication::Allocate;
+use crate::progress::{Operate, Source, Target, Timestamp};
 use crate::worker::AsWorker;
 
 pub mod child;
@@ -11,15 +11,14 @@ pub mod child;
 pub use self::child::Child;
 
 /// The information a child scope needs from its parent.
-pub trait ScopeParent: AsWorker+Clone {
+pub trait ScopeParent: AsWorker + Clone {
     /// The timestamp associated with data in this scope.
-    type Timestamp : Timestamp;
+    type Timestamp: Timestamp;
 }
 
 impl<A: Allocate> ScopeParent for crate::worker::Worker<A> {
     type Timestamp = ();
 }
-
 
 /// The fundamental operations required to add and connect operators in a timely dataflow graph.
 ///
@@ -56,7 +55,11 @@ pub trait Scope: ScopeParent {
     ///
     /// This is used internally when there is a gap between allocate a child identifier and adding the
     /// child, as happens in subgraph creation.
-    fn add_operator_with_index(&mut self, operator: Box<dyn Operate<Self::Timestamp>>, index: usize) {
+    fn add_operator_with_index(
+        &mut self,
+        operator: Box<dyn Operate<Self::Timestamp>>,
+        index: usize,
+    ) {
         let global = self.new_identifier();
         self.add_operator_with_indices(operator, index, global);
     }
@@ -64,7 +67,12 @@ pub trait Scope: ScopeParent {
     /// Adds a child `Operate` to the builder's scope using supplied indices.
     ///
     /// The two indices are the scope-local operator index, and a worker-unique index used for e.g. logging.
-    fn add_operator_with_indices(&mut self, operator: Box<dyn Operate<Self::Timestamp>>, local: usize, global: usize);
+    fn add_operator_with_indices(
+        &mut self,
+        operator: Box<dyn Operate<Self::Timestamp>>,
+        local: usize,
+        global: usize,
+    );
 
     /// Creates a dataflow subgraph.
     ///
@@ -93,7 +101,7 @@ pub trait Scope: ScopeParent {
     /// ```
     fn scoped<T, R, F>(&mut self, name: &str, func: F) -> R
     where
-        T: Timestamp+Refines<<Self as ScopeParent>::Timestamp>,
+        T: Timestamp + Refines<<Self as ScopeParent>::Timestamp>,
         F: FnOnce(&mut Child<Self, T>) -> R;
 
     /// Creates a iterative dataflow subgraph.
@@ -123,7 +131,7 @@ pub trait Scope: ScopeParent {
         T: Timestamp,
         F: FnOnce(&mut Child<Self, Product<<Self as ScopeParent>::Timestamp, T>>) -> R,
     {
-        self.scoped::<Product<<Self as ScopeParent>::Timestamp, T>,R,F>("Iterative", func)
+        self.scoped::<Product<<Self as ScopeParent>::Timestamp, T>, R, F>("Iterative", func)
     }
 
     /// Creates a dataflow region with the same timestamp.
@@ -184,7 +192,6 @@ pub trait Scope: ScopeParent {
     where
         F: FnOnce(&mut Child<Self, <Self as ScopeParent>::Timestamp>) -> R,
     {
-        self.scoped::<<Self as ScopeParent>::Timestamp,R,F>(name, func)
+        self.scoped::<<Self as ScopeParent>::Timestamp, R, F>(name, func)
     }
-
 }

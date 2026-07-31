@@ -10,16 +10,16 @@
 
 use std::hash::Hash;
 
-use timely::Data;
-use timely::progress::Timestamp;
-use timely::order::Product;
-use timely::dataflow::scopes::{Child, child::Iterative};
-use timely::dataflow::{Scope, Stream};
 use timely::dataflow::operators::*;
+use timely::dataflow::scopes::{child::Iterative, Child};
+use timely::dataflow::{Scope, Stream};
+use timely::order::Product;
+use timely::progress::Timestamp;
+use timely::Data;
 
-use ::difference::{Semigroup, Abelian, Multiply};
-use lattice::Lattice;
+use difference::{Abelian, Multiply, Semigroup};
 use hashable::Hashable;
+use lattice::Lattice;
 
 /// A mutable collection of values of type `D`
 ///
@@ -42,10 +42,13 @@ pub struct Collection<G: Scope, D, R: Semigroup = isize> {
     ///
     /// This field is exposed to support direct timely dataflow manipulation when required, but it is
     /// not intended to be the idiomatic way to work with the collection.
-    pub inner: Stream<G, (D, G::Timestamp, R)>
+    pub inner: Stream<G, (D, G::Timestamp, R)>,
 }
 
-impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Data {
+impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R>
+where
+    G::Timestamp: Data,
+{
     /// Creates a new Collection from a timely dataflow stream.
     ///
     /// This method seems to be rarely used, with the `as_collection` method on streams being a more
@@ -75,8 +78,9 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn map<D2, L>(&self, mut logic: L) -> Collection<G, D2, R>
-    where D2: Data,
-          L: FnMut(D) -> D2 + 'static
+    where
+        D2: Data,
+        L: FnMut(D) -> D2 + 'static,
     {
         self.inner
             .map(move |(data, time, delta)| (logic(data), time, delta))
@@ -106,7 +110,9 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn map_in_place<L>(&self, mut logic: L) -> Collection<G, D, R>
-    where L: FnMut(&mut D) + 'static {
+    where
+        L: FnMut(&mut D) + 'static,
+    {
         self.inner
             .map_in_place(move |&mut (ref mut data, _, _)| logic(data))
             .as_collection()
@@ -133,12 +139,18 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn flat_map<I, L>(&self, mut logic: L) -> Collection<G, I::Item, R>
-        where G::Timestamp: Clone,
-              I: IntoIterator,
-              I::Item: Data,
-              L: FnMut(D) -> I + 'static {
+    where
+        G::Timestamp: Clone,
+        I: IntoIterator,
+        I::Item: Data,
+        L: FnMut(D) -> I + 'static,
+    {
         self.inner
-            .flat_map(move |(data, time, delta)| logic(data).into_iter().map(move |x| (x, time.clone(), delta.clone())))
+            .flat_map(move |(data, time, delta)| {
+                logic(data)
+                    .into_iter()
+                    .map(move |x| (x, time.clone(), delta.clone()))
+            })
             .as_collection()
     }
     /// Creates a new collection containing those input records satisfying the supplied predicate.
@@ -161,7 +173,9 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn filter<L>(&self, mut logic: L) -> Collection<G, D, R>
-    where L: FnMut(&D) -> bool + 'static {
+    where
+        L: FnMut(&D) -> bool + 'static,
+    {
         self.inner
             .filter(move |&(ref data, _, _)| logic(data))
             .as_collection()
@@ -194,9 +208,7 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn concat(&self, other: &Collection<G, D, R>) -> Collection<G, D, R> {
-        self.inner
-            .concat(&other.inner)
-            .as_collection()
+        self.inner.concat(&other.inner).as_collection()
     }
     /// Creates a new collection accumulating the contents of the two collections.
     ///
@@ -227,7 +239,7 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// ```
     pub fn concatenate<I>(&self, sources: I) -> Collection<G, D, R>
     where
-        I: IntoIterator<Item=Collection<G, D, R>>
+        I: IntoIterator<Item = Collection<G, D, R>>,
     {
         self.inner
             .concatenate(sources.into_iter().map(|x| x.inner))
@@ -258,15 +270,23 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     ///     });
     /// }
     /// ```
-    pub fn explode<D2, R2, I, L>(&self, mut logic: L) -> Collection<G, D2, <R2 as Multiply<R>>::Output>
-    where D2: Data,
-          R2: Semigroup+Multiply<R>,
-          <R2 as Multiply<R>>::Output: Data+Semigroup,
-          I: IntoIterator<Item=(D2,R2)>,
-          L: FnMut(D)->I+'static,
+    pub fn explode<D2, R2, I, L>(
+        &self,
+        mut logic: L,
+    ) -> Collection<G, D2, <R2 as Multiply<R>>::Output>
+    where
+        D2: Data,
+        R2: Semigroup + Multiply<R>,
+        <R2 as Multiply<R>>::Output: Data + Semigroup,
+        I: IntoIterator<Item = (D2, R2)>,
+        L: FnMut(D) -> I + 'static,
     {
         self.inner
-            .flat_map(move |(x, t, d)| logic(x).into_iter().map(move |(x,d2)| (x, t.clone(), d2.multiply(&d))))
+            .flat_map(move |(x, t, d)| {
+                logic(x)
+                    .into_iter()
+                    .map(move |(x, d2)| (x, t.clone(), d2.multiply(&d)))
+            })
             .as_collection()
     }
 
@@ -297,16 +317,24 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     ///     });
     /// }
     /// ```
-    pub fn join_function<D2, R2, I, L>(&self, mut logic: L) -> Collection<G, D2, <R2 as Multiply<R>>::Output>
-    where G::Timestamp: Lattice,
-          D2: Data,
-          R2: Semigroup+Multiply<R>,
-          <R2 as Multiply<R>>::Output: Data+Semigroup,
-          I: IntoIterator<Item=(D2,G::Timestamp,R2)>,
-          L: FnMut(D)->I+'static,
+    pub fn join_function<D2, R2, I, L>(
+        &self,
+        mut logic: L,
+    ) -> Collection<G, D2, <R2 as Multiply<R>>::Output>
+    where
+        G::Timestamp: Lattice,
+        D2: Data,
+        R2: Semigroup + Multiply<R>,
+        <R2 as Multiply<R>>::Output: Data + Semigroup,
+        I: IntoIterator<Item = (D2, G::Timestamp, R2)>,
+        L: FnMut(D) -> I + 'static,
     {
         self.inner
-            .flat_map(move |(x, t, d)| logic(x).into_iter().map(move |(x,t2,d2)| (x, t.join(&t2), d2.multiply(&d))))
+            .flat_map(move |(x, t, d)| {
+                logic(x)
+                    .into_iter()
+                    .map(move |(x, t2, d2)| (x, t.join(&t2), d2.multiply(&d)))
+            })
             .as_collection()
     }
 
@@ -372,13 +400,16 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     ///     });
     /// }
     /// ```
-    pub fn enter_at<'a, T, F>(&self, child: &Iterative<'a, G, T>, initial: F) -> Collection<Iterative<'a, G, T>, D, R>
+    pub fn enter_at<'a, T, F>(
+        &self,
+        child: &Iterative<'a, G, T>,
+        initial: F,
+    ) -> Collection<Iterative<'a, G, T>, D, R>
     where
-        T: Timestamp+Hash,
+        T: Timestamp + Hash,
         F: FnMut(&D) -> T + Clone + 'static,
         G::Timestamp: Hash,
     {
-
         let mut initial1 = initial.clone();
         let mut initial2 = initial.clone();
 
@@ -395,11 +426,11 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     ///
     /// This method is a specialization of `enter` to the case where the nested scope is a region.
     /// It removes the need for an operator that adjusts the timestamp.
-    pub fn enter_region<'a>(&self, child: &Child<'a, G, <G as ScopeParent>::Timestamp>) -> Collection<Child<'a, G, <G as ScopeParent>::Timestamp>, D, R>
-    {
-        self.inner
-            .enter(child)
-            .as_collection()
+    pub fn enter_region<'a>(
+        &self,
+        child: &Child<'a, G, <G as ScopeParent>::Timestamp>,
+    ) -> Collection<Child<'a, G, <G as ScopeParent>::Timestamp>, D, R> {
+        self.inner.enter(child).as_collection()
     }
 
     /// Delays each difference by a supplied function.
@@ -409,8 +440,9 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// ordered, they should have the same order once `func` is applied to them (this is because we advance the
     /// timely capability with the same logic, and it must remain `less_equal` to all of the data timestamps).
     pub fn delay<F>(&self, func: F) -> Collection<G, D, R>
-    where F: FnMut(&G::Timestamp) -> G::Timestamp + Clone + 'static {
-
+    where
+        F: FnMut(&G::Timestamp) -> G::Timestamp + Clone + 'static,
+    {
         let mut func1 = func.clone();
         let mut func2 = func.clone();
 
@@ -448,10 +480,10 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn inspect<F>(&self, func: F) -> Collection<G, D, R>
-    where F: FnMut(&(D, G::Timestamp, R))+'static {
-        self.inner
-            .inspect(func)
-            .as_collection()
+    where
+        F: FnMut(&(D, G::Timestamp, R)) + 'static,
+    {
+        self.inner.inspect(func).as_collection()
     }
     /// Applies a supplied function to each batch of updates.
     ///
@@ -477,18 +509,17 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn inspect_batch<F>(&self, func: F) -> Collection<G, D, R>
-    where F: FnMut(&G::Timestamp, &[(D, G::Timestamp, R)])+'static {
-        self.inner
-            .inspect_batch(func)
-            .as_collection()
+    where
+        F: FnMut(&G::Timestamp, &[(D, G::Timestamp, R)]) + 'static,
+    {
+        self.inner.inspect_batch(func).as_collection()
     }
     /// Attaches a timely dataflow probe to the output of a Collection.
     ///
     /// This probe is used to determine when the state of the Collection has stabilized and can
     /// be read out.
     pub fn probe(&self) -> probe::Handle<G::Timestamp> {
-        self.inner
-            .probe()
+        self.inner.probe()
     }
     /// Attaches a timely dataflow probe to the output of a Collection.
     ///
@@ -497,9 +528,7 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// computation can wait until the probe has caught up to the input before introducing more rounds of data, to
     /// avoid swamping the system.
     pub fn probe_with(&self, handle: &mut probe::Handle<G::Timestamp>) -> Collection<G, D, R> {
-        self.inner
-            .probe_with(handle)
-            .as_collection()
+        self.inner.probe_with(handle).as_collection()
     }
 
     /// Assert if the collection is ever non-empty.
@@ -527,9 +556,10 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
     /// }
     /// ```
     pub fn assert_empty(&self)
-    where D: ::ExchangeData+Hashable,
-          R: ::ExchangeData+Hashable,
-          G::Timestamp: Lattice+Ord,
+    where
+        D: ::ExchangeData + Hashable,
+        R: ::ExchangeData + Hashable,
+        G::Timestamp: Lattice + Ord,
     {
         self.consolidate()
             .inspect(|x| panic!("Assertion failed: non-empty collection: {:?}", x));
@@ -583,21 +613,21 @@ where
 }
 
 /// Methods requiring a region as the scope.
-impl<'a, G: Scope, D: Data, R: Semigroup> Collection<Child<'a, G, G::Timestamp>, D, R>
-{
+impl<'a, G: Scope, D: Data, R: Semigroup> Collection<Child<'a, G, G::Timestamp>, D, R> {
     /// Returns the value of a Collection from a nested region to its containing scope.
     ///
     /// This method is a specialization of `leave` to the case that of a nested region.
     /// It removes the need for an operator that adjusts the timestamp.
     pub fn leave_region(&self) -> Collection<G, D, R> {
-        self.inner
-            .leave()
-            .as_collection()
+        self.inner.leave().as_collection()
     }
 }
 
 /// Methods requiring an Abelian difference, to support negation.
-impl<G: Scope, D: Data, R: Abelian> Collection<G, D, R> where G::Timestamp: Data {
+impl<G: Scope, D: Data, R: Abelian> Collection<G, D, R>
+where
+    G::Timestamp: Data,
+{
     /// Creates a new collection whose counts are the negation of those in the input.
     ///
     /// This method is most commonly used with `concat` to get those element in one collection but not another.
@@ -632,7 +662,6 @@ impl<G: Scope, D: Data, R: Abelian> Collection<G, D, R> where G::Timestamp: Data
             .as_collection()
     }
 
-
     /// Assert if the collections are ever different.
     ///
     /// Because this is a dataflow fragment, the test is only applied as the computation is run. If the computation
@@ -662,13 +691,12 @@ impl<G: Scope, D: Data, R: Abelian> Collection<G, D, R> where G::Timestamp: Data
     /// }
     /// ```
     pub fn assert_eq(&self, other: &Self)
-    where D: ::ExchangeData+Hashable,
-          R: ::ExchangeData+Hashable,
-          G::Timestamp: Lattice+Ord
+    where
+        D: ::ExchangeData + Hashable,
+        R: ::ExchangeData + Hashable,
+        G::Timestamp: Lattice + Ord,
     {
-        self.negate()
-            .concat(other)
-            .assert_empty();
+        self.negate().concat(other).assert_empty();
     }
 }
 
@@ -715,7 +743,7 @@ where
     G: Scope,
     D: Data,
     R: Semigroup,
-    I: IntoIterator<Item=Collection<G, D, R>>,
+    I: IntoIterator<Item = Collection<G, D, R>>,
 {
     scope
         .concatenate(iterator.into_iter().map(|x| x.inner))

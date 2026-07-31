@@ -1,17 +1,23 @@
 extern crate timely;
 
+use timely::dataflow::operators::{Concat, ConnectLoop, Feedback, Filter, Input, Map, Probe};
 use timely::dataflow::{InputHandle, ProbeHandle};
-use timely::dataflow::operators::{Input, Feedback, Concat, Map, Filter, ConnectLoop, Probe};
 
 fn main() {
-
     let mut args = std::env::args();
     args.next();
-    let rate: usize = args.next().expect("Must specify rate").parse().expect("Rate must be an usize");
-    let duration_s: usize = args.next().expect("Must specify duration_s").parse().expect("duration_s must be an usize");
+    let rate: usize = args
+        .next()
+        .expect("Must specify rate")
+        .parse()
+        .expect("Rate must be an usize");
+    let duration_s: usize = args
+        .next()
+        .expect("Must specify duration_s")
+        .parse()
+        .expect("duration_s must be an usize");
 
     timely::execute_from_args(args, move |worker| {
-
         let index = worker.index();
         let peers = worker.peers();
 
@@ -22,13 +28,11 @@ fn main() {
 
         // Create a dataflow that discards input data (just syncronizes).
         worker.dataflow(|scope| {
-
             let stream = scope.input_from(&mut input);
 
             let (loop_handle, loop_stream) = scope.feedback(1);
 
-            let step =
-            stream
+            let step = stream
                 .concat(&loop_stream)
                 .map(|x| if x % 2 == 0 { x / 2 } else { 3 * x + 1 })
                 .filter(|x| x > &1);
@@ -38,8 +42,8 @@ fn main() {
         });
 
         let ns_per_request = 1_000_000_000 / rate;
-        let mut insert_counter = index;           // counts up as we insert records.
-        let mut retire_counter = index;           // counts up as we retire records.
+        let mut insert_counter = index; // counts up as we insert records.
+        let mut retire_counter = index; // counts up as we retire records.
 
         let mut inserted_ns = 0;
 
@@ -50,7 +54,6 @@ fn main() {
 
         let counter_limit = rate * duration_s;
         while retire_counter < counter_limit {
-
             // Open-loop latency-throughput test, parameterized by offered rate `ns_per_request`.
             let elapsed = timer.elapsed();
             let elapsed_ns = elapsed.as_secs() * 1_000_000_000 + (elapsed.subsec_nanos() as u64);
@@ -59,7 +62,9 @@ fn main() {
             let acknowledged_ns: u64 = probe.with_frontier(|frontier| frontier[0]);
 
             // Notice any newly-retired records.
-            while ((retire_counter * ns_per_request) as u64) < acknowledged_ns && retire_counter < counter_limit {
+            while ((retire_counter * ns_per_request) as u64) < acknowledged_ns
+                && retire_counter < counter_limit
+            {
                 let requested_at = (retire_counter * ns_per_request) as u64;
                 let latency_ns = elapsed_ns - requested_at;
 
@@ -88,7 +93,6 @@ fn main() {
             let target_ns = elapsed_ns & !(scale - 1);
 
             if inserted_ns < target_ns {
-
                 while ((insert_counter * ns_per_request) as u64) < target_ns {
                     input.send(insert_counter);
                     insert_counter += peers;
@@ -102,14 +106,13 @@ fn main() {
 
         // Report observed latency measurements.
         if index == 0 {
-
             let mut results = Vec::new();
             let total = counts.iter().map(|x| x.iter().sum::<u64>()).sum();
             let mut sum = 0;
-            for index in (10 .. counts.len()).rev() {
-                for sub in (0 .. 16).rev() {
+            for index in (10..counts.len()).rev() {
+                for sub in (0..16).rev() {
                     if sum > 0 && sum < total {
-                        let latency = (1 << (index-1)) + (sub << (index-5));
+                        let latency = (1 << (index - 1)) + (sub << (index - 5));
                         let fraction = (sum as f64) / (total as f64);
                         results.push((latency, fraction));
                     }
@@ -120,6 +123,6 @@ fn main() {
                 println!("{}\t{}", latency, fraction);
             }
         }
-
-    }).unwrap();
+    })
+    .unwrap();
 }

@@ -6,17 +6,17 @@
 //! timely dataflow capabilities, exposing more concurrency to the operator implementations
 //! than are evident from the logical times, which appear to execute in sequence.
 
-use timely::progress::Timestamp;
-use timely::dataflow::operators::Input as TimelyInput;
 use timely::dataflow::operators::input::Handle;
+use timely::dataflow::operators::Input as TimelyInput;
 use timely::dataflow::scopes::ScopeParent;
+use timely::progress::Timestamp;
 
-use ::Data;
-use ::difference::Semigroup;
-use collection::{Collection, AsCollection};
+use collection::{AsCollection, Collection};
+use difference::Semigroup;
+use Data;
 
 /// Create a new collection and input handle to control the collection.
-pub trait Input : TimelyInput {
+pub trait Input: TimelyInput {
     /// Create a new collection and input handle to subsequently control the collection.
     ///
     /// # Examples
@@ -46,8 +46,15 @@ pub trait Input : TimelyInput {
     ///        }).unwrap();
     /// }
     /// ```
-    fn new_collection<D, R>(&mut self) -> (InputSession<<Self as ScopeParent>::Timestamp, D, R>, Collection<Self, D, R>)
-    where D: Data, R: Semigroup;
+    fn new_collection<D, R>(
+        &mut self,
+    ) -> (
+        InputSession<<Self as ScopeParent>::Timestamp, D, R>,
+        Collection<Self, D, R>,
+    )
+    where
+        D: Data,
+        R: Semigroup;
     /// Create a new collection and input handle from initial data.
     ///
     /// # Examples
@@ -77,8 +84,16 @@ pub trait Input : TimelyInput {
     ///        }).unwrap();
     /// }
     /// ```
-    fn new_collection_from<I>(&mut self, data: I) -> (InputSession<<Self as ScopeParent>::Timestamp, I::Item, isize>, Collection<Self, I::Item, isize>)
-    where I: IntoIterator+'static, I::Item: Data;
+    fn new_collection_from<I>(
+        &mut self,
+        data: I,
+    ) -> (
+        InputSession<<Self as ScopeParent>::Timestamp, I::Item, isize>,
+        Collection<Self, I::Item, isize>,
+    )
+    where
+        I: IntoIterator + 'static,
+        I::Item: Data;
     /// Create a new collection and input handle from initial data.
     ///
     /// # Examples
@@ -108,34 +123,79 @@ pub trait Input : TimelyInput {
     ///     }).unwrap();
     /// }
     /// ```
-    fn new_collection_from_raw<D, R, I>(&mut self, data: I) -> (InputSession<<Self as ScopeParent>::Timestamp, D, R>, Collection<Self, D, R>)
-    where I: IntoIterator<Item=(D,<Self as ScopeParent>::Timestamp,R)>+'static, D: Data, R: Semigroup+Data;
+    fn new_collection_from_raw<D, R, I>(
+        &mut self,
+        data: I,
+    ) -> (
+        InputSession<<Self as ScopeParent>::Timestamp, D, R>,
+        Collection<Self, D, R>,
+    )
+    where
+        I: IntoIterator<Item = (D, <Self as ScopeParent>::Timestamp, R)> + 'static,
+        D: Data,
+        R: Semigroup + Data;
 }
 
 use lattice::Lattice;
-impl<G: TimelyInput> Input for G where <G as ScopeParent>::Timestamp: Lattice {
-    fn new_collection<D, R>(&mut self) -> (InputSession<<G as ScopeParent>::Timestamp, D, R>, Collection<G, D, R>)
-    where D: Data, R: Semigroup{
+impl<G: TimelyInput> Input for G
+where
+    <G as ScopeParent>::Timestamp: Lattice,
+{
+    fn new_collection<D, R>(
+        &mut self,
+    ) -> (
+        InputSession<<G as ScopeParent>::Timestamp, D, R>,
+        Collection<G, D, R>,
+    )
+    where
+        D: Data,
+        R: Semigroup,
+    {
         let (handle, stream) = self.new_input();
         (InputSession::from(handle), stream.as_collection())
     }
-    fn new_collection_from<I>(&mut self, data: I) -> (InputSession<<G as ScopeParent>::Timestamp, I::Item, isize>, Collection<G, I::Item, isize>)
-    where I: IntoIterator+'static, I::Item: Data {
-        self.new_collection_from_raw(data.into_iter().map(|d| (d, <G::Timestamp as timely::progress::Timestamp>::minimum(), 1)))
+    fn new_collection_from<I>(
+        &mut self,
+        data: I,
+    ) -> (
+        InputSession<<G as ScopeParent>::Timestamp, I::Item, isize>,
+        Collection<G, I::Item, isize>,
+    )
+    where
+        I: IntoIterator + 'static,
+        I::Item: Data,
+    {
+        self.new_collection_from_raw(data.into_iter().map(|d| {
+            (
+                d,
+                <G::Timestamp as timely::progress::Timestamp>::minimum(),
+                1,
+            )
+        }))
     }
-    fn new_collection_from_raw<D,R,I>(&mut self, data: I) -> (InputSession<<G as ScopeParent>::Timestamp, D, R>, Collection<G, D, R>)
+    fn new_collection_from_raw<D, R, I>(
+        &mut self,
+        data: I,
+    ) -> (
+        InputSession<<G as ScopeParent>::Timestamp, D, R>,
+        Collection<G, D, R>,
+    )
     where
         D: Data,
-        R: Semigroup+Data,
-        I: IntoIterator<Item=(D,<Self as ScopeParent>::Timestamp,R)>+'static,
+        R: Semigroup + Data,
+        I: IntoIterator<Item = (D, <Self as ScopeParent>::Timestamp, R)> + 'static,
     {
         use timely::dataflow::operators::ToStream;
 
         let (handle, stream) = self.new_input();
         let source = data.to_stream(self).as_collection();
 
-        (InputSession::from(handle), stream.as_collection().concat(&source))
-    }}
+        (
+            InputSession::from(handle),
+            stream.as_collection().concat(&source),
+        )
+    }
+}
 
 /// An input session wrapping a single timely dataflow capability.
 ///
@@ -186,17 +246,21 @@ impl<G: TimelyInput> Input for G where <G as ScopeParent>::Timestamp: Lattice {
 ///        }).unwrap();
 /// }
 /// ```
-pub struct InputSession<T: Timestamp+Clone, D: Data, R: Semigroup> {
+pub struct InputSession<T: Timestamp + Clone, D: Data, R: Semigroup> {
     time: T,
     buffer: Vec<(D, T, R)>,
-    handle: Handle<T,(D,T,R)>,
+    handle: Handle<T, (D, T, R)>,
 }
 
-impl<T: Timestamp+Clone, D: Data> InputSession<T, D, isize> {
+impl<T: Timestamp + Clone, D: Data> InputSession<T, D, isize> {
     /// Adds an element to the collection.
-    pub fn insert(&mut self, element: D) { self.update(element, 1); }
+    pub fn insert(&mut self, element: D) {
+        self.update(element, 1);
+    }
     /// Removes an element from the collection.
-    pub fn remove(&mut self, element: D) { self.update(element,-1); }
+    pub fn remove(&mut self, element: D) {
+        self.update(element, -1);
+    }
 }
 
 // impl<T: Timestamp+Clone, D: Data> InputSession<T, D, i64> {
@@ -213,21 +277,18 @@ impl<T: Timestamp+Clone, D: Data> InputSession<T, D, isize> {
 //     pub fn remove(&mut self, element: D) { self.update(element,-1); }
 // }
 
-impl<T: Timestamp+Clone, D: Data, R: Semigroup> InputSession<T, D, R> {
-
+impl<T: Timestamp + Clone, D: Data, R: Semigroup> InputSession<T, D, R> {
     /// Introduces a handle as collection.
     pub fn to_collection<G: TimelyInput>(&mut self, scope: &mut G) -> Collection<G, D, R>
     where
-        G: ScopeParent<Timestamp=T>,
+        G: ScopeParent<Timestamp = T>,
     {
-        scope
-            .input_from(&mut self.handle)
-            .as_collection()
+        scope.input_from(&mut self.handle).as_collection()
     }
 
     /// Allocates a new input handle.
     pub fn new() -> Self {
-        let handle: Handle<T,_> = Handle::new();
+        let handle: Handle<T, _> = Handle::new();
         InputSession {
             time: handle.time().clone(),
             buffer: Vec::new(),
@@ -236,7 +297,7 @@ impl<T: Timestamp+Clone, D: Data, R: Semigroup> InputSession<T, D, R> {
     }
 
     /// Creates a new session from a reference to an input handle.
-    pub fn from(handle: Handle<T,(D,T,R)>) -> Self {
+    pub fn from(handle: Handle<T, (D, T, R)>) -> Self {
         InputSession {
             time: handle.time().clone(),
             buffer: Vec::new(),
@@ -293,15 +354,19 @@ impl<T: Timestamp+Clone, D: Data, R: Semigroup> InputSession<T, D, R> {
     }
 
     /// Reveals the current time of the session.
-    pub fn epoch(&self) -> &T { &self.time }
+    pub fn epoch(&self) -> &T {
+        &self.time
+    }
     /// Reveals the current time of the session.
-    pub fn time(&self) -> &T { &self.time }
+    pub fn time(&self) -> &T {
+        &self.time
+    }
 
     /// Closes the input, flushing and sealing the wrapped timely input.
-    pub fn close(self) { }
+    pub fn close(self) {}
 }
 
-impl<T: Timestamp+Clone, D: Data, R: Semigroup> Drop for InputSession<T, D, R> {
+impl<T: Timestamp + Clone, D: Data, R: Semigroup> Drop for InputSession<T, D, R> {
     fn drop(&mut self) {
         self.flush();
     }

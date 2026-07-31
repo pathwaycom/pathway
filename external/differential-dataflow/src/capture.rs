@@ -98,8 +98,7 @@ pub mod iterator {
     use timely::order::PartialOrder;
     use timely::progress::{
         frontier::{AntichainRef, MutableAntichain},
-        Antichain,
-        Timestamp,
+        Antichain, Timestamp,
     };
 
     /// A direct implementation of a deduplicating, re-ordering iterator.
@@ -264,10 +263,13 @@ pub mod source {
     use crate::{lattice::Lattice, ExchangeData};
     use std::cell::RefCell;
     use std::hash::Hash;
-    use std::rc::Rc;
     use std::marker::{Send, Sync};
+    use std::rc::Rc;
     use std::sync::Arc;
-    use timely::dataflow::{Scope, Stream, operators::{Capability, CapabilitySet}};
+    use timely::dataflow::{
+        operators::{Capability, CapabilitySet},
+        Scope, Stream,
+    };
     use timely::progress::Timestamp;
     use timely::scheduling::SyncActivator;
 
@@ -351,12 +353,13 @@ pub mod source {
         let address = messages_op.operator_info().address;
         let activator = scope.sync_activator_for(&address);
         let activator2 = scope.activator_for(&address);
-        let drop_activator = DropActivator { activator: Arc::new(scope.sync_activator_for(&address)) };
+        let drop_activator = DropActivator {
+            activator: Arc::new(scope.sync_activator_for(&address)),
+        };
         let mut source = source_builder(activator);
         let (mut updates_out, updates) = messages_op.new_output();
         let (mut progress_out, progress) = messages_op.new_output();
         messages_op.build(|capabilities| {
-
             // A Weak that communicates whether the returned token has been dropped.
             let drop_activator_weak = Arc::downgrade(&drop_activator.activator);
 
@@ -455,7 +458,9 @@ pub mod source {
                     let mut counts_session = counts.session(&capability);
                     for (data, time, diff) in updates.iter() {
                         if frontiers[0].less_equal(time) {
-                            if let Some(prior) = pending.insert((data.clone(), time.clone()), diff.clone()) {
+                            if let Some(prior) =
+                                pending.insert((data.clone(), time.clone()), diff.clone())
+                            {
                                 assert_eq!(&prior, diff);
                             } else {
                                 change_batch.update(time.clone(), -1);
@@ -567,13 +572,19 @@ pub mod source {
                 while let Some((_cap, frontier_changes)) = input.next() {
                     for (_self, input_changes) in frontier_changes.iter() {
                         // Apply the updates, and observe if the lower bound has changed.
-                        if antichain.update_iter(input_changes.unstable_internal_updates().iter().cloned()).next().is_some() {
+                        if antichain
+                            .update_iter(input_changes.unstable_internal_updates().iter().cloned())
+                            .next()
+                            .is_some()
+                        {
                             must_activate = true;
                         }
                     }
                 }
                 // If the lower bound has changed, we must activate MESSAGES.
-                if must_activate { activator2.activate(); }
+                if must_activate {
+                    activator2.activate();
+                }
             }
         });
 
@@ -584,20 +595,22 @@ pub mod source {
 /// Methods for recording update streams to binary bundles.
 pub mod sink {
 
-    use std::hash::Hash;
     use std::cell::RefCell;
+    use std::hash::Hash;
     use std::rc::Weak;
 
     use serde::{Deserialize, Serialize};
 
+    use timely::dataflow::channels::pact::{Exchange, Pipeline};
+    use timely::dataflow::operators::generic::{
+        builder_rc::OperatorBuilder, FrontieredInputHandle,
+    };
+    use timely::dataflow::{Scope, Stream};
     use timely::order::PartialOrder;
     use timely::progress::{Antichain, ChangeBatch, Timestamp};
-    use timely::dataflow::{Scope, Stream};
-    use timely::dataflow::channels::pact::{Exchange, Pipeline};
-    use timely::dataflow::operators::generic::{FrontieredInputHandle, builder_rc::OperatorBuilder};
 
+    use super::{Message, Progress, Writer};
     use crate::{lattice::Lattice, ExchangeData};
-    use super::{Writer, Message, Progress};
 
     /// Constructs a sink, for recording the updates in `stream`.
     ///
@@ -612,7 +625,7 @@ pub mod sink {
         progress_sink: Weak<RefCell<BS>>,
     ) where
         G: Scope<Timestamp = T>,
-        BS: Writer<Message<D,T,R>> + 'static,
+        BS: Writer<Message<D, T, R>> + 'static,
         D: ExchangeData + Hash + Serialize + for<'a> Deserialize<'a>,
         T: ExchangeData + Hash + Serialize + for<'a> Deserialize<'a> + Timestamp + Lattice,
         R: ExchangeData + Hash + Serialize + for<'a> Deserialize<'a>,
@@ -621,61 +634,63 @@ pub mod sink {
         // We can simply record all updates, under the presumption that the have been consolidated
         // and so any record we see is in fact guaranteed to happen.
         let mut builder = OperatorBuilder::new("UpdatesWriter".to_owned(), stream.scope());
-        let reactivator = stream.scope().activator_for(&builder.operator_info().address);
+        let reactivator = stream
+            .scope()
+            .activator_for(&builder.operator_info().address);
         let mut input = builder.new_input(&stream, Pipeline);
         let (mut updates_out, updates) = builder.new_output();
 
-        builder.build_reschedule(
-            move |_capability| {
-                let mut timestamps = ChangeBatch::new();
-                let mut send_queue = std::collections::VecDeque::new();
-                move |_frontiers| {
-                    let mut output = updates_out.activate();
+        builder.build_reschedule(move |_capability| {
+            let mut timestamps = ChangeBatch::new();
+            let mut send_queue = std::collections::VecDeque::new();
+            move |_frontiers| {
+                let mut output = updates_out.activate();
 
-                    // We want to drain inputs always...
-                    input.for_each(|capability, updates| {
-                        // Write each update out, and record the timestamp.
-                        for (_data, time, _diff) in updates.iter() {
-                            timestamps.update(time.clone(), 1);
-                        }
-
-                        // Now record the update to the writer.
-                        send_queue.push_back(Message::Updates(updates.replace(Vec::new())));
-
-                        // Transmit timestamp counts downstream.
-                        output
-                            .session(&capability)
-                            .give_iterator(timestamps.drain());
-                    });
-
-                    // Drain whatever we can from the queue of bytes to send.
-                    // ... but needn't do anything more if our sink is closed.
-                    if let Some(sink) = updates_sink.upgrade() {
-                        let mut sink = sink.borrow_mut();
-                        while let Some(message) = send_queue.front() {
-                            if let Some(duration) = sink.poll(&message) {
-                                // Reschedule after `duration` and then bail.
-                                reactivator.activate_after(duration);
-                                return true;
-                            } else {
-                                send_queue.pop_front();
-                            }
-                        }
-                        // Signal incompleteness if messages remain to be sent.
-                        !sink.done() || !send_queue.is_empty()
-                    } else {
-                        // We have been terminated, but may still receive indefinite data.
-                        send_queue.clear();
-                        // Signal that there are no outstanding writes.
-                        false
+                // We want to drain inputs always...
+                input.for_each(|capability, updates| {
+                    // Write each update out, and record the timestamp.
+                    for (_data, time, _diff) in updates.iter() {
+                        timestamps.update(time.clone(), 1);
                     }
+
+                    // Now record the update to the writer.
+                    send_queue.push_back(Message::Updates(updates.replace(Vec::new())));
+
+                    // Transmit timestamp counts downstream.
+                    output
+                        .session(&capability)
+                        .give_iterator(timestamps.drain());
+                });
+
+                // Drain whatever we can from the queue of bytes to send.
+                // ... but needn't do anything more if our sink is closed.
+                if let Some(sink) = updates_sink.upgrade() {
+                    let mut sink = sink.borrow_mut();
+                    while let Some(message) = send_queue.front() {
+                        if let Some(duration) = sink.poll(&message) {
+                            // Reschedule after `duration` and then bail.
+                            reactivator.activate_after(duration);
+                            return true;
+                        } else {
+                            send_queue.pop_front();
+                        }
+                    }
+                    // Signal incompleteness if messages remain to be sent.
+                    !sink.done() || !send_queue.is_empty()
+                } else {
+                    // We have been terminated, but may still receive indefinite data.
+                    send_queue.clear();
+                    // Signal that there are no outstanding writes.
+                    false
                 }
-            },
-        );
+            }
+        });
 
         // We use a lower-level builder here to get access to the operator address, for rescheduling.
         let mut builder = OperatorBuilder::new("ProgressWriter".to_owned(), stream.scope());
-        let reactivator = stream.scope().activator_for(&builder.operator_info().address);
+        let reactivator = stream
+            .scope()
+            .activator_for(&builder.operator_info().address);
         let mut input = builder.new_input(&updates, Exchange::new(move |_| sink_hash));
         let should_write = stream.scope().index() == (sink_hash as usize) % stream.scope().peers();
 
@@ -752,7 +767,9 @@ pub mod sink {
                         // Signal that there are no outstanding writes.
                         false
                     }
-                } else { false }
+                } else {
+                    false
+                }
             }
         });
     }

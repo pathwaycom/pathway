@@ -8,67 +8,69 @@
 //! Although `OrdVal` is more general than `OrdKey`, the latter has a simpler representation
 //! and should consume fewer resources (computation and memory) when it applies.
 
-use std::rc::Rc;
 use std::convert::{TryFrom, TryInto};
-use std::marker::PhantomData;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::Deref;
+use std::rc::Rc;
 
-#[cfg(feature = "columnation")]
-use timely::container::columnation::TimelyStack;
 #[cfg(feature = "columnation")]
 use timely::container::columnation::Columnation;
-use timely::progress::{Antichain, frontier::AntichainRef};
+#[cfg(feature = "columnation")]
+use timely::container::columnation::TimelyStack;
+use timely::progress::{frontier::AntichainRef, Antichain};
 
-use ::difference::Semigroup;
+use difference::Semigroup;
 use lattice::Lattice;
 
-use trace::layers::{Trie, TupleBuilder, BatchContainer};
+use trace::description::Description;
+use trace::layers::ordered::{OrdOffset, OrderedBuilder, OrderedCursor, OrderedLayer};
+use trace::layers::ordered_leaf::{OrderedLeaf, OrderedLeafBuilder};
 use trace::layers::Builder as TrieBuilder;
 use trace::layers::Cursor as TrieCursor;
-use trace::layers::ordered::{OrdOffset, OrderedLayer, OrderedBuilder, OrderedCursor};
-use trace::layers::ordered_leaf::{OrderedLeaf, OrderedLeafBuilder};
-use trace::{Batch, BatchReader, Builder, Merger, Cursor};
-use trace::description::Description;
+use trace::layers::{BatchContainer, Trie, TupleBuilder};
+use trace::{Batch, BatchReader, Builder, Cursor, Merger};
 
 use trace::layers::MergeBuilder;
 
 // use super::spine::Spine;
-use super::spine_fueled::Spine;
 use super::merge_batcher::MergeBatcher;
+use super::spine_fueled::Spine;
 
 use abomonation::abomonated::Abomonated;
 
 /// A trace implementation using a spine of ordered lists.
-pub type OrdValSpine<K, V, T, R, O=usize> = Spine<Rc<OrdValBatch<K, V, T, R, O>>>;
+pub type OrdValSpine<K, V, T, R, O = usize> = Spine<Rc<OrdValBatch<K, V, T, R, O>>>;
 
 /// A trace implementation using a spine of abomonated ordered lists.
-pub type OrdValSpineAbom<K, V, T, R, O=usize> = Spine<Rc<Abomonated<OrdValBatch<K, V, T, R, O>, Vec<u8>>>>;
+pub type OrdValSpineAbom<K, V, T, R, O = usize> =
+    Spine<Rc<Abomonated<OrdValBatch<K, V, T, R, O>, Vec<u8>>>>;
 
 /// A trace implementation for empty values using a spine of ordered lists.
-pub type OrdKeySpine<K, T, R, O=usize> = Spine<Rc<OrdKeyBatch<K, T, R, O>>>;
+pub type OrdKeySpine<K, T, R, O = usize> = Spine<Rc<OrdKeyBatch<K, T, R, O>>>;
 
 /// A trace implementation for empty values using a spine of abomonated ordered lists.
-pub type OrdKeySpineAbom<K, T, R, O=usize> = Spine<Rc<Abomonated<OrdKeyBatch<K, T, R, O>, Vec<u8>>>>;
+pub type OrdKeySpineAbom<K, T, R, O = usize> =
+    Spine<Rc<Abomonated<OrdKeyBatch<K, T, R, O>, Vec<u8>>>>;
 
 /// A trace implementation backed by columnar storage.
 #[cfg(feature = "columnation")]
-pub type ColValSpine<K, V, T, R, O=usize> = Spine<Rc<OrdValBatch<K, V, T, R, O, TimelyStack<K>, TimelyStack<V>>>>;
+pub type ColValSpine<K, V, T, R, O = usize> =
+    Spine<Rc<OrdValBatch<K, V, T, R, O, TimelyStack<K>, TimelyStack<V>>>>;
 /// A trace implementation backed by columnar storage.
 #[cfg(feature = "columnation")]
-pub type ColKeySpine<K, T, R, O=usize> = Spine<Rc<OrdKeyBatch<K,  T, R, O, TimelyStack<K>>>>;
-
+pub type ColKeySpine<K, T, R, O = usize> = Spine<Rc<OrdKeyBatch<K, T, R, O, TimelyStack<K>>>>;
 
 /// A container that can retain/discard from some offset onward.
 pub trait RetainFrom<T> {
     /// Retains elements from an index onwards that satisfy a predicate.
-    fn retain_from<P: FnMut(usize, &T)->bool>(&mut self, index: usize, predicate: P);
+    fn retain_from<P: FnMut(usize, &T) -> bool>(&mut self, index: usize, predicate: P);
 }
 
 impl<T> RetainFrom<T> for Vec<T> {
-    fn retain_from<P: FnMut(usize, &T)->bool>(&mut self, index: usize, mut predicate: P) {
+    fn retain_from<P: FnMut(usize, &T) -> bool>(&mut self, index: usize, mut predicate: P) {
         let mut write_position = index;
-        for position in index .. self.len() {
+        for position in index..self.len() {
             if predicate(position, &self[position]) {
                 self.swap(position, write_position);
                 write_position += 1;
@@ -80,7 +82,7 @@ impl<T> RetainFrom<T> for Vec<T> {
 
 #[cfg(feature = "columnation")]
 impl<T: Columnation> RetainFrom<T> for TimelyStack<T> {
-    fn retain_from<P: FnMut(usize, &T)->bool>(&mut self, index: usize, mut predicate: P) {
+    fn retain_from<P: FnMut(usize, &T) -> bool>(&mut self, index: usize, mut predicate: P) {
         let mut position = index;
         self.retain_from(index, |item| {
             let result = predicate(position, item);
@@ -92,15 +94,17 @@ impl<T: Columnation> RetainFrom<T> for TimelyStack<T> {
 
 /// An immutable collection of update tuples, from a contiguous interval of logical times.
 #[derive(Debug, Abomonation)]
-pub struct OrdValBatch<K, V, T, R, O=usize, CK=Vec<K>, CV=Vec<V>>
+pub struct OrdValBatch<K, V, T, R, O = usize, CK = Vec<K>, CV = Vec<V>>
 where
-    K: Ord+Clone,
-    V: Ord+Clone,
-    T: Clone+Lattice,
+    K: Ord + Clone,
+    V: Ord + Clone,
+    T: Clone + Lattice,
     R: Clone,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     /// Where all the dataz is.
     pub layer: OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O, CV>, O, CK>,
@@ -110,13 +114,15 @@ where
 
 impl<K, V, T, R, O, CK, CV> BatchReader for OrdValBatch<K, V, T, R, O, CK, CV>
 where
-    K: Ord+Clone+'static,
-    V: Ord+Clone+'static,
-    T: Lattice+Ord+Clone+'static,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Lattice + Ord + Clone + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     type Key = K;
     type Val = V;
@@ -124,42 +130,64 @@ where
     type R = R;
 
     type Cursor = OrdValCursor<K, V, T, R, O, CK, CV>;
-    fn cursor(&self) -> Self::Cursor { OrdValCursor { cursor: self.layer.cursor(), phantom: std::marker::PhantomData } }
-    fn len(&self) -> usize { <OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O, CV>, O, CK> as Trie>::tuples(&self.layer) }
-    fn description(&self) -> &Description<T> { &self.desc }
+    fn cursor(&self) -> Self::Cursor {
+        OrdValCursor {
+            cursor: self.layer.cursor(),
+            phantom: std::marker::PhantomData,
+        }
+    }
+    fn len(&self) -> usize {
+        <OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O, CV>, O, CK> as Trie>::tuples(
+            &self.layer,
+        )
+    }
+    fn description(&self) -> &Description<T> {
+        &self.desc
+    }
 }
 
 impl<K, V, T, R, O, CK, CV> Batch for OrdValBatch<K, V, T, R, O, CK, CV>
 where
-    K: Ord+Clone+'static,
-    V: Ord+Clone+'static,
-    T: Lattice+timely::progress::Timestamp+Ord+Clone+::std::fmt::Debug+'static,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Lattice + timely::progress::Timestamp + Ord + Clone + ::std::fmt::Debug + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     type Batcher = MergeBatcher<Self>;
     type Builder = OrdValBuilder<K, V, T, R, O, CK, CV>;
     type Merger = OrdValMerger<K, V, T, R, O, CK, CV>;
 
-    fn begin_merge(&self, other: &Self, compaction_frontier: Option<AntichainRef<T>>) -> Self::Merger {
+    fn begin_merge(
+        &self,
+        other: &Self,
+        compaction_frontier: Option<AntichainRef<T>>,
+    ) -> Self::Merger {
         OrdValMerger::new(self, other, compaction_frontier)
     }
 }
 
 impl<K, V, T, R, O, CK, CV> OrdValBatch<K, V, T, R, O, CK, CV>
 where
-    K: Ord+Clone+'static,
-    V: Ord+Clone+'static,
-    T: Lattice+Ord+Clone+::std::fmt::Debug+'static,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Lattice + Ord + Clone + ::std::fmt::Debug + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
-    fn advance_builder_from(layer: &mut OrderedBuilder<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>, O, CV>, O, CK>, frontier: AntichainRef<T>, key_pos: usize) {
-
+    fn advance_builder_from(
+        layer: &mut OrderedBuilder<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>, O, CV>, O, CK>,
+        frontier: AntichainRef<T>,
+        key_pos: usize,
+    ) {
         let key_start = key_pos;
         let val_start: usize = layer.offs[key_pos].try_into().unwrap();
         let time_start: usize = layer.vals.offs[val_start].try_into().unwrap();
@@ -172,30 +200,29 @@ where
         //    then zip through the key layer, collapsing each .. ?
 
         // 1. For each (time, diff) pair, advance the time.
-        for i in time_start .. layer.vals.vals.vals.len() {
+        for i in time_start..layer.vals.vals.vals.len() {
             layer.vals.vals.vals[i].0.advance_by(frontier);
         }
 
         // 2. For each `(val, off)` pair, sort the range, compact, and rewrite `off`.
         //    This may leave `val` with an empty range; filtering happens in step 3.
         let mut write_position = time_start;
-        for i in val_start .. layer.vals.keys.len() {
-
+        for i in val_start..layer.vals.keys.len() {
             // NB: batch.layer.vals.offs[i+1] will be used next iteration, and should not be changed.
             //     we will change batch.layer.vals.offs[i] in this iteration, from `write_position`'s
             //     initial value.
 
             let lower: usize = layer.vals.offs[i].try_into().unwrap();
-            let upper: usize = layer.vals.offs[i+1].try_into().unwrap();
+            let upper: usize = layer.vals.offs[i + 1].try_into().unwrap();
 
             layer.vals.offs[i] = O::try_from(write_position).unwrap();
 
             let updates = &mut layer.vals.vals.vals[..];
 
             // sort the range by the times (ignore the diffs; they will collapse).
-            let count = crate::consolidation::consolidate_slice(&mut updates[lower .. upper]);
+            let count = crate::consolidation::consolidate_slice(&mut updates[lower..upper]);
 
-            for index in lower .. (lower + count) {
+            for index in lower..(lower + count) {
                 updates.swap(write_position, index);
                 write_position += 1;
             }
@@ -216,13 +243,14 @@ where
                 keys_pos += 1;
             }
             let lower = vals_off[index].try_into().unwrap();
-            let upper = vals_off[index+1].try_into().unwrap();
+            let upper = vals_off[index + 1].try_into().unwrap();
             if lower < upper {
-                vals_off[write_position+1] = vals_off[index+1];
+                vals_off[write_position + 1] = vals_off[index + 1];
                 write_position += 1;
                 true
+            } else {
+                false
             }
-            else { false }
         });
         debug_assert_eq!(write_position, layer.vals.keys.len());
         layer.vals.offs.truncate(write_position + 1);
@@ -233,29 +261,32 @@ where
         let mut write_position = key_start;
         layer.keys.retain_from(key_start, |index, _item| {
             let lower = offs[index].try_into().unwrap();
-            let upper = offs[index+1].try_into().unwrap();
+            let upper = offs[index + 1].try_into().unwrap();
             if lower < upper {
-                offs[write_position+1] = offs[index+1];
+                offs[write_position + 1] = offs[index + 1];
                 write_position += 1;
                 true
+            } else {
+                false
             }
-            else { false }
         });
         debug_assert_eq!(write_position, layer.keys.len());
-        layer.offs.truncate(layer.keys.len()+1);
+        layer.offs.truncate(layer.keys.len() + 1);
     }
 }
 
 /// State for an in-progress merge.
-pub struct OrdValMerger<K, V, T, R, O=usize, CK=Vec<K>, CV=Vec<V>>
+pub struct OrdValMerger<K, V, T, R, O = usize, CK = Vec<K>, CV = Vec<V>>
 where
-    K: Ord+Clone+'static,
-    V: Ord+Clone+'static,
-    T: Lattice+Ord+Clone+::std::fmt::Debug+'static,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Lattice + Ord + Clone + ::std::fmt::Debug + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     // first batch, and position therein.
     lower1: usize,
@@ -264,26 +295,36 @@ where
     lower2: usize,
     upper2: usize,
     // result that we are currently assembling.
-    result: <OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O, CV>, O, CK> as Trie>::MergeBuilder,
+    result:
+        <OrderedLayer<K, OrderedLayer<V, OrderedLeaf<T, R>, O, CV>, O, CK> as Trie>::MergeBuilder,
     description: Description<T>,
     should_compact: bool,
 }
 
-impl<K, V, T, R, O, CK, CV> Merger<OrdValBatch<K, V, T, R, O, CK, CV>> for OrdValMerger<K, V, T, R, O, CK, CV>
+impl<K, V, T, R, O, CK, CV> Merger<OrdValBatch<K, V, T, R, O, CK, CV>>
+    for OrdValMerger<K, V, T, R, O, CK, CV>
 where
-    K: Ord+Clone+'static,
-    V: Ord+Clone+'static,
-    T: Lattice+timely::progress::Timestamp+Ord+Clone+::std::fmt::Debug+'static,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Lattice + timely::progress::Timestamp + Ord + Clone + ::std::fmt::Debug + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
-    fn new(batch1: &OrdValBatch<K, V, T, R, O, CK, CV>, batch2: &OrdValBatch<K, V, T, R, O, CK, CV>, compaction_frontier: Option<AntichainRef<T>>) -> Self {
-
+    fn new(
+        batch1: &OrdValBatch<K, V, T, R, O, CK, CV>,
+        batch2: &OrdValBatch<K, V, T, R, O, CK, CV>,
+        compaction_frontier: Option<AntichainRef<T>>,
+    ) -> Self {
         assert!(batch1.upper() == batch2.lower());
 
-        let mut since = batch1.description().since().join(batch2.description().since());
+        let mut since = batch1
+            .description()
+            .since()
+            .join(batch2.description().since());
         if let Some(compaction_frontier) = compaction_frontier {
             since = since.join(&compaction_frontier.to_owned());
         }
@@ -301,7 +342,6 @@ where
         }
     }
     fn done(self) -> OrdValBatch<K, V, T, R, O, CK, CV> {
-
         assert!(self.lower1 == self.upper1);
         assert!(self.lower2 == self.upper2);
 
@@ -310,8 +350,12 @@ where
             desc: self.description,
         }
     }
-    fn work(&mut self, source1: &OrdValBatch<K,V,T,R,O,CK,CV>, source2: &OrdValBatch<K,V,T,R,O,CK,CV>, fuel: &mut isize) {
-
+    fn work(
+        &mut self,
+        source1: &OrdValBatch<K, V, T, R, O, CK, CV>,
+        source2: &OrdValBatch<K, V, T, R, O, CK, CV>,
+        fuel: &mut isize,
+    ) {
         let starting_updates = self.result.vals.vals.vals.len();
         let mut effort = 0isize;
 
@@ -319,7 +363,10 @@ where
 
         // while both mergees are still active
         while self.lower1 < self.upper1 && self.lower2 < self.upper2 && effort < *fuel {
-            self.result.merge_step((&source1.layer, &mut self.lower1, self.upper1), (&source2.layer, &mut self.lower2, self.upper2));
+            self.result.merge_step(
+                (&source1.layer, &mut self.lower1, self.upper1),
+                (&source2.layer, &mut self.lower2, self.upper2),
+            );
             effort = (self.result.vals.vals.vals.len() - starting_updates) as isize;
         }
 
@@ -330,16 +377,26 @@ where
             if remaining_fuel > 0 {
                 if self.lower1 < self.upper1 {
                     let mut to_copy = remaining_fuel as usize;
-                    if to_copy < 1_000 { to_copy = 1_000; }
-                    if to_copy > (self.upper1 - self.lower1) { to_copy = self.upper1 - self.lower1; }
-                    self.result.copy_range(&source1.layer, self.lower1, self.lower1 + to_copy);
+                    if to_copy < 1_000 {
+                        to_copy = 1_000;
+                    }
+                    if to_copy > (self.upper1 - self.lower1) {
+                        to_copy = self.upper1 - self.lower1;
+                    }
+                    self.result
+                        .copy_range(&source1.layer, self.lower1, self.lower1 + to_copy);
                     self.lower1 += to_copy;
                 }
                 if self.lower2 < self.upper2 {
                     let mut to_copy = remaining_fuel as usize;
-                    if to_copy < 1_000 { to_copy = 1_000; }
-                    if to_copy > (self.upper2 - self.lower2) { to_copy = self.upper2 - self.lower2; }
-                    self.result.copy_range(&source2.layer, self.lower2, self.lower2 + to_copy);
+                    if to_copy < 1_000 {
+                        to_copy = 1_000;
+                    }
+                    if to_copy > (self.upper2 - self.lower2) {
+                        to_copy = self.upper2 - self.lower2;
+                    }
+                    self.result
+                        .copy_range(&source2.layer, self.lower2, self.lower2 + to_copy);
                     self.lower2 += to_copy;
                 }
             }
@@ -349,7 +406,11 @@ where
 
         // if we are supplied a frontier, we should compact.
         if self.should_compact {
-            OrdValBatch::<K, V, T, R, O, CK, CV>::advance_builder_from(&mut self.result, self.description.since().borrow(), initial_key_pos);
+            OrdValBatch::<K, V, T, R, O, CK, CV>::advance_builder_from(
+                &mut self.result,
+                self.description.since().borrow(),
+                initial_key_pos,
+            );
         }
 
         *fuel -= effort;
@@ -362,14 +423,16 @@ where
 
 /// A cursor for navigating a single layer.
 #[derive(Debug)]
-pub struct OrdValCursor<K, V, T, R, O=usize, CK=Vec<K>, CV=Vec<V>>
+pub struct OrdValCursor<K, V, T, R, O = usize, CK = Vec<K>, CV = Vec<V>>
 where
-    V: Ord+Clone,
-    T: Lattice+Ord+Clone,
+    V: Ord + Clone,
+    T: Lattice + Ord + Clone,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     phantom: std::marker::PhantomData<(K, CK, CV)>,
     pub(crate) cursor: OrderedCursor<OrderedLayer<V, OrderedLeaf<T, R>, O, CV>>,
@@ -377,13 +440,15 @@ where
 
 impl<K, V, T, R, O, CK, CV> Cursor for OrdValCursor<K, V, T, R, O, CK, CV>
 where
-    K: Ord+Clone,
-    V: Ord+Clone,
-    T: Lattice+Ord+Clone,
+    K: Ord + Clone,
+    V: Ord + Clone,
+    T: Lattice + Ord + Clone,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     type Key = K;
     type Val = V;
@@ -392,54 +457,82 @@ where
 
     type Storage = OrdValBatch<K, V, T, R, O, CK, CV>;
 
-    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a K { &self.cursor.key(&storage.layer) }
-    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a V { &self.cursor.child.key(&storage.layer.vals) }
+    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a K {
+        &self.cursor.key(&storage.layer)
+    }
+    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a V {
+        &self.cursor.child.key(&storage.layer.vals)
+    }
     fn map_times<L: FnMut(&T, &R)>(&mut self, storage: &Self::Storage, mut logic: L) {
         self.cursor.child.child.rewind(&storage.layer.vals.vals);
         while self.cursor.child.child.valid(&storage.layer.vals.vals) {
-            logic(&self.cursor.child.child.key(&storage.layer.vals.vals).0, &self.cursor.child.child.key(&storage.layer.vals.vals).1);
+            logic(
+                &self.cursor.child.child.key(&storage.layer.vals.vals).0,
+                &self.cursor.child.child.key(&storage.layer.vals.vals).1,
+            );
             self.cursor.child.child.step(&storage.layer.vals.vals);
         }
     }
-    fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.valid(&storage.layer) }
-    fn val_valid(&self, storage: &Self::Storage) -> bool { self.cursor.child.valid(&storage.layer.vals) }
-    fn step_key(&mut self, storage: &Self::Storage){ self.cursor.step(&storage.layer); }
-    fn seek_key(&mut self, storage: &Self::Storage, key: &K) { self.cursor.seek(&storage.layer, key); }
-    fn step_val(&mut self, storage: &Self::Storage) { self.cursor.child.step(&storage.layer.vals); }
-    fn seek_val(&mut self, storage: &Self::Storage, val: &V) { self.cursor.child.seek(&storage.layer.vals, val); }
-    fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind(&storage.layer); }
-    fn rewind_vals(&mut self, storage: &Self::Storage) { self.cursor.child.rewind(&storage.layer.vals); }
+    fn key_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.valid(&storage.layer)
+    }
+    fn val_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.child.valid(&storage.layer.vals)
+    }
+    fn step_key(&mut self, storage: &Self::Storage) {
+        self.cursor.step(&storage.layer);
+    }
+    fn seek_key(&mut self, storage: &Self::Storage, key: &K) {
+        self.cursor.seek(&storage.layer, key);
+    }
+    fn step_val(&mut self, storage: &Self::Storage) {
+        self.cursor.child.step(&storage.layer.vals);
+    }
+    fn seek_val(&mut self, storage: &Self::Storage, val: &V) {
+        self.cursor.child.seek(&storage.layer.vals, val);
+    }
+    fn rewind_keys(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind(&storage.layer);
+    }
+    fn rewind_vals(&mut self, storage: &Self::Storage) {
+        self.cursor.child.rewind(&storage.layer.vals);
+    }
 }
 
-
 /// A builder for creating layers from unsorted update tuples.
-pub struct OrdValBuilder<K, V, T, R, O=usize, CK=Vec<K>, CV=Vec<V>>
+pub struct OrdValBuilder<K, V, T, R, O = usize, CK = Vec<K>, CV = Vec<V>>
 where
-    K: Ord+Clone,
-    V: Ord+Clone,
-    T: Ord+Clone+Lattice,
-    R: Clone+Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    K: Ord + Clone,
+    V: Ord + Clone,
+    T: Ord + Clone + Lattice,
+    R: Clone + Semigroup,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
     builder: OrderedBuilder<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>, O, CV>, O, CK>,
 }
 
-impl<K, V, T, R, O, CK, CV> Builder<OrdValBatch<K, V, T, R, O, CK, CV>> for OrdValBuilder<K, V, T, R, O, CK, CV>
+impl<K, V, T, R, O, CK, CV> Builder<OrdValBatch<K, V, T, R, O, CK, CV>>
+    for OrdValBuilder<K, V, T, R, O, CK, CV>
 where
-    K: Ord+Clone+'static,
-    V: Ord+Clone+'static,
-    T: Lattice+timely::progress::Timestamp+Ord+Clone+::std::fmt::Debug+'static,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Lattice + timely::progress::Timestamp + Ord + Clone + ::std::fmt::Debug + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
-    CV: BatchContainer<Item=V>+Deref<Target=[V]>+RetainFrom<V>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
+    CV: BatchContainer<Item = V> + Deref<Target = [V]> + RetainFrom<V>,
 {
-
     fn new() -> Self {
         OrdValBuilder {
-            builder: OrderedBuilder::<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>, O, CV>, O, CK>::new()
+            builder:
+                OrderedBuilder::<K, OrderedBuilder<V, OrderedLeafBuilder<T, R>, O, CV>, O, CK>::new(
+                ),
         }
     }
     fn with_capacity(cap: usize) -> Self {
@@ -454,26 +547,30 @@ where
     }
 
     #[inline(never)]
-    fn done(self, lower: Antichain<T>, upper: Antichain<T>, since: Antichain<T>) -> OrdValBatch<K, V, T, R, O, CK, CV> {
+    fn done(
+        self,
+        lower: Antichain<T>,
+        upper: Antichain<T>,
+        since: Antichain<T>,
+    ) -> OrdValBatch<K, V, T, R, O, CK, CV> {
         OrdValBatch {
             layer: self.builder.done(),
-            desc: Description::new(lower, upper, since)
+            desc: Description::new(lower, upper, since),
         }
     }
 }
 
-
-
-
 /// An immutable collection of update tuples, from a contiguous interval of logical times.
 #[derive(Debug, Abomonation)]
-pub struct OrdKeyBatch<K, T, R, O=usize, CK=Vec<K>>
+pub struct OrdKeyBatch<K, T, R, O = usize, CK = Vec<K>>
 where
-    K: Ord+Clone,
-    T: Clone+Lattice,
+    K: Ord + Clone,
+    T: Clone + Lattice,
     R: Clone,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
     /// Where all the dataz is.
     pub layer: OrderedLayer<K, OrderedLeaf<T, R>, O, CK>,
@@ -483,11 +580,13 @@ where
 
 impl<K, T, R, O, CK> BatchReader for OrdKeyBatch<K, T, R, O, CK>
 where
-    K: Ord+Clone+'static,
-    T: Lattice+Ord+Clone+'static,
-    R: Clone+Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    K: Ord + Clone + 'static,
+    T: Lattice + Ord + Clone + 'static,
+    R: Clone + Semigroup,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
     type Key = K;
     type Val = ();
@@ -499,40 +598,55 @@ where
         OrdKeyCursor {
             valid: true,
             cursor: self.layer.cursor(),
-            phantom: PhantomData
+            phantom: PhantomData,
         }
     }
-    fn len(&self) -> usize { <OrderedLayer<K, OrderedLeaf<T, R>, O, CK> as Trie>::tuples(&self.layer) }
-    fn description(&self) -> &Description<T> { &self.desc }
+    fn len(&self) -> usize {
+        <OrderedLayer<K, OrderedLeaf<T, R>, O, CK> as Trie>::tuples(&self.layer)
+    }
+    fn description(&self) -> &Description<T> {
+        &self.desc
+    }
 }
 
 impl<K, T, R, O, CK> Batch for OrdKeyBatch<K, T, R, O, CK>
 where
-    K: Ord+Clone+'static,
-    T: Lattice+timely::progress::Timestamp+Ord+Clone+'static,
+    K: Ord + Clone + 'static,
+    T: Lattice + timely::progress::Timestamp + Ord + Clone + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
     type Batcher = MergeBatcher<Self>;
     type Builder = OrdKeyBuilder<K, T, R, O, CK>;
     type Merger = OrdKeyMerger<K, T, R, O, CK>;
 
-    fn begin_merge(&self, other: &Self, compaction_frontier: Option<AntichainRef<T>>) -> Self::Merger {
+    fn begin_merge(
+        &self,
+        other: &Self,
+        compaction_frontier: Option<AntichainRef<T>>,
+    ) -> Self::Merger {
         OrdKeyMerger::new(self, other, compaction_frontier)
     }
 }
 
 impl<K, T, R, O, CK> OrdKeyBatch<K, T, R, O, CK>
 where
-    K: Ord+Clone+'static,
-    T: Lattice+Ord+Clone+'static,
+    K: Ord + Clone + 'static,
+    T: Lattice + Ord + Clone + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
-    fn advance_builder_from(layer: &mut OrderedBuilder<K, OrderedLeafBuilder<T, R>, O, CK>, frontier: AntichainRef<T>, key_pos: usize) {
-
+    fn advance_builder_from(
+        layer: &mut OrderedBuilder<K, OrderedLeafBuilder<T, R>, O, CK>,
+        frontier: AntichainRef<T>,
+        key_pos: usize,
+    ) {
         let key_start = key_pos;
         let time_start: usize = layer.offs[key_pos].try_into().unwrap();
 
@@ -541,7 +655,7 @@ where
         //    then zip through the key layer, collapsing each .. ?
 
         // 1. For each (time, diff) pair, advance the time.
-        for i in time_start .. layer.vals.vals.len() {
+        for i in time_start..layer.vals.vals.len() {
             layer.vals.vals[i].0.advance_by(frontier);
         }
         // for time_diff in self.layer.vals.vals.iter_mut() {
@@ -551,23 +665,22 @@ where
         // 2. For each `(val, off)` pair, sort the range, compact, and rewrite `off`.
         //    This may leave `val` with an empty range; filtering happens in step 3.
         let mut write_position = time_start;
-        for i in key_start .. layer.keys.len() {
-
+        for i in key_start..layer.keys.len() {
             // NB: batch.layer.vals.offs[i+1] will be used next iteration, and should not be changed.
             //     we will change batch.layer.vals.offs[i] in this iteration, from `write_position`'s
             //     initial value.
 
             let lower: usize = layer.offs[i].try_into().unwrap();
-            let upper: usize = layer.offs[i+1].try_into().unwrap();
+            let upper: usize = layer.offs[i + 1].try_into().unwrap();
 
             layer.offs[i] = O::try_from(write_position).unwrap();
 
             let updates = &mut layer.vals.vals[..];
 
             // sort the range by the times (ignore the diffs; they will collapse).
-             let count = crate::consolidation::consolidate_slice(&mut updates[lower .. upper]);
+            let count = crate::consolidation::consolidate_slice(&mut updates[lower..upper]);
 
-            for index in lower .. (lower + count) {
+            for index in lower..(lower + count) {
                 updates.swap(write_position, index);
                 write_position += 1;
             }
@@ -580,27 +693,30 @@ where
         let mut write_position = key_start;
         layer.keys.retain_from(key_start, |index, _item| {
             let lower = offs[index].try_into().unwrap();
-            let upper = offs[index+1].try_into().unwrap();
+            let upper = offs[index + 1].try_into().unwrap();
             if lower < upper {
-                offs[write_position+1] = offs[index+1];
+                offs[write_position + 1] = offs[index + 1];
                 write_position += 1;
                 true
+            } else {
+                false
             }
-            else { false }
         });
         debug_assert_eq!(write_position, layer.keys.len());
-        layer.offs.truncate(layer.keys.len()+1);
+        layer.offs.truncate(layer.keys.len() + 1);
     }
 }
 
 /// State for an in-progress merge.
-pub struct OrdKeyMerger<K, T, R, O=usize,CK=Vec<K>>
+pub struct OrdKeyMerger<K, T, R, O = usize, CK = Vec<K>>
 where
-    K: Ord+Clone+'static,
-    T: Lattice+Ord+Clone+'static,
+    K: Ord + Clone + 'static,
+    T: Lattice + Ord + Clone + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
     // first batch, and position therein.
     lower1: usize,
@@ -616,17 +732,25 @@ where
 
 impl<K, T, R, O, CK> Merger<OrdKeyBatch<K, T, R, O, CK>> for OrdKeyMerger<K, T, R, O, CK>
 where
-    K: Ord+Clone+'static,
-    T: Lattice+timely::progress::Timestamp+Ord+Clone+'static,
+    K: Ord + Clone + 'static,
+    T: Lattice + timely::progress::Timestamp + Ord + Clone + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
-    fn new(batch1: &OrdKeyBatch<K, T, R, O, CK>, batch2: &OrdKeyBatch<K, T, R, O, CK>, compaction_frontier: Option<AntichainRef<T>>) -> Self {
-
+    fn new(
+        batch1: &OrdKeyBatch<K, T, R, O, CK>,
+        batch2: &OrdKeyBatch<K, T, R, O, CK>,
+        compaction_frontier: Option<AntichainRef<T>>,
+    ) -> Self {
         assert!(batch1.upper() == batch2.lower());
 
-        let mut since = batch1.description().since().join(batch2.description().since());
+        let mut since = batch1
+            .description()
+            .since()
+            .join(batch2.description().since());
         if let Some(compaction_frontier) = compaction_frontier {
             since = since.join(&compaction_frontier.to_owned());
         }
@@ -644,7 +768,6 @@ where
         }
     }
     fn done(self) -> OrdKeyBatch<K, T, R, O, CK> {
-
         assert!(self.lower1 == self.upper1);
         assert!(self.lower2 == self.upper2);
 
@@ -653,8 +776,12 @@ where
             desc: self.description,
         }
     }
-    fn work(&mut self, source1: &OrdKeyBatch<K,T,R,O,CK>, source2: &OrdKeyBatch<K,T,R,O,CK>, fuel: &mut isize) {
-
+    fn work(
+        &mut self,
+        source1: &OrdKeyBatch<K, T, R, O, CK>,
+        source2: &OrdKeyBatch<K, T, R, O, CK>,
+        fuel: &mut isize,
+    ) {
         let starting_updates = self.result.vals.vals.len();
         let mut effort = 0isize;
 
@@ -662,7 +789,10 @@ where
 
         // while both mergees are still active
         while self.lower1 < self.upper1 && self.lower2 < self.upper2 && effort < *fuel {
-            self.result.merge_step((&source1.layer, &mut self.lower1, self.upper1), (&source2.layer, &mut self.lower2, self.upper2));
+            self.result.merge_step(
+                (&source1.layer, &mut self.lower1, self.upper1),
+                (&source2.layer, &mut self.lower2, self.upper2),
+            );
             effort = (self.result.vals.vals.len() - starting_updates) as isize;
         }
 
@@ -678,27 +808,40 @@ where
             if remaining_fuel > 0 {
                 if self.lower1 < self.upper1 {
                     let mut to_copy = remaining_fuel as usize;
-                    if to_copy < 1_000 { to_copy = 1_000; }
-                    if to_copy > (self.upper1 - self.lower1) { to_copy = self.upper1 - self.lower1; }
-                    self.result.copy_range(&source1.layer, self.lower1, self.lower1 + to_copy);
+                    if to_copy < 1_000 {
+                        to_copy = 1_000;
+                    }
+                    if to_copy > (self.upper1 - self.lower1) {
+                        to_copy = self.upper1 - self.lower1;
+                    }
+                    self.result
+                        .copy_range(&source1.layer, self.lower1, self.lower1 + to_copy);
                     self.lower1 += to_copy;
                 }
                 if self.lower2 < self.upper2 {
                     let mut to_copy = remaining_fuel as usize;
-                    if to_copy < 1_000 { to_copy = 1_000; }
-                    if to_copy > (self.upper2 - self.lower2) { to_copy = self.upper2 - self.lower2; }
-                    self.result.copy_range(&source2.layer, self.lower2, self.lower2 + to_copy);
+                    if to_copy < 1_000 {
+                        to_copy = 1_000;
+                    }
+                    if to_copy > (self.upper2 - self.lower2) {
+                        to_copy = self.upper2 - self.lower2;
+                    }
+                    self.result
+                        .copy_range(&source2.layer, self.lower2, self.lower2 + to_copy);
                     self.lower2 += to_copy;
                 }
             }
         }
 
-
         effort = (self.result.vals.vals.len() - starting_updates) as isize;
 
         // if we are supplied a frontier, we should compact.
         if self.should_compact {
-            OrdKeyBatch::<K,T,R,O,CK>::advance_builder_from(&mut self.result, self.description.since().borrow(), initial_key_pos);
+            OrdKeyBatch::<K, T, R, O, CK>::advance_builder_from(
+                &mut self.result,
+                self.description.since().borrow(),
+                initial_key_pos,
+            );
         }
 
         *fuel -= effort;
@@ -709,10 +852,9 @@ where
     }
 }
 
-
 /// A cursor for navigating a single layer.
 #[derive(Debug)]
-pub struct OrdKeyCursor<K, T: Lattice+Ord+Clone, R: Semigroup, O=usize, CK=Vec<K>> {
+pub struct OrdKeyCursor<K, T: Lattice + Ord + Clone, R: Semigroup, O = usize, CK = Vec<K>> {
     pub(crate) valid: bool,
     pub(crate) cursor: OrderedCursor<OrderedLeaf<T, R>>,
     phantom: PhantomData<(K, O, CK)>,
@@ -720,11 +862,13 @@ pub struct OrdKeyCursor<K, T: Lattice+Ord+Clone, R: Semigroup, O=usize, CK=Vec<K
 
 impl<K, T, R, O, CK> Cursor for OrdKeyCursor<K, T, R, O, CK>
 where
-    K: Ord+Clone,
-    T: Lattice+Ord+Clone,
+    K: Ord + Clone,
+    T: Lattice + Ord + Clone,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
     type Key = K;
     type Val = ();
@@ -733,56 +877,85 @@ where
 
     type Storage = OrdKeyBatch<K, T, R, O, CK>;
 
-    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a K { &self.cursor.key(&storage.layer) }
-    fn val<'a>(&self, _storage: &'a Self::Storage) -> &'a () { &() }
+    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a K {
+        &self.cursor.key(&storage.layer)
+    }
+    fn val<'a>(&self, _storage: &'a Self::Storage) -> &'a () {
+        &()
+    }
     fn map_times<L: FnMut(&T, &R)>(&mut self, storage: &Self::Storage, mut logic: L) {
         self.cursor.child.rewind(&storage.layer.vals);
         while self.cursor.child.valid(&storage.layer.vals) {
-            logic(&self.cursor.child.key(&storage.layer.vals).0, &self.cursor.child.key(&storage.layer.vals).1);
+            logic(
+                &self.cursor.child.key(&storage.layer.vals).0,
+                &self.cursor.child.key(&storage.layer.vals).1,
+            );
             self.cursor.child.step(&storage.layer.vals);
         }
     }
-    fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.valid(&storage.layer) }
-    fn val_valid(&self, _storage: &Self::Storage) -> bool { self.valid }
-    fn step_key(&mut self, storage: &Self::Storage){ self.cursor.step(&storage.layer); self.valid = true; }
-    fn seek_key(&mut self, storage: &Self::Storage, key: &K) { self.cursor.seek(&storage.layer, key); self.valid = true; }
-    fn step_val(&mut self, _storage: &Self::Storage) { self.valid = false; }
-    fn seek_val(&mut self, _storage: &Self::Storage, _val: &()) { }
-    fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind(&storage.layer); self.valid = true; }
-    fn rewind_vals(&mut self, _storage: &Self::Storage) { self.valid = true; }
+    fn key_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.valid(&storage.layer)
+    }
+    fn val_valid(&self, _storage: &Self::Storage) -> bool {
+        self.valid
+    }
+    fn step_key(&mut self, storage: &Self::Storage) {
+        self.cursor.step(&storage.layer);
+        self.valid = true;
+    }
+    fn seek_key(&mut self, storage: &Self::Storage, key: &K) {
+        self.cursor.seek(&storage.layer, key);
+        self.valid = true;
+    }
+    fn step_val(&mut self, _storage: &Self::Storage) {
+        self.valid = false;
+    }
+    fn seek_val(&mut self, _storage: &Self::Storage, _val: &()) {}
+    fn rewind_keys(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind(&storage.layer);
+        self.valid = true;
+    }
+    fn rewind_vals(&mut self, _storage: &Self::Storage) {
+        self.valid = true;
+    }
 }
 
-
 /// A builder for creating layers from unsorted update tuples.
-pub struct OrdKeyBuilder<K, T, R, O=usize,CK=Vec<K>>
+pub struct OrdKeyBuilder<K, T, R, O = usize, CK = Vec<K>>
 where
-    K: Ord+Clone,
-    T: Ord+Clone+Lattice,
-    R: Clone+Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    K: Ord + Clone,
+    T: Ord + Clone + Lattice,
+    R: Clone + Semigroup,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
     builder: OrderedBuilder<K, OrderedLeafBuilder<T, R>, O, CK>,
 }
 
 impl<K, T, R, O, CK> Builder<OrdKeyBatch<K, T, R, O, CK>> for OrdKeyBuilder<K, T, R, O, CK>
 where
-    K: Ord+Clone+'static,
-    T: Lattice+timely::progress::Timestamp+Ord+Clone+'static,
+    K: Ord + Clone + 'static,
+    T: Lattice + timely::progress::Timestamp + Ord + Clone + 'static,
     R: Semigroup,
-    O: OrdOffset, <O as TryFrom<usize>>::Error: Debug, <O as TryInto<usize>>::Error: Debug,
-    CK: BatchContainer<Item=K>+Deref<Target=[K]>+RetainFrom<K>,
+    O: OrdOffset,
+    <O as TryFrom<usize>>::Error: Debug,
+    <O as TryInto<usize>>::Error: Debug,
+    CK: BatchContainer<Item = K> + Deref<Target = [K]> + RetainFrom<K>,
 {
-
     fn new() -> Self {
         OrdKeyBuilder {
-            builder: OrderedBuilder::<K, OrderedLeafBuilder<T, R>, O, CK>::new()
+            builder: OrderedBuilder::<K, OrderedLeafBuilder<T, R>, O, CK>::new(),
         }
     }
 
     fn with_capacity(cap: usize) -> Self {
         OrdKeyBuilder {
-            builder: <OrderedBuilder<K, OrderedLeafBuilder<T, R>, O, CK> as TupleBuilder>::with_capacity(cap)
+            builder:
+                <OrderedBuilder<K, OrderedLeafBuilder<T, R>, O, CK> as TupleBuilder>::with_capacity(
+                    cap,
+                ),
         }
     }
 
@@ -792,10 +965,15 @@ where
     }
 
     #[inline(never)]
-    fn done(self, lower: Antichain<T>, upper: Antichain<T>, since: Antichain<T>) -> OrdKeyBatch<K, T, R, O, CK> {
+    fn done(
+        self,
+        lower: Antichain<T>,
+        upper: Antichain<T>,
+        since: Antichain<T>,
+    ) -> OrdKeyBatch<K, T, R, O, CK> {
         OrdKeyBatch {
             layer: self.builder.done(),
-            desc: Description::new(lower, upper, since)
+            desc: Description::new(lower, upper, since),
         }
     }
 }

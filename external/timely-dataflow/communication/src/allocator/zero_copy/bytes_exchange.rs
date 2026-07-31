@@ -1,17 +1,17 @@
 //! Types and traits for sharing `Bytes`.
 
-use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
-use bytes::arc::Bytes;
 use super::bytes_slab::BytesSlab;
+use bytes::arc::Bytes;
 
 /// A target for `Bytes`.
 pub trait BytesPush {
     // /// Pushes bytes at the instance.
     // fn push(&mut self, bytes: Bytes);
     /// Pushes many bytes at the instance.
-    fn extend<I: IntoIterator<Item=Bytes>>(&mut self, iter: I);
+    fn extend<I: IntoIterator<Item = Bytes>>(&mut self, iter: I);
 }
 /// A source for `Bytes`.
 pub trait BytesPull {
@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Clone)]
 pub struct MergeQueue {
     queue: Arc<Mutex<VecDeque<Bytes>>>, // queue of bytes.
-    buzzer: crate::buzzer::Buzzer,  // awakens receiver thread.
+    buzzer: crate::buzzer::Buzzer,      // awakens receiver thread.
     panic: Arc<AtomicBool>,
 }
 
@@ -44,15 +44,23 @@ impl MergeQueue {
     }
     /// Indicates that all input handles to the queue have dropped.
     pub fn is_complete(&self) -> bool {
-        if self.panic.load(Ordering::SeqCst) { panic!("MergeQueue poisoned."); }
-        Arc::strong_count(&self.queue) == 1 && self.queue.lock().expect("Failed to acquire lock").is_empty()
+        if self.panic.load(Ordering::SeqCst) {
+            panic!("MergeQueue poisoned.");
+        }
+        Arc::strong_count(&self.queue) == 1
+            && self
+                .queue
+                .lock()
+                .expect("Failed to acquire lock")
+                .is_empty()
     }
 }
 
 impl BytesPush for MergeQueue {
-    fn extend<I: IntoIterator<Item=Bytes>>(&mut self, iterator: I) {
-
-        if self.panic.load(Ordering::SeqCst) { panic!("MergeQueue poisoned."); }
+    fn extend<I: IntoIterator<Item = Bytes>>(&mut self, iterator: I) {
+        if self.panic.load(Ordering::SeqCst) {
+            panic!("MergeQueue poisoned.");
+        }
 
         // try to acquire lock without going to sleep (Rust's lock() might yield)
         let mut lock_ok = self.queue.try_lock();
@@ -69,8 +77,7 @@ impl BytesPush for MergeQueue {
                     queue.push_back(::std::mem::replace(&mut tail, bytes));
                 }
                 tail
-            }
-            else {
+            } else {
                 should_ping = true;
                 bytes
             };
@@ -86,14 +93,16 @@ impl BytesPush for MergeQueue {
         // Wakeup corresponding thread *after* releasing the lock
         ::std::mem::drop(queue);
         if should_ping {
-            self.buzzer.buzz();  // only signal from empty to non-empty.
+            self.buzzer.buzz(); // only signal from empty to non-empty.
         }
     }
 }
 
 impl BytesPull for MergeQueue {
     fn drain_into(&mut self, vec: &mut Vec<Bytes>) {
-        if self.panic.load(Ordering::SeqCst) { panic!("MergeQueue poisoned."); }
+        if self.panic.load(Ordering::SeqCst) {
+            panic!("MergeQueue poisoned.");
+        }
 
         // try to acquire lock without going to sleep (Rust's lock() might yield)
         let mut lock_ok = self.queue.try_lock();
@@ -113,17 +122,17 @@ impl Drop for MergeQueue {
         // Propagate panic information, to distinguish between clean and unclean shutdown.
         if ::std::thread::panicking() {
             self.panic.store(true, Ordering::SeqCst);
-        }
-        else {
+        } else {
             // TODO: Perhaps this aggressive ordering can relax orderings elsewhere.
-            if self.panic.load(Ordering::SeqCst) { panic!("MergeQueue poisoned."); }
+            if self.panic.load(Ordering::SeqCst) {
+                panic!("MergeQueue poisoned.");
+            }
         }
         // Drop the queue before pinging.
         self.queue = Arc::new(Mutex::new(VecDeque::new()));
         self.buzzer.buzz();
     }
 }
-
 
 /// A `BytesPush` wrapper which stages writes.
 pub struct SendEndpoint<P: BytesPush> {
@@ -132,7 +141,6 @@ pub struct SendEndpoint<P: BytesPush> {
 }
 
 impl<P: BytesPush> SendEndpoint<P> {
-
     /// Moves `self.buffer` into `self.send`, replaces with empty buffer.
     fn send_buffer(&mut self) {
         let valid_len = self.buffer.valid().len();
@@ -157,7 +165,6 @@ impl<P: BytesPush> SendEndpoint<P> {
     }
     /// Acquires a prefix of `self.empty()` of length at least `capacity`.
     pub fn reserve(&mut self, capacity: usize) -> &mut [u8] {
-
         if self.buffer.empty().len() < capacity {
             self.send_buffer();
             self.buffer.ensure_capacity(capacity);
@@ -177,4 +184,3 @@ impl<P: BytesPush> Drop for SendEndpoint<P> {
         self.send_buffer();
     }
 }
-

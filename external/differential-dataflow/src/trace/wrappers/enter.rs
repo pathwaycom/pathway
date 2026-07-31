@@ -3,11 +3,11 @@
 // use timely::progress::nested::product::Product;
 use timely::progress::timestamp::Refines;
 use timely::progress::Timestamp;
-use timely::progress::{Antichain, frontier::AntichainRef};
+use timely::progress::{frontier::AntichainRef, Antichain};
 
 use lattice::Lattice;
-use trace::{TraceReader, BatchReader, Description};
 use trace::cursor::Cursor;
+use trace::{BatchReader, Description, TraceReader};
 
 /// Wrapper to provide trace to nested scope.
 pub struct TraceEnter<Tr, TInner>
@@ -19,9 +19,9 @@ where
     stash2: Antichain<TInner>,
 }
 
-impl<Tr,TInner> Clone for TraceEnter<Tr, TInner>
+impl<Tr, TInner> Clone for TraceEnter<Tr, TInner>
 where
-    Tr: TraceReader+Clone,
+    Tr: TraceReader + Clone,
 {
     fn clone(&self) -> Self {
         TraceEnter {
@@ -40,7 +40,7 @@ where
     Tr::Val: 'static,
     Tr::Time: Timestamp,
     Tr::R: 'static,
-    TInner: Refines<Tr::Time>+Lattice,
+    TInner: Refines<Tr::Time> + Lattice,
 {
     type Key = Tr::Key;
     type Val = Tr::Val;
@@ -86,12 +86,17 @@ where
         self.stash2.borrow()
     }
 
-    fn cursor_through(&mut self, upper: AntichainRef<TInner>) -> Option<(Self::Cursor, <Self::Cursor as Cursor>::Storage)> {
+    fn cursor_through(
+        &mut self,
+        upper: AntichainRef<TInner>,
+    ) -> Option<(Self::Cursor, <Self::Cursor as Cursor>::Storage)> {
         self.stash1.clear();
         for time in upper.iter() {
             self.stash1.insert(time.clone().to_outer());
         }
-        self.trace.cursor_through(self.stash1.borrow()).map(|(x,y)| (CursorEnter::new(x), y))
+        self.trace
+            .cursor_through(self.stash1.borrow())
+            .map(|(x, y)| (CursorEnter::new(x), y))
     }
 }
 
@@ -99,7 +104,7 @@ impl<Tr, TInner> TraceEnter<Tr, TInner>
 where
     Tr: TraceReader,
     Tr::Time: Timestamp,
-    TInner: Refines<Tr::Time>+Lattice,
+    TInner: Refines<Tr::Time> + Lattice,
 {
     /// Makes a new trace wrapper
     pub fn make_from(trace: Tr) -> Self {
@@ -110,7 +115,6 @@ where
         }
     }
 }
-
 
 /// Wrapper to provide batch to nested scope.
 #[derive(Clone)]
@@ -123,7 +127,7 @@ impl<B, TInner> BatchReader for BatchEnter<B, TInner>
 where
     B: BatchReader,
     B::Time: Timestamp,
-    TInner: Refines<B::Time>+Lattice,
+    TInner: Refines<B::Time> + Lattice,
 {
     type Key = B::Key;
     type Val = B::Val;
@@ -135,25 +139,51 @@ where
     fn cursor(&self) -> Self::Cursor {
         BatchCursorEnter::new(self.batch.cursor())
     }
-    fn len(&self) -> usize { self.batch.len() }
-    fn description(&self) -> &Description<TInner> { &self.description }
+    fn len(&self) -> usize {
+        self.batch.len()
+    }
+    fn description(&self) -> &Description<TInner> {
+        &self.description
+    }
 }
 
 impl<B, TInner> BatchEnter<B, TInner>
 where
     B: BatchReader,
     B::Time: Timestamp,
-    TInner: Refines<B::Time>+Lattice,
+    TInner: Refines<B::Time> + Lattice,
 {
     /// Makes a new batch wrapper
     pub fn make_from(batch: B) -> Self {
-        let lower: Vec<_> = batch.description().lower().elements().iter().map(|x| TInner::to_inner(x.clone())).collect();
-        let upper: Vec<_> = batch.description().upper().elements().iter().map(|x| TInner::to_inner(x.clone())).collect();
-        let since: Vec<_> = batch.description().since().elements().iter().map(|x| TInner::to_inner(x.clone())).collect();
+        let lower: Vec<_> = batch
+            .description()
+            .lower()
+            .elements()
+            .iter()
+            .map(|x| TInner::to_inner(x.clone()))
+            .collect();
+        let upper: Vec<_> = batch
+            .description()
+            .upper()
+            .elements()
+            .iter()
+            .map(|x| TInner::to_inner(x.clone()))
+            .collect();
+        let since: Vec<_> = batch
+            .description()
+            .since()
+            .elements()
+            .iter()
+            .map(|x| TInner::to_inner(x.clone()))
+            .collect();
 
         BatchEnter {
             batch: batch,
-            description: Description::new(Antichain::from(lower), Antichain::from(upper), Antichain::from(since))
+            description: Description::new(
+                Antichain::from(lower),
+                Antichain::from(upper),
+                Antichain::from(since),
+            ),
         }
     }
 }
@@ -177,7 +207,7 @@ impl<C, TInner> Cursor for CursorEnter<C, TInner>
 where
     C: Cursor,
     C::Time: Timestamp,
-    TInner: Refines<C::Time>+Lattice,
+    TInner: Refines<C::Time> + Lattice,
 {
     type Key = C::Key;
     type Val = C::Val;
@@ -186,11 +216,23 @@ where
 
     type Storage = C::Storage;
 
-    #[inline] fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.key_valid(storage) }
-    #[inline] fn val_valid(&self, storage: &Self::Storage) -> bool { self.cursor.val_valid(storage) }
+    #[inline]
+    fn key_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.key_valid(storage)
+    }
+    #[inline]
+    fn val_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.val_valid(storage)
+    }
 
-    #[inline] fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key { self.cursor.key(storage) }
-    #[inline] fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val { self.cursor.val(storage) }
+    #[inline]
+    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key {
+        self.cursor.key(storage)
+    }
+    #[inline]
+    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val {
+        self.cursor.val(storage)
+    }
 
     #[inline]
     fn map_times<L: FnMut(&TInner, &Self::R)>(&mut self, storage: &Self::Storage, mut logic: L) {
@@ -199,17 +241,33 @@ where
         })
     }
 
-    #[inline] fn step_key(&mut self, storage: &Self::Storage) { self.cursor.step_key(storage) }
-    #[inline] fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) { self.cursor.seek_key(storage, key) }
+    #[inline]
+    fn step_key(&mut self, storage: &Self::Storage) {
+        self.cursor.step_key(storage)
+    }
+    #[inline]
+    fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) {
+        self.cursor.seek_key(storage, key)
+    }
 
-    #[inline] fn step_val(&mut self, storage: &Self::Storage) { self.cursor.step_val(storage) }
-    #[inline] fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) { self.cursor.seek_val(storage, val) }
+    #[inline]
+    fn step_val(&mut self, storage: &Self::Storage) {
+        self.cursor.step_val(storage)
+    }
+    #[inline]
+    fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) {
+        self.cursor.seek_val(storage, val)
+    }
 
-    #[inline] fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind_keys(storage) }
-    #[inline] fn rewind_vals(&mut self, storage: &Self::Storage) { self.cursor.rewind_vals(storage) }
+    #[inline]
+    fn rewind_keys(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_keys(storage)
+    }
+    #[inline]
+    fn rewind_vals(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_vals(storage)
+    }
 }
-
-
 
 /// Wrapper to provide cursor to nested scope.
 pub struct BatchCursorEnter<B: BatchReader, TInner> {
@@ -229,7 +287,7 @@ impl<B: BatchReader, TInner> BatchCursorEnter<B, TInner> {
 impl<TInner, B: BatchReader> Cursor for BatchCursorEnter<B, TInner>
 where
     B::Time: Timestamp,
-    TInner: Refines<B::Time>+Lattice,
+    TInner: Refines<B::Time> + Lattice,
 {
     type Key = B::Key;
     type Val = B::Val;
@@ -238,11 +296,23 @@ where
 
     type Storage = BatchEnter<B, TInner>;
 
-    #[inline] fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.key_valid(&storage.batch) }
-    #[inline] fn val_valid(&self, storage: &Self::Storage) -> bool { self.cursor.val_valid(&storage.batch) }
+    #[inline]
+    fn key_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.key_valid(&storage.batch)
+    }
+    #[inline]
+    fn val_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.val_valid(&storage.batch)
+    }
 
-    #[inline] fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key { self.cursor.key(&storage.batch) }
-    #[inline] fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val { self.cursor.val(&storage.batch) }
+    #[inline]
+    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key {
+        self.cursor.key(&storage.batch)
+    }
+    #[inline]
+    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val {
+        self.cursor.val(&storage.batch)
+    }
 
     #[inline]
     fn map_times<L: FnMut(&TInner, &Self::R)>(&mut self, storage: &Self::Storage, mut logic: L) {
@@ -251,12 +321,30 @@ where
         })
     }
 
-    #[inline] fn step_key(&mut self, storage: &Self::Storage) { self.cursor.step_key(&storage.batch) }
-    #[inline] fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) { self.cursor.seek_key(&storage.batch, key) }
+    #[inline]
+    fn step_key(&mut self, storage: &Self::Storage) {
+        self.cursor.step_key(&storage.batch)
+    }
+    #[inline]
+    fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) {
+        self.cursor.seek_key(&storage.batch, key)
+    }
 
-    #[inline] fn step_val(&mut self, storage: &Self::Storage) { self.cursor.step_val(&storage.batch) }
-    #[inline] fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) { self.cursor.seek_val(&storage.batch, val) }
+    #[inline]
+    fn step_val(&mut self, storage: &Self::Storage) {
+        self.cursor.step_val(&storage.batch)
+    }
+    #[inline]
+    fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) {
+        self.cursor.seek_val(&storage.batch, val)
+    }
 
-    #[inline] fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind_keys(&storage.batch) }
-    #[inline] fn rewind_vals(&mut self, storage: &Self::Storage) { self.cursor.rewind_vals(&storage.batch) }
+    #[inline]
+    fn rewind_keys(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_keys(&storage.batch)
+    }
+    #[inline]
+    fn rewind_vals(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_vals(&storage.batch)
+    }
 }

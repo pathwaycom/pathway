@@ -56,7 +56,6 @@
 //! that we will introduce no more input at prior rounds), and step the computation.
 
 #![forbid(missing_docs)]
-
 // Disabling warnings since we try to keep the forks as close to the original, while the
 // suggestions are applied for the principal framework library.
 #![allow(warnings)]
@@ -67,18 +66,18 @@ extern crate abomonation;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate timely_communication;
 extern crate timely_bytes;
+extern crate timely_communication;
 extern crate timely_logging;
 
-pub use execute::{execute, execute_directly, example};
 #[cfg(feature = "getopts")]
 pub use execute::execute_from_args;
+pub use execute::{example, execute, execute_directly};
 pub use order::PartialOrder;
 
+pub use execute::Config;
 pub use timely_communication::Config as CommunicationConfig;
 pub use worker::Config as WorkerConfig;
-pub use execute::Config as Config;
 
 pub use timely_container::Container;
 /// Re-export of the `timely_container` crate.
@@ -101,12 +100,12 @@ pub mod logging_core {
     pub use timely_logging::*;
 }
 
-pub mod worker;
-pub mod progress;
 pub mod dataflow;
-pub mod synchronization;
 pub mod execute;
 pub mod order;
+pub mod progress;
+pub mod synchronization;
+pub mod worker;
 
 pub mod logging;
 // pub mod log_events;
@@ -116,12 +115,12 @@ pub mod scheduling;
 /// A composite trait for types usable as data in timely dataflow.
 ///
 /// The `Data` trait is necessary for all types that go along timely dataflow channels.
-pub trait Data: Clone+'static { }
-impl<T: Clone+'static> Data for T { }
+pub trait Data: Clone + 'static {}
+impl<T: Clone + 'static> Data for T {}
 
 /// A composite trait for types usable on exchange channels in timely dataflow.
 ///
 /// The `ExchangeData` trait extends `Data` with any requirements imposed by the `timely_communication`
 /// `Data` trait, which describes requirements for communication along channels.
-pub trait ExchangeData: Data + communication::Data { }
-impl<T: Data + communication::Data> ExchangeData for T { }
+pub trait ExchangeData: Data + communication::Data {}
+impl<T: Data + communication::Data> ExchangeData for T {}

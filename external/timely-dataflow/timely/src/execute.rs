@@ -1,6 +1,6 @@
 //! Starts a timely dataflow execution from configuration information and per-worker logic.
 
-use crate::communication::{initialize_from, Allocator, allocator::AllocateBuilder, WorkerGuards};
+use crate::communication::{allocator::AllocateBuilder, initialize_from, Allocator, WorkerGuards};
 use crate::dataflow::scopes::Child;
 use crate::worker::Worker;
 use crate::{CommunicationConfig, WorkerConfig};
@@ -49,7 +49,7 @@ impl Config {
     ///
     /// Most commonly, callers supply `std::env::args()` as the iterator.
     #[cfg(feature = "getopts")]
-    pub fn from_args<I: Iterator<Item=String>>(args: I) -> Result<Config, String> {
+    pub fn from_args<I: Iterator<Item = String>>(args: I) -> Result<Config, String> {
         let mut opts = getopts_dep::Options::new();
         Config::install_options(&mut opts);
         let matches = opts.parse(args).map_err(|e| e.to_string())?;
@@ -120,12 +120,14 @@ impl Config {
 /// ```
 pub fn example<T, F>(func: F) -> T
 where
-    T: Send+'static,
-    F: FnOnce(&mut Child<Worker<crate::communication::allocator::thread::Thread>,u64>)->T+Send+Sync+'static
+    T: Send + 'static,
+    F: FnOnce(&mut Child<Worker<crate::communication::allocator::thread::Thread>, u64>) -> T
+        + Send
+        + Sync
+        + 'static,
 {
     crate::execute::execute_directly(|worker| worker.dataflow(|scope| func(scope)))
 }
-
 
 /// Executes a single-threaded timely dataflow computation.
 ///
@@ -149,8 +151,11 @@ where
 /// ```
 pub fn execute_directly<T, F>(func: F) -> T
 where
-    T: Send+'static,
-    F: FnOnce(&mut Worker<crate::communication::allocator::thread::Thread>)->T+Send+Sync+'static
+    T: Send + 'static,
+    F: FnOnce(&mut Worker<crate::communication::allocator::thread::Thread>) -> T
+        + Send
+        + Sync
+        + 'static,
 {
     let alloc = crate::communication::allocator::thread::Thread::new();
     let mut worker = crate::worker::Worker::new(WorkerConfig::default(), alloc);
@@ -218,24 +223,18 @@ where
 /// // the extracted data should have data (0..10) thrice at timestamp 0.
 /// assert_eq!(recv.extract()[0].1, (0..30).map(|x| x / 3).collect::<Vec<_>>());
 /// ```
-pub fn execute<T, F>(
-    mut config: Config,
-    func: F
-) -> Result<WorkerGuards<T>,String>
+pub fn execute<T, F>(mut config: Config, func: F) -> Result<WorkerGuards<T>, String>
 where
-    T:Send+'static,
-    F: Fn(&mut Worker<Allocator>)->T+Send+Sync+'static {
-
+    T: Send + 'static,
+    F: Fn(&mut Worker<Allocator>) -> T + Send + Sync + 'static,
+{
     if let CommunicationConfig::Cluster { ref mut log_fn, .. } = config.communication {
-
         *log_fn = Box::new(|events_setup| {
-
             let mut result = None;
             if let Ok(addr) = ::std::env::var("TIMELY_COMM_LOG_ADDR") {
-
-                use ::std::net::TcpStream;
-                use crate::logging::BatchLogger;
                 use crate::dataflow::operators::capture::EventWriterCore;
+                use crate::logging::BatchLogger;
+                use ::std::net::TcpStream;
 
                 eprintln!("enabled COMM logging to {}", addr);
 
@@ -246,10 +245,9 @@ where
                         ::std::time::Instant::now(),
                         ::std::time::Duration::default(),
                         events_setup,
-                        move |time, data| logger.publish_batch(time, data)
+                        move |time, data| logger.publish_batch(time, data),
                     ));
-                }
-                else {
+                } else {
                     panic!("Could not connect to communication log address: {:?}", addr);
                 }
             }
@@ -261,25 +259,23 @@ where
 
     let worker_config = config.worker;
     initialize_from(allocators, other, move |allocator| {
-
         let mut worker = Worker::new(worker_config.clone(), allocator);
 
         // If an environment variable is set, use it as the default timely logging.
         if let Ok(addr) = ::std::env::var("TIMELY_WORKER_LOG_ADDR") {
-
-            use ::std::net::TcpStream;
-            use crate::logging::{BatchLogger, TimelyEvent};
             use crate::dataflow::operators::capture::EventWriterCore;
+            use crate::logging::{BatchLogger, TimelyEvent};
+            use ::std::net::TcpStream;
 
             if let Ok(stream) = TcpStream::connect(&addr) {
                 let writer = EventWriterCore::new(stream);
                 let mut logger = BatchLogger::new(writer);
-                worker.log_register()
-                    .insert::<TimelyEvent,_>("timely", move |time, data|
+                worker
+                    .log_register()
+                    .insert::<TimelyEvent, _>("timely", move |time, data| {
                         logger.publish_batch(time, data)
-                    );
-            }
-            else {
+                    });
+            } else {
                 panic!("Could not connect logging stream to: {:?}", addr);
             }
         }
@@ -348,10 +344,12 @@ where
 /// host3:port
 /// ```
 #[cfg(feature = "getopts")]
-pub fn execute_from_args<I, T, F>(iter: I, func: F) -> Result<WorkerGuards<T>,String>
-    where I: Iterator<Item=String>,
-          T:Send+'static,
-          F: Fn(&mut Worker<Allocator>)->T+Send+Sync+'static, {
+pub fn execute_from_args<I, T, F>(iter: I, func: F) -> Result<WorkerGuards<T>, String>
+where
+    I: Iterator<Item = String>,
+    T: Send + 'static,
+    F: Fn(&mut Worker<Allocator>) -> T + Send + Sync + 'static,
+{
     let config = Config::from_args(iter)?;
     execute(config, func)
 }
@@ -375,14 +373,15 @@ pub fn execute_from_args<I, T, F>(iter: I, func: F) -> Result<WorkerGuards<T>,St
 /// ```
 pub fn execute_from<A, T, F>(
     builders: Vec<A>,
-    others: Box<dyn ::std::any::Any+Send>,
+    others: Box<dyn ::std::any::Any + Send>,
     worker_config: WorkerConfig,
     func: F,
 ) -> Result<WorkerGuards<T>, String>
 where
-    A: AllocateBuilder+'static,
-    T: Send+'static,
-    F: Fn(&mut Worker<<A as AllocateBuilder>::Allocator>)->T+Send+Sync+'static {
+    A: AllocateBuilder + 'static,
+    T: Send + 'static,
+    F: Fn(&mut Worker<<A as AllocateBuilder>::Allocator>) -> T + Send + Sync + 'static,
+{
     initialize_from(builders, others, move |allocator| {
         let mut worker = Worker::new(worker_config.clone(), allocator);
         let result = func(&mut worker);

@@ -72,17 +72,16 @@
 //! assert_eq!(results[2], ((Location::new_target(2, 0), 17), -1));
 //! ```
 
-use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 
-use crate::progress::Timestamp;
-use crate::progress::{Source, Target};
 use crate::progress::ChangeBatch;
+use crate::progress::Timestamp;
 use crate::progress::{Location, Port};
+use crate::progress::{Source, Target};
 
 use crate::progress::frontier::{Antichain, MutableAntichain};
 use crate::progress::timestamp::PathSummary;
-
 
 /// A topology builder, which can summarize reachability along paths.
 ///
@@ -143,7 +142,6 @@ pub struct Builder<T: Timestamp> {
 }
 
 impl<T: Timestamp> Builder<T> {
-
     /// Create a new empty topology builder.
     pub fn new() -> Self {
         Builder {
@@ -156,11 +154,18 @@ impl<T: Timestamp> Builder<T> {
     /// Add links internal to operators.
     ///
     /// This method overwrites any existing summary, instead of anything more sophisticated.
-    pub fn add_node(&mut self, index: usize, inputs: usize, outputs: usize, summary: Vec<Vec<Antichain<T::Summary>>>) {
-
+    pub fn add_node(
+        &mut self,
+        index: usize,
+        inputs: usize,
+        outputs: usize,
+        summary: Vec<Vec<Antichain<T::Summary>>>,
+    ) {
         // Assert that all summaries exist.
         debug_assert_eq!(inputs, summary.len());
-        for x in summary.iter() { debug_assert_eq!(outputs, x.len()); }
+        for x in summary.iter() {
+            debug_assert_eq!(outputs, x.len());
+        }
 
         while self.nodes.len() <= index {
             self.nodes.push(Vec::new());
@@ -180,7 +185,6 @@ impl<T: Timestamp> Builder<T> {
     /// This method does not check that the associated nodes and ports exist. References to
     /// missing nodes or ports are discovered in `build`.
     pub fn add_edge(&mut self, source: Source, target: Target) {
-
         // Assert that the edge is between existing ports.
         debug_assert!(source.port < self.shape[source.node].1);
         debug_assert!(target.port < self.shape[target.node].0);
@@ -195,8 +199,10 @@ impl<T: Timestamp> Builder<T> {
     /// default summaries (a serious liveness issue).
     ///
     /// The optional logger information is baked into the resulting tracker.
-    pub fn build(self, logger: Option<logging::TrackerLogger>) -> (Tracker<T>, Vec<Vec<Antichain<T::Summary>>>) {
-
+    pub fn build(
+        self,
+        logger: Option<logging::TrackerLogger>,
+    ) -> (Tracker<T>, Vec<Vec<Antichain<T::Summary>>>) {
         if !self.is_acyclic() {
             println!("Cycle detected without timestamp increment");
             println!("{:?}", self);
@@ -264,8 +270,11 @@ impl<T: Timestamp> Builder<T> {
     /// assert!(builder.is_acyclic());
     /// ```
     pub fn is_acyclic(&self) -> bool {
-
-        let locations = self.shape.iter().map(|(targets, sources)| targets + sources).sum();
+        let locations = self
+            .shape
+            .iter()
+            .map(|(targets, sources)| targets + sources)
+            .sum();
         let mut in_degree = HashMap::with_capacity(locations);
 
         // Load edges as default summaries.
@@ -320,7 +329,7 @@ impl<T: Timestamp> Builder<T> {
                             worklist.push(target);
                         }
                     }
-                },
+                }
                 Port::Target(port) => {
                     for (output, summaries) in self.nodes[node][port].iter().enumerate() {
                         let source = Location::new_source(node, output);
@@ -334,7 +343,7 @@ impl<T: Timestamp> Builder<T> {
                             }
                         }
                     }
-                },
+                }
             }
         }
 
@@ -354,8 +363,7 @@ impl<T: Timestamp> Default for Builder<T> {
 /// A `Tracker` tracks, for a fixed graph topology, the implications of
 /// pointstamp changes at various node input and output ports. These changes may
 /// alter the potential pointstamps that could arrive at downstream input ports.
-pub struct Tracker<T:Timestamp> {
-
+pub struct Tracker<T: Timestamp> {
     /// Internal connections within hosted operators.
     ///
     /// Indexed by operator index, then input port, then output port. This is the
@@ -375,7 +383,6 @@ pub struct Tracker<T:Timestamp> {
     // TODO: We could also change the internal representation to be a graph of targets, using usize
     //       identifiers for each, so that internally we needn't use multiple levels of indirection.
     //       This may make more sense once we commit to topologically ordering the targets.
-
     /// Each source and target has a mutable antichain to ensure that we track their discrete frontiers,
     /// rather than their multiplicities. We separately track the frontiers resulting from propagated
     /// frontiers, to protect them from transient negativity in inbound target updates.
@@ -456,7 +463,11 @@ impl<T: Timestamp> PortInformation<T> {
     /// this pointstamp.
     #[inline]
     pub fn is_global(&self, time: &T) -> bool {
-        let dominated = self.implications.frontier().iter().any(|t| t.less_than(time));
+        let dominated = self
+            .implications
+            .frontier()
+            .iter()
+            .any(|t| t.less_than(time));
         let redundant = self.implications.count_for(time) > 1;
         !dominated && !redundant
     }
@@ -468,8 +479,7 @@ impl<T: Timestamp> Default for PortInformation<T> {
     }
 }
 
-impl<T:Timestamp> Tracker<T> {
-
+impl<T: Timestamp> Tracker<T> {
     /// Updates the count for a time at a location.
     #[inline]
     pub fn update(&mut self, location: Location, time: T, value: i64) {
@@ -492,9 +502,7 @@ impl<T:Timestamp> Tracker<T> {
 
     /// Indicates if any pointstamps have positive count.
     pub fn tracking_anything(&mut self) -> bool {
-        !self.source_changes.is_empty() ||
-        !self.target_changes.is_empty() ||
-        self.total_counts > 0
+        !self.source_changes.is_empty() || !self.target_changes.is_empty() || self.total_counts > 0
     }
 
     /// Allocate a new `Tracker` using the shape from `summaries`.
@@ -503,11 +511,12 @@ impl<T:Timestamp> Tracker<T> {
     /// output port.
     ///
     /// If the optional logger is provided, it will be used to log various tracker events.
-    pub fn allocate_from(builder: Builder<T>, logger: Option<logging::TrackerLogger>) -> (Self, Vec<Vec<Antichain<T::Summary>>>) {
-
+    pub fn allocate_from(
+        builder: Builder<T>,
+        logger: Option<logging::TrackerLogger>,
+    ) -> (Self, Vec<Vec<Antichain<T::Summary>>>) {
         // Allocate buffer space for each input and input port.
-        let mut per_operator =
-        builder
+        let mut per_operator = builder
             .shape
             .iter()
             .map(|&(inputs, outputs)| PerOperator::new(inputs, outputs))
@@ -523,8 +532,7 @@ impl<T:Timestamp> Tracker<T> {
             if location.node == 0 {
                 if let Port::Source(port) = location.port {
                     builder_summary[port] = summaries;
-                }
-                else {
+                } else {
                     // Ignore (ideally trivial) output to output summaries.
                 }
             }
@@ -533,10 +541,10 @@ impl<T:Timestamp> Tracker<T> {
                 match location.port {
                     Port::Target(port) => {
                         per_operator[location.node].targets[port].output_summaries = summaries;
-                    },
+                    }
                     Port::Source(port) => {
                         per_operator[location.node].sources[port].output_summaries = summaries;
-                    },
+                    }
                 }
             }
         }
@@ -544,8 +552,7 @@ impl<T:Timestamp> Tracker<T> {
         let scope_outputs = builder.shape[0].0;
         let output_changes = vec![ChangeBatch::new(); scope_outputs];
 
-        let tracker =
-        Tracker {
+        let tracker = Tracker {
             nodes: builder.nodes,
             edges: builder.edges,
             per_operator,
@@ -566,12 +573,10 @@ impl<T:Timestamp> Tracker<T> {
     /// The method drains `self.input_changes` and circulates their implications
     /// until we cease deriving new implications.
     pub fn propagate_all(&mut self) {
-
         // Step 0: If logging is enabled, construct and log inbound changes.
         if let Some(logger) = &mut self.logger {
-
-            let target_changes =
-            self.target_changes
+            let target_changes = self
+                .target_changes
                 .iter()
                 .map(|((target, time), diff)| (target.node, target.port, time.clone(), *diff))
                 .collect::<Vec<_>>();
@@ -580,8 +585,8 @@ impl<T:Timestamp> Tracker<T> {
                 logger.log_target_updates(Box::new(target_changes));
             }
 
-            let source_changes =
-            self.source_changes
+            let source_changes = self
+                .source_changes
                 .iter()
                 .map(|((source, time), diff)| (source.node, source.port, time.clone(), *diff))
                 .collect::<Vec<_>>();
@@ -598,7 +603,6 @@ impl<T:Timestamp> Tracker<T> {
         // changes in the frontier, rather than changes in the pointstamp counts that
         // witness that frontier.
         for ((target, time), diff) in self.target_changes.drain() {
-
             let operator = &mut self.per_operator[target.node].targets[target.port];
             let changes = operator.pointstamps.update_iter(Some((time, diff)));
 
@@ -612,12 +616,12 @@ impl<T:Timestamp> Tracker<T> {
                         .flat_map(|summary| summary.results_in(&time))
                         .for_each(|out_time| output_changes.update(out_time, diff));
                 }
-                self.worklist.push(Reverse((time, Location::from(target), diff)));
+                self.worklist
+                    .push(Reverse((time, Location::from(target), diff)));
             }
         }
 
         for ((source, time), diff) in self.source_changes.drain() {
-
             let operator = &mut self.per_operator[source.node].sources[source.port];
             let changes = operator.pointstamps.update_iter(Some((time, diff)));
 
@@ -631,7 +635,8 @@ impl<T:Timestamp> Tracker<T> {
                         .flat_map(|summary| summary.results_in(&time))
                         .for_each(|out_time| output_changes.update(out_time, diff));
                 }
-                self.worklist.push(Reverse((time, Location::from(source), diff)));
+                self.worklist
+                    .push(Reverse((time, Location::from(source), diff)));
             }
         }
 
@@ -642,30 +647,33 @@ impl<T:Timestamp> Tracker<T> {
         //       will discover zero-change times when we first visit them, as no further
         //       changes can be made to them once we complete them.
         while let Some(Reverse((time, location, mut diff))) = self.worklist.pop() {
-
             // Drain and accumulate all updates that have the same time and location.
-            while self.worklist.peek().map(|x| ((x.0).0 == time) && ((x.0).1 == location)).unwrap_or(false) {
+            while self
+                .worklist
+                .peek()
+                .map(|x| ((x.0).0 == time) && ((x.0).1 == location))
+                .unwrap_or(false)
+            {
                 diff += (self.worklist.pop().unwrap().0).2;
             }
 
             // Only act if there is a net change, positive or negative.
             if diff != 0 {
-
                 match location.port {
                     // Update to an operator input.
                     // Propagate any changes forward across the operator.
                     Port::Target(port_index) => {
-
-                        let changes =
-                        self.per_operator[location.node]
-                            .targets[port_index]
+                        let changes = self.per_operator[location.node].targets[port_index]
                             .implications
                             .update_iter(Some((time, diff)));
 
                         for (time, diff) in changes {
                             let nodes = &self.nodes[location.node][port_index];
                             for (output_port, summaries) in nodes.iter().enumerate() {
-                                let source = Location { node: location.node, port: Port::Source(output_port) };
+                                let source = Location {
+                                    node: location.node,
+                                    port: Port::Source(output_port),
+                                };
                                 for summary in summaries.elements().iter() {
                                     if let Some(new_time) = summary.results_in(&time) {
                                         self.worklist.push(Reverse((new_time, source, diff)));
@@ -678,10 +686,7 @@ impl<T:Timestamp> Tracker<T> {
                     // Update to an operator output.
                     // Propagate any changes forward along outgoing edges.
                     Port::Source(port_index) => {
-
-                        let changes =
-                        self.per_operator[location.node]
-                            .sources[port_index]
+                        let changes = self.per_operator[location.node].sources[port_index]
                             .implications
                             .update_iter(Some((time, diff)));
 
@@ -695,7 +700,7 @@ impl<T:Timestamp> Tracker<T> {
                             }
                             self.pushed_changes.update((location, time), diff);
                         }
-                    },
+                    }
                 };
             }
         }
@@ -740,8 +745,7 @@ impl<T:Timestamp> Tracker<T> {
 fn summarize_outputs<T: Timestamp>(
     nodes: &Vec<Vec<Vec<Antichain<T::Summary>>>>,
     edges: &Vec<Vec<Vec<Target>>>,
-    ) -> HashMap<Location, Vec<Antichain<T::Summary>>>
-{
+) -> HashMap<Location, Vec<Antichain<T::Summary>>> {
     // A reverse edge map, to allow us to walk back up the dataflow graph.
     let mut reverse = HashMap::new();
     for (node, outputs) in edges.iter().enumerate() {
@@ -749,7 +753,10 @@ fn summarize_outputs<T: Timestamp>(
             for target in targets.iter() {
                 reverse.insert(
                     Location::from(*target),
-                    Location { node, port: Port::Source(output) }
+                    Location {
+                        node,
+                        port: Port::Source(output),
+                    },
                 );
             }
         }
@@ -758,8 +765,7 @@ fn summarize_outputs<T: Timestamp>(
     let mut results: HashMap<Location, Vec<Antichain<T::Summary>>> = HashMap::new();
     let mut worklist = VecDeque::<(Location, usize, T::Summary)>::new();
 
-    let outputs =
-    edges
+    let outputs = edges
         .iter()
         .flat_map(|x| x.iter())
         .flat_map(|x| x.iter())
@@ -767,29 +773,34 @@ fn summarize_outputs<T: Timestamp>(
 
     // The scope may have no outputs, in which case we can do no work.
     for output_target in outputs {
-        worklist.push_back((Location::from(*output_target), output_target.port, Default::default()));
+        worklist.push_back((
+            Location::from(*output_target),
+            output_target.port,
+            Default::default(),
+        ));
     }
 
     // Loop until we stop discovering novel reachability paths.
     while let Some((location, output, summary)) = worklist.pop_front() {
-
         match location.port {
-
             // This is an output port of an operator, or a scope input.
             // We want to crawl up the operator, to its inputs.
             Port::Source(output_port) => {
-
                 // Consider each input port of the associated operator.
                 for (input_port, summaries) in nodes[location.node].iter().enumerate() {
-
                     // Determine the current path summaries from the input port.
-                    let location = Location { node: location.node, port: Port::Target(input_port) };
+                    let location = Location {
+                        node: location.node,
+                        port: Port::Target(input_port),
+                    };
                     let antichains = results
                         .entry(location)
                         .and_modify(|antichains| antichains.reserve(output))
                         .or_insert_with(|| Vec::with_capacity(output));
 
-                    while antichains.len() <= output { antichains.push(Antichain::new()); }
+                    while antichains.len() <= output {
+                        antichains.push(Antichain::new());
+                    }
 
                     // Combine each operator-internal summary to the output with `summary`.
                     for operator_summary in summaries[output_port].elements().iter() {
@@ -800,13 +811,11 @@ fn summarize_outputs<T: Timestamp>(
                         }
                     }
                 }
-
-            },
+            }
 
             // This is an input port of an operator, or a scope output.
             // We want to walk back the edges leading to it.
             Port::Target(_port) => {
-
                 // Each target should have (at most) one source.
                 if let Some(&source) = reverse.get(&location) {
                     let antichains = results
@@ -814,16 +823,16 @@ fn summarize_outputs<T: Timestamp>(
                         .and_modify(|antichains| antichains.reserve(output))
                         .or_insert_with(|| Vec::with_capacity(output));
 
-                    while antichains.len() <= output { antichains.push(Antichain::new()); }
+                    while antichains.len() <= output {
+                        antichains.push(Antichain::new());
+                    }
 
                     if antichains[output].insert(summary.clone()) {
                         worklist.push_back((source, output, summary.clone()));
                     }
                 }
-
-            },
+            }
         }
-
     }
 
     results
@@ -891,11 +900,15 @@ pub mod logging {
     }
 
     impl From<SourceUpdate> for TrackerEvent {
-        fn from(v: SourceUpdate) -> TrackerEvent { TrackerEvent::SourceUpdate(v) }
+        fn from(v: SourceUpdate) -> TrackerEvent {
+            TrackerEvent::SourceUpdate(v)
+        }
     }
 
     impl From<TargetUpdate> for TrackerEvent {
-        fn from(v: TargetUpdate) -> TrackerEvent { TrackerEvent::TargetUpdate(v) }
+        fn from(v: TargetUpdate) -> TrackerEvent {
+            TrackerEvent::TargetUpdate(v)
+        }
     }
 }
 
@@ -914,11 +927,13 @@ impl<T: Timestamp> Drop for Tracker<T> {
 
         // Retract pending data that `propagate_all` would normally log.
         for (index, per_operator) in self.per_operator.iter_mut().enumerate() {
-            let target_changes = per_operator.targets
+            let target_changes = per_operator
+                .targets
                 .iter_mut()
                 .enumerate()
                 .flat_map(|(port, target)| {
-                    target.pointstamps
+                    target
+                        .pointstamps
                         .updates()
                         .map(move |(time, diff)| (index, port, time.clone(), -diff))
                 })
@@ -927,11 +942,13 @@ impl<T: Timestamp> Drop for Tracker<T> {
                 logger.log_target_updates(Box::new(target_changes));
             }
 
-            let source_changes = per_operator.sources
+            let source_changes = per_operator
+                .sources
                 .iter_mut()
                 .enumerate()
                 .flat_map(|(port, source)| {
-                    source.pointstamps
+                    source
+                        .pointstamps
                         .updates()
                         .map(move |(time, diff)| (index, port, time.clone(), -diff))
                 })

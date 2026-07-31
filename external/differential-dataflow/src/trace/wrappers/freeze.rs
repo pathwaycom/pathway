@@ -19,14 +19,14 @@
 
 use std::rc::Rc;
 
-use timely::dataflow::Scope;
 use timely::dataflow::operators::Map;
+use timely::dataflow::Scope;
 use timely::progress::frontier::AntichainRef;
 
-use operators::arrange::Arranged;
 use lattice::Lattice;
-use trace::{TraceReader, BatchReader, Description};
+use operators::arrange::Arranged;
 use trace::cursor::Cursor;
+use trace::{BatchReader, Description, TraceReader};
 
 /// Freezes updates to an arrangement using a supplied function.
 ///
@@ -36,17 +36,19 @@ use trace::cursor::Cursor;
 pub fn freeze<G, T, F>(arranged: &Arranged<G, T>, func: F) -> Arranged<G, TraceFreeze<T, F>>
 where
     G: Scope,
-    G::Timestamp: Lattice+Ord,
-    T: TraceReader<Time=G::Timestamp>+Clone,
+    G::Timestamp: Lattice + Ord,
+    T: TraceReader<Time = G::Timestamp> + Clone,
     T::Key: 'static,
     T::Val: 'static,
     T::R: 'static,
-    F: Fn(&G::Timestamp)->Option<G::Timestamp>+'static,
+    F: Fn(&G::Timestamp) -> Option<G::Timestamp> + 'static,
 {
     let func1 = Rc::new(func);
     let func2 = func1.clone();
     Arranged {
-        stream: arranged.stream.map(move |bw| BatchFreeze::make_from(bw, func1.clone())),
+        stream: arranged
+            .stream
+            .map(move |bw| BatchFreeze::make_from(bw, func1.clone())),
         trace: TraceFreeze::make_from(arranged.trace.clone(), func2),
     }
 }
@@ -55,18 +57,18 @@ where
 pub struct TraceFreeze<Tr, F>
 where
     Tr: TraceReader,
-    Tr::Time: Lattice+Clone+'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    Tr::Time: Lattice + Clone + 'static,
+    F: Fn(&Tr::Time) -> Option<Tr::Time>,
 {
     trace: Tr,
     func: Rc<F>,
 }
 
-impl<Tr,F> Clone for TraceFreeze<Tr, F>
+impl<Tr, F> Clone for TraceFreeze<Tr, F>
 where
-    Tr: TraceReader+Clone,
-    Tr::Time: Lattice+Clone+'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    Tr: TraceReader + Clone,
+    Tr::Time: Lattice + Clone + 'static,
+    F: Fn(&Tr::Time) -> Option<Tr::Time>,
 {
     fn clone(&self) -> Self {
         TraceFreeze {
@@ -82,9 +84,9 @@ where
     Tr::Batch: Clone,
     Tr::Key: 'static,
     Tr::Val: 'static,
-    Tr::Time: Lattice+Clone+'static,
+    Tr::Time: Lattice + Clone + 'static,
     Tr::R: 'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>+'static,
+    F: Fn(&Tr::Time) -> Option<Tr::Time> + 'static,
 {
     type Key = Tr::Key;
     type Val = Tr::Val;
@@ -101,15 +103,27 @@ where
         })
     }
 
-    fn set_logical_compaction(&mut self, frontier: AntichainRef<Tr::Time>) { self.trace.set_logical_compaction(frontier) }
-    fn get_logical_compaction(&mut self) -> AntichainRef<Tr::Time> { self.trace.get_logical_compaction() }
+    fn set_logical_compaction(&mut self, frontier: AntichainRef<Tr::Time>) {
+        self.trace.set_logical_compaction(frontier)
+    }
+    fn get_logical_compaction(&mut self) -> AntichainRef<Tr::Time> {
+        self.trace.get_logical_compaction()
+    }
 
-    fn set_physical_compaction(&mut self, frontier: AntichainRef<Tr::Time>) { self.trace.set_physical_compaction(frontier) }
-    fn get_physical_compaction(&mut self) -> AntichainRef<Tr::Time> { self.trace.get_physical_compaction() }
+    fn set_physical_compaction(&mut self, frontier: AntichainRef<Tr::Time>) {
+        self.trace.set_physical_compaction(frontier)
+    }
+    fn get_physical_compaction(&mut self) -> AntichainRef<Tr::Time> {
+        self.trace.get_physical_compaction()
+    }
 
-    fn cursor_through(&mut self, upper: AntichainRef<Tr::Time>) -> Option<(Self::Cursor, <Self::Cursor as Cursor>::Storage)> {
+    fn cursor_through(
+        &mut self,
+        upper: AntichainRef<Tr::Time>,
+    ) -> Option<(Self::Cursor, <Self::Cursor as Cursor>::Storage)> {
         let func = &self.func;
-        self.trace.cursor_through(upper)
+        self.trace
+            .cursor_through(upper)
             .map(|(cursor, storage)| (CursorFreeze::new(cursor, func.clone()), storage))
     }
 }
@@ -120,9 +134,9 @@ where
     Tr::Batch: Clone,
     Tr::Key: 'static,
     Tr::Val: 'static,
-    Tr::Time: Lattice+Clone+'static,
+    Tr::Time: Lattice + Clone + 'static,
     Tr::R: 'static,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    F: Fn(&Tr::Time) -> Option<Tr::Time>,
 {
     /// Makes a new trace wrapper
     pub fn make_from(trace: Tr, func: Rc<F>) -> Self {
@@ -132,7 +146,6 @@ where
         }
     }
 }
-
 
 /// Wrapper to provide batch to nested scope.
 pub struct BatchFreeze<B, F> {
@@ -153,7 +166,7 @@ impl<B, F> BatchReader for BatchFreeze<B, F>
 where
     B: BatchReader,
     B::Time: Clone,
-    F: Fn(&B::Time)->Option<B::Time>,
+    F: Fn(&B::Time) -> Option<B::Time>,
 {
     type Key = B::Key;
     type Val = B::Val;
@@ -165,15 +178,19 @@ where
     fn cursor(&self) -> Self::Cursor {
         BatchCursorFreeze::new(self.batch.cursor(), self.func.clone())
     }
-    fn len(&self) -> usize { self.batch.len() }
-    fn description(&self) -> &Description<B::Time> { self.batch.description() }
+    fn len(&self) -> usize {
+        self.batch.len()
+    }
+    fn description(&self) -> &Description<B::Time> {
+        self.batch.description()
+    }
 }
 
 impl<B, F> BatchFreeze<B, F>
 where
     B: BatchReader,
     B::Time: Clone,
-    F: Fn(&B::Time)->Option<B::Time>
+    F: Fn(&B::Time) -> Option<B::Time>,
 {
     /// Makes a new batch wrapper
     pub fn make_from(batch: B, func: Rc<F>) -> Self {
@@ -202,7 +219,7 @@ impl<C: Cursor, F> CursorFreeze<C, F> {
 impl<C, F> Cursor for CursorFreeze<C, F>
 where
     C: Cursor,
-    F: Fn(&C::Time)->Option<C::Time>,
+    F: Fn(&C::Time) -> Option<C::Time>,
 {
     type Key = C::Key;
     type Val = C::Val;
@@ -211,13 +228,30 @@ where
 
     type Storage = C::Storage;
 
-    #[inline] fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.key_valid(storage) }
-    #[inline] fn val_valid(&self, storage: &Self::Storage) -> bool { self.cursor.val_valid(storage) }
+    #[inline]
+    fn key_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.key_valid(storage)
+    }
+    #[inline]
+    fn val_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.val_valid(storage)
+    }
 
-    #[inline] fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key { self.cursor.key(storage) }
-    #[inline] fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val { self.cursor.val(storage) }
+    #[inline]
+    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key {
+        self.cursor.key(storage)
+    }
+    #[inline]
+    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val {
+        self.cursor.val(storage)
+    }
 
-    #[inline] fn map_times<L: FnMut(&Self::Time, &Self::R)>(&mut self, storage: &Self::Storage, mut logic: L) {
+    #[inline]
+    fn map_times<L: FnMut(&Self::Time, &Self::R)>(
+        &mut self,
+        storage: &Self::Storage,
+        mut logic: L,
+    ) {
         let func = &self.func;
         self.cursor.map_times(storage, |time, diff| {
             if let Some(time) = func(time) {
@@ -226,16 +260,33 @@ where
         })
     }
 
-    #[inline] fn step_key(&mut self, storage: &Self::Storage) { self.cursor.step_key(storage) }
-    #[inline] fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) { self.cursor.seek_key(storage, key) }
+    #[inline]
+    fn step_key(&mut self, storage: &Self::Storage) {
+        self.cursor.step_key(storage)
+    }
+    #[inline]
+    fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) {
+        self.cursor.seek_key(storage, key)
+    }
 
-    #[inline] fn step_val(&mut self, storage: &Self::Storage) { self.cursor.step_val(storage) }
-    #[inline] fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) { self.cursor.seek_val(storage, val) }
+    #[inline]
+    fn step_val(&mut self, storage: &Self::Storage) {
+        self.cursor.step_val(storage)
+    }
+    #[inline]
+    fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) {
+        self.cursor.seek_val(storage, val)
+    }
 
-    #[inline] fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind_keys(storage) }
-    #[inline] fn rewind_vals(&mut self, storage: &Self::Storage) { self.cursor.rewind_vals(storage) }
+    #[inline]
+    fn rewind_keys(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_keys(storage)
+    }
+    #[inline]
+    fn rewind_vals(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_vals(storage)
+    }
 }
-
 
 /// Wrapper to provide cursor to nested scope.
 pub struct BatchCursorFreeze<B: BatchReader, F> {
@@ -254,7 +305,7 @@ impl<B: BatchReader, F> BatchCursorFreeze<B, F> {
 
 impl<B: BatchReader, F> Cursor for BatchCursorFreeze<B, F>
 where
-    F: Fn(&B::Time)->Option<B::Time>,
+    F: Fn(&B::Time) -> Option<B::Time>,
 {
     type Key = B::Key;
     type Val = B::Val;
@@ -263,13 +314,30 @@ where
 
     type Storage = BatchFreeze<B, F>;
 
-    #[inline] fn key_valid(&self, storage: &Self::Storage) -> bool { self.cursor.key_valid(&storage.batch) }
-    #[inline] fn val_valid(&self, storage: &Self::Storage) -> bool { self.cursor.val_valid(&storage.batch) }
+    #[inline]
+    fn key_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.key_valid(&storage.batch)
+    }
+    #[inline]
+    fn val_valid(&self, storage: &Self::Storage) -> bool {
+        self.cursor.val_valid(&storage.batch)
+    }
 
-    #[inline] fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key { self.cursor.key(&storage.batch) }
-    #[inline] fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val { self.cursor.val(&storage.batch) }
+    #[inline]
+    fn key<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Key {
+        self.cursor.key(&storage.batch)
+    }
+    #[inline]
+    fn val<'a>(&self, storage: &'a Self::Storage) -> &'a Self::Val {
+        self.cursor.val(&storage.batch)
+    }
 
-    #[inline] fn map_times<L: FnMut(&Self::Time, &Self::R)>(&mut self, storage: &Self::Storage, mut logic: L) {
+    #[inline]
+    fn map_times<L: FnMut(&Self::Time, &Self::R)>(
+        &mut self,
+        storage: &Self::Storage,
+        mut logic: L,
+    ) {
         let func = &self.func;
         self.cursor.map_times(&storage.batch, |time, diff| {
             if let Some(time) = func(time) {
@@ -278,12 +346,30 @@ where
         })
     }
 
-    #[inline] fn step_key(&mut self, storage: &Self::Storage) { self.cursor.step_key(&storage.batch) }
-    #[inline] fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) { self.cursor.seek_key(&storage.batch, key) }
+    #[inline]
+    fn step_key(&mut self, storage: &Self::Storage) {
+        self.cursor.step_key(&storage.batch)
+    }
+    #[inline]
+    fn seek_key(&mut self, storage: &Self::Storage, key: &Self::Key) {
+        self.cursor.seek_key(&storage.batch, key)
+    }
 
-    #[inline] fn step_val(&mut self, storage: &Self::Storage) { self.cursor.step_val(&storage.batch) }
-    #[inline] fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) { self.cursor.seek_val(&storage.batch, val) }
+    #[inline]
+    fn step_val(&mut self, storage: &Self::Storage) {
+        self.cursor.step_val(&storage.batch)
+    }
+    #[inline]
+    fn seek_val(&mut self, storage: &Self::Storage, val: &Self::Val) {
+        self.cursor.seek_val(&storage.batch, val)
+    }
 
-    #[inline] fn rewind_keys(&mut self, storage: &Self::Storage) { self.cursor.rewind_keys(&storage.batch) }
-    #[inline] fn rewind_vals(&mut self, storage: &Self::Storage) { self.cursor.rewind_vals(&storage.batch) }
+    #[inline]
+    fn rewind_keys(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_keys(&storage.batch)
+    }
+    #[inline]
+    fn rewind_vals(&mut self, storage: &Self::Storage) {
+        self.cursor.rewind_vals(&storage.batch)
+    }
 }

@@ -29,28 +29,19 @@ pub trait OkErr<S: Scope, D: Data> {
     ///     odd.inspect(|x| println!("odd numbers: {:?}", x));
     /// });
     /// ```
-    fn ok_err<D1, D2, L>(
-        &self,
-        logic: L,
-    ) -> (Stream<S, D1>, Stream<S, D2>)
-
+    fn ok_err<D1, D2, L>(&self, logic: L) -> (Stream<S, D1>, Stream<S, D2>)
     where
         D1: Data,
         D2: Data,
-        L: FnMut(D) -> Result<D1,D2>+'static
-    ;
+        L: FnMut(D) -> Result<D1, D2> + 'static;
 }
 
 impl<S: Scope, D: Data> OkErr<S, D> for Stream<S, D> {
-    fn ok_err<D1, D2, L>(
-        &self,
-        mut logic: L,
-    ) -> (Stream<S, D1>, Stream<S, D2>)
-
+    fn ok_err<D1, D2, L>(&self, mut logic: L) -> (Stream<S, D1>, Stream<S, D2>)
     where
         D1: Data,
         D2: Data,
-        L: FnMut(D) -> Result<D1,D2>+'static
+        L: FnMut(D) -> Result<D1, D2> + 'static,
     {
         let mut builder = OperatorBuilder::new("OkErr".to_owned(), self.scope());
 

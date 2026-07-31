@@ -1,12 +1,11 @@
-extern crate timely;
 extern crate differential_dataflow;
+extern crate timely;
 
 use timely::dataflow::operators::probe::Handle;
 
 use differential_dataflow::input::Input;
 
 fn main() {
-
     let keys: usize = std::env::args().nth(1).unwrap().parse().unwrap();
     let size: usize = std::env::args().nth(2).unwrap().parse().unwrap();
 
@@ -14,8 +13,7 @@ fn main() {
 
     if mode {
         println!("Running NEW arrangement");
-    }
-    else {
+    } else {
         println!("Running OLD arrangement");
     }
 
@@ -24,26 +22,23 @@ fn main() {
 
     // define a new computational scope, in which to run BFS
     timely::execute_from_args(std::env::args(), move |worker| {
-
         // define BFS dataflow; return handles to roots and edges inputs
         let mut probe = Handle::new();
         let (mut data_input, mut keys_input) = worker.dataflow(|scope| {
-
             use differential_dataflow::operators::{arrange::Arrange, JoinCore};
-            use differential_dataflow::trace::implementations::ord::{OrdKeySpine, ColKeySpine};
+            use differential_dataflow::trace::implementations::ord::{ColKeySpine, OrdKeySpine};
 
             let (data_input, data) = scope.new_collection::<String, isize>();
             let (keys_input, keys) = scope.new_collection::<String, isize>();
 
             if mode {
-                let data = data.arrange::<ColKeySpine<_,_,_>>();
-                let keys = keys.arrange::<ColKeySpine<_,_,_>>();
+                let data = data.arrange::<ColKeySpine<_, _, _>>();
+                let keys = keys.arrange::<ColKeySpine<_, _, _>>();
                 keys.join_core(&data, |_k, &(), &()| Option::<()>::None)
                     .probe_with(&mut probe);
-            }
-            else {
-                let data = data.arrange::<OrdKeySpine<_,_,_>>();
-                let keys = keys.arrange::<OrdKeySpine<_,_,_>>();
+            } else {
+                let data = data.arrange::<OrdKeySpine<_, _, _>>();
+                let keys = keys.arrange::<OrdKeySpine<_, _, _>>();
                 keys.join_core(&data, |_k, &(), &()| Option::<()>::None)
                     .probe_with(&mut probe);
             }
@@ -93,9 +88,8 @@ fn main() {
         println!("{:?}\tqueries complete", timer1.elapsed());
 
         // loop { }
-
-    }).unwrap();
+    })
+    .unwrap();
 
     println!("{:?}\tshut down", timer2.elapsed());
-
 }

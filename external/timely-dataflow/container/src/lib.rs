@@ -56,7 +56,9 @@ impl<T: Clone + 'static> Container for Vec<T> {
         Vec::capacity(self)
     }
 
-    fn clear(&mut self) { Vec::clear(self) }
+    fn clear(&mut self) {
+        Vec::clear(self)
+    }
 }
 
 mod rc {

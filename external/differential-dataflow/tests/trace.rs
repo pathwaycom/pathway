@@ -1,15 +1,15 @@
-extern crate timely;
 extern crate differential_dataflow;
+extern crate timely;
 
 use std::rc::Rc;
 
 use timely::dataflow::operators::generic::OperatorInfo;
-use timely::progress::{Antichain, frontier::AntichainRef};
+use timely::progress::{frontier::AntichainRef, Antichain};
 
-use differential_dataflow::trace::implementations::ord::OrdValBatch;
-use differential_dataflow::trace::{Trace, TraceReader, Batch, Batcher};
 use differential_dataflow::trace::cursor::Cursor;
+use differential_dataflow::trace::implementations::ord::OrdValBatch;
 use differential_dataflow::trace::implementations::spine_fueled::Spine;
+use differential_dataflow::trace::{Batch, Batcher, Trace, TraceReader};
 
 pub type OrdValSpine<K, V, T, R> = Spine<Rc<OrdValBatch<K, V, T, R>>>;
 
@@ -29,7 +29,9 @@ fn get_trace() -> Spine<Rc<OrdValBatch<u64, u64, usize, i64>>> {
         ]));
 
         let batch_ts = &[1, 2, 3];
-        let batches = batch_ts.iter().map(move |i| batcher.seal(Antichain::from_elem(*i)));
+        let batches = batch_ts
+            .iter()
+            .map(move |i| batcher.seal(Antichain::from_elem(*i)));
         for b in batches {
             trace.insert(b);
         }
@@ -48,17 +50,14 @@ fn test_trace() {
     let (mut cursor2, storage2) = trace.cursor_through(AntichainRef::new(&[2])).unwrap();
     let vec_2 = cursor2.to_vec(&storage2);
     println!("--> {:?}", vec_2);
-    assert_eq!(vec_2, vec![
-               ((1, 2), vec![(0, 1)]),
-               ((2, 3), vec![(1, 1)]),
-    ]);
+    assert_eq!(vec_2, vec![((1, 2), vec![(0, 1)]), ((2, 3), vec![(1, 1)]),]);
 
     let (mut cursor3, storage3) = trace.cursor_through(AntichainRef::new(&[3])).unwrap();
     let vec_3 = cursor3.to_vec(&storage3);
-    assert_eq!(vec_3, vec![
-               ((1, 2), vec![(0, 1)]),
-               ((2, 3), vec![(1, 1), (2, -1)]),
-    ]);
+    assert_eq!(
+        vec_3,
+        vec![((1, 2), vec![(0, 1)]), ((2, 3), vec![(1, 1), (2, -1)]),]
+    );
 
     let (mut cursor4, storage4) = trace.cursor();
     let vec_4 = cursor4.to_vec(&storage4);

@@ -6,7 +6,7 @@
 //! dataflow collections would then track for each record the total of counts and heights, which allows
 //! us to track something like the average.
 
-use ::Data;
+use Data;
 
 #[deprecated]
 pub use self::Abelian as Diff;
@@ -22,7 +22,7 @@ pub use self::Abelian as Diff;
 /// There is a light presumption of commutativity here, in that while we will largely perform addition
 /// in order of timestamps, for many types of timestamps there is no total order and consequently no
 /// obvious order to respect. Non-commutative semigroups should be used with care.
-pub trait Semigroup : ::std::marker::Sized + Data + Clone {
+pub trait Semigroup: ::std::marker::Sized + Data + Clone {
     /// The method of `std::ops::AddAssign`, for types that do not implement `AddAssign`.
     fn plus_equals(&mut self, rhs: &Self);
     /// Returns true if the element is the additive identity.
@@ -37,7 +37,7 @@ pub trait Semigroup : ::std::marker::Sized + Data + Clone {
 }
 
 /// A semigroup with an explicit zero element.
-pub trait Monoid : Semigroup {
+pub trait Monoid: Semigroup {
     /// A zero element under the semigroup addition operator.
     fn zero() -> Self;
 }
@@ -47,7 +47,7 @@ pub trait Monoid : Semigroup {
 /// This trait extends the requirements of `Semigroup` to include a negation operator.
 /// Several differential dataflow operators require negation in order to retract prior outputs, but
 /// not quite as many as you might imagine.
-pub trait Abelian : Monoid {
+pub trait Abelian: Monoid {
     /// The method of `std::ops::Neg`, for types that do not implement `Neg`.
     fn negate(self) -> Self;
 }
@@ -64,17 +64,28 @@ pub trait Multiply<Rhs = Self> {
 macro_rules! builtin_implementation {
     ($t:ty) => {
         impl Semigroup for $t {
-            #[inline] fn plus_equals(&mut self, rhs: &Self) { *self += rhs; }
-            #[inline] fn is_zero(&self) -> bool { self == &0 }
+            #[inline]
+            fn plus_equals(&mut self, rhs: &Self) {
+                *self += rhs;
+            }
+            #[inline]
+            fn is_zero(&self) -> bool {
+                self == &0
+            }
         }
 
         impl Monoid for $t {
-            #[inline] fn zero() -> Self { 0 }
+            #[inline]
+            fn zero() -> Self {
+                0
+            }
         }
 
         impl Multiply<Self> for $t {
             type Output = Self;
-            fn multiply(self, rhs: &Self) -> Self { self * rhs}
+            fn multiply(self, rhs: &Self) -> Self {
+                self * rhs
+            }
         }
     };
 }
@@ -82,7 +93,10 @@ macro_rules! builtin_implementation {
 macro_rules! builtin_abelian_implementation {
     ($t:ty) => {
         impl Abelian for $t {
-            #[inline] fn negate(self) -> Self { -self }
+            #[inline]
+            fn negate(self) -> Self {
+                -self
+            }
         }
     };
 }
@@ -111,21 +125,35 @@ builtin_abelian_implementation!(isize);
 macro_rules! wrapping_implementation {
     ($t:ty) => {
         impl Semigroup for $t {
-            #[inline] fn plus_equals(&mut self, rhs: &Self) { *self += rhs; }
-            #[inline] fn is_zero(&self) -> bool { self == &std::num::Wrapping(0) }
+            #[inline]
+            fn plus_equals(&mut self, rhs: &Self) {
+                *self += rhs;
+            }
+            #[inline]
+            fn is_zero(&self) -> bool {
+                self == &std::num::Wrapping(0)
+            }
         }
 
         impl Monoid for $t {
-            #[inline] fn zero() -> Self { std::num::Wrapping(0) }
+            #[inline]
+            fn zero() -> Self {
+                std::num::Wrapping(0)
+            }
         }
 
         impl Abelian for $t {
-            #[inline] fn negate(self) -> Self { -self }
+            #[inline]
+            fn negate(self) -> Self {
+                -self
+            }
         }
 
         impl Multiply<Self> for $t {
             type Output = Self;
-            fn multiply(self, rhs: &Self) -> Self { self * rhs}
+            fn multiply(self, rhs: &Self) -> Self {
+                self * rhs
+            }
         }
     };
 }
@@ -136,7 +164,6 @@ wrapping_implementation!(std::num::Wrapping<i32>);
 wrapping_implementation!(std::num::Wrapping<i64>);
 wrapping_implementation!(std::num::Wrapping<i128>);
 wrapping_implementation!(std::num::Wrapping<isize>);
-
 
 pub use self::present::Present;
 mod present {
@@ -149,7 +176,19 @@ mod present {
     /// The primary feature of this type is that it has zero size, which reduces the overhead
     /// of differential dataflow's representations for settings where collections either do
     /// not change, or for which records are only added (for example, derived facts in Datalog).
-    #[derive(Abomonation, Copy, Ord, PartialOrd, Eq, PartialEq, Debug, Clone, Serialize, Deserialize, Hash)]
+    #[derive(
+        Abomonation,
+        Copy,
+        Ord,
+        PartialOrd,
+        Eq,
+        PartialEq,
+        Debug,
+        Clone,
+        Serialize,
+        Deserialize,
+        Hash,
+    )]
     pub struct Present;
 
     impl<T: Clone> super::Multiply<T> for Present {
@@ -160,15 +199,17 @@ mod present {
     }
 
     impl super::Semigroup for Present {
-        fn plus_equals(&mut self, _rhs: &Self) { }
-        fn is_zero(&self) -> bool { false }
+        fn plus_equals(&mut self, _rhs: &Self) {}
+        fn is_zero(&self) -> bool {
+            false
+        }
     }
 }
 
 // Pair implementations.
 mod tuples {
 
-    use super::{Semigroup, Monoid, Abelian, Multiply};
+    use super::{Abelian, Monoid, Multiply, Semigroup};
 
     /// Implementations for tuples. The two arguments must have the same length.
     macro_rules! tuple_implementation {
@@ -227,7 +268,7 @@ mod tuples {
 // Vector implementations
 mod vector {
 
-    use super::{Semigroup, Monoid, Abelian, Multiply};
+    use super::{Abelian, Monoid, Multiply, Semigroup};
 
     impl<R: Semigroup> Semigroup for Vec<R> {
         fn plus_equals(&mut self, rhs: &Self) {
@@ -265,9 +306,7 @@ mod vector {
     impl<T, R: Multiply<T>> Multiply<T> for Vec<R> {
         type Output = Vec<<R as Multiply<T>>::Output>;
         fn multiply(self, rhs: &T) -> Self::Output {
-            self.into_iter()
-                .map(|x| x.multiply(rhs))
-                .collect()
+            self.into_iter().map(|x| x.multiply(rhs)).collect()
         }
     }
 }

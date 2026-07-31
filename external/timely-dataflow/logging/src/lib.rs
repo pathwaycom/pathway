@@ -1,10 +1,9 @@
-
-use std::rc::Rc;
-use std::cell::RefCell;
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::{Instant, Duration};
 use std::fmt::{self, Debug};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 pub struct Registry<Id> {
     /// A worker-specific identifier.
@@ -15,7 +14,7 @@ pub struct Registry<Id> {
     time: Instant,
 }
 
-impl<Id: Clone+'static> Registry<Id> {
+impl<Id: Clone + 'static> Registry<Id> {
     /// Binds a log name to an action on log event batches.
     ///
     /// This method also returns any pre-installed action, rather than overwriting it
@@ -27,11 +26,11 @@ impl<Id: Clone+'static> Registry<Id> {
     /// seen (likely greater or equal to the timestamp of the last event). The end of a
     /// logging stream is indicated only by dropping the associated action, which can be
     /// accomplished with `remove` (or a call to insert, though this is not recommended).
-    pub fn insert<T: 'static, F: FnMut(&Duration, &mut Vec<(Duration, Id, T)>)+'static>(
+    pub fn insert<T: 'static, F: FnMut(&Duration, &mut Vec<(Duration, Id, T)>) + 'static>(
         &mut self,
         name: &str,
-        action: F) -> Option<Box<dyn Any>>
-    {
+        action: F,
+    ) -> Option<Box<dyn Any>> {
         let logger = Logger::<T, Id>::new(self.time, Duration::default(), self.id.clone(), action);
         self.insert_logger(name, logger)
     }
@@ -40,9 +39,14 @@ impl<Id: Clone+'static> Registry<Id> {
     pub fn insert_logger<T: 'static>(
         &mut self,
         name: &str,
-        logger: Logger<T, Id>) -> Option<Box<dyn Any>>
-    {
-        self.map.insert(name.to_owned(), (Box::new(logger.clone()), Box::new(logger))).map(|x| x.0)
+        logger: Logger<T, Id>,
+    ) -> Option<Box<dyn Any>> {
+        self.map
+            .insert(
+                name.to_owned(),
+                (Box::new(logger.clone()), Box::new(logger)),
+            )
+            .map(|x| x.0)
     }
 
     /// Removes a bound logger.
@@ -95,15 +99,15 @@ pub struct Logger<T, E> {
 impl<T, E: Clone> Clone for Logger<T, E> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone()
+            inner: self.inner.clone(),
         }
     }
 }
 
 struct LoggerInner<T, E, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> {
-    id:     E,
+    id: E,
     /// common instant used for all loggers.
-    time:   Instant,
+    time: Instant,
     /// offset to allow re-calibration.
     offset: Duration,
     /// shared buffer of accumulated log events
@@ -116,7 +120,7 @@ impl<T, E: Clone> Logger<T, E> {
     /// Allocates a new shareable logger bound to a write destination.
     pub fn new<F>(time: Instant, offset: Duration, id: E, action: F) -> Self
     where
-        F: FnMut(&Duration, &mut Vec<(Duration, E, T)>)+'static
+        F: FnMut(&Duration, &mut Vec<(Duration, E, T)>) + 'static,
     {
         let inner = LoggerInner {
             id,
@@ -156,7 +160,9 @@ impl<T, E: Clone> Logger<T, E> {
     /// that the `action` only sees one stream of events with increasing timestamps. This may
     /// have a cost that we don't entirely understand.
     pub fn log_many<I>(&self, events: I)
-    where I: IntoIterator, I::Item: Into<T>
+    where
+        I: IntoIterator,
+        I::Item: Into<T>,
     {
         self.inner.borrow_mut().log_many(events)
     }
@@ -168,7 +174,6 @@ impl<T, E: Clone> Logger<T, E> {
 }
 
 impl<T, E: Clone, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> LoggerInner<T, E, A> {
-
     /// The upper limit for buffers to allocate, size in bytes. [Self::buffer_capacity] converts
     /// this to size in elements.
     const BUFFER_SIZE_BYTES: usize = 1 << 13;
@@ -177,7 +182,7 @@ impl<T, E: Clone, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> Logg
     /// and 1, inclusively.
     // TODO: This fn is not const because it cannot depend on non-Sized generic parameters
     fn buffer_capacity() -> usize {
-        let size =  ::std::mem::size_of::<(Duration, E, T)>();
+        let size = ::std::mem::size_of::<(Duration, E, T)>();
         if size == 0 {
             Self::BUFFER_SIZE_BYTES
         } else if size <= Self::BUFFER_SIZE_BYTES {
@@ -188,7 +193,9 @@ impl<T, E: Clone, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> Logg
     }
 
     pub fn log_many<I>(&mut self, events: I)
-        where I: IntoIterator, I::Item: Into<T>
+    where
+        I: IntoIterator,
+        I::Item: Into<T>,
     {
         let elapsed = self.time.elapsed() + self.offset;
         for event in events {
@@ -201,7 +208,8 @@ impl<T, E: Clone, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> Logg
                 self.buffer.clear();
                 let buffer_capacity = self.buffer.capacity();
                 if buffer_capacity < Self::buffer_capacity() {
-                    self.buffer.reserve((buffer_capacity+1).next_power_of_two());
+                    self.buffer
+                        .reserve((buffer_capacity + 1).next_power_of_two());
                 }
             }
         }
@@ -246,7 +254,9 @@ impl<T, E> Flush for Logger<T, E> {
     }
 }
 
-impl<T, E, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> Flush for LoggerInner<T, E, A> {
+impl<T, E, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> Flush
+    for LoggerInner<T, E, A>
+{
     fn flush(&mut self) {
         let elapsed = self.time.elapsed() + self.offset;
         if !self.buffer.is_empty() {
@@ -256,8 +266,7 @@ impl<T, E, A: ?Sized + FnMut(&Duration, &mut Vec<(Duration, E, T)>)> Flush for L
             // taken. The intent is that the geometric growth in `log_many` should be
             // enough to ensure that we do not send too many small buffers, nor do we
             // allocate too large buffers when they are not needed.
-        }
-        else {
+        } else {
             // Avoid swapping resources for empty buffers.
             (self.action)(&elapsed, &mut Vec::new());
         }

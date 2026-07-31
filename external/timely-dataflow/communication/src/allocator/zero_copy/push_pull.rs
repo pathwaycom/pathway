@@ -1,16 +1,16 @@
 //! Push and Pull implementations wrapping serialized data.
 
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use bytes::arc::Bytes;
 
 use crate::allocator::canary::Canary;
 use crate::networking::MessageHeader;
 
-use crate::{Data, Push, Pull};
 use crate::allocator::Message;
+use crate::{Data, Pull, Push};
 
 use super::bytes_exchange::{BytesPush, SendEndpoint};
 
@@ -19,9 +19,9 @@ use super::bytes_exchange::{BytesPush, SendEndpoint};
 /// This pusher has a fixed MessageHeader, and access to a SharedByteBuffer which it uses to
 /// acquire buffers for serialization.
 pub struct Pusher<T, P: BytesPush> {
-    header:     MessageHeader,
-    sender:     Rc<RefCell<SendEndpoint<P>>>,
-    phantom:    ::std::marker::PhantomData<T>,
+    header: MessageHeader,
+    sender: Rc<RefCell<SendEndpoint<P>>>,
+    phantom: ::std::marker::PhantomData<T>,
 }
 
 impl<T, P: BytesPush> Pusher<T, P> {
@@ -30,16 +30,15 @@ impl<T, P: BytesPush> Pusher<T, P> {
         Pusher {
             header,
             sender,
-            phantom:    ::std::marker::PhantomData,
+            phantom: ::std::marker::PhantomData,
         }
     }
 }
 
-impl<T:Data, P: BytesPush> Push<Message<T>> for Pusher<T, P> {
+impl<T: Data, P: BytesPush> Push<Message<T>> for Pusher<T, P> {
     #[inline]
     fn push(&mut self, element: &mut Option<Message<T>>) {
         if let Some(ref mut element) = *element {
-
             // determine byte lengths and build header.
             let mut header = self.header;
             self.header.seqno += 1;
@@ -69,10 +68,10 @@ impl<T:Data, P: BytesPush> Push<Message<T>> for Pusher<T, P> {
 pub struct Puller<T> {
     _canary: Canary,
     current: Option<Message<T>>,
-    receiver: Rc<RefCell<VecDeque<Bytes>>>,    // source of serialized buffers
+    receiver: Rc<RefCell<VecDeque<Bytes>>>, // source of serialized buffers
 }
 
-impl<T:Data> Puller<T> {
+impl<T: Data> Puller<T> {
     /// Creates a new `Puller` instance from a shared queue.
     pub fn new(receiver: Rc<RefCell<VecDeque<Bytes>>>, _canary: Canary) -> Puller<T> {
         Puller {
@@ -83,11 +82,11 @@ impl<T:Data> Puller<T> {
     }
 }
 
-impl<T:Data> Pull<Message<T>> for Puller<T> {
+impl<T: Data> Pull<Message<T>> for Puller<T> {
     #[inline]
     fn pull(&mut self) -> &mut Option<Message<T>> {
-        self.current =
-        self.receiver
+        self.current = self
+            .receiver
             .borrow_mut()
             .pop_front()
             .map(|bytes| unsafe { Message::from_bytes(bytes) });
@@ -103,15 +102,19 @@ impl<T:Data> Pull<Message<T>> for Puller<T> {
 /// like the `bytes` crate (../bytes/) which provides an exclusive view of a shared
 /// allocation.
 pub struct PullerInner<T> {
-    inner: Box<dyn Pull<Message<T>>>,               // inner pullable (e.g. intra-process typed queue)
+    inner: Box<dyn Pull<Message<T>>>, // inner pullable (e.g. intra-process typed queue)
     _canary: Canary,
     current: Option<Message<T>>,
-    receiver: Rc<RefCell<VecDeque<Bytes>>>,     // source of serialized buffers
+    receiver: Rc<RefCell<VecDeque<Bytes>>>, // source of serialized buffers
 }
 
-impl<T:Data> PullerInner<T> {
+impl<T: Data> PullerInner<T> {
     /// Creates a new `PullerInner` instance from a shared queue.
-    pub fn new(inner: Box<dyn Pull<Message<T>>>, receiver: Rc<RefCell<VecDeque<Bytes>>>, _canary: Canary) -> Self {
+    pub fn new(
+        inner: Box<dyn Pull<Message<T>>>,
+        receiver: Rc<RefCell<VecDeque<Bytes>>>,
+        _canary: Canary,
+    ) -> Self {
         PullerInner {
             inner,
             _canary,
@@ -121,17 +124,15 @@ impl<T:Data> PullerInner<T> {
     }
 }
 
-impl<T:Data> Pull<Message<T>> for PullerInner<T> {
+impl<T: Data> Pull<Message<T>> for PullerInner<T> {
     #[inline]
     fn pull(&mut self) -> &mut Option<Message<T>> {
-
         let inner = self.inner.pull();
         if inner.is_some() {
             inner
-        }
-        else {
-            self.current =
-            self.receiver
+        } else {
+            self.current = self
+                .receiver
                 .borrow_mut()
                 .pop_front()
                 .map(|bytes| unsafe { Message::from_bytes(bytes) });

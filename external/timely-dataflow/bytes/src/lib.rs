@@ -33,9 +33,9 @@
 /// An `Arc`-backed mutable byte slice backed by a common allocation.
 pub mod arc {
 
+    use std::any::Any;
     use std::ops::{Deref, DerefMut};
     use std::sync::Arc;
-    use std::any::Any;
 
     /// A thread-safe byte buffer backed by a shared allocation.
     pub struct Bytes {
@@ -54,20 +54,20 @@ pub mod arc {
     // Synchronization happens through `self.sequestered`, which mean to ensure that even
     // across multiple threads each region of the slice is uniquely "owned", if not in the
     // traditional Rust sense.
-    unsafe impl Send for Bytes { }
+    unsafe impl Send for Bytes {}
 
     impl Bytes {
-
         /// Create a new instance from a byte allocation.
-        pub fn from<B>(bytes: B) -> Bytes where B : DerefMut<Target=[u8]>+'static {
-
+        pub fn from<B>(bytes: B) -> Bytes
+        where
+            B: DerefMut<Target = [u8]> + 'static,
+        {
             // Sequester allocation behind an `Arc`, which *should* keep the address
             // stable for the lifetime of `sequestered`. The `Arc` also serves as our
             // source of truth for the allocation, which we use to re-connect slices
             // of the same allocation.
             let mut sequestered = Arc::new(bytes) as Arc<dyn Any>;
-            let (ptr, len) =
-            Arc::get_mut(&mut sequestered)
+            let (ptr, len) = Arc::get_mut(&mut sequestered)
                 .unwrap()
                 .downcast_mut::<B>()
                 .map(|a| (a.as_mut_ptr(), a.len()))
@@ -87,7 +87,6 @@ pub mod arc {
         /// This method first tests `index` against `self.len`, which should ensure that both
         /// the returned `Bytes` contains valid memory, and that `self` can no longer access it.
         pub fn extract_to(&mut self, index: usize) -> Bytes {
-
             assert!(index <= self.len);
 
             let result = Bytes {
@@ -96,7 +95,9 @@ pub mod arc {
                 sequestered: self.sequestered.clone(),
             };
 
-            unsafe { self.ptr = self.ptr.offset(index as isize); }
+            unsafe {
+                self.ptr = self.ptr.offset(index as isize);
+            }
             self.len -= index;
 
             result
@@ -125,15 +126,17 @@ pub mod arc {
         /// assert!(shared3.try_regenerate::<Vec<u8>>());
         /// assert!(shared3.len() == 1024);
         /// ```
-        pub fn try_regenerate<B>(&mut self) -> bool where B: DerefMut<Target=[u8]>+'static {
+        pub fn try_regenerate<B>(&mut self) -> bool
+        where
+            B: DerefMut<Target = [u8]> + 'static,
+        {
             // Only possible if this is the only reference to the sequestered allocation.
             if let Some(boxed) = Arc::get_mut(&mut self.sequestered) {
                 let downcast = boxed.downcast_mut::<B>().expect("Downcast failed");
                 self.ptr = downcast.as_mut_ptr();
                 self.len = downcast.len();
                 true
-            }
-            else {
+            } else {
                 false
             }
         }
@@ -161,11 +164,12 @@ pub mod arc {
         /// shared4.try_merge(shared2).ok().expect("Failed to merge 4 and 231");
         /// ```
         pub fn try_merge(&mut self, other: Bytes) -> Result<(), Bytes> {
-            if Arc::ptr_eq(&self.sequestered, &other.sequestered) && ::std::ptr::eq(unsafe { self.ptr.offset(self.len as isize) }, other.ptr) {
+            if Arc::ptr_eq(&self.sequestered, &other.sequestered)
+                && ::std::ptr::eq(unsafe { self.ptr.offset(self.len as isize) }, other.ptr)
+            {
                 self.len += other.len;
                 Ok(())
-            }
-            else {
+            } else {
                 Err(other)
             }
         }

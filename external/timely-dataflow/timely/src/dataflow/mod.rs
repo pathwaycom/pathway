@@ -13,14 +13,14 @@
 //! });
 //! ```
 
-pub use self::stream::{StreamCore, Stream};
 pub use self::scopes::{Scope, ScopeParent};
+pub use self::stream::{Stream, StreamCore};
 
-pub use self::operators::input::HandleCore as InputHandleCore;
 pub use self::operators::input::Handle as InputHandle;
+pub use self::operators::input::HandleCore as InputHandleCore;
 pub use self::operators::probe::Handle as ProbeHandle;
 
-pub mod operators;
 pub mod channels;
+pub mod operators;
 pub mod scopes;
 pub mod stream;

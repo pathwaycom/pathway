@@ -2755,3 +2755,36 @@ def test_mssql_write_column_name_is_reserved_word(mssql):
     check_write_quotes_reserved_word_column_name(
         write=_mssql_write, db_context=mssql, quote_ident=_mssql_quote_ident
     )
+
+
+def test_mssql_explore_schema_auto_infers(mssql):
+    class OutputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        value: float
+
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE [{table_name}] ("
+        f"  id INT NOT NULL PRIMARY KEY,"
+        f"  name NVARCHAR(100),"
+        f"  value FLOAT"
+        f")"
+    )
+
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        mode="static",
+        schema=None,
+    )
+
+    assert table.schema.column_names() == ["id", "name", "value"]
+
+    from pathway.internals import dtype
+
+    actual_dtypes = table.schema._dtypes()
+
+    assert actual_dtypes["id"] == dtype.INT
+    assert actual_dtypes["name"] == dtype.Optional(dtype.STR)
+    assert actual_dtypes["value"] == dtype.Optional(dtype.FLOAT)

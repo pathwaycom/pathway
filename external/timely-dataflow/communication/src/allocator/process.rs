@@ -1,17 +1,17 @@
 //! Typed inter-thread, intra-process channels.
 
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use crossbeam_channel::{Receiver, Sender};
 use std::any::Any;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::collections::{HashMap};
-use crossbeam_channel::{Sender, Receiver};
 
-use crate::allocator::thread::{ThreadBuilder};
+use crate::allocator::thread::ThreadBuilder;
 use crate::allocator::{Allocate, AllocateBuilder, Thread};
-use crate::{Push, Pull, Message};
 use crate::buzzer::Buzzer;
+use crate::{Message, Pull, Push};
 
 /// An allocator for inter-thread, intra-process communication
 pub struct ProcessBuilder {
@@ -19,7 +19,7 @@ pub struct ProcessBuilder {
     index: usize,
     peers: usize,
     // below: `Box<Any+Send>` is a `Box<Vec<Option<(Vec<Sender<T>>, Receiver<T>)>>>`
-    channels: Arc<Mutex<HashMap<usize, Box<dyn Any+Send>>>>,
+    channels: Arc<Mutex<HashMap<usize, Box<dyn Any + Send>>>>,
 
     // Buzzers for waking other local workers.
     buzzers_send: Vec<Sender<Buzzer>>,
@@ -32,7 +32,6 @@ pub struct ProcessBuilder {
 impl AllocateBuilder for ProcessBuilder {
     type Allocator = Process;
     fn build(self) -> Self::Allocator {
-
         // Initialize buzzers; send first, then recv.
         for worker in self.buzzers_send.iter() {
             let buzzer = Buzzer::new();
@@ -61,7 +60,7 @@ pub struct Process {
     index: usize,
     peers: usize,
     // below: `Box<Any+Send>` is a `Box<Vec<Option<(Vec<Sender<T>>, Receiver<T>)>>>`
-    channels: Arc<Mutex<HashMap</* channel id */ usize, Box<dyn Any+Send>>>>,
+    channels: Arc<Mutex<HashMap</* channel id */ usize, Box<dyn Any + Send>>>>,
     buzzers: Vec<Buzzer>,
     counters_send: Vec<Sender<usize>>,
     counters_recv: Receiver<usize>,
@@ -69,13 +68,14 @@ pub struct Process {
 
 impl Process {
     /// Access the wrapped inner allocator.
-    pub fn inner(&mut self) -> &mut Thread { &mut self.inner }
+    pub fn inner(&mut self) -> &mut Thread {
+        &mut self.inner
+    }
     /// Allocate a list of connected intra-process allocators.
     pub fn new_vector(peers: usize) -> Vec<ProcessBuilder> {
-
         let mut counters_send = Vec::with_capacity(peers);
         let mut counters_recv = Vec::with_capacity(peers);
-        for _ in 0 .. peers {
+        for _ in 0..peers {
             let (send, recv) = crossbeam_channel::unbounded();
             counters_send.push(send);
             counters_recv.push(recv);
@@ -91,27 +91,31 @@ impl Process {
             .zip(buzzers_send.into_iter())
             .zip(buzzers_recv.into_iter())
             .enumerate()
-            .map(|(index, ((recv, bsend), brecv))| {
-                ProcessBuilder {
-                    inner: ThreadBuilder,
-                    index,
-                    peers,
-                    buzzers_send: bsend,
-                    buzzers_recv: brecv,
-                    channels: channels.clone(),
-                    counters_send: counters_send.clone(),
-                    counters_recv: recv,
-                }
+            .map(|(index, ((recv, bsend), brecv))| ProcessBuilder {
+                inner: ThreadBuilder,
+                index,
+                peers,
+                buzzers_send: bsend,
+                buzzers_recv: brecv,
+                channels: channels.clone(),
+                counters_send: counters_send.clone(),
+                counters_recv: recv,
             })
             .collect()
     }
 }
 
 impl Allocate for Process {
-    fn index(&self) -> usize { self.index }
-    fn peers(&self) -> usize { self.peers }
-    fn allocate<T: Any+Send+Sync+'static>(&mut self, identifier: usize) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
-
+    fn index(&self) -> usize {
+        self.index
+    }
+    fn peers(&self) -> usize {
+        self.peers
+    }
+    fn allocate<T: Any + Send + Sync + 'static>(
+        &mut self,
+        identifier: usize,
+    ) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
         // this is race-y global initialisation of all channels for all workers, performed by the
         // first worker that enters this critical section
 
@@ -119,17 +123,19 @@ impl Allocate for Process {
         let mut channels = self.channels.lock().expect("mutex error?");
 
         let (sends, recv, empty) = {
-
             // we may need to alloc a new channel ...
             let entry = channels.entry(identifier).or_insert_with(|| {
-
                 let mut pushers = Vec::with_capacity(self.peers);
                 let mut pullers = Vec::with_capacity(self.peers);
                 for buzzer in self.buzzers.iter() {
-                    let (s, r): (Sender<Message<T>>, Receiver<Message<T>>) = crossbeam_channel::unbounded();
+                    let (s, r): (Sender<Message<T>>, Receiver<Message<T>>) =
+                        crossbeam_channel::unbounded();
                     // TODO: the buzzer in the pusher may be redundant, because we need to buzz post-counter.
                     pushers.push((Pusher { target: s }, buzzer.clone()));
-                    pullers.push(Puller { source: r, current: None });
+                    pullers.push(Puller {
+                        source: r,
+                        current: None,
+                    });
                 }
 
                 let mut to_box = Vec::with_capacity(pullers.len());
@@ -145,10 +151,7 @@ impl Allocate for Process {
                 .downcast_mut::<Vec<Option<(Vec<(Pusher<Message<T>>, Buzzer)>, Puller<Message<T>>)>>>()
                 .expect("failed to correctly cast channel");
 
-            let (sends, recv) =
-            vector[self.index]
-                .take()
-                .expect("channel already consumed");
+            let (sends, recv) = vector[self.index].take().expect("channel already consumed");
 
             let empty = vector.iter().all(|x| x.is_none());
 
@@ -157,19 +160,25 @@ impl Allocate for Process {
 
         // send is a vec of all senders, recv is this worker's receiver
 
-        if empty { channels.remove(&identifier); }
+        if empty {
+            channels.remove(&identifier);
+        }
 
         use crate::allocator::counters::ArcPusher as CountPusher;
         use crate::allocator::counters::Puller as CountPuller;
 
-        let sends =
-        sends.into_iter()
-             .zip(self.counters_send.iter())
-             .map(|((s,b), sender)| CountPusher::new(s, identifier, sender.clone(), b))
-             .map(|s| Box::new(s) as Box<dyn Push<super::Message<T>>>)
-             .collect::<Vec<_>>();
+        let sends = sends
+            .into_iter()
+            .zip(self.counters_send.iter())
+            .map(|((s, b), sender)| CountPusher::new(s, identifier, sender.clone(), b))
+            .map(|s| Box::new(s) as Box<dyn Push<super::Message<T>>>)
+            .collect::<Vec<_>>();
 
-        let recv = Box::new(CountPuller::new(recv, identifier, self.inner.events().clone())) as Box<dyn Pull<super::Message<T>>>;
+        let recv = Box::new(CountPuller::new(
+            recv,
+            identifier,
+            self.inner.events().clone(),
+        )) as Box<dyn Pull<super::Message<T>>>;
 
         (sends, recv)
     }
@@ -204,7 +213,8 @@ impl<T> Clone for Pusher<T> {
 }
 
 impl<T> Push<T> for Pusher<T> {
-    #[inline] fn push(&mut self, element: &mut Option<T>) {
+    #[inline]
+    fn push(&mut self, element: &mut Option<T>) {
         if let Some(element) = element.take() {
             // The remote endpoint could be shut down, and so
             // it is not fundamentally an error to fail to send.

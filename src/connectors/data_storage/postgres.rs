@@ -4531,3 +4531,63 @@ impl Reader for PsqlReader {
         StorageType::Postgres
     }
 }
+
+type ConnectorColumns = Vec<(String, crate::engine::Type, bool)>;
+type PrimaryKeys = Vec<String>;
+type ConnectorSchemaResult = Result<(ConnectorColumns, PrimaryKeys), PostgresError>;
+
+pub fn explore_schema(
+    connection_string: &str,
+    ssl_mode: SslMode,
+    ssl_cert_path: Option<String>,
+    schema_name: &str,
+    table_name: &str,
+) -> ConnectorSchemaResult {
+    let mut client = create_psql_client(connection_string, ssl_mode, ssl_cert_path)?;
+
+    let cols_query = "
+        SELECT column_name, udt_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2
+        ORDER BY ordinal_position;
+    ";
+    let rows = client.query(cols_query, &[&schema_name, &table_name])?;
+
+    let mut columns = Vec::new();
+    for row in rows {
+        let col_name: String = row.get(0);
+        let udt_name: String = row.get(1);
+        let is_nullable_str: String = row.get(2);
+        let is_nullable = is_nullable_str == "YES";
+
+        let engine_type = match udt_name.as_str() {
+            "int2" | "int4" | "int8" => crate::engine::Type::Int,
+            "float4" | "float8" | "numeric" => crate::engine::Type::Float,
+            "bool" => crate::engine::Type::Bool,
+            // We map json and jsonb to strings since the frontend reads them as text representation typically.
+            _ => crate::engine::Type::String,
+        };
+
+        columns.push((col_name, engine_type, is_nullable));
+    }
+
+    let pk_query = "
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tco
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_name = tco.constraint_name
+          AND kcu.constraint_schema = tco.constraint_schema
+        WHERE tco.constraint_type = 'PRIMARY KEY'
+          AND kcu.table_schema = $1
+          AND kcu.table_name = $2;
+    ";
+    let pk_rows = client.query(pk_query, &[&schema_name, &table_name])?;
+
+    let mut pk_columns = Vec::new();
+    for row in pk_rows {
+        let col_name: String = row.get(0);
+        pk_columns.push(col_name);
+    }
+
+    Ok((columns, pk_columns))
+}

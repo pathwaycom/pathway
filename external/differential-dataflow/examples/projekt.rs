@@ -1,6 +1,6 @@
+extern crate differential_dataflow;
 extern crate rand;
 extern crate timely;
-extern crate differential_dataflow;
 
 use timely::dataflow::operators::probe::Handle;
 
@@ -8,12 +8,10 @@ use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::*;
 
 fn main() {
-
     // define a new computational scope, in which to run BFS
     timely::execute_from_args(std::env::args(), move |worker| {
-
         // An input for (x,y,z) placements.
-        let mut xyzs = InputSession::<_,_,isize>::new();
+        let mut xyzs = InputSession::<_, _, isize>::new();
 
         // Inputs for (x,y) and (x,z) goals.
         let mut xy_goal = InputSession::new();
@@ -23,23 +21,22 @@ fn main() {
 
         // Dataflow to validate input against goals.
         worker.dataflow(|scope| {
-
             // Introduce inputs to the scope.
             let xyzs = xyzs.to_collection(scope);
             let xy_goal = xy_goal.to_collection(scope);
             let xz_goal = xz_goal.to_collection(scope);
 
             // Report unmet XY goals, and met XY non-goals.
-            let xy_errors =
-            xyzs.map(|(x,y,_)| (x,y))
+            let xy_errors = xyzs
+                .map(|(x, y, _)| (x, y))
                 .distinct()
                 .negate()
                 .concat(&xy_goal)
                 .consolidate();
 
             // Report unmet XZ goals, and met XZ non-goals.
-            let xz_errors =
-            xyzs.map(|(x,_,z)| (x,z))
+            let xz_errors = xyzs
+                .map(|(x, _, z)| (x, z))
                 .distinct()
                 .negate()
                 .concat(&xz_goal)
@@ -56,18 +53,18 @@ fn main() {
 
         // Dataflow to produce maximum inputs.
         worker.dataflow(|scope| {
-
             // Introduce goals to the scope.
             let xy_goal = xy_goal.to_collection(scope);
             let xz_goal = xz_goal.to_collection(scope);
 
-            let xy_xs = xy_goal.map(|(x,_)| (x,()));
-            let xz_xs = xz_goal.map(|(x,_)| (x,()));
-            xy_xs.join(&xz_xs)
-                 .map(|_| ())
-                 .consolidate()
-                 .inspect(|x| println!("Maximum solution size: {}", x.2))
-                 .probe_with(&mut probe);
+            let xy_xs = xy_goal.map(|(x, _)| (x, ()));
+            let xz_xs = xz_goal.map(|(x, _)| (x, ()));
+            xy_xs
+                .join(&xz_xs)
+                .map(|_| ())
+                .consolidate()
+                .inspect(|x| println!("Maximum solution size: {}", x.2))
+                .probe_with(&mut probe);
 
             // // For each x, produce valid pairs of y and z.
             // xy_goal
@@ -77,21 +74,20 @@ fn main() {
             //     .probe_with(&mut probe);
         });
 
-
         // Dataflow to produce minimum inputs.
         worker.dataflow(|scope| {
-
             // Introduce goals to the scope.
             let xy_goal = xy_goal.to_collection(scope);
             let xz_goal = xz_goal.to_collection(scope);
 
-            let xy_xs = xy_goal.map(|(x,_)| x).count();
-            let xz_xs = xz_goal.map(|(x,_)| x).count();
-            xy_xs.join(&xz_xs)
-                 .explode(|(_,(ys,zs))| Some(((), ::std::cmp::max(ys,zs))))
-                 .consolidate()
-                 .inspect(|x| println!("Minimum solution size: {}", x.2))
-                 .probe_with(&mut probe);
+            let xy_xs = xy_goal.map(|(x, _)| x).count();
+            let xz_xs = xz_goal.map(|(x, _)| x).count();
+            xy_xs
+                .join(&xz_xs)
+                .explode(|(_, (ys, zs))| Some(((), ::std::cmp::max(ys, zs))))
+                .consolidate()
+                .inspect(|x| println!("Minimum solution size: {}", x.2))
+                .probe_with(&mut probe);
 
             // // Produce pairs (x, ys) and (x, zs).
             // let xy_xs = xy_goal.group(|_x,ys,out|
@@ -110,7 +106,6 @@ fn main() {
             //      })
             //     .inspect(|x| println!("Minimum solution: {:?}", x))
             //     .probe_with(&mut probe);
-
         });
 
         // Introduce XY projektion.
@@ -146,9 +141,12 @@ fn main() {
         xz_goal.insert((4, 4));
 
         // Advance one round.
-        xyzs.advance_to(1); xyzs.flush();
-        xy_goal.advance_to(1); xy_goal.flush();
-        xz_goal.advance_to(1); xz_goal.flush();
+        xyzs.advance_to(1);
+        xyzs.flush();
+        xy_goal.advance_to(1);
+        xy_goal.flush();
+        xz_goal.advance_to(1);
+        xz_goal.flush();
 
         // Introduce candidate solution.
         xyzs.insert((0, 0, 2));
@@ -169,9 +167,12 @@ fn main() {
         xyzs.insert((4, 2, 4));
 
         // Advance another round.
-        xyzs.advance_to(2); xyzs.flush();
-        xy_goal.advance_to(2); xy_goal.flush();
-        xz_goal.advance_to(2); xz_goal.flush();
-
-    }).unwrap();
+        xyzs.advance_to(2);
+        xyzs.flush();
+        xy_goal.advance_to(2);
+        xy_goal.flush();
+        xz_goal.advance_to(2);
+        xz_goal.flush();
+    })
+    .unwrap();
 }

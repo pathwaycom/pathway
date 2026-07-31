@@ -1,14 +1,13 @@
 //! Methods which describe an operators topology, and the progress it makes.
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
+use crate::progress::{Antichain, ChangeBatch, Timestamp};
 use crate::scheduling::Schedule;
-use crate::progress::{Timestamp, ChangeBatch, Antichain};
 
 /// Methods for describing an operators topology, and the progress it makes.
-pub trait Operate<T: Timestamp> : Schedule {
-
+pub trait Operate<T: Timestamp>: Schedule {
     /// Indicates if the operator is strictly local to this worker.
     ///
     /// A parent scope must understand whether the progress information returned by the worker
@@ -26,7 +25,9 @@ pub trait Operate<T: Timestamp> : Schedule {
     /// how many groups. This becomes complicated, as a full all-to-all exchange would result in
     /// multiple copies of the same progress messages (but aggregated variously) arriving at
     /// arbitrary times.
-    fn local(&self) -> bool { true }
+    fn local(&self) -> bool {
+        true
+    }
 
     /// The number of inputs.
     fn inputs(&self) -> usize;
@@ -44,7 +45,12 @@ pub trait Operate<T: Timestamp> : Schedule {
     ///
     /// The default behavior is to indicate that timestamps on any input can emerge unchanged on
     /// any output, and no initial capabilities are held.
-    fn get_internal_summary(&mut self) -> (Vec<Vec<Antichain<T::Summary>>>, Rc<RefCell<SharedProgress<T>>>);
+    fn get_internal_summary(
+        &mut self,
+    ) -> (
+        Vec<Vec<Antichain<T::Summary>>>,
+        Rc<RefCell<SharedProgress<T>>>,
+    );
 
     /// Signals that external frontiers have been set.
     ///
@@ -52,10 +58,12 @@ pub trait Operate<T: Timestamp> : Schedule {
     /// of the shared progress state. An operator should be able to consult `frontiers` at any
     /// point and read out the current frontier information, or the changes from the last time
     /// that `frontiers` was drained.
-    fn set_external_summary(&mut self) { }
+    fn set_external_summary(&mut self) {}
 
     /// Indicates of whether the operator requires `push_external_progress` information or not.
-    fn notify_me(&self) -> bool { true }
+    fn notify_me(&self) -> bool {
+        true
+    }
 }
 
 /// Progress information shared between parent and child.

@@ -1,8 +1,8 @@
 //! Extension methods for `Stream` containing `Result`s.
 
-use crate::Data;
 use crate::dataflow::operators::Map;
 use crate::dataflow::{Scope, Stream};
+use crate::Data;
 
 /// Extension trait for `Stream`.
 pub trait ResultStream<S: Scope, T: Data, E: Data> {
@@ -104,15 +104,24 @@ impl<S: Scope, T: Data, E: Data> ResultStream<S, T, E> for Stream<S, Result<T, E
         self.flat_map(Result::err)
     }
 
-    fn map_ok<T2: Data, L: FnMut(T) -> T2 + 'static>(&self, mut logic: L) -> Stream<S, Result<T2, E>> {
+    fn map_ok<T2: Data, L: FnMut(T) -> T2 + 'static>(
+        &self,
+        mut logic: L,
+    ) -> Stream<S, Result<T2, E>> {
         self.map(move |r| r.map(|x| logic(x)))
     }
 
-    fn map_err<E2: Data, L: FnMut(E) -> E2 + 'static>(&self, mut logic: L) -> Stream<S, Result<T, E2>> {
+    fn map_err<E2: Data, L: FnMut(E) -> E2 + 'static>(
+        &self,
+        mut logic: L,
+    ) -> Stream<S, Result<T, E2>> {
         self.map(move |r| r.map_err(|x| logic(x)))
     }
 
-    fn and_then<T2: Data, L: FnMut(T) -> Result<T2, E> + 'static>(&self, mut logic: L) -> Stream<S, Result<T2, E>> {
+    fn and_then<T2: Data, L: FnMut(T) -> Result<T2, E> + 'static>(
+        &self,
+        mut logic: L,
+    ) -> Stream<S, Result<T2, E>> {
         self.map(move |r| r.and_then(|x| logic(x)))
     }
 
@@ -123,32 +132,25 @@ impl<S: Scope, T: Data, E: Data> ResultStream<S, T, E> for Stream<S, Result<T, E
 
 #[cfg(test)]
 mod tests {
-    use crate::dataflow::operators::{ToStream, ResultStream, Capture, capture::Extract};
+    use crate::dataflow::operators::{capture::Extract, Capture, ResultStream, ToStream};
 
     #[test]
     fn test_ok() {
-        let output = crate::example(|scope| {
-            vec![Ok(0), Err(())].to_stream(scope)
-                .ok()
-                .capture()
-        });
+        let output = crate::example(|scope| vec![Ok(0), Err(())].to_stream(scope).ok().capture());
         assert_eq!(output.extract()[0].1, vec![0]);
     }
 
     #[test]
     fn test_err() {
-        let output = crate::example(|scope| {
-            vec![Ok(0), Err(())].to_stream(scope)
-                .err()
-                .capture()
-        });
+        let output = crate::example(|scope| vec![Ok(0), Err(())].to_stream(scope).err().capture());
         assert_eq!(output.extract()[0].1, vec![()]);
     }
 
     #[test]
     fn test_map_ok() {
         let output = crate::example(|scope| {
-            vec![Ok(0), Err(())].to_stream(scope)
+            vec![Ok(0), Err(())]
+                .to_stream(scope)
                 .map_ok(|_| 10)
                 .capture()
         });
@@ -158,7 +160,8 @@ mod tests {
     #[test]
     fn test_map_err() {
         let output = crate::example(|scope| {
-            vec![Ok(0), Err(())].to_stream(scope)
+            vec![Ok(0), Err(())]
+                .to_stream(scope)
                 .map_err(|_| 10)
                 .capture()
         });
@@ -168,7 +171,8 @@ mod tests {
     #[test]
     fn test_and_then() {
         let output = crate::example(|scope| {
-            vec![Ok(0), Err(())].to_stream(scope)
+            vec![Ok(0), Err(())]
+                .to_stream(scope)
                 .and_then(|_| Ok(1))
                 .capture()
         });
@@ -178,7 +182,8 @@ mod tests {
     #[test]
     fn test_unwrap_or_else() {
         let output = crate::example(|scope| {
-            vec![Ok(0), Err(())].to_stream(scope)
+            vec![Ok(0), Err(())]
+                .to_stream(scope)
                 .unwrap_or_else(|_| 10)
                 .capture()
         });

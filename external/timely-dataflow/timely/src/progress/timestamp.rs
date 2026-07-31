@@ -1,23 +1,23 @@
 //! A partially ordered measure of progress at each timely dataflow location.
 
-use std::fmt::Debug;
 use std::any::Any;
 use std::default::Default;
+use std::fmt::Debug;
 use std::hash::Hash;
 
 use crate::communication::Data;
 use crate::order::PartialOrder;
 
 /// A composite trait for types that serve as timestamps in timely dataflow.
-pub trait Timestamp: Clone+Eq+PartialOrder+Debug+Send+Any+Data+Hash+Ord {
+pub trait Timestamp: Clone + Eq + PartialOrder + Debug + Send + Any + Data + Hash + Ord {
     /// A type summarizing action on a timestamp along a dataflow path.
-    type Summary : PathSummary<Self> + 'static;
+    type Summary: PathSummary<Self> + 'static;
     /// A minimum value suitable as a default.
     fn minimum() -> Self;
 }
 
 /// A summary of how a timestamp advances along a timely dataflow path.
-pub trait PathSummary<T> : Clone+'static+Eq+PartialOrder+Debug+Default {
+pub trait PathSummary<T>: Clone + 'static + Eq + PartialOrder + Debug + Default {
     /// Advances a timestamp according to the timestamp actions on the path.
     ///
     /// The path may advance the timestamp sufficiently that it is no longer valid, for example if
@@ -61,10 +61,21 @@ pub trait PathSummary<T> : Clone+'static+Eq+PartialOrder+Debug+Default {
     fn followed_by(&self, other: &Self) -> Option<Self>;
 }
 
-impl Timestamp for () { type Summary = (); fn minimum() -> Self { () }}
+impl Timestamp for () {
+    type Summary = ();
+    fn minimum() -> Self {
+        ()
+    }
+}
 impl PathSummary<()> for () {
-    #[inline] fn results_in(&self, _src: &()) -> Option<()> { Some(()) }
-    #[inline] fn followed_by(&self, _other: &()) -> Option<()> { Some(()) }
+    #[inline]
+    fn results_in(&self, _src: &()) -> Option<()> {
+        Some(())
+    }
+    #[inline]
+    fn followed_by(&self, _other: &()) -> Option<()> {
+        Some(())
+    }
 }
 
 /// Implements Timestamp and PathSummary for types with a `checked_add` method.
@@ -89,13 +100,19 @@ implement_timestamp_add!(usize, u128, u64, u32, u16, u8, isize, i128, i64, i32, 
 
 impl Timestamp for ::std::time::Duration {
     type Summary = ::std::time::Duration;
-    fn minimum() -> Self { ::std::time::Duration::new(0, 0) }
+    fn minimum() -> Self {
+        ::std::time::Duration::new(0, 0)
+    }
 }
 impl PathSummary<::std::time::Duration> for ::std::time::Duration {
     #[inline]
-    fn results_in(&self, src: &::std::time::Duration) -> Option<::std::time::Duration> { self.checked_add(*src) }
+    fn results_in(&self, src: &::std::time::Duration) -> Option<::std::time::Duration> {
+        self.checked_add(*src)
+    }
     #[inline]
-    fn followed_by(&self, other: &::std::time::Duration) -> Option<::std::time::Duration> { self.checked_add(*other) }
+    fn followed_by(&self, other: &::std::time::Duration) -> Option<::std::time::Duration> {
+        self.checked_add(*other)
+    }
 }
 
 pub use self::refines::Refines;
@@ -111,7 +128,7 @@ mod refines {
     /// It would be ideal to use Rust's From and Into traits, but they seem to be messed
     /// up due to coherence: we can't implement `Into` because it induces a from implementation
     /// we can't control.
-    pub trait Refines<T: Timestamp> : Timestamp {
+    pub trait Refines<T: Timestamp>: Timestamp {
         /// Converts the outer timestamp to an inner timestamp.
         fn to_inner(other: T) -> Self;
         /// Converts the inner timestamp to an outer timestamp.
@@ -126,9 +143,15 @@ mod refines {
 
     /// All types "refine" themselves,
     impl<T: Timestamp> Refines<T> for T {
-        fn to_inner(other: T) -> T { other }
-        fn to_outer(self) -> T { self }
-        fn summarize(path: <T as Timestamp>::Summary) -> <T as Timestamp>::Summary { path }
+        fn to_inner(other: T) -> T {
+            other
+        }
+        fn to_outer(self) -> T {
+            self
+        }
+        fn summarize(path: <T as Timestamp>::Summary) -> <T as Timestamp>::Summary {
+            path
+        }
     }
 
     /// Implements `Refines<()>` for most types.
@@ -147,5 +170,19 @@ mod refines {
         )
     }
 
-    implement_refines_empty!(usize, u128, u64, u32, u16, u8, isize, i128, i64, i32, i16, i8, ::std::time::Duration,);
+    implement_refines_empty!(
+        usize,
+        u128,
+        u64,
+        u32,
+        u16,
+        u8,
+        isize,
+        i128,
+        i64,
+        i32,
+        i16,
+        i8,
+        ::std::time::Duration,
+    );
 }

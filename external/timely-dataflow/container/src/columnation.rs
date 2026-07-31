@@ -36,8 +36,8 @@ impl<T: Columnation> TimelyStack<T> {
     /// Please be careful if it contains side effects.
     #[inline(always)]
     pub fn reserve_items<'a, I>(&'a mut self, items: I)
-        where
-            I: Iterator<Item= &'a T>+Clone,
+    where
+        I: Iterator<Item = &'a T> + Clone,
     {
         self.local.reserve(items.clone().count());
         self.inner.reserve_items(items);
@@ -49,15 +49,14 @@ impl<T: Columnation> TimelyStack<T> {
     /// Please be careful if it contains side effects.
     #[inline(always)]
     pub fn reserve_regions<'a, I>(&mut self, regions: I)
-        where
-            Self: 'a,
-            I: Iterator<Item= &'a Self>+Clone,
+    where
+        Self: 'a,
+        I: Iterator<Item = &'a Self> + Clone,
     {
-        self.local.reserve(regions.clone().map(|cs| cs.local.len()).sum());
+        self.local
+            .reserve(regions.clone().map(|cs| cs.local.len()).sum());
         self.inner.reserve_regions(regions.map(|cs| &cs.inner));
     }
-
-
 
     /// Copies an element in to the region.
     ///
@@ -307,7 +306,7 @@ mod container {
         }
 
         fn capacity(&self) -> usize {
-           self.local.capacity()
+            self.local.capacity()
         }
 
         fn clear(&mut self) {

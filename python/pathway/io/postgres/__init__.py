@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import copy
-import logging
 import urllib.parse
 import warnings
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Literal
 
 from pathway.internals import api, datasink, datasource, dtype
 from pathway.internals._io_helpers import TLSSettings, _format_output_value_fields
@@ -22,7 +21,6 @@ from pathway.io._utils import (
     init_mode_from_str,
     read_schema,
 )
-from pathway.schema import schema_builder
 
 
 def _quote_libpq_value(value) -> str:
@@ -339,9 +337,8 @@ def read(
             identifier is accepted — the connector quotes the name before
             interpolating it into generated SQL, so hyphens, mixed case, and
             reserved words round-trip as-is.
-        schema: Pathway Live Data Framework schema describing the table's columns and their types.
-            Column names may be any PostgreSQL identifier for the same reason
-            as ``table_name``.
+        schema: Pathway Live Data Framework schema describing the table's columns
+            and their types. If not provided, it will be deduced automatically from the database.
         mode: Polling mode for the connector. Accepted values are ``"streaming"``
             (default) and ``"static"``. In ``"streaming"`` mode, the connector tracks
             changes in the table via the WAL, reflecting insertions, updates, deletions,
@@ -578,69 +575,11 @@ def read(
     )
 
     if schema is None:
-        try:
-            from pathway.engine import postgres_explore_schema
+        from pathway.io._utils import auto_explore_sql_schema
 
-            ssl_mode = owned_postgres_settings.get("sslmode", "prefer")
-            ssl_cert_path = owned_postgres_settings.get("sslrootcert", None)
-
-            columns_data, pk_columns = postgres_explore_schema(
-                _connection_string_from_settings(owned_postgres_settings),
-                schema_name,
-                table_name,
-                ssl_mode,
-                ssl_cert_path,
-            )
-
-            schema_columns = {}
-            for col_name, udt_name, is_nullable in columns_data:
-                # Map to pw types
-                mapping = {
-                    "int2": int,
-                    "int4": int,
-                    "int8": int,
-                    "float4": float,
-                    "float8": float,
-                    "numeric": float,
-                    "bool": bool,
-                    "text": str,
-                    "varchar": str,
-                    "bpchar": str,
-                    "char": str,
-                    "uuid": str,
-                    "json": str,
-                    "jsonb": str,
-                }
-                py_type = mapping.get(udt_name, Any)
-                if is_nullable and py_type is not Any:
-                    py_type = Optional[py_type]
-
-                is_pk = col_name in pk_columns
-                from pathway.internals.schema import column_definition
-
-                schema_columns[col_name] = column_definition(
-                    dtype=py_type,
-                    primary_key=is_pk,
-                )
-
-            if not pk_columns:
-                logging.getLogger(__name__).warning(
-                    f"No primary key found for {schema_name}.{table_name} during schema exploration. "
-                    "Falling back to auto-generated row identifiers. "
-                    "This may cause issues in streaming mode if the table is not append-only."
-                )
-
-            schema_name_class = (
-                "".join(c.capitalize() for c in table_name.split("_")) + "Schema"
-            )
-            schema = schema_builder(schema_columns, name=schema_name_class)
-            logging.getLogger(__name__).info(
-                f"Derived schema for {schema_name}.{table_name}:\n{schema}"
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to explore schema automatically: {e}. Please provide an explicit schema."
-            ) from e
+        schema = auto_explore_sql_schema(
+            data_storage, table_name, schema_name=schema_name
+        )
 
     schema, api_schema = read_schema(schema)
     data_format = api.DataFormat(

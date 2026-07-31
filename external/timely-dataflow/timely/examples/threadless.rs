@@ -1,11 +1,10 @@
 extern crate timely;
 
-use timely::dataflow::{InputHandle, ProbeHandle};
 use timely::dataflow::operators::{Inspect, Probe};
+use timely::dataflow::{InputHandle, ProbeHandle};
 use timely::WorkerConfig;
 
 fn main() {
-
     // create a naked single-threaded worker.
     let allocator = timely::communication::allocator::Thread::new();
     let mut worker = timely::worker::Worker::new(WorkerConfig::default(), allocator);
@@ -23,7 +22,7 @@ fn main() {
     });
 
     // manage inputs.
-    for i in 0 .. 10 {
+    for i in 0..10 {
         input.send(i);
         input.advance_to(i);
         while probe.less_than(input.time()) {

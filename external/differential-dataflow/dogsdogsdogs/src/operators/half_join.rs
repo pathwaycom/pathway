@@ -33,17 +33,17 @@
 
 use std::collections::HashMap;
 
-use timely::dataflow::Scope;
-use timely::dataflow::channels::pact::{Pipeline, Exchange};
+use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely::dataflow::operators::Operator;
+use timely::dataflow::Scope;
 use timely::progress::Antichain;
 
-use differential_dataflow::{ExchangeData, Collection, AsCollection, Hashable};
+use differential_dataflow::consolidation::{consolidate, consolidate_updates};
 use differential_dataflow::difference::{Monoid, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::{Cursor, TraceReader};
-use differential_dataflow::consolidation::{consolidate, consolidate_updates};
+use differential_dataflow::{AsCollection, Collection, ExchangeData, Hashable};
 
 /// A binary equijoin that responds to updates on only its first input.
 ///
@@ -78,22 +78,35 @@ where
     G: Scope,
     G::Timestamp: Lattice,
     V: ExchangeData,
-    Tr: TraceReader<Time=G::Timestamp>+Clone+'static,
-    Tr::Key: Ord+Hashable+ExchangeData,
+    Tr: TraceReader<Time = G::Timestamp> + Clone + 'static,
+    Tr::Key: Ord + Hashable + ExchangeData,
     Tr::Val: Clone,
-    Tr::R: Monoid+ExchangeData,
+    Tr::R: Monoid + ExchangeData,
     FF: Fn(&G::Timestamp) -> G::Timestamp + 'static,
     CF: Fn(&G::Timestamp, &G::Timestamp) -> bool + 'static,
-    DOut: Clone+'static,
-    Tr::R: std::ops::Mul<Tr::R, Output=Tr::R>,
-    S: FnMut(&Tr::Key, &V, &Tr::Val)->DOut+'static,
+    DOut: Clone + 'static,
+    Tr::R: std::ops::Mul<Tr::R, Output = Tr::R>,
+    S: FnMut(&Tr::Key, &V, &Tr::Val) -> DOut + 'static,
 {
-    let output_func = move |k: &Tr::Key, v1: &V, v2: &Tr::Val, initial: &G::Timestamp, time: &G::Timestamp, diff1: &Tr::R, diff2: &Tr::R| {
+    let output_func = move |k: &Tr::Key,
+                            v1: &V,
+                            v2: &Tr::Val,
+                            initial: &G::Timestamp,
+                            time: &G::Timestamp,
+                            diff1: &Tr::R,
+                            diff2: &Tr::R| {
         let diff = diff1.clone() * diff2.clone();
         let dout = (output_func(k, v1, v2), time.clone());
         Some((dout, initial.clone(), diff))
     };
-    half_join_internal_unsafe(stream, arrangement, frontier_func, comparison, |_timer, _count| false, output_func)
+    half_join_internal_unsafe(
+        stream,
+        arrangement,
+        frontier_func,
+        comparison,
+        |_timer, _count| false,
+        output_func,
+    )
 }
 
 /// An unsafe variant of `half_join` where the `output_func` closure takes
@@ -132,166 +145,200 @@ where
     G: Scope,
     G::Timestamp: Lattice,
     V: ExchangeData,
-    Tr: TraceReader<Time=G::Timestamp>+Clone+'static,
-    Tr::Key: Ord+Hashable+ExchangeData,
+    Tr: TraceReader<Time = G::Timestamp> + Clone + 'static,
+    Tr::Key: Ord + Hashable + ExchangeData,
     Tr::Val: Clone,
-    Tr::R: Monoid+ExchangeData,
+    Tr::R: Monoid + ExchangeData,
     FF: Fn(&G::Timestamp) -> G::Timestamp + 'static,
     CF: Fn(&G::Timestamp, &G::Timestamp) -> bool + 'static,
-    DOut: Clone+'static,
+    DOut: Clone + 'static,
     ROut: Monoid,
     Y: Fn(std::time::Instant, usize) -> bool + 'static,
-    I: IntoIterator<Item=(DOut, G::Timestamp, ROut)>,
-    S: FnMut(&Tr::Key, &V, &Tr::Val, &G::Timestamp, &G::Timestamp, &Tr::R, &Tr::R)-> I + 'static,
+    I: IntoIterator<Item = (DOut, G::Timestamp, ROut)>,
+    S: FnMut(&Tr::Key, &V, &Tr::Val, &G::Timestamp, &G::Timestamp, &Tr::R, &Tr::R) -> I + 'static,
 {
     // No need to block physical merging for this operator.
-    arrangement.trace.set_physical_compaction(Antichain::new().borrow());
+    arrangement
+        .trace
+        .set_physical_compaction(Antichain::new().borrow());
     let mut arrangement_trace = Some(arrangement.trace);
     let arrangement_stream = arrangement.stream;
 
     let mut stash = HashMap::new();
     let mut buffer = Vec::new();
 
-    let exchange = Exchange::new(move |update: &((Tr::Key, V, G::Timestamp),G::Timestamp,Tr::R)| (update.0).0.hashed().into());
+    let exchange = Exchange::new(
+        move |update: &((Tr::Key, V, G::Timestamp), G::Timestamp, Tr::R)| {
+            (update.0).0.hashed().into()
+        },
+    );
 
     // Stash for (time, diff) accumulation.
     let mut output_buffer = Vec::new();
 
-    stream.inner.binary_frontier(&arrangement_stream, exchange, Pipeline, "HalfJoin", move |_,info| {
+    stream
+        .inner
+        .binary_frontier(
+            &arrangement_stream,
+            exchange,
+            Pipeline,
+            "HalfJoin",
+            move |_, info| {
+                // Acquire an activator to reschedule the operator when it has unfinished work.
+                use timely::scheduling::Activator;
+                let activations = stream.scope().activations();
+                let activator = Activator::new(&info.address[..], activations);
 
-        // Acquire an activator to reschedule the operator when it has unfinished work.
-        use timely::scheduling::Activator;
-        let activations = stream.scope().activations();
-        let activator = Activator::new(&info.address[..], activations);
+                move |input1, input2, output| {
+                    // drain the first input, stashing requests.
+                    input1.for_each(|capability, data| {
+                        data.swap(&mut buffer);
+                        stash
+                            .entry(capability.retain())
+                            .or_insert(Vec::new())
+                            .extend(buffer.drain(..))
+                    });
 
-        move |input1, input2, output| {
+                    // Drain input batches; although we do not observe them, we want access to the input
+                    // to observe the frontier and to drive scheduling.
+                    input2.for_each(|_, _| {});
 
-            // drain the first input, stashing requests.
-            input1.for_each(|capability, data| {
-                data.swap(&mut buffer);
-                stash.entry(capability.retain())
-                    .or_insert(Vec::new())
-                    .extend(buffer.drain(..))
-            });
+                    // Local variables to track if and when we should exit early.
+                    // The rough logic is that we fully process inputs and set their differences to zero,
+                    // stopping at any point. We clean up all of the zeros in buffers that did any work,
+                    // and reactivate at the end if the yield function still says so.
+                    let mut yielded = false;
+                    let timer = std::time::Instant::now();
+                    let mut work = 0;
 
-            // Drain input batches; although we do not observe them, we want access to the input
-            // to observe the frontier and to drive scheduling.
-            input2.for_each(|_, _| { });
+                    // New entries to introduce to the stash after processing.
+                    let mut stash_additions = HashMap::new();
 
-            // Local variables to track if and when we should exit early.
-            // The rough logic is that we fully process inputs and set their differences to zero,
-            // stopping at any point. We clean up all of the zeros in buffers that did any work,
-            // and reactivate at the end if the yield function still says so.
-            let mut yielded = false;
-            let timer = std::time::Instant::now();
-            let mut work = 0;
-
-            // New entries to introduce to the stash after processing.
-            let mut stash_additions = HashMap::new();
-
-            if let Some(ref mut trace) = arrangement_trace {
-
-                for (capability, proposals) in stash.iter_mut() {
-
-                    // Avoid computation if we should already yield.
-                    // TODO: Verify this is correct for TOTAL ORDER.
-                    yielded = yielded || yield_function(timer, work);
-                    if !yielded && !input2.frontier.less_equal(capability.time()) {
-
-                        let mut session = output.session(capability);
-
-                        // Sort requests by key for in-order cursor traversal.
-                        consolidate_updates(proposals);
-
-                        let (mut cursor, storage) = trace.cursor();
-
-                        // Process proposals one at a time, stopping if we should yield.
-                        for &mut ((ref key, ref val1, ref time), ref initial, ref mut diff1) in proposals.iter_mut() {
-                            // Use TOTAL ORDER to allow the release of `time`.
+                    if let Some(ref mut trace) = arrangement_trace {
+                        for (capability, proposals) in stash.iter_mut() {
+                            // Avoid computation if we should already yield.
+                            // TODO: Verify this is correct for TOTAL ORDER.
                             yielded = yielded || yield_function(timer, work);
-                            if !yielded && !input2.frontier.frontier().iter().any(|t| comparison(t, initial)) {
-                                cursor.seek_key(&storage, &key);
-                                if cursor.get_key(&storage) == Some(&key) {
-                                    while let Some(val2) = cursor.get_val(&storage) {
-                                        cursor.map_times(&storage, |t, d| {
-                                            if comparison(t, initial) {
-                                                output_buffer.push((t.join(time), d.clone()))
+                            if !yielded && !input2.frontier.less_equal(capability.time()) {
+                                let mut session = output.session(capability);
+
+                                // Sort requests by key for in-order cursor traversal.
+                                consolidate_updates(proposals);
+
+                                let (mut cursor, storage) = trace.cursor();
+
+                                // Process proposals one at a time, stopping if we should yield.
+                                for &mut (
+                                    (ref key, ref val1, ref time),
+                                    ref initial,
+                                    ref mut diff1,
+                                ) in proposals.iter_mut()
+                                {
+                                    // Use TOTAL ORDER to allow the release of `time`.
+                                    yielded = yielded || yield_function(timer, work);
+                                    if !yielded
+                                        && !input2
+                                            .frontier
+                                            .frontier()
+                                            .iter()
+                                            .any(|t| comparison(t, initial))
+                                    {
+                                        cursor.seek_key(&storage, &key);
+                                        if cursor.get_key(&storage) == Some(&key) {
+                                            while let Some(val2) = cursor.get_val(&storage) {
+                                                cursor.map_times(&storage, |t, d| {
+                                                    if comparison(t, initial) {
+                                                        output_buffer
+                                                            .push((t.join(time), d.clone()))
+                                                    }
+                                                });
+                                                consolidate(&mut output_buffer);
+                                                work += output_buffer.len();
+                                                for (time, diff2) in output_buffer.drain(..) {
+                                                    for dout in output_func(
+                                                        key, val1, val2, initial, &time, &diff1,
+                                                        &diff2,
+                                                    ) {
+                                                        session.give(dout);
+                                                    }
+                                                }
+                                                cursor.step_val(&storage);
                                             }
-                                        });
-                                        consolidate(&mut output_buffer);
-                                        work += output_buffer.len();
-                                        for (time, diff2) in output_buffer.drain(..) {
-                                            for dout in output_func(key, val1, val2, initial, &time, &diff1, &diff2) {
-                                                session.give(dout);
-                                            }
+                                            cursor.rewind_vals(&storage);
                                         }
-                                        cursor.step_val(&storage);
+                                        *diff1 = Tr::R::zero();
                                     }
-                                    cursor.rewind_vals(&storage);
                                 }
-                                *diff1 = Tr::R::zero();
-                            }
-                        }
 
-                        proposals.retain(|ptd| !ptd.2.is_zero());
+                                proposals.retain(|ptd| !ptd.2.is_zero());
 
-                        // Determine the lower bound of remaining update times.
-                        let mut antichain = Antichain::new();
-                        for (_, initial, _) in proposals.iter() {
-                            antichain.insert(initial.clone());
-                        }
-                        // Fast path: there is only one element in the antichain.
-                        // All times in `proposals` must be greater or equal to it.
-                        if antichain.len() == 1 && !antichain.less_equal(capability.time()) {
-                            stash_additions
-                                .entry(capability.delayed(&antichain[0]))
-                                .or_insert(Vec::new())
-                                .extend(proposals.drain(..));
-                        }
-                        else if antichain.len() > 1 {
-                            // Any remaining times should peel off elements from `proposals`.
-                            let mut additions = vec![Vec::new(); antichain.len()];
-                            for (data, initial, diff) in proposals.drain(..) {
-                                use timely::PartialOrder;
-                                let position = antichain.iter().position(|t| t.less_equal(&initial)).unwrap();
-                                additions[position].push((data, initial, diff));
-                            }
-                            for (time, addition) in antichain.into_iter().zip(additions) {
-                                stash_additions
-                                    .entry(capability.delayed(&time))
-                                    .or_insert(Vec::new())
-                                    .extend(addition);
+                                // Determine the lower bound of remaining update times.
+                                let mut antichain = Antichain::new();
+                                for (_, initial, _) in proposals.iter() {
+                                    antichain.insert(initial.clone());
+                                }
+                                // Fast path: there is only one element in the antichain.
+                                // All times in `proposals` must be greater or equal to it.
+                                if antichain.len() == 1 && !antichain.less_equal(capability.time())
+                                {
+                                    stash_additions
+                                        .entry(capability.delayed(&antichain[0]))
+                                        .or_insert(Vec::new())
+                                        .extend(proposals.drain(..));
+                                } else if antichain.len() > 1 {
+                                    // Any remaining times should peel off elements from `proposals`.
+                                    let mut additions = vec![Vec::new(); antichain.len()];
+                                    for (data, initial, diff) in proposals.drain(..) {
+                                        use timely::PartialOrder;
+                                        let position = antichain
+                                            .iter()
+                                            .position(|t| t.less_equal(&initial))
+                                            .unwrap();
+                                        additions[position].push((data, initial, diff));
+                                    }
+                                    for (time, addition) in antichain.into_iter().zip(additions) {
+                                        stash_additions
+                                            .entry(capability.delayed(&time))
+                                            .or_insert(Vec::new())
+                                            .extend(addition);
+                                    }
+                                }
                             }
                         }
                     }
+
+                    // If we yielded, re-activate the operator.
+                    if yielded {
+                        activator.activate();
+                    }
+
+                    // drop fully processed capabilities.
+                    stash.retain(|_, proposals| !proposals.is_empty());
+
+                    for (capability, proposals) in stash_additions.into_iter() {
+                        stash
+                            .entry(capability)
+                            .or_insert(Vec::new())
+                            .extend(proposals);
+                    }
+
+                    // The logical merging frontier depends on both input1 and stash.
+                    let mut frontier = timely::progress::frontier::Antichain::new();
+                    for time in input1.frontier().frontier().iter() {
+                        frontier.insert(frontier_func(time));
+                    }
+                    for key in stash.keys() {
+                        frontier.insert(frontier_func(key.time()));
+                    }
+                    arrangement_trace
+                        .as_mut()
+                        .map(|trace| trace.set_logical_compaction(frontier.borrow()));
+
+                    if input1.frontier().is_empty() && stash.is_empty() {
+                        arrangement_trace = None;
+                    }
                 }
-            }
-
-            // If we yielded, re-activate the operator.
-            if yielded {
-                activator.activate();
-            }
-
-            // drop fully processed capabilities.
-            stash.retain(|_,proposals| !proposals.is_empty());
-            
-            for (capability, proposals) in stash_additions.into_iter() {
-                stash.entry(capability).or_insert(Vec::new()).extend(proposals);
-            }
-
-            // The logical merging frontier depends on both input1 and stash.
-            let mut frontier = timely::progress::frontier::Antichain::new();
-            for time in input1.frontier().frontier().iter() {
-                frontier.insert(frontier_func(time));
-            }
-            for key in stash.keys() {
-                frontier.insert(frontier_func(key.time()));
-            }
-            arrangement_trace.as_mut().map(|trace| trace.set_logical_compaction(frontier.borrow()));
-
-            if input1.frontier().is_empty() && stash.is_empty() {
-                arrangement_trace = None;
-            }
-        }
-    }).as_collection()
+            },
+        )
+        .as_collection()
 }

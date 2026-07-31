@@ -1,10 +1,10 @@
 use timely::dataflow::Scope;
 
-use differential_dataflow::{ExchangeData, Collection, Hashable};
 use differential_dataflow::difference::{Monoid, Multiply};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::TraceReader;
+use differential_dataflow::{Collection, ExchangeData, Hashable};
 
 /// Proposes extensions to a prefix stream.
 ///
@@ -22,17 +22,19 @@ pub fn propose<G, Tr, F, P>(
 where
     G: Scope,
     G::Timestamp: Lattice,
-    Tr: TraceReader<Time=G::Timestamp>+Clone+'static,
-    Tr::Key: Ord+Hashable+Default,
+    Tr: TraceReader<Time = G::Timestamp> + Clone + 'static,
+    Tr::Key: Ord + Hashable + Default,
     Tr::Val: Clone,
-    Tr::R: Monoid+Multiply<Output = Tr::R>+ExchangeData,
-    F: Fn(&P)->Tr::Key+Clone+'static,
+    Tr::R: Monoid + Multiply<Output = Tr::R> + ExchangeData,
+    F: Fn(&P) -> Tr::Key + Clone + 'static,
     P: ExchangeData,
 {
     crate::operators::lookup_map(
         prefixes,
         arrangement,
-        move |p: &P, k: &mut Tr::Key| { *k = key_selector(p); },
+        move |p: &P, k: &mut Tr::Key| {
+            *k = key_selector(p);
+        },
         |prefix, diff, value, sum| ((prefix.clone(), value.clone()), diff.clone().multiply(sum)),
         Default::default(),
         Default::default(),
@@ -53,17 +55,19 @@ pub fn propose_distinct<G, Tr, F, P>(
 where
     G: Scope,
     G::Timestamp: Lattice,
-    Tr: TraceReader<Time=G::Timestamp>+Clone+'static,
-    Tr::Key: Ord+Hashable+Default,
+    Tr: TraceReader<Time = G::Timestamp> + Clone + 'static,
+    Tr::Key: Ord + Hashable + Default,
     Tr::Val: Clone,
-    Tr::R: Monoid+Multiply<Output = Tr::R>+ExchangeData,
-    F: Fn(&P)->Tr::Key+Clone+'static,
+    Tr::R: Monoid + Multiply<Output = Tr::R> + ExchangeData,
+    F: Fn(&P) -> Tr::Key + Clone + 'static,
     P: ExchangeData,
 {
     crate::operators::lookup_map(
         prefixes,
         arrangement,
-        move |p: &P, k: &mut Tr::Key| { *k = key_selector(p); },
+        move |p: &P, k: &mut Tr::Key| {
+            *k = key_selector(p);
+        },
         |prefix, diff, value, _sum| ((prefix.clone(), value.clone()), diff.clone()),
         Default::default(),
         Default::default(),

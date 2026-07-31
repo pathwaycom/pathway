@@ -2,26 +2,25 @@
 extern crate abomonation_derive;
 extern crate abomonation;
 
+extern crate differential_dataflow;
 extern crate rand;
 extern crate timely;
-extern crate differential_dataflow;
 
 use std::io::BufRead;
 
-use timely::dataflow::ProbeHandle;
 use timely::dataflow::operators::unordered_input::UnorderedInput;
 use timely::dataflow::operators::Probe;
+use timely::dataflow::ProbeHandle;
 use timely::progress::frontier::AntichainRef;
 use timely::PartialOrder;
 
-use differential_dataflow::AsCollection;
-use differential_dataflow::operators::{Count, arrange::ArrangeBySelf};
+use differential_dataflow::operators::{arrange::ArrangeBySelf, Count};
 use differential_dataflow::trace::{Cursor, TraceReader};
+use differential_dataflow::AsCollection;
 
 use pair::Pair;
 
 fn main() {
-
     timely::execute_from_args(std::env::args(), move |worker| {
 
         // Used to determine if our output has caught up to our input.
@@ -167,17 +166,23 @@ mod pair {
 
     use timely::progress::timestamp::Refines;
     impl<S: Timestamp, T: Timestamp> Refines<()> for Pair<S, T> {
-        fn to_inner(_outer: ()) -> Self { Self::minimum() }
-        fn to_outer(self) -> () { () }
-        fn summarize(_summary: <Self>::Summary) -> () { () }
+        fn to_inner(_outer: ()) -> Self {
+            Self::minimum()
+        }
+        fn to_outer(self) -> () {
+            ()
+        }
+        fn summarize(_summary: <Self>::Summary) -> () {
+            ()
+        }
     }
 
     // Implement timely dataflow's `PathSummary` trait.
     // This is preparation for the `Timestamp` implementation below.
     use timely::progress::PathSummary;
 
-    impl<S: Timestamp, T: Timestamp> PathSummary<Pair<S,T>> for () {
-        fn results_in(&self, timestamp: &Pair<S, T>) -> Option<Pair<S,T>> {
+    impl<S: Timestamp, T: Timestamp> PathSummary<Pair<S, T>> for () {
+        fn results_in(&self, timestamp: &Pair<S, T>) -> Option<Pair<S, T>> {
             Some(timestamp.clone())
         }
         fn followed_by(&self, other: &Self) -> Option<Self> {
@@ -188,7 +193,12 @@ mod pair {
     // Implement timely dataflow's `Timestamp` trait.
     use timely::progress::Timestamp;
     impl<S: Timestamp, T: Timestamp> Timestamp for Pair<S, T> {
-        fn minimum() -> Self { Pair { first: S::minimum(), second: T::minimum() }}
+        fn minimum() -> Self {
+            Pair {
+                first: S::minimum(),
+                second: T::minimum(),
+            }
+        }
         type Summary = ();
     }
 
@@ -210,7 +220,7 @@ mod pair {
         }
     }
 
-    use std::fmt::{Formatter, Error, Debug};
+    use std::fmt::{Debug, Error, Formatter};
 
     /// Debug implementation to avoid seeing fully qualified path names.
     impl<TOuter: Debug, TInner: Debug> Debug for Pair<TOuter, TInner> {
@@ -218,7 +228,6 @@ mod pair {
             f.write_str(&format!("({:?}, {:?})", self.first, self.second))
         }
     }
-
 }
 
 /// This module contains a definition of a new timestamp time, a "pair" or product.
@@ -243,20 +252,25 @@ mod vector {
 
     // Implement timely dataflow's `PartialOrder` trait.
     use timely::order::PartialOrder;
-    impl<T: PartialOrder+Timestamp> PartialOrder for Vector<T> {
+    impl<T: PartialOrder + Timestamp> PartialOrder for Vector<T> {
         fn less_equal(&self, other: &Self) -> bool {
-            self.vector
-                .iter()
-                .enumerate()
-                .all(|(index, time)| time.less_equal(other.vector.get(index).unwrap_or(&T::minimum())))
+            self.vector.iter().enumerate().all(|(index, time)| {
+                time.less_equal(other.vector.get(index).unwrap_or(&T::minimum()))
+            })
         }
     }
 
     use timely::progress::timestamp::Refines;
     impl<T: Timestamp> Refines<()> for Vector<T> {
-        fn to_inner(_outer: ()) -> Self { Self { vector: Vec::new() } }
-        fn to_outer(self) -> () { () }
-        fn summarize(_summary: <Self>::Summary) -> () { () }
+        fn to_inner(_outer: ()) -> Self {
+            Self { vector: Vec::new() }
+        }
+        fn to_outer(self) -> () {
+            ()
+        }
+        fn summarize(_summary: <Self>::Summary) -> () {
+            ()
+        }
     }
 
     // Implement timely dataflow's `PathSummary` trait.
@@ -275,19 +289,21 @@ mod vector {
     // Implement timely dataflow's `Timestamp` trait.
     use timely::progress::Timestamp;
     impl<T: Timestamp> Timestamp for Vector<T> {
-        fn minimum() -> Self { Self { vector: Vec::new() } }
+        fn minimum() -> Self {
+            Self { vector: Vec::new() }
+        }
         type Summary = ();
     }
 
     // Implement differential dataflow's `Lattice` trait.
     // This extends the `PartialOrder` implementation with additional structure.
     use differential_dataflow::lattice::Lattice;
-    impl<T: Lattice+Timestamp+Clone> Lattice for Vector<T> {
+    impl<T: Lattice + Timestamp + Clone> Lattice for Vector<T> {
         fn join(&self, other: &Self) -> Self {
             let min_len = ::std::cmp::min(self.vector.len(), other.vector.len());
             let max_len = ::std::cmp::max(self.vector.len(), other.vector.len());
             let mut vector = Vec::with_capacity(max_len);
-            for index in 0 .. min_len {
+            for index in 0..min_len {
                 vector.push(self.vector[index].join(&other.vector[index]));
             }
             for time in &self.vector[min_len..] {
@@ -301,7 +317,7 @@ mod vector {
         fn meet(&self, other: &Self) -> Self {
             let min_len = ::std::cmp::min(self.vector.len(), other.vector.len());
             let mut vector = Vec::with_capacity(min_len);
-            for index in 0 .. min_len {
+            for index in 0..min_len {
                 vector.push(self.vector[index].meet(&other.vector[index]));
             }
             Self { vector }
@@ -310,7 +326,9 @@ mod vector {
 }
 
 /// Read a command and its arguments.
-fn read_integers<'a>(input: impl Iterator<Item=&'a str>) -> Result<Vec<isize>, std::num::ParseIntError> {
+fn read_integers<'a>(
+    input: impl Iterator<Item = &'a str>,
+) -> Result<Vec<isize>, std::num::ParseIntError> {
     let mut integers = Vec::new();
     for text in input {
         integers.push(text.parse()?);

@@ -1,10 +1,10 @@
 //! Extension methods for `Stream` based on record-by-record transformation.
 
-use crate::Container;
-use crate::order::PartialOrder;
-use crate::dataflow::{Scope, StreamCore};
 use crate::dataflow::channels::pact::Pipeline;
 use crate::dataflow::operators::generic::operator::Operator;
+use crate::dataflow::{Scope, StreamCore};
+use crate::order::PartialOrder;
+use crate::Container;
 
 /// Extension trait for reclocking a stream.
 pub trait Reclock<S: Scope> {
@@ -45,36 +45,41 @@ pub trait Reclock<S: Scope> {
     /// assert_eq!(extracted[1], (5, vec![4,5]));
     /// assert_eq!(extracted[2], (8, vec![6,7,8]));
     /// ```
-    fn reclock<TC: Container<Item=()>>(&self, clock: &StreamCore<S, TC>) -> Self;
+    fn reclock<TC: Container<Item = ()>>(&self, clock: &StreamCore<S, TC>) -> Self;
 }
 
 impl<S: Scope, C: Container> Reclock<S> for StreamCore<S, C> {
-    fn reclock<TC: Container<Item=()>>(&self, clock: &StreamCore<S, TC>) -> StreamCore<S, C> {
-
+    fn reclock<TC: Container<Item = ()>>(&self, clock: &StreamCore<S, TC>) -> StreamCore<S, C> {
         let mut stash = vec![];
 
-        self.binary_notify(clock, Pipeline, Pipeline, "Reclock", vec![], move |input1, input2, output, notificator| {
+        self.binary_notify(
+            clock,
+            Pipeline,
+            Pipeline,
+            "Reclock",
+            vec![],
+            move |input1, input2, output, notificator| {
+                // stash each data input with its timestamp.
+                input1.for_each(|cap, data| {
+                    stash.push((cap.time().clone(), data.replace(Default::default())));
+                });
 
-            // stash each data input with its timestamp.
-            input1.for_each(|cap, data| {
-                stash.push((cap.time().clone(), data.replace(Default::default())));
-            });
+                // request notification at time, to flush stash.
+                input2.for_each(|time, _data| {
+                    notificator.notify_at(time.retain());
+                });
 
-            // request notification at time, to flush stash.
-            input2.for_each(|time, _data| {
-                notificator.notify_at(time.retain());
-            });
-
-            // each time with complete stash can be flushed.
-            notificator.for_each(|cap,_,_| {
-                let mut session = output.session(&cap);
-                for &mut (ref t, ref mut data) in &mut stash {
-                    if t.less_equal(cap.time()) {
-                        session.give_container(data);
+                // each time with complete stash can be flushed.
+                notificator.for_each(|cap, _, _| {
+                    let mut session = output.session(&cap);
+                    for &mut (ref t, ref mut data) in &mut stash {
+                        if t.less_equal(cap.time()) {
+                            session.give_container(data);
+                        }
                     }
-                }
-                stash.retain(|x| !x.0.less_equal(cap.time()));
-            });
-        })
+                    stash.retain(|x| !x.0.less_equal(cap.time()));
+                });
+            },
+        )
     }
 }

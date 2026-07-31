@@ -34,12 +34,12 @@
 extern crate differential_dataflow;
 extern crate timely;
 
-use std::fmt::Debug;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 
 use timely::dataflow::operators::probe::Handle;
-use timely::progress::frontier::AntichainRef;
 use timely::dataflow::operators::Probe;
+use timely::progress::frontier::AntichainRef;
 
 use differential_dataflow::input::Input;
 use differential_dataflow::operators::arrange::ArrangeByKey;
@@ -103,18 +103,18 @@ fn main() {
         let (mut cursor, storage) = graph_trace.cursor();
         cursor.to_vec(&storage)
     })
-    .unwrap().join();
+    .unwrap()
+    .join();
 
     /* Aggregate trace summaries from individual workers to reconstrust the content of the graph. */
     let mut graph_content: BTreeMap<Edge, Diff> = BTreeMap::new();
     for summary in summaries.drain(..) {
-
         let mut summary_vec: Vec<((Node, Edge), Vec<(Time, Diff)>)> = summary.unwrap();
 
         for ((_, edge), timestamps) in summary_vec.drain(..) {
             /* Sum up all diffs to get the number of occurrences of `edge` at the end of the
              * computation. */
-            let diff: Diff = timestamps.iter().map(|(_,d)|d).sum();
+            let diff: Diff = timestamps.iter().map(|(_, d)| d).sum();
             if diff != 0 {
                 *graph_content.entry(edge).or_insert(0) += diff;
             }
@@ -125,10 +125,10 @@ fn main() {
 
     /* Make sure that final graph content is correct. */
     let mut expected_graph_content: BTreeMap<Edge, Diff> = BTreeMap::new();
-    for i in 1..rounds+1 {
-        expected_graph_content.insert((i+1, i), 1);
+    for i in 1..rounds + 1 {
+        expected_graph_content.insert((i + 1, i), 1);
     }
-    expected_graph_content.insert((rounds, rounds+1), 1);
+    expected_graph_content.insert((rounds, rounds + 1), 1);
     assert_eq!(graph_content, expected_graph_content);
 }
 

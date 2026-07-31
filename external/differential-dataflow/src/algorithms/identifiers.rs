@@ -2,13 +2,13 @@
 
 use timely::dataflow::Scope;
 
-use ::{Collection, ExchangeData, Hashable};
-use ::lattice::Lattice;
-use ::operators::*;
-use ::difference::Abelian;
+use difference::Abelian;
+use lattice::Lattice;
+use operators::*;
+use {Collection, ExchangeData, Hashable};
 
 /// Assign unique identifiers to elements of a collection.
-pub trait Identifiers<G: Scope, D: ExchangeData, R: ExchangeData+Abelian> {
+pub trait Identifiers<G: Scope, D: ExchangeData, R: ExchangeData + Abelian> {
     /// Assign unique identifiers to elements of a collection.
     ///
     /// # Example
@@ -40,11 +40,10 @@ impl<G, D, R> Identifiers<G, D, R> for Collection<G, D, R>
 where
     G: Scope,
     G::Timestamp: Lattice,
-    D: ExchangeData+::std::hash::Hash,
-    R: ExchangeData+Abelian,
+    D: ExchangeData + ::std::hash::Hash,
+    R: ExchangeData + Abelian,
 {
     fn identifiers(&self) -> Collection<G, (D, u64), R> {
-
         // The design here is that we iteratively develop a collection
         // of pairs (round, record), where each pair is a proposal that
         // the hash for record should be (round, record).hashed().
@@ -64,7 +63,7 @@ where
         let init = self.map(|record| (0, record));
         timely::dataflow::operators::generic::operator::empty(&init.scope())
             .as_collection()
-            .iterate(|diff|
+            .iterate(|diff| {
                 init.enter(&diff.scope())
                     .concat(&diff)
                     .map(|pair| (pair.hashed(), pair))
@@ -78,13 +77,16 @@ where
                         // if any losers, increment their rounds.
                         for ((round, record), count) in input[1..].iter() {
                             output.push(((0, record.clone()), count.clone().negate()));
-                            output.push(((*round+1, record.clone()), count.clone()));
+                            output.push(((*round + 1, record.clone()), count.clone()));
                         }
                     })
                     .map(|(_hash, pair)| pair)
-            )
+            })
             .concat(&init)
-            .map(|pair| { let hash = pair.hashed(); (pair.1, hash) })
+            .map(|pair| {
+                let hash = pair.hashed();
+                (pair.1, hash)
+            })
     }
 }
 
@@ -93,26 +95,24 @@ mod tests {
 
     #[test]
     fn are_unique() {
-
         // It is hard to test the above method, because we would want
         // to exercise the case with hash collisions. Instead, we test
         // a version with a crippled hash function to see that even if
         // there are collisions, everyone gets a unique identifier.
 
-        use ::input::Input;
-        use ::operators::{Threshold, Reduce};
-        use ::operators::iterate::Iterate;
+        use input::Input;
+        use operators::iterate::Iterate;
+        use operators::{Reduce, Threshold};
 
         ::timely::example(|scope| {
-
-            let input = scope.new_collection_from(1 .. 4).1;
+            let input = scope.new_collection_from(1..4).1;
 
             use collection::AsCollection;
 
             let init = input.map(|record| (0, record));
             timely::dataflow::operators::generic::operator::empty(&init.scope())
                 .as_collection()
-                .iterate(|diff|
+                .iterate(|diff| {
                     init.enter(&diff.scope())
                         .concat(&diff)
                         .map(|(round, num)| ((round + num) / 10, (round, num)))
@@ -127,16 +127,16 @@ mod tests {
                             // if any losers, increment their rounds.
                             for ((round, record), count) in input[1..].iter() {
                                 output.push(((0, record.clone()), -*count));
-                                output.push(((*round+1, record.clone()), *count));
+                                output.push(((*round + 1, record.clone()), *count));
                             }
                         })
                         .inspect(|x| println!("{:?}", x))
                         .map(|(_hash, pair)| pair)
-                )
+                })
                 .concat(&init)
-                .map(|(round, num)| { (num, (round + num) / 10) })
+                .map(|(round, num)| (num, (round + num) / 10))
                 .map(|(_data, id)| id)
-                .threshold(|_id,cnt| if cnt > &1 { *cnt } else { 0 })
+                .threshold(|_id, cnt| if cnt > &1 { *cnt } else { 0 })
                 .assert_empty();
         });
     }

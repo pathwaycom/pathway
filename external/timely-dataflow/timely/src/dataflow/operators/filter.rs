@@ -1,9 +1,9 @@
 //! Filters a stream by a predicate.
 
-use crate::Data;
 use crate::dataflow::channels::pact::Pipeline;
-use crate::dataflow::{Stream, Scope};
 use crate::dataflow::operators::generic::operator::Operator;
+use crate::dataflow::{Scope, Stream};
+use crate::Data;
 
 /// Extension trait for filtering.
 pub trait Filter<D: Data> {
@@ -19,20 +19,22 @@ pub trait Filter<D: Data> {
     ///            .inspect(|x| println!("seen: {:?}", x));
     /// });
     /// ```
-    fn filter<P: FnMut(&D)->bool+'static>(&self, predicate: P) -> Self;
+    fn filter<P: FnMut(&D) -> bool + 'static>(&self, predicate: P) -> Self;
 }
 
 impl<G: Scope, D: Data> Filter<D> for Stream<G, D> {
-    fn filter<P: FnMut(&D)->bool+'static>(&self, mut predicate: P) -> Stream<G, D> {
+    fn filter<P: FnMut(&D) -> bool + 'static>(&self, mut predicate: P) -> Stream<G, D> {
         let mut vector = Vec::new();
-        self.unary(Pipeline, "Filter", move |_,_| move |input, output| {
-            input.for_each(|time, data| {
-                data.swap(&mut vector);
-                vector.retain(|x| predicate(x));
-                if !vector.is_empty() {
-                    output.session(&time).give_vec(&mut vector);
-                }
-            });
+        self.unary(Pipeline, "Filter", move |_, _| {
+            move |input, output| {
+                input.for_each(|time, data| {
+                    data.swap(&mut vector);
+                    vector.retain(|x| predicate(x));
+                    if !vector.is_empty() {
+                        output.session(&time).give_vec(&mut vector);
+                    }
+                });
+            }
         })
     }
 }

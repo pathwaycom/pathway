@@ -1,7 +1,7 @@
 extern crate timely;
 
 use timely::dataflow::operators::flow_controlled::{iterator_source, IteratorSourceInput};
-use timely::dataflow::operators::{probe, Probe, Inspect};
+use timely::dataflow::operators::{probe, Inspect, Probe};
 
 fn main() {
     timely::execute_from_args(std::env::args(), |worker| {
@@ -18,18 +18,25 @@ fn main() {
                         let next_t = first_x / 100 * 100;
                         Some(IteratorSourceInput {
                             lower_bound: Default::default(),
-                            data: vec![
-                                (next_t,
-                                 input.by_ref().take(10).map(|x| (/* "timestamp" */ x, x)).collect::<Vec<_>>())],
+                            data: vec![(
+                                next_t,
+                                input
+                                    .by_ref()
+                                    .take(10)
+                                    .map(|x| (/* "timestamp" */ x, x))
+                                    .collect::<Vec<_>>(),
+                            )],
                             target: *prev_t,
                         })
                     } else {
                         None
                     }
                 },
-                probe_handle_2)
+                probe_handle_2,
+            )
             .inspect_time(|t, d| eprintln!("@ {:?}: {:?}", t, d))
             .probe_with(&mut probe_handle);
         });
-    }).unwrap();
+    })
+    .unwrap();
 }

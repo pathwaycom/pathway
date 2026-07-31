@@ -1946,6 +1946,58 @@ impl Reader for MysqlReader {
     }
 }
 
+type ConnectorColumns = Vec<(String, crate::engine::Type, bool)>;
+type PrimaryKeys = Vec<String>;
+type ConnectorSchemaResult =
+    Result<(ConnectorColumns, PrimaryKeys), Box<dyn std::error::Error + Send + Sync>>;
+
+pub fn explore_schema(connection_string: &str, table_name: &str) -> ConnectorSchemaResult {
+    use mysql::prelude::Queryable;
+    let opts = mysql::Opts::from_url(connection_string)?;
+    let mut conn = mysql::Conn::new(opts)?;
+
+    let cols_query = "
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION;
+    ";
+
+    let rows: Vec<(String, String, String)> = conn.exec(cols_query, (table_name,))?;
+
+    let mut columns = Vec::new();
+    for (col_name, data_type, is_nullable_str) in rows {
+        let is_nullable = is_nullable_str == "YES";
+
+        let engine_type = match data_type.to_lowercase().as_str() {
+            "tinyint" | "smallint" | "mediumint" | "int" | "bigint" | "year" => {
+                crate::engine::Type::Int
+            }
+            "float" | "double" | "decimal" | "numeric" => crate::engine::Type::Float,
+            "bit" | "boolean" => crate::engine::Type::Bool,
+            _ => crate::engine::Type::String,
+        };
+
+        columns.push((col_name, engine_type, is_nullable));
+    }
+
+    let pk_query = "
+        SELECT kcu.COLUMN_NAME
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tco
+        JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+          ON kcu.CONSTRAINT_NAME = tco.CONSTRAINT_NAME
+          AND kcu.CONSTRAINT_SCHEMA = tco.CONSTRAINT_SCHEMA
+          AND kcu.TABLE_NAME = tco.TABLE_NAME
+        WHERE tco.CONSTRAINT_TYPE = 'PRIMARY KEY'
+          AND kcu.TABLE_SCHEMA = DATABASE()
+          AND kcu.TABLE_NAME = ?;
+    ";
+
+    let pk_rows: Vec<String> = conn.exec(pk_query, (table_name,))?;
+
+    Ok((columns, pk_rows))
+}
+
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;

@@ -55,8 +55,8 @@
 //! will often be a logic bug, as `since` does not advance without a corresponding advance in
 //! times at which data may possibly be sent.
 
-use timely::{PartialOrder, progress::Antichain};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use timely::{progress::Antichain, PartialOrder};
 
 /// Describes an interval of partially ordered times.
 ///
@@ -75,11 +75,11 @@ pub struct Description<Time> {
     since: Antichain<Time>,
 }
 
-impl<Time: PartialOrder+Clone> Description<Time> {
+impl<Time: PartialOrder + Clone> Description<Time> {
     /// Returns a new description from its component parts.
     pub fn new(lower: Antichain<Time>, upper: Antichain<Time>, since: Antichain<Time>) -> Self {
-        assert!(lower.elements().len() > 0);    // this should always be true.
-        // assert!(upper.len() > 0);            // this may not always be true.
+        assert!(lower.elements().len() > 0); // this should always be true.
+                                             // assert!(upper.len() > 0);            // this may not always be true.
         Description {
             lower,
             upper,
@@ -90,18 +90,22 @@ impl<Time: PartialOrder+Clone> Description<Time> {
 
 impl<Time> Description<Time> {
     /// The lower envelope for times in the interval.
-    pub fn lower(&self) -> &Antichain<Time> { &self.lower }
+    pub fn lower(&self) -> &Antichain<Time> {
+        &self.lower
+    }
     /// The upper envelope for times in the interval.
-    pub fn upper(&self) -> &Antichain<Time> { &self.upper }
+    pub fn upper(&self) -> &Antichain<Time> {
+        &self.upper
+    }
     /// Times from whose future the interval may be observed.
-    pub fn since(&self) -> &Antichain<Time> { &self.since }
+    pub fn since(&self) -> &Antichain<Time> {
+        &self.since
+    }
 }
 
 impl<Time: PartialEq> PartialEq for Description<Time> {
     fn eq(&self, other: &Self) -> bool {
-        self.lower.eq(other.lower())
-            && self.upper.eq(other.upper())
-            && self.since.eq(other.since())
+        self.lower.eq(other.lower()) && self.upper.eq(other.upper()) && self.since.eq(other.since())
     }
 }
 

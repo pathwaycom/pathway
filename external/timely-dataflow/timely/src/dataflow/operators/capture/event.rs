@@ -5,7 +5,9 @@
 //! of timestamps.
 
 /// Data and progress events of the captured stream.
-#[derive(Debug, Clone, Abomonation, Hash, Ord, PartialOrd, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(
+    Debug, Clone, Abomonation, Hash, Ord, PartialOrd, Eq, PartialEq, Deserialize, Serialize,
+)]
 pub enum EventCore<T, D> {
     /// Progress received via `push_external_progress`.
     Progress(Vec<(T, i64)>),
@@ -39,7 +41,6 @@ impl<T, D, E: EventIteratorCore<T, Vec<D>>> EventIterator<T, D> for E {
     }
 }
 
-
 /// Receives `EventCore<T, D>` events.
 pub trait EventPusherCore<T, D> {
     /// Provides a new `Event<T, D>` to the pusher.
@@ -50,7 +51,6 @@ pub trait EventPusherCore<T, D> {
 // TODO: use trait aliases once stable.
 pub trait EventPusher<T, D>: EventPusherCore<T, Vec<D>> {}
 impl<T, D, E: EventPusherCore<T, Vec<D>>> EventPusher<T, D> for E {}
-
 
 // implementation for the linked list behind a `Handle`.
 impl<T, D> EventPusherCore<T, D> for ::std::sync::mpsc::Sender<EventCore<T, D>> {
@@ -64,10 +64,10 @@ impl<T, D> EventPusherCore<T, D> for ::std::sync::mpsc::Sender<EventCore<T, D>> 
 /// A linked-list event pusher and iterator.
 pub mod link {
 
-    use std::rc::Rc;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
-    use super::{EventCore, EventPusherCore, EventIteratorCore};
+    use super::{EventCore, EventIteratorCore, EventPusherCore};
 
     /// A linked list of EventCore<T, D>.
     pub struct EventLinkCore<T, D> {
@@ -86,14 +86,20 @@ pub mod link {
     impl<T, D> EventLinkCore<T, D> {
         /// Allocates a new `EventLink`.
         pub fn new() -> EventLinkCore<T, D> {
-            EventLinkCore { event: None, next: RefCell::new(None) }
+            EventLinkCore {
+                event: None,
+                next: RefCell::new(None),
+            }
         }
     }
 
     // implementation for the linked list behind a `Handle`.
     impl<T, D> EventPusherCore<T, D> for Rc<EventLinkCore<T, D>> {
         fn push(&mut self, event: EventCore<T, D>) {
-            *self.next.borrow_mut() = Some(Rc::new(EventLinkCore { event: Some(event), next: RefCell::new(None) }));
+            *self.next.borrow_mut() = Some(Rc::new(EventLinkCore {
+                event: Some(event),
+                next: RefCell::new(None),
+            }));
             let next = self.next.borrow().as_ref().unwrap().clone();
             *self = next;
         }
@@ -106,8 +112,7 @@ pub mod link {
                 let next = self.next.borrow().as_ref().unwrap().clone();
                 *self = next;
                 self.event.as_ref()
-            }
-            else {
+            } else {
                 None
             }
         }
@@ -132,9 +137,9 @@ pub mod link {
 
     #[test]
     fn avoid_stack_overflow_in_drop() {
-        let mut event1 = Rc::new(EventLinkCore::<(),()>::new());
+        let mut event1 = Rc::new(EventLinkCore::<(), ()>::new());
         let _event2 = event1.clone();
-        for _ in 0 .. 1_000_000 {
+        for _ in 0..1_000_000 {
             event1.push(EventCore::Progress(vec![]));
         }
     }
@@ -143,14 +148,14 @@ pub mod link {
 /// A binary event pusher and iterator.
 pub mod binary {
 
-    use std::io::Write;
+    use super::{EventCore, EventIteratorCore, EventPusherCore};
     use abomonation::Abomonation;
-    use super::{EventCore, EventPusherCore, EventIteratorCore};
+    use std::io::Write;
 
     /// A wrapper for `W: Write` implementing `EventPusherCore<T, D>`.
     pub struct EventWriterCore<T, D, W: ::std::io::Write> {
         stream: W,
-        phant: ::std::marker::PhantomData<(T,D)>,
+        phant: ::std::marker::PhantomData<(T, D)>,
     }
 
     /// [EventWriterCore] specialized to vector-based containers.
@@ -166,10 +171,15 @@ pub mod binary {
         }
     }
 
-    impl<T: Abomonation, D: Abomonation, W: ::std::io::Write> EventPusherCore<T, D> for EventWriterCore<T, D, W> {
+    impl<T: Abomonation, D: Abomonation, W: ::std::io::Write> EventPusherCore<T, D>
+        for EventWriterCore<T, D, W>
+    {
         fn push(&mut self, event: EventCore<T, D>) {
             // TODO: `push` has no mechanism to report errors, so we `unwrap`.
-            unsafe { ::abomonation::encode(&event, &mut self.stream).expect("Event abomonation/write failed"); }
+            unsafe {
+                ::abomonation::encode(&event, &mut self.stream)
+                    .expect("Event abomonation/write failed");
+            }
         }
     }
 
@@ -181,7 +191,7 @@ pub mod binary {
         buff2: Vec<u8>,
         consumed: usize,
         valid: usize,
-        phant: ::std::marker::PhantomData<(T,D)>,
+        phant: ::std::marker::PhantomData<(T, D)>,
     }
 
     /// [EventReaderCore] specialized to vector-based containers.
@@ -202,12 +212,18 @@ pub mod binary {
         }
     }
 
-    impl<T: Abomonation, D: Abomonation, R: ::std::io::Read> EventIteratorCore<T, D> for EventReaderCore<T, D, R> {
+    impl<T: Abomonation, D: Abomonation, R: ::std::io::Read> EventIteratorCore<T, D>
+        for EventReaderCore<T, D, R>
+    {
         fn next(&mut self) -> Option<&EventCore<T, D>> {
-
             // if we can decode something, we should just return it! :D
-            if unsafe { ::abomonation::decode::<EventCore<T,D>>(&mut self.buff1[self.consumed..]) }.is_some() {
-                let (item, rest) = unsafe { ::abomonation::decode::<EventCore<T,D>>(&mut self.buff1[self.consumed..]) }.unwrap();
+            if unsafe { ::abomonation::decode::<EventCore<T, D>>(&mut self.buff1[self.consumed..]) }
+                .is_some()
+            {
+                let (item, rest) = unsafe {
+                    ::abomonation::decode::<EventCore<T, D>>(&mut self.buff1[self.consumed..])
+                }
+                .unwrap();
                 self.consumed = self.valid - rest.len();
                 return Some(item);
             }

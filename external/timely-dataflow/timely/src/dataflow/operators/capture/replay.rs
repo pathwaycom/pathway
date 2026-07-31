@@ -38,20 +38,20 @@
 //! allowing the replay to occur in a timely dataflow computation with more or fewer workers
 //! than that in which the stream was captured.
 
-use crate::dataflow::{Scope, StreamCore};
-use crate::dataflow::channels::pushers::CounterCore as PushCounter;
 use crate::dataflow::channels::pushers::buffer::BufferCore as PushBuffer;
+use crate::dataflow::channels::pushers::CounterCore as PushCounter;
 use crate::dataflow::operators::generic::builder_raw::OperatorBuilder;
+use crate::dataflow::{Scope, StreamCore};
 use crate::progress::Timestamp;
 
-use super::EventCore;
 use super::event::EventIteratorCore;
+use super::EventCore;
 use crate::Container;
 
 /// Replay a capture stream into a scope with the same timestamp.
-pub trait Replay<T: Timestamp, C> : Sized {
+pub trait Replay<T: Timestamp, C>: Sized {
     /// Replays `self` into the provided scope, as a `Stream<S, D>`.
-    fn replay_into<S: Scope<Timestamp=T>>(self, scope: &mut S) -> StreamCore<S, C> {
+    fn replay_into<S: Scope<Timestamp = T>>(self, scope: &mut S) -> StreamCore<S, C> {
         self.replay_core(scope, Some(std::time::Duration::new(0, 0)))
     }
     /// Replays `self` into the provided scope, as a `Stream<S, D>'.
@@ -59,14 +59,23 @@ pub trait Replay<T: Timestamp, C> : Sized {
     /// The `period` argument allows the specification of a re-activation period, where the operator
     /// will re-activate itself every so often. The `None` argument instructs the operator not to
     /// re-activate itself.us
-    fn replay_core<S: Scope<Timestamp=T>>(self, scope: &mut S, period: Option<std::time::Duration>) -> StreamCore<S, C>;
+    fn replay_core<S: Scope<Timestamp = T>>(
+        self,
+        scope: &mut S,
+        period: Option<std::time::Duration>,
+    ) -> StreamCore<S, C>;
 }
 
 impl<T: Timestamp, C: Container, I> Replay<T, C> for I
-where I : IntoIterator,
-      <I as IntoIterator>::Item: EventIteratorCore<T, C>+'static {
-    fn replay_core<S: Scope<Timestamp=T>>(self, scope: &mut S, period: Option<std::time::Duration>) -> StreamCore<S, C>{
-
+where
+    I: IntoIterator,
+    <I as IntoIterator>::Item: EventIteratorCore<T, C> + 'static,
+{
+    fn replay_core<S: Scope<Timestamp = T>>(
+        self,
+        scope: &mut S,
+        period: Option<std::time::Duration>,
+    ) -> StreamCore<S, C> {
         let mut builder = OperatorBuilder::new("Replay".to_owned(), scope.clone());
 
         let address = builder.operator_info().address;
@@ -79,42 +88,44 @@ where I : IntoIterator,
         let mut started = false;
         let mut allocation: C = Default::default();
 
-        builder.build(
-            move |progress| {
+        builder.build(move |progress| {
+            if !started {
+                // The first thing we do is modify our capabilities to match the number of streams we manage.
+                // This should be a simple change of `self.event_streams.len() - 1`. We only do this once, as
+                // our very first action.
+                progress.internals[0]
+                    .update(S::Timestamp::minimum(), (event_streams.len() as i64) - 1);
+                started = true;
+            }
 
-                if !started {
-                    // The first thing we do is modify our capabilities to match the number of streams we manage.
-                    // This should be a simple change of `self.event_streams.len() - 1`. We only do this once, as
-                    // our very first action.
-                    progress.internals[0].update(S::Timestamp::minimum(), (event_streams.len() as i64) - 1);
-                    started = true;
-                }
-
-                for event_stream in event_streams.iter_mut() {
-                    while let Some(event) = event_stream.next() {
-                        match event {
-                            EventCore::Progress(vec) => {
-                                progress.internals[0].extend(vec.iter().cloned());
-                            },
-                            EventCore::Messages(ref time, data) => {
-                                allocation.clone_from(data);
-                                output.session(time).give_container(&mut allocation);
-                            }
+            for event_stream in event_streams.iter_mut() {
+                while let Some(event) = event_stream.next() {
+                    match event {
+                        EventCore::Progress(vec) => {
+                            progress.internals[0].extend(vec.iter().cloned());
+                        }
+                        EventCore::Messages(ref time, data) => {
+                            allocation.clone_from(data);
+                            output.session(time).give_container(&mut allocation);
                         }
                     }
                 }
-
-                // A `None` period indicates that we do not re-activate here.
-                if let Some(delay) = period {
-                    activator.activate_after(delay);
-                }
-
-                output.cease();
-                output.inner().produced().borrow_mut().drain_into(&mut progress.produceds[0]);
-
-                false
             }
-        );
+
+            // A `None` period indicates that we do not re-activate here.
+            if let Some(delay) = period {
+                activator.activate_after(delay);
+            }
+
+            output.cease();
+            output
+                .inner()
+                .produced()
+                .borrow_mut()
+                .drain_into(&mut progress.produceds[0]);
+
+            false
+        });
 
         stream
     }

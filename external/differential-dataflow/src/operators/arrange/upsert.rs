@@ -107,17 +107,17 @@
 
 use std::collections::{BinaryHeap, HashMap};
 
-use timely::order::{PartialOrder, TotalOrder};
-use timely::dataflow::{Scope, Stream};
-use timely::dataflow::operators::generic::Operator;
 use timely::dataflow::channels::pact::Exchange;
-use timely::progress::Timestamp;
-use timely::progress::Antichain;
+use timely::dataflow::operators::generic::Operator;
 use timely::dataflow::operators::Capability;
+use timely::dataflow::{Scope, Stream};
+use timely::order::{PartialOrder, TotalOrder};
+use timely::progress::Antichain;
+use timely::progress::Timestamp;
 
-use ::{ExchangeData, Hashable};
 use lattice::Lattice;
-use trace::{Trace, TraceReader, Batch, Cursor};
+use trace::{Batch, Cursor, Trace, TraceReader};
+use {ExchangeData, Hashable};
 
 use trace::Builder;
 
@@ -141,23 +141,23 @@ pub fn arrange_from_upsert<G, Tr>(
 ) -> Arranged<G, TraceAgent<Tr>>
 where
     G: Scope,
-    G::Timestamp: Lattice+Ord+TotalOrder+ExchangeData,
-    Tr::Key: ExchangeData+Hashable+std::hash::Hash,
+    G::Timestamp: Lattice + Ord + TotalOrder + ExchangeData,
+    Tr::Key: ExchangeData + Hashable + std::hash::Hash,
     Tr::Val: ExchangeData,
-    Tr: Trace+TraceReader<Time=G::Timestamp,R=isize>+'static,
+    Tr: Trace + TraceReader<Time = G::Timestamp, R = isize> + 'static,
     Tr::Batch: Batch,
 {
     let mut reader: Option<TraceAgent<Tr>> = None;
 
     // fabricate a data-parallel operator using the `unary_notify` pattern.
     let stream = {
-
         let reader = &mut reader;
 
-        let exchange = Exchange::new(move |update: &(Tr::Key,Option<Tr::Val>,G::Timestamp)| (update.0).hashed().into());
+        let exchange = Exchange::new(move |update: &(Tr::Key, Option<Tr::Val>, G::Timestamp)| {
+            (update.0).hashed().into()
+        });
 
         stream.unary_frontier(exchange, name, move |_capability, info| {
-
             // Acquire a logger for arrange events.
             let logger = {
                 let scope = stream.scope();
@@ -166,11 +166,17 @@ where
             };
 
             // Establish compaction effort to apply even without updates.
-            let (activator, effort) =
-            if let Some(effort) = stream.scope().config().get::<isize>("differential/idle_merge_effort").cloned() {
-                (Some(stream.scope().activator_for(&info.address[..])), Some(effort))
-            }
-            else {
+            let (activator, effort) = if let Some(effort) = stream
+                .scope()
+                .config()
+                .get::<isize>("differential/idle_merge_effort")
+                .cloned()
+            {
+                (
+                    Some(stream.scope().activator_for(&info.address[..])),
+                    Some(effort),
+                )
+            } else {
                 (None, None)
             };
 
@@ -187,11 +193,11 @@ where
             let mut prev_frontier = Antichain::from_elem(<G::Timestamp as Timestamp>::minimum());
 
             // For stashing input upserts, ordered increasing by time (`BinaryHeap` is a max-heap).
-            let mut priority_queue = BinaryHeap::<std::cmp::Reverse<(G::Timestamp, Tr::Key, Option<Tr::Val>)>>::new();
+            let mut priority_queue =
+                BinaryHeap::<std::cmp::Reverse<(G::Timestamp, Tr::Key, Option<Tr::Val>)>>::new();
             let mut updates = Vec::new();
 
             move |input, output| {
-
                 // Stash capabilities and associated data (ordered by time).
                 input.for_each(|cap, data| {
                     capabilities.insert(cap.retain());
@@ -202,23 +208,26 @@ where
                 });
 
                 // Assert that the frontier never regresses.
-                assert!(PartialOrder::less_equal(&prev_frontier.borrow(), &input.frontier().frontier()));
+                assert!(PartialOrder::less_equal(
+                    &prev_frontier.borrow(),
+                    &input.frontier().frontier()
+                ));
 
                 // Test to see if strict progress has occurred, which happens whenever the new
                 // frontier isn't equal to the previous. It is only in this case that we have any
                 // data processing to do.
                 if prev_frontier.borrow() != input.frontier().frontier() {
-
                     // If there is at least one capability not in advance of the input frontier ...
-                    if capabilities.elements().iter().any(|c| !input.frontier().less_equal(c.time())) {
-
-                        let mut upper = Antichain::new();   // re-used allocation for sealing batches.
+                    if capabilities
+                        .elements()
+                        .iter()
+                        .any(|c| !input.frontier().less_equal(c.time()))
+                    {
+                        let mut upper = Antichain::new(); // re-used allocation for sealing batches.
 
                         // For each capability not in advance of the input frontier ...
                         for (index, capability) in capabilities.elements().iter().enumerate() {
-
                             if !input.frontier().less_equal(capability.time()) {
-
                                 // Assemble the upper bound on times we can commit with this capabilities.
                                 // We must respect the input frontier, and *subsequent* capabilities, as
                                 // we are pretending to retire the capability changes one by one.
@@ -226,15 +235,24 @@ where
                                 for time in input.frontier().frontier().iter() {
                                     upper.insert(time.clone());
                                 }
-                                for other_capability in &capabilities.elements()[(index + 1) .. ] {
+                                for other_capability in &capabilities.elements()[(index + 1)..] {
                                     upper.insert(other_capability.time().clone());
                                 }
 
                                 // Extract upserts available to process as of this `upper`.
                                 let mut to_process = HashMap::new();
-                                while priority_queue.peek().map(|std::cmp::Reverse((t,_k,_v))| !upper.less_equal(t)).unwrap_or(false) {
-                                    let std::cmp::Reverse((time, key, val)) = priority_queue.pop().expect("Priority queue just ensured non-empty");
-                                    to_process.entry(key).or_insert(Vec::new()).push((time, std::cmp::Reverse(val)));
+                                while priority_queue
+                                    .peek()
+                                    .map(|std::cmp::Reverse((t, _k, _v))| !upper.less_equal(t))
+                                    .unwrap_or(false)
+                                {
+                                    let std::cmp::Reverse((time, key, val)) = priority_queue
+                                        .pop()
+                                        .expect("Priority queue just ensured non-empty");
+                                    to_process
+                                        .entry(key)
+                                        .or_insert(Vec::new())
+                                        .push((time, std::cmp::Reverse(val)));
                                 }
                                 // Reduce the allocation behind the priority queue if it is presently excessive.
                                 // A factor of four is used to avoid repeated doubling and shrinking.
@@ -253,7 +271,6 @@ where
                                 let (mut trace_cursor, trace_storage) = reader_local.cursor();
                                 let mut builder = <Tr::Batch as Batch>::Builder::new();
                                 for (key, mut list) in to_process.drain(..) {
-
                                     // The prior value associated with the key.
                                     let mut prev_value: Option<Tr::Val> = None;
 
@@ -263,7 +280,10 @@ where
                                         // Determine the prior value associated with the key.
                                         while let Some(val) = trace_cursor.get_val(&trace_storage) {
                                             let mut count = 0;
-                                            trace_cursor.map_times(&trace_storage, |_time, diff| count += *diff);
+                                            trace_cursor
+                                                .map_times(&trace_storage, |_time, diff| {
+                                                    count += *diff
+                                                });
                                             assert!(count == 0 || count == 1);
                                             if count == 1 {
                                                 assert!(prev_value.is_none());
@@ -276,14 +296,19 @@ where
 
                                     // Sort the list of upserts to `key` by their time, suppress multiple updates.
                                     list.sort();
-                                    list.dedup_by(|(t1,_), (t2,_)| t1 == t2);
+                                    list.dedup_by(|(t1, _), (t2, _)| t1 == t2);
                                     for (time, std::cmp::Reverse(next)) in list {
                                         if prev_value != next {
                                             if let Some(prev) = prev_value {
                                                 updates.push((key.clone(), prev, time.clone(), -1));
                                             }
                                             if let Some(next) = next.as_ref() {
-                                                updates.push((key.clone(), next.clone(), time.clone(), 1));
+                                                updates.push((
+                                                    key.clone(),
+                                                    next.clone(),
+                                                    time.clone(),
+                                                    1,
+                                                ));
                                             }
                                             prev_value = next;
                                         }
@@ -294,7 +319,11 @@ where
                                         builder.push(update);
                                     }
                                 }
-                                let batch = builder.done(prev_frontier.clone(), upper.clone(), Antichain::from_elem(G::Timestamp::minimum()));
+                                let batch = builder.done(
+                                    prev_frontier.clone(),
+                                    upper.clone(),
+                                    Antichain::from_elem(G::Timestamp::minimum()),
+                                );
                                 prev_frontier.clone_from(&upper);
 
                                 // Communicate `batch` to the arrangement and the stream.
@@ -310,17 +339,19 @@ where
 
                         let mut new_capabilities = Antichain::new();
                         if let Some(std::cmp::Reverse((time, _, _))) = priority_queue.peek() {
-                            if let Some(capability) = capabilities.elements().iter().find(|c| c.time().less_equal(time)) {
+                            if let Some(capability) = capabilities
+                                .elements()
+                                .iter()
+                                .find(|c| c.time().less_equal(time))
+                            {
                                 new_capabilities.insert(capability.delayed(time));
-                            }
-                            else {
+                            } else {
                                 panic!("failed to find capability");
                             }
                         }
 
                         capabilities = new_capabilities;
-                    }
-                    else {
+                    } else {
                         // Announce progress updates, even without data.
                         writer.seal(input.frontier().frontier().to_owned());
                     }
@@ -341,6 +372,8 @@ where
         })
     };
 
-    Arranged { stream: stream, trace: reader.unwrap() }
-
+    Arranged {
+        stream: stream,
+        trace: reader.unwrap(),
+    }
 }

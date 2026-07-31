@@ -1,23 +1,24 @@
 //! Intra-thread communication.
 
-use std::rc::Rc;
 use std::cell::RefCell;
-use std::time::Duration;
 use std::collections::VecDeque;
+use std::rc::Rc;
+use std::time::Duration;
 
-use crate::allocator::{Allocate, AllocateBuilder};
-use crate::allocator::counters::Pusher as CountPusher;
 use crate::allocator::counters::Puller as CountPuller;
-use crate::{Push, Pull, Message};
+use crate::allocator::counters::Pusher as CountPusher;
+use crate::allocator::{Allocate, AllocateBuilder};
+use crate::{Message, Pull, Push};
 
 /// Builder for single-threaded allocator.
 pub struct ThreadBuilder;
 
 impl AllocateBuilder for ThreadBuilder {
     type Allocator = Thread;
-    fn build(self) -> Self::Allocator { Thread::new() }
+    fn build(self) -> Self::Allocator {
+        Thread::new()
+    }
 }
-
 
 /// An allocator for intra-thread communication.
 pub struct Thread {
@@ -26,9 +27,16 @@ pub struct Thread {
 }
 
 impl Allocate for Thread {
-    fn index(&self) -> usize { 0 }
-    fn peers(&self) -> usize { 1 }
-    fn allocate<T: 'static>(&mut self, identifier: usize) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
+    fn index(&self) -> usize {
+        0
+    }
+    fn peers(&self) -> usize {
+        1
+    }
+    fn allocate<T: 'static>(
+        &mut self,
+        identifier: usize,
+    ) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
         let (pusher, puller) = Thread::new_from(identifier, self.events.clone());
         (vec![Box::new(pusher)], Box::new(puller))
     }
@@ -39,8 +47,7 @@ impl Allocate for Thread {
         if self.events.borrow().is_empty() {
             if let Some(duration) = duration {
                 std::thread::park_timeout(duration);
-            }
-            else {
+            } else {
                 std::thread::park();
             }
         }
@@ -61,18 +68,26 @@ impl Thread {
     }
 
     /// Creates a new thread-local channel from an identifier and shared counts.
-    pub fn new_from<T: 'static>(identifier: usize, events: Rc<RefCell<Vec<usize>>>)
-        -> (ThreadPusher<Message<T>>, ThreadPuller<Message<T>>)
-    {
-        let shared = Rc::new(RefCell::new((VecDeque::<Message<T>>::new(), VecDeque::<Message<T>>::new())));
-        let pusher = Pusher { target: shared.clone() };
+    pub fn new_from<T: 'static>(
+        identifier: usize,
+        events: Rc<RefCell<Vec<usize>>>,
+    ) -> (ThreadPusher<Message<T>>, ThreadPuller<Message<T>>) {
+        let shared = Rc::new(RefCell::new((
+            VecDeque::<Message<T>>::new(),
+            VecDeque::<Message<T>>::new(),
+        )));
+        let pusher = Pusher {
+            target: shared.clone(),
+        };
         let pusher = CountPusher::new(pusher, identifier, events.clone());
-        let puller = Puller { source: shared, current: None };
+        let puller = Puller {
+            source: shared,
+            current: None,
+        };
         let puller = CountPuller::new(puller, identifier, events);
         (pusher, puller)
     }
 }
-
 
 /// The push half of an intra-thread channel.
 pub struct Pusher<T> {

@@ -2,11 +2,11 @@ use std::hash::Hash;
 
 use timely::dataflow::Scope;
 
-use differential_dataflow::{ExchangeData, Collection};
 use differential_dataflow::difference::{Monoid, Multiply};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::TraceReader;
+use differential_dataflow::{Collection, ExchangeData};
 
 /// Proposes extensions to a stream of prefixes.
 ///
@@ -21,18 +21,20 @@ pub fn validate<G, K, V, Tr, F, P>(
 where
     G: Scope,
     G::Timestamp: Lattice,
-    Tr: TraceReader<Key=(K,V), Val=(), Time=G::Timestamp>+Clone+'static,
-    K: Ord+Hash+Clone+Default,
-    V: ExchangeData+Hash+Default,
-    Tr::R: Monoid+Multiply<Output = Tr::R>+ExchangeData,
-    F: Fn(&P)->K+Clone+'static,
+    Tr: TraceReader<Key = (K, V), Val = (), Time = G::Timestamp> + Clone + 'static,
+    K: Ord + Hash + Clone + Default,
+    V: ExchangeData + Hash + Default,
+    Tr::R: Monoid + Multiply<Output = Tr::R> + ExchangeData,
+    F: Fn(&P) -> K + Clone + 'static,
     P: ExchangeData,
 {
     crate::operators::lookup_map(
         extensions,
         arrangement,
-        move |(pre,val),key| { *key = (key_selector(pre), val.clone()); },
-        |(pre,val),r,&(),_| ((pre.clone(), val.clone()), r.clone()),
+        move |(pre, val), key| {
+            *key = (key_selector(pre), val.clone());
+        },
+        |(pre, val), r, &(), _| ((pre.clone(), val.clone()), r.clone()),
         Default::default(),
         Default::default(),
         Default::default(),

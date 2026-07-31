@@ -1,21 +1,23 @@
 //! Progress tracking mechanisms to support notification in timely dataflow
 
-pub use self::operate::Operate;
-pub use self::subgraph::{Subgraph, SubgraphBuilder};
-pub use self::timestamp::{Timestamp, PathSummary};
 pub use self::change_batch::ChangeBatch;
 pub use self::frontier::Antichain;
+pub use self::operate::Operate;
+pub use self::subgraph::{Subgraph, SubgraphBuilder};
+pub use self::timestamp::{PathSummary, Timestamp};
 
+pub mod broadcast;
 pub mod change_batch;
 pub mod frontier;
-pub mod timestamp;
 pub mod operate;
-pub mod broadcast;
 pub mod reachability;
 pub mod subgraph;
+pub mod timestamp;
 
 /// A timely dataflow location.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Abomonation, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Abomonation, Serialize, Deserialize,
+)]
 pub struct Location {
     /// A scope-local operator identifier.
     pub node: usize,
@@ -26,16 +28,26 @@ pub struct Location {
 impl Location {
     /// Creates a new target location (operator input or scope output).
     pub fn new_target(node: usize, port: usize) -> Location {
-        Location { node, port: Port::Target(port) }
+        Location {
+            node,
+            port: Port::Target(port),
+        }
     }
     /// Creates a new source location (operator output or scope input).
     pub fn new_source(node: usize, port: usize) -> Location {
-        Location { node, port: Port::Source(port) }
+        Location {
+            node,
+            port: Port::Source(port),
+        }
     }
     /// If the location is a target.
-    pub fn is_target(&self) -> bool { matches!(self.port, Port::Target(_)) }
+    pub fn is_target(&self) -> bool {
+        matches!(self.port, Port::Target(_))
+    }
     /// If the location is a source.
-    pub fn is_source(&self) -> bool { matches!(self.port, Port::Source(_)) }
+    pub fn is_source(&self) -> bool {
+        matches!(self.port, Port::Source(_))
+    }
 }
 
 impl From<Target> for Location {
@@ -57,7 +69,9 @@ impl From<Source> for Location {
 }
 
 /// An operator port.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Abomonation, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Abomonation, Serialize, Deserialize,
+)]
 pub enum Port {
     /// An operator input.
     Target(usize),

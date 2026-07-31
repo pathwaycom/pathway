@@ -18,7 +18,6 @@ pub struct ChangeBatch<T> {
 }
 
 impl<T> ChangeBatch<T> {
-
     /// Allocates a new empty `ChangeBatch`.
     ///
     /// # Examples
@@ -59,10 +58,14 @@ impl<T> ChangeBatch<T> {
     }
 
     /// Expose the internal vector of updates.
-    pub fn unstable_internal_updates(&self) -> &Vec<(T, i64)> { &self.updates }
+    pub fn unstable_internal_updates(&self) -> &Vec<(T, i64)> {
+        &self.updates
+    }
 
     /// Expose the internal value of `clean`.
-    pub fn unstable_internal_clean(&self) -> usize { self.clean }
+    pub fn unstable_internal_clean(&self) -> usize {
+        self.clean
+    }
 
     /// Clears the map.
     ///
@@ -86,7 +89,6 @@ impl<T> ChangeBatch<T>
 where
     T: Ord,
 {
-    
     /// Allocates a new `ChangeBatch` with a single entry.
     ///
     /// # Examples
@@ -137,7 +139,7 @@ where
     /// assert!(batch.is_empty());
     ///```
     #[inline]
-    pub fn extend<I: Iterator<Item=(T, i64)>>(&mut self, iterator: I) {
+    pub fn extend<I: Iterator<Item = (T, i64)>>(&mut self, iterator: I) {
         self.updates.extend(iterator);
         self.maintain_bounds();
     }
@@ -223,8 +225,7 @@ where
     pub fn is_empty(&mut self) -> bool {
         if self.clean > self.updates.len() / 2 {
             false
-        }
-        else {
+        } else {
             self.compact();
             self.updates.is_empty()
         }
@@ -270,11 +271,13 @@ where
     /// assert!(!batch2.is_empty());
     ///```
     #[inline]
-    pub fn drain_into(&mut self, other: &mut ChangeBatch<T>) where T: Clone {
+    pub fn drain_into(&mut self, other: &mut ChangeBatch<T>)
+    where
+        T: Clone,
+    {
         if other.updates.is_empty() {
             ::std::mem::swap(self, other);
-        }
-        else {
+        } else {
             other.extend(self.updates.drain(..));
             self.clean = 0;
         }
@@ -288,10 +291,10 @@ where
     #[inline]
     pub fn compact(&mut self) {
         if self.clean < self.updates.len() && self.updates.len() > 1 {
-            self.updates.sort_by(|x,y| x.0.cmp(&y.0));
-            for i in 0 .. self.updates.len() - 1 {
-                if self.updates[i].0 == self.updates[i+1].0 {
-                    self.updates[i+1].1 += self.updates[i].1;
+            self.updates.sort_by(|x, y| x.0.cmp(&y.0));
+            for i in 0..self.updates.len() - 1 {
+                if self.updates[i].0 == self.updates[i + 1].0 {
+                    self.updates[i + 1].1 += self.updates[i].1;
                     self.updates[i].1 = 0;
                 }
             }

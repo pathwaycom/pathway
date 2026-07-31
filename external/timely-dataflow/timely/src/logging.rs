@@ -9,18 +9,24 @@ pub type TimelyLogger = Logger<TimelyEvent>;
 /// Logger for timely dataflow progress events (the "timely/progress" log stream).
 pub type TimelyProgressLogger = Logger<TimelyProgressEvent>;
 
-use std::time::Duration;
 use crate::dataflow::operators::capture::{Event, EventPusher};
+use std::time::Duration;
 
 /// Logs events as a timely stream, with progress statements.
-pub struct BatchLogger<T, E, P> where P: EventPusher<Duration, (Duration, E, T)> {
+pub struct BatchLogger<T, E, P>
+where
+    P: EventPusher<Duration, (Duration, E, T)>,
+{
     // None when the logging stream is closed
     time: Duration,
     event_pusher: P,
     _phantom: ::std::marker::PhantomData<(E, T)>,
 }
 
-impl<T, E, P> BatchLogger<T, E, P> where P: EventPusher<Duration, (Duration, E, T)> {
+impl<T, E, P> BatchLogger<T, E, P>
+where
+    P: EventPusher<Duration, (Duration, E, T)>,
+{
     /// Creates a new batch logger.
     pub fn new(event_pusher: P) -> Self {
         BatchLogger {
@@ -32,23 +38,31 @@ impl<T, E, P> BatchLogger<T, E, P> where P: EventPusher<Duration, (Duration, E, 
     /// Publishes a batch of logged events and advances the capability.
     pub fn publish_batch(&mut self, &time: &Duration, data: &mut Vec<(Duration, E, T)>) {
         if !data.is_empty() {
-            self.event_pusher.push(Event::Messages(self.time, data.drain(..).collect()));
+            self.event_pusher
+                .push(Event::Messages(self.time, data.drain(..).collect()));
         }
         if self.time < time {
             let new_frontier = time;
             let old_frontier = self.time;
-            self.event_pusher.push(Event::Progress(vec![(new_frontier, 1), (old_frontier, -1)]));
+            self.event_pusher
+                .push(Event::Progress(vec![(new_frontier, 1), (old_frontier, -1)]));
         }
         self.time = time;
     }
 }
-impl<T, E, P> Drop for BatchLogger<T, E, P> where P: EventPusher<Duration, (Duration, E, T)> {
+impl<T, E, P> Drop for BatchLogger<T, E, P>
+where
+    P: EventPusher<Duration, (Duration, E, T)>,
+{
     fn drop(&mut self) {
-        self.event_pusher.push(Event::Progress(vec![(self.time, -1)]));
+        self.event_pusher
+            .push(Event::Progress(vec![(self.time, -1)]));
     }
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// The creation of an `Operate` implementor.
 pub struct OperatesEvent {
     /// Worker-unique identifier for the operator.
@@ -59,7 +73,9 @@ pub struct OperatesEvent {
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// The creation of a channel between operators.
 pub struct ChannelsEvent {
     /// Worker-unique identifier for the channel
@@ -101,9 +117,13 @@ pub trait ProgressEventTimestamp: std::fmt::Debug + std::any::Any {
     fn type_name(&self) -> &'static str;
 }
 impl<T: crate::Data + std::fmt::Debug + std::any::Any> ProgressEventTimestamp for T {
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
-    fn type_name(&self) -> &'static str { std::any::type_name::<T>() }
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
 }
 
 /// A vector of progress updates in logs
@@ -114,15 +134,39 @@ impl<T: crate::Data + std::fmt::Debug + std::any::Any> ProgressEventTimestamp fo
 /// for each dynamically typed element).
 pub trait ProgressEventTimestampVec: std::fmt::Debug + std::any::Any {
     /// Iterate over the contents of the vector
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item=(&'a usize, &'a usize, &'a dyn ProgressEventTimestamp, &'a i64)>+'a>;
+    fn iter<'a>(
+        &'a self,
+    ) -> Box<
+        dyn Iterator<
+                Item = (
+                    &'a usize,
+                    &'a usize,
+                    &'a dyn ProgressEventTimestamp,
+                    &'a i64,
+                ),
+            > + 'a,
+    >;
 }
 
 impl<T: ProgressEventTimestamp> ProgressEventTimestampVec for Vec<(usize, usize, T, i64)> {
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item=(&'a usize, &'a usize, &'a dyn ProgressEventTimestamp, &'a i64)>+'a> {
-        Box::new(<[(usize, usize, T, i64)]>::iter(&self[..]).map(|(n, p, t, d)| {
-            let t: &dyn ProgressEventTimestamp = t;
-            (n, p, t, d)
-        }))
+    fn iter<'a>(
+        &'a self,
+    ) -> Box<
+        dyn Iterator<
+                Item = (
+                    &'a usize,
+                    &'a usize,
+                    &'a dyn ProgressEventTimestamp,
+                    &'a i64,
+                ),
+            > + 'a,
+    > {
+        Box::new(
+            <[(usize, usize, T, i64)]>::iter(&self[..]).map(|(n, p, t, d)| {
+                let t: &dyn ProgressEventTimestamp = t;
+                (n, p, t, d)
+            }),
+        )
     }
 }
 
@@ -145,14 +189,18 @@ pub struct TimelyProgressEvent {
     pub internal: Box<dyn ProgressEventTimestampVec>,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// External progress pushed onto an operator
 pub struct PushProgressEvent {
     /// Worker-unique operator identifier
     pub op_id: usize,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Message send or receive event
 pub struct MessagesEvent {
     /// `true` if send event, `false` if receive event.
@@ -170,7 +218,9 @@ pub struct MessagesEvent {
 }
 
 /// Records the starting and stopping of an operator.
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, PartialEq, Eq, Ord, PartialOrd,
+)]
 pub enum StartStop {
     /// Operator starts.
     Start,
@@ -178,7 +228,9 @@ pub enum StartStop {
     Stop,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Operator start or stop.
 pub struct ScheduleEvent {
     /// Worker-unique identifier for the operator, linkable to the identifiers in `OperatesEvent`.
@@ -191,19 +243,33 @@ pub struct ScheduleEvent {
 
 impl ScheduleEvent {
     /// Creates a new start scheduling event.
-    pub fn start(id: usize) -> Self { ScheduleEvent { id, start_stop: StartStop::Start } }
+    pub fn start(id: usize) -> Self {
+        ScheduleEvent {
+            id,
+            start_stop: StartStop::Start,
+        }
+    }
     /// Creates a new stop scheduling event and reports whether work occurred.
-    pub fn stop(id: usize) -> Self { ScheduleEvent { id, start_stop: StartStop::Stop } }
+    pub fn stop(id: usize) -> Self {
+        ScheduleEvent {
+            id,
+            start_stop: StartStop::Stop,
+        }
+    }
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Operator shutdown.
 pub struct ShutdownEvent {
     /// Worker-unique identifier for the operator, linkable to the identifiers in `OperatesEvent`.
     pub id: usize,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Application-defined code start or stop
 pub struct ApplicationEvent {
     /// Unique event type identifier
@@ -212,14 +278,18 @@ pub struct ApplicationEvent {
     pub is_start: bool,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Application-defined code start or stop
 pub struct GuardedMessageEvent {
     /// True when activity begins, false when it stops
     pub is_start: bool,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Application-defined code start or stop
 pub struct GuardedProgressEvent {
     /// True when activity begins, false when it stops
@@ -233,7 +303,9 @@ pub struct TimelySetup {
     pub index: usize,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Kind of communication channel
 pub enum CommChannelKind {
     /// Communication channel carrying progress information
@@ -242,7 +314,9 @@ pub enum CommChannelKind {
     Data,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Event on a communication channel
 pub struct CommChannelsEvent {
     /// Communication channel identifier
@@ -251,7 +325,9 @@ pub struct CommChannelsEvent {
     pub kind: CommChannelKind,
 }
 
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// Input logic start/stop
 pub struct InputEvent {
     /// True when activity begins, false when it stops
@@ -259,7 +335,9 @@ pub struct InputEvent {
 }
 
 /// Records the starting and stopping of an operator.
-#[derive(Serialize, Deserialize, Abomonation, Debug, Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Abomonation, Debug, Clone, Hash, PartialEq, Eq, Ord, PartialOrd,
+)]
 pub enum ParkEvent {
     /// Worker parks.
     Park(Option<Duration>),
@@ -269,12 +347,18 @@ pub enum ParkEvent {
 
 impl ParkEvent {
     /// Creates a new park event from the supplied duration.
-    pub fn park(duration: Option<Duration>) -> Self { ParkEvent::Park(duration) }
+    pub fn park(duration: Option<Duration>) -> Self {
+        ParkEvent::Park(duration)
+    }
     /// Creates a new unpark event.
-    pub fn unpark() -> Self { ParkEvent::Unpark }
+    pub fn unpark() -> Self {
+        ParkEvent::Unpark
+    }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Abomonation, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Abomonation, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 /// An event in a timely worker
 pub enum TimelyEvent {
     /// Operator creation.
@@ -306,49 +390,73 @@ pub enum TimelyEvent {
 }
 
 impl From<OperatesEvent> for TimelyEvent {
-    fn from(v: OperatesEvent) -> TimelyEvent { TimelyEvent::Operates(v) }
+    fn from(v: OperatesEvent) -> TimelyEvent {
+        TimelyEvent::Operates(v)
+    }
 }
 
 impl From<ChannelsEvent> for TimelyEvent {
-    fn from(v: ChannelsEvent) -> TimelyEvent { TimelyEvent::Channels(v) }
+    fn from(v: ChannelsEvent) -> TimelyEvent {
+        TimelyEvent::Channels(v)
+    }
 }
 
 impl From<PushProgressEvent> for TimelyEvent {
-    fn from(v: PushProgressEvent) -> TimelyEvent { TimelyEvent::PushProgress(v) }
+    fn from(v: PushProgressEvent) -> TimelyEvent {
+        TimelyEvent::PushProgress(v)
+    }
 }
 
 impl From<MessagesEvent> for TimelyEvent {
-    fn from(v: MessagesEvent) -> TimelyEvent { TimelyEvent::Messages(v) }
+    fn from(v: MessagesEvent) -> TimelyEvent {
+        TimelyEvent::Messages(v)
+    }
 }
 
 impl From<ScheduleEvent> for TimelyEvent {
-    fn from(v: ScheduleEvent) -> TimelyEvent { TimelyEvent::Schedule(v) }
+    fn from(v: ScheduleEvent) -> TimelyEvent {
+        TimelyEvent::Schedule(v)
+    }
 }
 
 impl From<ShutdownEvent> for TimelyEvent {
-    fn from(v: ShutdownEvent) -> TimelyEvent { TimelyEvent::Shutdown(v) }
+    fn from(v: ShutdownEvent) -> TimelyEvent {
+        TimelyEvent::Shutdown(v)
+    }
 }
 
 impl From<ApplicationEvent> for TimelyEvent {
-    fn from(v: ApplicationEvent) -> TimelyEvent { TimelyEvent::Application(v) }
+    fn from(v: ApplicationEvent) -> TimelyEvent {
+        TimelyEvent::Application(v)
+    }
 }
 
 impl From<GuardedMessageEvent> for TimelyEvent {
-    fn from(v: GuardedMessageEvent) -> TimelyEvent { TimelyEvent::GuardedMessage(v) }
+    fn from(v: GuardedMessageEvent) -> TimelyEvent {
+        TimelyEvent::GuardedMessage(v)
+    }
 }
 
 impl From<GuardedProgressEvent> for TimelyEvent {
-    fn from(v: GuardedProgressEvent) -> TimelyEvent { TimelyEvent::GuardedProgress(v) }
+    fn from(v: GuardedProgressEvent) -> TimelyEvent {
+        TimelyEvent::GuardedProgress(v)
+    }
 }
 
 impl From<CommChannelsEvent> for TimelyEvent {
-    fn from(v: CommChannelsEvent) -> TimelyEvent { TimelyEvent::CommChannels(v) }
+    fn from(v: CommChannelsEvent) -> TimelyEvent {
+        TimelyEvent::CommChannels(v)
+    }
 }
 
 impl From<InputEvent> for TimelyEvent {
-    fn from(v: InputEvent) -> TimelyEvent { TimelyEvent::Input(v) }
+    fn from(v: InputEvent) -> TimelyEvent {
+        TimelyEvent::Input(v)
+    }
 }
 
 impl From<ParkEvent> for TimelyEvent {
-    fn from(v: ParkEvent) -> TimelyEvent { TimelyEvent::Park(v) }
+    fn from(v: ParkEvent) -> TimelyEvent {
+        TimelyEvent::Park(v)
+    }
 }

@@ -4,16 +4,21 @@
 pub type Logger = ::timely::logging::Logger<DifferentialEvent>;
 
 /// Enables logging of differential dataflow events.
-pub fn enable<A, W>(worker: &mut timely::worker::Worker<A>, writer: W) -> Option<Box<dyn std::any::Any+'static>>
+pub fn enable<A, W>(
+    worker: &mut timely::worker::Worker<A>,
+    writer: W,
+) -> Option<Box<dyn std::any::Any + 'static>>
 where
     A: timely::communication::Allocate,
-    W: std::io::Write+'static,
+    W: std::io::Write + 'static,
 {
     let writer = ::timely::dataflow::operators::capture::EventWriter::new(writer);
     let mut logger = ::timely::logging::BatchLogger::new(writer);
     worker
         .log_register()
-        .insert::<DifferentialEvent,_>("differential/arrange", move |time, data| logger.publish_batch(time, data))
+        .insert::<DifferentialEvent, _>("differential/arrange", move |time, data| {
+            logger.publish_batch(time, data)
+        })
 }
 
 /// Possible different differential events.
@@ -40,8 +45,11 @@ pub struct BatchEvent {
     pub length: usize,
 }
 
-impl From<BatchEvent> for DifferentialEvent { fn from(e: BatchEvent) -> Self { DifferentialEvent::Batch(e) } }
-
+impl From<BatchEvent> for DifferentialEvent {
+    fn from(e: BatchEvent) -> Self {
+        DifferentialEvent::Batch(e)
+    }
+}
 
 /// Either the start or end of a merge event.
 #[derive(Debug, Clone, Abomonation, Ord, PartialOrd, Eq, PartialEq)]
@@ -52,7 +60,11 @@ pub struct DropEvent {
     pub length: usize,
 }
 
-impl From<DropEvent> for DifferentialEvent { fn from(e: DropEvent) -> Self { DifferentialEvent::Drop(e) } }
+impl From<DropEvent> for DifferentialEvent {
+    fn from(e: DropEvent) -> Self {
+        DifferentialEvent::Drop(e)
+    }
+}
 
 /// Either the start or end of a merge event.
 #[derive(Debug, Clone, Abomonation, Ord, PartialOrd, Eq, PartialEq)]
@@ -69,7 +81,11 @@ pub struct MergeEvent {
     pub complete: Option<usize>,
 }
 
-impl From<MergeEvent> for DifferentialEvent { fn from(e: MergeEvent) -> Self { DifferentialEvent::Merge(e) } }
+impl From<MergeEvent> for DifferentialEvent {
+    fn from(e: MergeEvent) -> Self {
+        DifferentialEvent::Merge(e)
+    }
+}
 
 /// A merge failed to complete in time.
 #[derive(Debug, Clone, Abomonation, Ord, PartialOrd, Eq, PartialEq)]
@@ -82,7 +98,11 @@ pub struct MergeShortfall {
     pub shortfall: usize,
 }
 
-impl From<MergeShortfall> for DifferentialEvent { fn from(e: MergeShortfall) -> Self { DifferentialEvent::MergeShortfall(e) } }
+impl From<MergeShortfall> for DifferentialEvent {
+    fn from(e: MergeShortfall) -> Self {
+        DifferentialEvent::MergeShortfall(e)
+    }
+}
 
 /// Either the start or end of a merge event.
 #[derive(Debug, Clone, Abomonation, Ord, PartialOrd, Eq, PartialEq)]
@@ -93,4 +113,8 @@ pub struct TraceShare {
     pub diff: isize,
 }
 
-impl From<TraceShare> for DifferentialEvent { fn from(e: TraceShare) -> Self { DifferentialEvent::TraceShare(e) } }
+impl From<TraceShare> for DifferentialEvent {
+    fn from(e: TraceShare) -> Self {
+        DifferentialEvent::TraceShare(e)
+    }
+}

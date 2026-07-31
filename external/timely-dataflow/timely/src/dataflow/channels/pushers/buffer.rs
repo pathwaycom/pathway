@@ -1,10 +1,10 @@
 //! Buffering and session mechanisms to provide the appearance of record-at-a-time sending,
 //! with the performance of batched sends.
 
-use crate::dataflow::channels::{Bundle, BundleCore, Message};
-use crate::progress::Timestamp;
-use crate::dataflow::operators::Capability;
 use crate::communication::Push;
+use crate::dataflow::channels::{Bundle, BundleCore, Message};
+use crate::dataflow::operators::Capability;
+use crate::progress::Timestamp;
 use crate::{Container, Data};
 
 /// Buffers data sent at the same time, for efficient communication.
@@ -23,8 +23,10 @@ pub struct BufferCore<T, D: Container, P: Push<BundleCore<T, D>>> {
 /// A buffer specialized to vector-based containers.
 pub type Buffer<T, D, P> = BufferCore<T, Vec<D>, P>;
 
-impl<T, C: Container, P: Push<BundleCore<T, C>>> BufferCore<T, C, P> where T: Eq+Clone {
-
+impl<T, C: Container, P: Push<BundleCore<T, C>>> BufferCore<T, C, P>
+where
+    T: Eq + Clone,
+{
     /// Creates a new `Buffer`.
     pub fn new(pusher: P) -> Self {
         Self {
@@ -36,13 +38,20 @@ impl<T, C: Container, P: Push<BundleCore<T, C>>> BufferCore<T, C, P> where T: Eq
 
     /// Returns a `Session`, which accepts data to send at the associated time
     pub fn session(&mut self, time: &T) -> Session<T, C, P> {
-        if let Some(true) = self.time.as_ref().map(|x| x != time) { self.flush(); }
+        if let Some(true) = self.time.as_ref().map(|x| x != time) {
+            self.flush();
+        }
         self.time = Some(time.clone());
         Session { buffer: self }
     }
     /// Allocates a new `AutoflushSession` which flushes itself on drop.
-    pub fn autoflush_session(&mut self, cap: Capability<T>) -> AutoflushSessionCore<T, C, P> where T: Timestamp {
-        if let Some(true) = self.time.as_ref().map(|x| x != cap.time()) { self.flush(); }
+    pub fn autoflush_session(&mut self, cap: Capability<T>) -> AutoflushSessionCore<T, C, P>
+    where
+        T: Timestamp,
+    {
+        if let Some(true) = self.time.as_ref().map(|x| x != cap.time()) {
+            self.flush();
+        }
         self.time = Some(cap.time().clone());
         AutoflushSessionCore {
             buffer: self,
@@ -53,7 +62,9 @@ impl<T, C: Container, P: Push<BundleCore<T, C>>> BufferCore<T, C, P> where T: Eq
     /// Returns a reference to the inner `P: Push` type.
     ///
     /// This is currently used internally, and should not be used without some care.
-    pub fn inner(&mut self) -> &mut P { &mut self.pusher }
+    pub fn inner(&mut self) -> &mut P {
+        &mut self.pusher
+    }
 
     /// Flushes all data and pushes a `None` to `self.pusher`, indicating a flush.
     pub fn cease(&mut self) {
@@ -75,18 +86,26 @@ impl<T, C: Container, P: Push<BundleCore<T, C>>> BufferCore<T, C, P> where T: Eq
             // flush to ensure fifo-ness
             self.flush();
 
-            let time = self.time.as_ref().expect("Buffer::give_container(): time is None.").clone();
+            let time = self
+                .time
+                .as_ref()
+                .expect("Buffer::give_container(): time is None.")
+                .clone();
             Message::push_at(vector, time, &mut self.pusher);
         }
     }
 }
 
-impl<T, D: Data, P: Push<Bundle<T, D>>> Buffer<T, D, P> where T: Eq+Clone {
+impl<T, D: Data, P: Push<Bundle<T, D>>> Buffer<T, D, P>
+where
+    T: Eq + Clone,
+{
     // internal method for use by `Session`.
     #[inline]
     fn give(&mut self, data: D) {
         if self.buffer.capacity() < crate::container::buffer::default_capacity::<D>() {
-            let to_reserve = crate::container::buffer::default_capacity::<D>() - self.buffer.capacity();
+            let to_reserve =
+                crate::container::buffer::default_capacity::<D>() - self.buffer.capacity();
             self.buffer.reserve(to_reserve);
         }
         self.buffer.push(data);
@@ -101,29 +120,44 @@ impl<T, D: Data, P: Push<Bundle<T, D>>> Buffer<T, D, P> where T: Eq+Clone {
         // flush to ensure fifo-ness
         self.flush();
 
-        let time = self.time.as_ref().expect("Buffer::give_vec(): time is None.").clone();
+        let time = self
+            .time
+            .as_ref()
+            .expect("Buffer::give_vec(): time is None.")
+            .clone();
         Message::push_at(vector, time, &mut self.pusher);
     }
 }
-
 
 /// An output session for sending records at a specified time.
 ///
 /// The `Session` struct provides the user-facing interface to an operator output, namely
 /// the `Buffer` type. A `Session` wraps a session of output at a specified time, and
 /// avoids what would otherwise be a constant cost of checking timestamp equality.
-pub struct Session<'a, T, C: Container, P: Push<BundleCore<T, C>>+'a> where T: Eq+Clone+'a, C: 'a {
+pub struct Session<'a, T, C: Container, P: Push<BundleCore<T, C>> + 'a>
+where
+    T: Eq + Clone + 'a,
+    C: 'a,
+{
     buffer: &'a mut BufferCore<T, C, P>,
 }
 
-impl<'a, T, C: Container, P: Push<BundleCore<T, C>>+'a> Session<'a, T, C, P>  where T: Eq+Clone+'a, C: 'a {
+impl<'a, T, C: Container, P: Push<BundleCore<T, C>> + 'a> Session<'a, T, C, P>
+where
+    T: Eq + Clone + 'a,
+    C: 'a,
+{
     /// Provide a container at the time specified by the [Session].
     pub fn give_container(&mut self, container: &mut C) {
         self.buffer.give_container(container)
     }
 }
 
-impl<'a, T, D: Data, P: Push<BundleCore<T, Vec<D>>>+'a> Session<'a, T, Vec<D>, P>  where T: Eq+Clone+'a, D: 'a {
+impl<'a, T, D: Data, P: Push<BundleCore<T, Vec<D>>> + 'a> Session<'a, T, Vec<D>, P>
+where
+    T: Eq + Clone + 'a,
+    D: 'a,
+{
     /// Provides one record at the time specified by the `Session`.
     #[inline]
     pub fn give(&mut self, data: D) {
@@ -131,7 +165,7 @@ impl<'a, T, D: Data, P: Push<BundleCore<T, Vec<D>>>+'a> Session<'a, T, Vec<D>, P
     }
     /// Provides an iterator of records at the time specified by the `Session`.
     #[inline]
-    pub fn give_iterator<I: Iterator<Item=D>>(&mut self, iter: I) {
+    pub fn give_iterator<I: Iterator<Item = D>>(&mut self, iter: I) {
         for item in iter {
             self.give(item);
         }
@@ -150,8 +184,11 @@ impl<'a, T, D: Data, P: Push<BundleCore<T, Vec<D>>>+'a> Session<'a, T, Vec<D>, P
 }
 
 /// A session which will flush itself when dropped.
-pub struct AutoflushSessionCore<'a, T: Timestamp, C: Container, P: Push<BundleCore<T, C>>+'a> where
-    T: Eq+Clone+'a, C: 'a {
+pub struct AutoflushSessionCore<'a, T: Timestamp, C: Container, P: Push<BundleCore<T, C>> + 'a>
+where
+    T: Eq + Clone + 'a,
+    C: 'a,
+{
     /// A reference to the underlying buffer.
     buffer: &'a mut BufferCore<T, C, P>,
     /// The capability being used to send the data.
@@ -161,7 +198,12 @@ pub struct AutoflushSessionCore<'a, T: Timestamp, C: Container, P: Push<BundleCo
 /// Auto-flush session specialized to vector-based containers.
 pub type AutoflushSession<'a, T, D, P> = AutoflushSessionCore<'a, T, Vec<D>, P>;
 
-impl<'a, T: Timestamp, D: Data, P: Push<BundleCore<T, Vec<D>>>+'a> AutoflushSessionCore<'a, T, Vec<D>, P> where T: Eq+Clone+'a, D: 'a {
+impl<'a, T: Timestamp, D: Data, P: Push<BundleCore<T, Vec<D>>> + 'a>
+    AutoflushSessionCore<'a, T, Vec<D>, P>
+where
+    T: Eq + Clone + 'a,
+    D: 'a,
+{
     /// Transmits a single record.
     #[inline]
     pub fn give(&mut self, data: D) {
@@ -169,7 +211,7 @@ impl<'a, T: Timestamp, D: Data, P: Push<BundleCore<T, Vec<D>>>+'a> AutoflushSess
     }
     /// Transmits records produced by an iterator.
     #[inline]
-    pub fn give_iterator<I: Iterator<Item=D>>(&mut self, iter: I) {
+    pub fn give_iterator<I: Iterator<Item = D>>(&mut self, iter: I) {
         for item in iter {
             self.give(item);
         }
@@ -183,7 +225,12 @@ impl<'a, T: Timestamp, D: Data, P: Push<BundleCore<T, Vec<D>>>+'a> AutoflushSess
     }
 }
 
-impl<'a, T: Timestamp, C: Container, P: Push<BundleCore<T, C>>+'a> Drop for AutoflushSessionCore<'a, T, C, P> where T: Eq+Clone+'a, C: 'a {
+impl<'a, T: Timestamp, C: Container, P: Push<BundleCore<T, C>> + 'a> Drop
+    for AutoflushSessionCore<'a, T, C, P>
+where
+    T: Eq + Clone + 'a,
+    C: 'a,
+{
     fn drop(&mut self) {
         self.buffer.cease();
     }

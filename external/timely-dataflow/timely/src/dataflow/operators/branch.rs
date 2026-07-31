@@ -103,7 +103,6 @@ impl<S: Scope, C: Container> BranchWhen<S::Timestamp> for StreamCore<S, C> {
         let (mut output2, stream2) = builder.new_output();
 
         builder.build(move |_| {
-
             let mut container = Default::default();
             move |_frontiers| {
                 let mut output1_handle = output1.activate();

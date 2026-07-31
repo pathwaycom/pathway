@@ -6,7 +6,6 @@ use timely::dataflow::operators::{Input, Map, Probe};
 fn main() {
     // initializes and runs a timely dataflow.
     timely::execute_from_args(std::env::args(), |worker| {
-
         let timer = std::time::Instant::now();
 
         let mut args = std::env::args();
@@ -20,10 +19,10 @@ fn main() {
         let mut probes = Vec::new();
 
         // create a new input, exchange data, and inspect its output
-        for _dataflow in 0 .. dataflows {
+        for _dataflow in 0..dataflows {
             worker.dataflow(|scope| {
                 let (input, mut stream) = scope.new_input();
-                for _step in 0 .. length {
+                for _step in 0..length {
                     stream = stream.map(|x: ()| x);
                 }
                 let probe = stream.probe();
@@ -32,9 +31,14 @@ fn main() {
             });
         }
 
-        println!("{:?}\tdataflows built ({} x {})", timer.elapsed(), dataflows, length);
+        println!(
+            "{:?}\tdataflows built ({} x {})",
+            timer.elapsed(),
+            dataflows,
+            length
+        );
 
-        for round in 0 .. {
+        for round in 0.. {
             let dataflow = round % dataflows;
             if record {
                 inputs[dataflow].send(());
@@ -45,8 +49,13 @@ fn main() {
                 worker.step();
                 steps += 1;
             }
-            println!("{:?}\tround {} complete in {} steps", timer.elapsed(), round, steps);
+            println!(
+                "{:?}\tround {} complete in {} steps",
+                timer.elapsed(),
+                round,
+                steps
+            );
         }
-
-    }).unwrap();
+    })
+    .unwrap();
 }

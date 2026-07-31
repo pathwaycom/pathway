@@ -5025,3 +5025,30 @@ def test_psql_copy_writer_ingests_500k_rows_within_30s(tmp_path, postgres):
             max_batch_size=10_000,
         )
         wait_result_with_checker(RowCountChecker(n_rows, postgres, table_name), 30)
+
+
+def test_psql_explore_schema_auto_infers(postgres):
+    class OutputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+        value: float
+
+    table_name = postgres.random_table_name()
+    postgres.create_table(OutputSchema, add_special_fields=False, table_name=table_name)
+
+    table = pw.io.postgres.read(
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        mode="static",
+        schema=None,
+    )
+
+    assert table.schema.column_names() == ["id", "name", "value"]
+
+    from pathway.internals import dtype
+
+    actual_dtypes = table.schema._dtypes()
+
+    assert actual_dtypes["id"] == dtype.INT
+    assert actual_dtypes["name"] == dtype.Optional(dtype.STR)
+    assert actual_dtypes["value"] == dtype.Optional(dtype.FLOAT)

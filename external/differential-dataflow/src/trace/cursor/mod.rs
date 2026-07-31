@@ -6,14 +6,13 @@
 //! supports efficient seeking (via the `seek_key` and `seek_val` methods).
 
 // pub mod cursor_list;
-pub mod cursor_pair;
 pub mod cursor_list;
+pub mod cursor_pair;
 
 pub use self::cursor_list::CursorList;
 
 /// A cursor for navigating ordered `(key, val, time, diff)` updates.
 pub trait Cursor {
-
     /// Key by which updates are indexed.
     type Key;
     /// Values associated with keys.
@@ -42,11 +41,19 @@ pub trait Cursor {
 
     /// Returns a reference to the current key, if valid.
     fn get_key<'a>(&self, storage: &'a Self::Storage) -> Option<&'a Self::Key> {
-        if self.key_valid(storage) { Some(self.key(storage)) } else { None }
+        if self.key_valid(storage) {
+            Some(self.key(storage))
+        } else {
+            None
+        }
     }
     /// Returns a reference to the current value, if valid.
     fn get_val<'a>(&self, storage: &'a Self::Storage) -> Option<&'a Self::Val> {
-        if self.val_valid(storage) { Some(self.val(storage)) } else { None }
+        if self.val_valid(storage) {
+            Some(self.val(storage))
+        } else {
+            None
+        }
     }
 
     /// Applies `logic` to each pair of time and difference. Intended for mutation of the
@@ -69,7 +76,10 @@ pub trait Cursor {
     fn rewind_vals(&mut self, storage: &Self::Storage);
 
     /// Rewinds the cursor and outputs its contents to a Vec
-    fn to_vec(&mut self, storage: &Self::Storage) -> Vec<((Self::Key, Self::Val), Vec<(Self::Time, Self::R)>)>
+    fn to_vec(
+        &mut self,
+        storage: &Self::Storage,
+    ) -> Vec<((Self::Key, Self::Val), Vec<(Self::Time, Self::R)>)>
     where
         Self::Key: Clone,
         Self::Val: Clone,
@@ -85,7 +95,10 @@ pub trait Cursor {
                 self.map_times(storage, |ts, r| {
                     kv_out.push((ts.clone(), r.clone()));
                 });
-                out.push(((self.key(storage).clone(), self.val(storage).clone()), kv_out));
+                out.push((
+                    (self.key(storage).clone(), self.val(storage).clone()),
+                    kv_out,
+                ));
                 self.step_val(storage);
             }
             self.step_key(storage);

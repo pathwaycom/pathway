@@ -5,13 +5,19 @@ use std::collections::VecDeque;
 use timely::communication::message::RefOrMut;
 use timely::progress::frontier::Antichain;
 
-use ::difference::Semigroup;
+use difference::Semigroup;
 
 use lattice::Lattice;
 use trace::{Batch, Batcher, Builder};
 
 /// Creates batches from unordered tuples.
-pub struct MergeBatcher<B: Batch> where B::Key: Ord, B::Val: Ord, B::Time: Ord, B::R: Semigroup {
+pub struct MergeBatcher<B: Batch>
+where
+    B::Key: Ord,
+    B::Val: Ord,
+    B::Time: Ord,
+    B::R: Semigroup,
+{
     sorter: MergeSorter<(B::Key, B::Val), B::Time, B::R>,
     lower: Antichain<B::Time>,
     frontier: Antichain<B::Time>,
@@ -21,9 +27,9 @@ pub struct MergeBatcher<B: Batch> where B::Key: Ord, B::Val: Ord, B::Time: Ord, 
 impl<B> Batcher<B> for MergeBatcher<B>
 where
     B: Batch,
-    B::Key: Ord+Clone,
-    B::Val: Ord+Clone,
-    B::Time: Lattice+timely::progress::Timestamp+Ord+Clone,
+    B::Key: Ord + Clone,
+    B::Val: Ord + Clone,
+    B::Time: Lattice + timely::progress::Timestamp + Ord + Clone,
     B::R: Semigroup,
 {
     fn new() -> Self {
@@ -36,7 +42,7 @@ where
     }
 
     #[inline(never)]
-    fn push_batch(&mut self, batch: RefOrMut<Vec<((B::Key,B::Val),B::Time,B::R)>>) {
+    fn push_batch(&mut self, batch: RefOrMut<Vec<((B::Key, B::Val), B::Time, B::R)>>) {
         // `batch` is either a shared reference or an owned allocations.
         match batch {
             RefOrMut::Ref(reference) => {
@@ -45,7 +51,7 @@ where
                 let mut owned: Vec<_> = self.sorter.empty();
                 owned.clone_from(reference);
                 self.sorter.push(&mut owned);
-            },
+            }
             RefOrMut::Mut(reference) => {
                 self.sorter.push(reference);
             }
@@ -58,7 +64,6 @@ where
     // updates with times not greater or equal to `upper`.
     #[inline(never)]
     fn seal(&mut self, upper: Antichain<B::Time>) -> B {
-
         let mut builder = B::Builder::new();
 
         let mut merged = Vec::new();
@@ -81,8 +86,7 @@ where
                         }
                     }
                     keep.push(((key, val), time, diff));
-                }
-                else {
+                } else {
                     builder.push((key, val, time, diff));
                 }
             }
@@ -105,12 +109,17 @@ where
         let mut buffer = Vec::new();
         self.sorter.push(&mut buffer);
         // We recycle buffers with allocations (capacity, and not zero-sized).
-        while buffer.capacity() > 0 && std::mem::size_of::<((B::Key,B::Val),B::Time,B::R)>() > 0 {
+        while buffer.capacity() > 0 && std::mem::size_of::<((B::Key, B::Val), B::Time, B::R)>() > 0
+        {
             buffer = Vec::new();
             self.sorter.push(&mut buffer);
         }
 
-        let seal = builder.done(self.lower.clone(), upper.clone(), Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()));
+        let seal = builder.done(
+            self.lower.clone(),
+            upper.clone(),
+            Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
+        );
         self.lower = upper;
         seal
     }
@@ -121,7 +130,6 @@ where
     }
 }
 
-
 #[inline]
 unsafe fn push_unchecked<T>(vec: &mut Vec<T>, element: T) {
     debug_assert!(vec.len() < vec.capacity());
@@ -131,12 +139,11 @@ unsafe fn push_unchecked<T>(vec: &mut Vec<T>, element: T) {
 }
 
 pub struct MergeSorter<D: Ord, T: Ord, R: Semigroup> {
-    queue: Vec<Vec<Vec<(D, T, R)>>>,    // each power-of-two length list of allocations.
+    queue: Vec<Vec<Vec<(D, T, R)>>>, // each power-of-two length list of allocations.
     stash: Vec<Vec<(D, T, R)>>,
 }
 
 impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
-
     const BUFFER_SIZE_BYTES: usize = 1 << 13;
 
     fn buffer_size() -> usize {
@@ -151,11 +158,18 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
     }
 
     #[inline]
-    pub fn new() -> Self { MergeSorter { queue: Vec::new(), stash: Vec::new() } }
+    pub fn new() -> Self {
+        MergeSorter {
+            queue: Vec::new(),
+            stash: Vec::new(),
+        }
+    }
 
     #[inline]
     pub fn empty(&mut self) -> Vec<(D, T, R)> {
-        self.stash.pop().unwrap_or_else(|| Vec::with_capacity(Self::buffer_size()))
+        self.stash
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(Self::buffer_size()))
     }
 
     #[inline(never)]
@@ -172,15 +186,17 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
         // TODO: Reason about mis-sized vectors, from deserialized data; should probably drop.
         let mut batch = if self.stash.len() > 2 {
             ::std::mem::replace(batch, self.stash.pop().unwrap())
-        }
-        else {
+        } else {
             ::std::mem::replace(batch, Vec::new())
         };
 
         if batch.len() > 0 {
             crate::consolidation::consolidate_updates(&mut batch);
             self.queue.push(vec![batch]);
-            while self.queue.len() > 1 && (self.queue[self.queue.len()-1].len() >= self.queue[self.queue.len()-2].len() / 2) {
+            while self.queue.len() > 1
+                && (self.queue[self.queue.len() - 1].len()
+                    >= self.queue[self.queue.len() - 2].len() / 2)
+            {
                 let list1 = self.queue.pop().unwrap();
                 let list2 = self.queue.pop().unwrap();
                 let merged = self.merge_by(list1, list2);
@@ -192,7 +208,7 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
     // This is awkward, because it isn't a power-of-two length any more, and we don't want
     // to break it down to be so.
     pub fn push_list(&mut self, list: Vec<Vec<(D, T, R)>>) {
-        while self.queue.len() > 1 && self.queue[self.queue.len()-1].len() < list.len() {
+        while self.queue.len() > 1 && self.queue[self.queue.len() - 1].len() < list.len() {
             let list1 = self.queue.pop().unwrap();
             let list2 = self.queue.pop().unwrap();
             let merged = self.merge_by(list1, list2);
@@ -217,8 +233,11 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
 
     // merges two sorted input lists into one sorted output list.
     #[inline(never)]
-    fn merge_by(&mut self, list1: Vec<Vec<(D, T, R)>>, list2: Vec<Vec<(D, T, R)>>) -> Vec<Vec<(D, T, R)>> {
-
+    fn merge_by(
+        &mut self,
+        list1: Vec<Vec<(D, T, R)>>,
+        list2: Vec<Vec<(D, T, R)>>,
+    ) -> Vec<Vec<(D, T, R)>> {
         use std::cmp::Ordering;
 
         // TODO: `list1` and `list2` get dropped; would be better to reuse?
@@ -233,23 +252,27 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
 
         // while we have valid data in each input, merge.
         while !head1.is_empty() && !head2.is_empty() {
-
             while (result.capacity() - result.len()) > 0 && head1.len() > 0 && head2.len() > 0 {
-
                 let cmp = {
                     let x = head1.front().unwrap();
                     let y = head2.front().unwrap();
                     (&x.0, &x.1).cmp(&(&y.0, &y.1))
                 };
                 match cmp {
-                    Ordering::Less    => { unsafe { push_unchecked(&mut result, head1.pop_front().unwrap()); } }
-                    Ordering::Greater => { unsafe { push_unchecked(&mut result, head2.pop_front().unwrap()); } }
-                    Ordering::Equal   => {
+                    Ordering::Less => unsafe {
+                        push_unchecked(&mut result, head1.pop_front().unwrap());
+                    },
+                    Ordering::Greater => unsafe {
+                        push_unchecked(&mut result, head2.pop_front().unwrap());
+                    },
+                    Ordering::Equal => {
                         let (data1, time1, mut diff1) = head1.pop_front().unwrap();
                         let (_data2, _time2, diff2) = head2.pop_front().unwrap();
                         diff1.plus_equals(&diff2);
                         if !diff1.is_zero() {
-                            unsafe { push_unchecked(&mut result, (data1, time1, diff1)); }
+                            unsafe {
+                                push_unchecked(&mut result, (data1, time1, diff1));
+                            }
                         }
                     }
                 }
@@ -262,29 +285,40 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
 
             if head1.is_empty() {
                 let done1 = Vec::from(head1);
-                if done1.capacity() == Self::buffer_size() { self.stash.push(done1); }
+                if done1.capacity() == Self::buffer_size() {
+                    self.stash.push(done1);
+                }
                 head1 = VecDeque::from(list1.next().unwrap_or_default());
             }
             if head2.is_empty() {
                 let done2 = Vec::from(head2);
-                if done2.capacity() == Self::buffer_size() { self.stash.push(done2); }
+                if done2.capacity() == Self::buffer_size() {
+                    self.stash.push(done2);
+                }
                 head2 = VecDeque::from(list2.next().unwrap_or_default());
             }
         }
 
-        if result.len() > 0 { output.push(result); }
-        else if result.capacity() > 0 { self.stash.push(result); }
+        if result.len() > 0 {
+            output.push(result);
+        } else if result.capacity() > 0 {
+            self.stash.push(result);
+        }
 
         if !head1.is_empty() {
             let mut result = self.empty();
-            for item1 in head1 { result.push(item1); }
+            for item1 in head1 {
+                result.push(item1);
+            }
             output.push(result);
         }
         output.extend(list1);
 
         if !head2.is_empty() {
             let mut result = self.empty();
-            for item2 in head2 { result.push(item2); }
+            for item2 in head2 {
+                result.push(item2);
+            }
             output.push(result);
         }
         output.extend(list2);
@@ -300,12 +334,10 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
 /// and the slice. This allows `advance` to use exponential search to
 /// count the number of elements in time logarithmic in the result.
 #[inline]
-pub fn _advance<T, F: Fn(&T)->bool>(slice: &[T], function: F) -> usize {
-
+pub fn _advance<T, F: Fn(&T) -> bool>(slice: &[T], function: F) -> usize {
     // start with no advance
     let mut index = 0;
     if index < slice.len() && function(&slice[index]) {
-
         // advance in exponentially growing steps.
         let mut step = 1;
         while index + step < slice.len() && function(&slice[index + step]) {

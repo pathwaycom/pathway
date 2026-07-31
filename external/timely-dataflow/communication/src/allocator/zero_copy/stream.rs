@@ -1,7 +1,7 @@
 //! Abstractions over network streams.
 
 use std::io;
-use std::net::{TcpStream, Shutdown};
+use std::net::{Shutdown, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
@@ -64,7 +64,7 @@ impl<S: Stream> Drop for StreamWriter<S> {
     }
 }
 
-impl <S: Stream> io::Write for StreamWriter<S> {
+impl<S: Stream> io::Write for StreamWriter<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
     }

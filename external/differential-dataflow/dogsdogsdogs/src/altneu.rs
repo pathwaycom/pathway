@@ -11,18 +11,22 @@
 //! element of the second lattice, if neither first element equals
 //! the join.
 
-
-
 /// A pair of timestamps, partially ordered by the product order.
-#[derive(Debug, Hash, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Abomonation, Serialize, Deserialize)]
+#[derive(
+    Debug, Hash, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Abomonation, Serialize, Deserialize,
+)]
 pub struct AltNeu<T> {
     pub time: T,
-    pub neu: bool,  // alt < neu in timestamp comparisons.
+    pub neu: bool, // alt < neu in timestamp comparisons.
 }
 
 impl<T> AltNeu<T> {
-    pub fn alt(time: T) -> Self { AltNeu { time, neu: false } }
-    pub fn neu(time: T) -> Self { AltNeu { time, neu: true } }
+    pub fn alt(time: T) -> Self {
+        AltNeu { time, neu: false }
+    }
+    pub fn neu(time: T) -> Self {
+        AltNeu { time, neu: true }
+    }
 }
 
 // Implement timely dataflow's `PartialOrder` trait.
@@ -31,8 +35,7 @@ impl<T: PartialOrder> PartialOrder for AltNeu<T> {
     fn less_equal(&self, other: &Self) -> bool {
         if self.time.eq(&other.time) {
             self.neu <= other.neu
-        }
-        else {
+        } else {
             self.time.less_equal(&other.time)
         }
     }
@@ -54,7 +57,9 @@ impl<T: Timestamp> PathSummary<AltNeu<T>> for () {
 use timely::progress::Timestamp;
 impl<T: Timestamp> Timestamp for AltNeu<T> {
     type Summary = ();
-    fn minimum() -> Self { AltNeu::alt(T::minimum()) }
+    fn minimum() -> Self {
+        AltNeu::alt(T::minimum())
+    }
 }
 
 use timely::progress::timestamp::Refines;

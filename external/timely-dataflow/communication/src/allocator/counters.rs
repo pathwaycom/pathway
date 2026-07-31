@@ -1,9 +1,9 @@
 //! Push and Pull wrappers to maintain counts of messages in channels.
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
-use crate::{Push, Pull};
+use crate::{Pull, Push};
 
 /// The push half of an intra-thread channel.
 pub struct Pusher<T, P: Push<T>> {
@@ -14,7 +14,7 @@ pub struct Pusher<T, P: Push<T>> {
     phantom: ::std::marker::PhantomData<T>,
 }
 
-impl<T, P: Push<T>>  Pusher<T, P> {
+impl<T, P: Push<T>> Pusher<T, P> {
     /// Wraps a pusher with a message counter.
     pub fn new(pusher: P, index: usize, events: Rc<RefCell<Vec<usize>>>) -> Self {
         Pusher {
@@ -51,11 +51,9 @@ impl<T, P: Push<T>> Push<T> for Pusher<T, P> {
         // messages here doesn't block the computation. (The Thread allocator is used
         // if only one worker is used and always for Pipeline pact).
         if element.is_some() {
-            self.events
-                .borrow_mut()
-                .push(self.index);
+            self.events.borrow_mut().push(self.index);
         }
-        
+
         self.pusher.push(element)
     }
 }
@@ -72,9 +70,14 @@ pub struct ArcPusher<T, P: Push<T>> {
     buzzer: crate::buzzer::Buzzer,
 }
 
-impl<T, P: Push<T>>  ArcPusher<T, P> {
+impl<T, P: Push<T>> ArcPusher<T, P> {
     /// Wraps a pusher with a message counter.
-    pub fn new(pusher: P, index: usize, events: Sender<usize>, buzzer: crate::buzzer::Buzzer) -> Self {
+    pub fn new(
+        pusher: P,
+        index: usize,
+        events: Sender<usize>,
+        buzzer: crate::buzzer::Buzzer,
+    ) -> Self {
         ArcPusher {
             index,
             // count: 0,
@@ -107,8 +110,8 @@ impl<T, P: Push<T>> Push<T> for ArcPusher<T, P> {
         // multiple threads are involved.
         self.pusher.push(element);
         let _ = self.events.send(self.index);
-            // TODO : Perhaps this shouldn't be a fatal error (e.g. in shutdown).
-            // .expect("Failed to send message count");
+        // TODO : Perhaps this shouldn't be a fatal error (e.g. in shutdown).
+        // .expect("Failed to send message count");
         self.buzzer.buzz();
     }
 }
@@ -122,7 +125,7 @@ pub struct Puller<T, P: Pull<T>> {
     phantom: ::std::marker::PhantomData<T>,
 }
 
-impl<T, P: Pull<T>>  Puller<T, P> {
+impl<T, P: Pull<T>> Puller<T, P> {
     /// Wraps a puller with a message counter.
     pub fn new(puller: P, index: usize, events: Rc<RefCell<Vec<usize>>>) -> Self {
         Puller {
@@ -140,13 +143,10 @@ impl<T, P: Pull<T>> Pull<T> for Puller<T, P> {
         let result = self.puller.pull();
         if result.is_none() {
             if self.count != 0 {
-                self.events
-                    .borrow_mut()
-                    .push(self.index);
+                self.events.borrow_mut().push(self.index);
                 self.count = 0;
             }
-        }
-        else {
+        } else {
             self.count += 1;
         }
 

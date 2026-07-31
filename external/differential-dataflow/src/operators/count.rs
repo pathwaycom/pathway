@@ -1,20 +1,23 @@
 //! Count the number of occurrences of each element.
 
-use timely::order::TotalOrder;
-use timely::dataflow::*;
-use timely::dataflow::operators::Operator;
 use timely::dataflow::channels::pact::Pipeline;
+use timely::dataflow::operators::Operator;
+use timely::dataflow::*;
+use timely::order::TotalOrder;
 
-use lattice::Lattice;
-use ::{ExchangeData, Collection, Data};
-use ::difference::Semigroup;
-use hashable::Hashable;
 use collection::AsCollection;
-use operators::arrange::{Arranged, ArrangeBySelf};
+use difference::Semigroup;
+use hashable::Hashable;
+use lattice::Lattice;
+use operators::arrange::{ArrangeBySelf, Arranged};
 use trace::{BatchReader, Cursor, TraceReader};
+use {Collection, Data, ExchangeData};
 
 /// Extension trait for the `count` differential dataflow method.
-pub trait CountTotal<G: Scope, K: Data, R: Semigroup> where G::Timestamp: TotalOrder+Lattice+Ord {
+pub trait CountTotal<G: Scope, K: Data, R: Semigroup>
+where
+    G::Timestamp: TotalOrder + Lattice + Ord,
+{
     /// Counts the number of occurrences of each element.
     ///
     /// # Examples
@@ -47,8 +50,11 @@ pub trait CountTotal<G: Scope, K: Data, R: Semigroup> where G::Timestamp: TotalO
     fn count_total_core<R2: Semigroup + From<i8>>(&self) -> Collection<G, (K, R), R2>;
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Semigroup> CountTotal<G, K, R> for Collection<G, K, R>
-where G::Timestamp: TotalOrder+Lattice+Ord {
+impl<G: Scope, K: ExchangeData + Hashable, R: ExchangeData + Semigroup> CountTotal<G, K, R>
+    for Collection<G, K, R>
+where
+    G::Timestamp: TotalOrder + Lattice + Ord,
+{
     fn count_total_core<R2: Semigroup + From<i8>>(&self) -> Collection<G, (K, R), R2> {
         self.arrange_by_self_named("Arrange: CountTotal")
             .count_total_core()
@@ -57,71 +63,82 @@ where G::Timestamp: TotalOrder+Lattice+Ord {
 
 impl<G: Scope, T1> CountTotal<G, T1::Key, T1::R> for Arranged<G, T1>
 where
-    G::Timestamp: TotalOrder+Lattice+Ord,
-    T1: TraceReader<Val=(), Time=G::Timestamp>+Clone+'static,
+    G::Timestamp: TotalOrder + Lattice + Ord,
+    T1: TraceReader<Val = (), Time = G::Timestamp> + Clone + 'static,
     T1::Key: Data,
     T1::R: Semigroup,
 {
     fn count_total_core<R2: Semigroup + From<i8>>(&self) -> Collection<G, (T1::Key, T1::R), R2> {
-
         let mut trace = self.trace.clone();
         let mut buffer = Vec::new();
 
-        self.stream.unary_frontier(Pipeline, "CountTotal", move |_,_| {
+        self.stream
+            .unary_frontier(Pipeline, "CountTotal", move |_, _| {
+                // tracks the upper limit of known-complete timestamps.
+                let mut upper_limit = timely::progress::frontier::Antichain::from_elem(
+                    <G::Timestamp as timely::progress::Timestamp>::minimum(),
+                );
 
-            // tracks the upper limit of known-complete timestamps.
-            let mut upper_limit = timely::progress::frontier::Antichain::from_elem(<G::Timestamp as timely::progress::Timestamp>::minimum());
+                move |input, output| {
+                    input.for_each(|capability, batches| {
+                        batches.swap(&mut buffer);
+                        let mut session = output.session(&capability);
+                        for batch in buffer.drain(..) {
+                            let mut batch_cursor = batch.cursor();
+                            let (mut trace_cursor, trace_storage) =
+                                trace.cursor_through(batch.lower().borrow()).unwrap();
+                            upper_limit.clone_from(batch.upper());
 
-            move |input, output| {
+                            while batch_cursor.key_valid(&batch) {
+                                let key = batch_cursor.key(&batch);
+                                let mut count: Option<T1::R> = None;
 
-                input.for_each(|capability, batches| {
-                    batches.swap(&mut buffer);
-                    let mut session = output.session(&capability);
-                    for batch in buffer.drain(..) {
-                        let mut batch_cursor = batch.cursor();
-                        let (mut trace_cursor, trace_storage) = trace.cursor_through(batch.lower().borrow()).unwrap();
-                        upper_limit.clone_from(batch.upper());
+                                trace_cursor.seek_key(&trace_storage, key);
+                                if trace_cursor.get_key(&trace_storage) == Some(key) {
+                                    trace_cursor.map_times(&trace_storage, |_, diff| {
+                                        count.as_mut().map(|c| c.plus_equals(diff));
+                                        if count.is_none() {
+                                            count = Some(diff.clone());
+                                        }
+                                    });
+                                }
 
-                        while batch_cursor.key_valid(&batch) {
-
-                            let key = batch_cursor.key(&batch);
-                            let mut count: Option<T1::R> = None;
-
-                            trace_cursor.seek_key(&trace_storage, key);
-                            if trace_cursor.get_key(&trace_storage) == Some(key) {
-                                trace_cursor.map_times(&trace_storage, |_, diff| {
+                                batch_cursor.map_times(&batch, |time, diff| {
+                                    if let Some(count) = count.as_ref() {
+                                        if !count.is_zero() {
+                                            session.give((
+                                                (key.clone(), count.clone()),
+                                                time.clone(),
+                                                R2::from(-1i8),
+                                            ));
+                                        }
+                                    }
                                     count.as_mut().map(|c| c.plus_equals(diff));
-                                    if count.is_none() { count = Some(diff.clone()); }
+                                    if count.is_none() {
+                                        count = Some(diff.clone());
+                                    }
+                                    if let Some(count) = count.as_ref() {
+                                        if !count.is_zero() {
+                                            session.give((
+                                                (key.clone(), count.clone()),
+                                                time.clone(),
+                                                R2::from(1i8),
+                                            ));
+                                        }
+                                    }
                                 });
+
+                                batch_cursor.step_key(&batch);
                             }
-
-                            batch_cursor.map_times(&batch, |time, diff| {
-
-                                if let Some(count) = count.as_ref() {
-                                    if !count.is_zero() {
-                                        session.give(((key.clone(), count.clone()), time.clone(), R2::from(-1i8)));
-                                    }
-                                }
-                                count.as_mut().map(|c| c.plus_equals(diff));
-                                if count.is_none() { count = Some(diff.clone()); }
-                                if let Some(count) = count.as_ref() {
-                                    if !count.is_zero() {
-                                        session.give(((key.clone(), count.clone()), time.clone(), R2::from(1i8)));
-                                    }
-                                }
-                            });
-
-                            batch_cursor.step_key(&batch);
                         }
-                    }
-                });
+                    });
 
-                // tidy up the shared input trace.
-                trace.advance_upper(&mut upper_limit);
-                trace.set_logical_compaction(upper_limit.borrow());
-                trace.set_physical_compaction(upper_limit.borrow());
-            }
-        })
-        .as_collection()
+                    // tidy up the shared input trace.
+                    trace.advance_upper(&mut upper_limit);
+                    trace.set_logical_compaction(upper_limit.borrow());
+                    trace.set_physical_compaction(upper_limit.borrow());
+                }
+            })
+            .as_collection()
     }
 }

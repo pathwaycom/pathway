@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Iterable, Literal
 
 from pathway.internals import api, datasink, datasource, dtype as dt
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -20,7 +19,6 @@ from pathway.io._utils import (
     init_mode_from_str,
     read_schema,
 )
-from pathway.schema import schema_builder
 
 
 def _validate_identifier(arg_name: str, value: str) -> None:
@@ -107,7 +105,7 @@ def read(
         connection_string: ADO.NET-style connection string for the MSSQL database.
             Example: ``"Server=tcp:localhost,1433;Database=mydb;User Id=sa;Password=pass;TrustServerCertificate=true"``
         table_name: Name of the table to read from.
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. If not provided, it will be deduced automatically from the database.
         mode: ``"streaming"`` (the default) uses CDC for real-time change
             tracking via the transaction log; requires CDC to be enabled on the
             database and table. ``"static"`` reads the full table once as a
@@ -216,65 +214,24 @@ def read(
     _validate_identifier("table_name", table_name)
     _validate_identifier("schema_name", schema_name)
 
+    cdc_enabled = mode == "streaming"
+
+    data_storage = api.DataStorage(
+        storage_type="mssql",
+        connection_string=connection_string,
+        table_name=table_name,
+        schema_name=schema_name,
+        mode=(
+            api.ConnectorMode.STATIC if not cdc_enabled else api.ConnectorMode.STREAMING
+        ),
+    )
+
     if schema is None:
-        try:
-            from pathway.engine import mssql_explore_schema
+        from pathway.io._utils import auto_explore_sql_schema
 
-            full_table_name = f"{schema_name}.{table_name}"
-            columns_data, pk_columns = mssql_explore_schema(
-                connection_string, full_table_name
-            )
-            schema_columns = {}
-            for col_name, udt_name, is_nullable in columns_data:
-                udt_name_lower = udt_name.lower()
-                mapping = {
-                    "tinyint": int,
-                    "smallint": int,
-                    "int": int,
-                    "bigint": int,
-                    "bit": bool,
-                    "real": float,
-                    "float": float,
-                    "decimal": float,
-                    "numeric": float,
-                    "char": str,
-                    "varchar": str,
-                    "nchar": str,
-                    "nvarchar": str,
-                    "text": str,
-                    "ntext": str,
-                    "uniqueidentifier": str,
-                }
-                py_type = mapping.get(udt_name_lower, Any)
-                if is_nullable and py_type is not Any:
-                    py_type = Optional[py_type]
-
-                is_pk = col_name in pk_columns
-                from pathway.internals.schema import column_definition
-
-                schema_columns[col_name] = column_definition(
-                    dtype=py_type,
-                    primary_key=is_pk,
-                )
-
-            if not pk_columns:
-                logging.getLogger(__name__).warning(
-                    f"No primary key found for {schema_name}.{table_name} during schema exploration. "
-                    "Falling back to auto-generated row identifiers. "
-                    "This may cause issues in streaming mode if the table is not append-only."
-                )
-
-            schema_name_class = (
-                "".join(c.capitalize() for c in table_name.split("_")) + "Schema"
-            )
-            schema = schema_builder(schema_columns, name=schema_name_class)
-            logging.getLogger(__name__).info(
-                f"Derived schema for {schema_name}.{table_name}:\n{schema}"
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to explore schema automatically: {e}. Please provide an explicit schema."
-            ) from e
+        schema = auto_explore_sql_schema(
+            data_storage, table_name, schema_name=schema_name
+        )
 
     schema, api_schema = read_schema(schema)
 
@@ -298,17 +255,6 @@ def read(
             "same Pathway key and CDC tracking would silently merge unrelated rows."
         )
 
-    cdc_enabled = mode == "streaming"
-
-    data_storage = api.DataStorage(
-        storage_type="mssql",
-        connection_string=connection_string,
-        table_name=table_name,
-        schema_name=schema_name,
-        mode=(
-            api.ConnectorMode.STATIC if not cdc_enabled else api.ConnectorMode.STREAMING
-        ),
-    )
     data_format = api.DataFormat(
         format_type="transparent",
         session_type=api.SessionType.UPSERT,

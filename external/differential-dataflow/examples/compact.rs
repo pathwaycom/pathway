@@ -1,11 +1,10 @@
-extern crate timely;
 extern crate differential_dataflow;
+extern crate timely;
 
 use differential_dataflow::input::Input;
 use differential_dataflow::operators::Threshold;
 
 fn main() {
-
     let large: usize = std::env::args().nth(1).unwrap().parse().unwrap();
     let small: usize = std::env::args().nth(2).unwrap().parse().unwrap();
     let batch: usize = std::env::args().nth(3).unwrap().parse().unwrap();
@@ -13,7 +12,6 @@ fn main() {
 
     // define a new timely dataflow computation.
     timely::execute_from_args(std::env::args().skip(3), move |worker| {
-
         let timer = ::std::time::Instant::now();
 
         let mut probe = timely::dataflow::operators::probe::Handle::new();
@@ -34,7 +32,9 @@ fn main() {
                 handle.advance_to(next);
                 handle.flush();
                 next += batch;
-                while probe.less_than(handle.time()) { worker.step(); }
+                while probe.less_than(handle.time()) {
+                    worker.step();
+                }
                 // println!("{:?}\tround {} loaded", timer.elapsed(), next);
             }
             handle.advance_to(value);
@@ -45,7 +45,9 @@ fn main() {
 
         handle.advance_to(total);
         handle.flush();
-        while probe.less_than(handle.time()) { worker.step(); }
+        while probe.less_than(handle.time()) {
+            worker.step();
+        }
 
         println!("{:?}\tdata loaded", timer.elapsed());
 
@@ -56,7 +58,9 @@ fn main() {
                 handle.advance_to(total + next);
                 handle.flush();
                 next += batch;
-                while probe.less_than(handle.time()) { worker.step(); }
+                while probe.less_than(handle.time()) {
+                    worker.step();
+                }
                 // println!("{:?}\tround {} unloaded", timer.elapsed(), next);
             }
             handle.advance_to(total + value);
@@ -67,11 +71,13 @@ fn main() {
 
         handle.advance_to(total + total);
         handle.flush();
-        while probe.less_than(handle.time()) { worker.step(); }
+        while probe.less_than(handle.time()) {
+            worker.step();
+        }
 
         println!("{:?}\tdata unloaded", timer.elapsed());
 
-        while worker.step_or_park(None) { }
-
-    }).unwrap();
+        while worker.step_or_park(None) {}
+    })
+    .unwrap();
 }

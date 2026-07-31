@@ -43,8 +43,12 @@ pub struct StateEvent {
 }
 
 impl From<MessageEvent> for CommunicationEvent {
-    fn from(v: MessageEvent) -> CommunicationEvent { CommunicationEvent::Message(v) }
+    fn from(v: MessageEvent) -> CommunicationEvent {
+        CommunicationEvent::Message(v)
+    }
 }
 impl From<StateEvent> for CommunicationEvent {
-    fn from(v: StateEvent) -> CommunicationEvent { CommunicationEvent::State(v) }
+    fn from(v: StateEvent) -> CommunicationEvent {
+        CommunicationEvent::State(v)
+    }
 }

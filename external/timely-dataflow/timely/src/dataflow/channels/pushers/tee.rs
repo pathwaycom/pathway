@@ -27,12 +27,15 @@ impl<T: Data, D: Container> Push<BundleCore<T, D>> for TeeCore<T, D> {
         if let Some(message) = message {
             for index in 1..pushers.len() {
                 self.buffer.clone_from(&message.data);
-                Message::push_at(&mut self.buffer, message.time.clone(), &mut pushers[index-1]);
+                Message::push_at(
+                    &mut self.buffer,
+                    message.time.clone(),
+                    &mut pushers[index - 1],
+                );
             }
-        }
-        else {
+        } else {
             for index in 1..pushers.len() {
-                pushers[index-1].push(&mut None);
+                pushers[index - 1].push(&mut None);
             }
         }
         if pushers.len() > 0 {
@@ -89,7 +92,7 @@ pub struct TeeHelper<T, D> {
 
 impl<T, D> TeeHelper<T, D> {
     /// Adds a new `Push` implementor to the list of recipients shared with a `Stream`.
-    pub fn add_pusher<P: Push<BundleCore<T, D>>+'static>(&self, pusher: P) {
+    pub fn add_pusher<P: Push<BundleCore<T, D>> + 'static>(&self, pusher: P) {
         self.shared.borrow_mut().push(Box::new(pusher));
     }
 }

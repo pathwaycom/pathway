@@ -5,14 +5,14 @@
 //! and there are several default implementations, including a linked-list, Rust's MPSC
 //! queue, and a binary serializer wrapping any `W: Write`.
 
-use crate::dataflow::{Scope, StreamCore};
 use crate::dataflow::channels::pact::Pipeline;
 use crate::dataflow::channels::pullers::Counter as PullCounter;
 use crate::dataflow::operators::generic::builder_raw::OperatorBuilder;
+use crate::dataflow::{Scope, StreamCore};
 
-use crate::Container;
 use crate::progress::ChangeBatch;
 use crate::progress::Timestamp;
+use crate::Container;
 
 use super::{EventCore, EventPusherCore};
 
@@ -103,7 +103,7 @@ pub trait Capture<T: Timestamp, D: Container> {
     ///
     /// assert_eq!(recv0.extract()[0].1, (0..10).collect::<Vec<_>>());
     /// ```
-    fn capture_into<P: EventPusherCore<T, D>+'static>(&self, pusher: P);
+    fn capture_into<P: EventPusherCore<T, D> + 'static>(&self, pusher: P);
 
     /// Captures a stream using Rust's MPSC channels.
     fn capture(&self) -> ::std::sync::mpsc::Receiver<EventCore<T, D>> {
@@ -114,40 +114,41 @@ pub trait Capture<T: Timestamp, D: Container> {
 }
 
 impl<S: Scope, D: Container> Capture<S::Timestamp, D> for StreamCore<S, D> {
-    fn capture_into<P: EventPusherCore<S::Timestamp, D>+'static>(&self, mut event_pusher: P) {
-
+    fn capture_into<P: EventPusherCore<S::Timestamp, D> + 'static>(&self, mut event_pusher: P) {
         let mut builder = OperatorBuilder::new("Capture".to_owned(), self.scope());
         let mut input = PullCounter::new(builder.new_input(self, Pipeline));
         let mut started = false;
 
-        builder.build(
-            move |progress| {
-
-                if !started {
-                    // discard initial capability.
-                    progress.frontiers[0].update(S::Timestamp::minimum(), -1);
-                    started = true;
-                }
-                if !progress.frontiers[0].is_empty() {
-                    // transmit any frontier progress.
-                    let to_send = ::std::mem::replace(&mut progress.frontiers[0], ChangeBatch::new());
-                    event_pusher.push(EventCore::Progress(to_send.into_inner()));
-                }
-
-                use crate::communication::message::RefOrMut;
-
-                // turn each received message into an event.
-                while let Some(message) = input.next() {
-                    let (time, data) = match message.as_ref_or_mut() {
-                        RefOrMut::Ref(reference) => (&reference.time, RefOrMut::Ref(&reference.data)),
-                        RefOrMut::Mut(reference) => (&reference.time, RefOrMut::Mut(&mut reference.data)),
-                    };
-                    let vector = data.replace(Default::default());
-                    event_pusher.push(EventCore::Messages(time.clone(), vector));
-                }
-                input.consumed().borrow_mut().drain_into(&mut progress.consumeds[0]);
-                false
+        builder.build(move |progress| {
+            if !started {
+                // discard initial capability.
+                progress.frontiers[0].update(S::Timestamp::minimum(), -1);
+                started = true;
             }
-        );
+            if !progress.frontiers[0].is_empty() {
+                // transmit any frontier progress.
+                let to_send = ::std::mem::replace(&mut progress.frontiers[0], ChangeBatch::new());
+                event_pusher.push(EventCore::Progress(to_send.into_inner()));
+            }
+
+            use crate::communication::message::RefOrMut;
+
+            // turn each received message into an event.
+            while let Some(message) = input.next() {
+                let (time, data) = match message.as_ref_or_mut() {
+                    RefOrMut::Ref(reference) => (&reference.time, RefOrMut::Ref(&reference.data)),
+                    RefOrMut::Mut(reference) => {
+                        (&reference.time, RefOrMut::Mut(&mut reference.data))
+                    }
+                };
+                let vector = data.replace(Default::default());
+                event_pusher.push(EventCore::Messages(time.clone(), vector));
+            }
+            input
+                .consumed()
+                .borrow_mut()
+                .drain_into(&mut progress.consumeds[0]);
+            false
+        });
     }
 }

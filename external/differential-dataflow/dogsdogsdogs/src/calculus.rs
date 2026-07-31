@@ -12,17 +12,20 @@
 //! allows us to write dataflows based on instantaneous changes, whose "accumluated state" is
 //! almost everywhere empty (and so has a low memory footprint, if the system works as planned).
 
-use timely::dataflow::Scope;
-use timely::dataflow::scopes::Child;
-use timely::dataflow::operators::{Filter, Map};
-use differential_dataflow::{AsCollection, Collection, Data};
 use differential_dataflow::difference::Abelian;
+use differential_dataflow::{AsCollection, Collection, Data};
+use timely::dataflow::operators::{Filter, Map};
+use timely::dataflow::scopes::Child;
+use timely::dataflow::Scope;
 
 use crate::altneu::AltNeu;
 
 /// Produce a collection containing the changes at the moments they happen.
 pub trait Differentiate<G: Scope, D: Data, R: Abelian> {
-    fn differentiate<'a>(&self, child: &Child<'a, G, AltNeu<G::Timestamp>>) -> Collection<Child<'a, G, AltNeu<G::Timestamp>>, D, R>;
+    fn differentiate<'a>(
+        &self,
+        child: &Child<'a, G, AltNeu<G::Timestamp>>,
+    ) -> Collection<Child<'a, G, AltNeu<G::Timestamp>>, D, R>;
 }
 
 /// Collect instantaneous changes back in to a collection.
@@ -37,11 +40,18 @@ where
     R: Abelian,
 {
     // For each (data, Alt(time), diff) we add a (data, Neu(time), -diff).
-    fn differentiate<'a>(&self, child: &Child<'a, G, AltNeu<G::Timestamp>>) -> Collection<Child<'a, G, AltNeu<G::Timestamp>>, D, R> {
+    fn differentiate<'a>(
+        &self,
+        child: &Child<'a, G, AltNeu<G::Timestamp>>,
+    ) -> Collection<Child<'a, G, AltNeu<G::Timestamp>>, D, R> {
         self.enter(child)
             .inner
             .flat_map(|(data, time, diff)| {
-                let neu = (data.clone(), AltNeu::neu(time.time.clone()), diff.clone().negate());
+                let neu = (
+                    data.clone(),
+                    AltNeu::neu(time.time.clone()),
+                    diff.clone().negate(),
+                );
                 let alt = (data, time, diff);
                 Some(alt).into_iter().chain(Some(neu))
             })
@@ -58,7 +68,7 @@ where
     // We discard each `neu` variant and strip off the `alt` wrapper.
     fn integrate(&self) -> Collection<G, D, R> {
         self.inner
-            .filter(|(_d,t,_r)| !t.neu)
+            .filter(|(_d, t, _r)| !t.neu)
             .as_collection()
             .leave()
     }

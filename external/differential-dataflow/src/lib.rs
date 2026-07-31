@@ -71,28 +71,27 @@
 //! of the new and old counts of the old and new degrees of the affected node).
 
 #![forbid(missing_docs)]
-
 // Disabling warnings since we try to keep the forks as close to the original, while the
 // suggestions are applied for the principal framework library.
 #![allow(warnings)]
 
 use std::fmt::Debug;
 
-pub use collection::{Collection, AsCollection};
-pub use hashable::Hashable;
+pub use collection::{AsCollection, Collection};
 pub use difference::Abelian as Diff;
+pub use hashable::Hashable;
 
 /// Data type usable in differential dataflow.
 ///
 /// Most differential dataflow operators require the ability to cancel corresponding updates, and the
 /// way that they do this is by putting the data in a canonical form. The `Ord` trait allows us to sort
 /// the data, at which point we can consolidate updates for equivalent records.
-pub trait Data : timely::Data + Ord + Debug { }
-impl<T: timely::Data + Ord + Debug> Data for T { }
+pub trait Data: timely::Data + Ord + Debug {}
+impl<T: timely::Data + Ord + Debug> Data for T {}
 
 /// Data types exchangeable in differential dataflow.
-pub trait ExchangeData : timely::ExchangeData + Ord + Debug { }
-impl<T: timely::ExchangeData + Ord + Debug> ExchangeData for T { }
+pub trait ExchangeData: timely::ExchangeData + Ord + Debug {}
+impl<T: timely::ExchangeData + Ord + Debug> ExchangeData for T {}
 
 extern crate fnv;
 extern crate timely;
@@ -104,19 +103,19 @@ extern crate abomonation;
 extern crate serde_derive;
 extern crate serde;
 
-pub mod hashable;
-pub mod operators;
 pub mod algorithms;
-pub mod lattice;
-pub mod trace;
-pub mod input;
+pub mod capture;
+pub mod collection;
+pub mod consolidation;
 pub mod difference;
 pub mod dynamic;
-pub mod collection;
+pub mod hashable;
+pub mod input;
+pub mod lattice;
 pub mod logging;
-pub mod consolidation;
-pub mod capture;
+pub mod operators;
 pub mod pathway;
+pub mod trace;
 
 /// Configuration options for differential dataflow.
 #[derive(Default)]
@@ -128,7 +127,7 @@ pub struct Config {
     /// cause these operators to reschedule themselves as long as their arrangemnt has not
     /// reached a compact representation, and each scheduling quantum they will perform
     /// compaction work as if `effort` records had been added to the arrangement.
-    pub idle_merge_effort: Option<isize>
+    pub idle_merge_effort: Option<isize>,
 }
 
 impl Config {

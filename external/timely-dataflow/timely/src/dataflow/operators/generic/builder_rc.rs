@@ -1,24 +1,26 @@
 //! Types to build operators with general shapes.
 
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::default::Default;
+use std::rc::Rc;
 
-use crate::progress::{ChangeBatch, Timestamp};
-use crate::progress::operate::SharedProgress;
 use crate::progress::frontier::{Antichain, MutableAntichain};
+use crate::progress::operate::SharedProgress;
+use crate::progress::{ChangeBatch, Timestamp};
 
-use crate::Container;
-use crate::dataflow::{Scope, StreamCore};
-use crate::dataflow::channels::pushers::TeeCore;
-use crate::dataflow::channels::pushers::CounterCore as PushCounter;
-use crate::dataflow::channels::pushers::buffer::BufferCore as PushBuffer;
 use crate::dataflow::channels::pact::ParallelizationContractCore;
 use crate::dataflow::channels::pullers::Counter as PullCounter;
+use crate::dataflow::channels::pushers::buffer::BufferCore as PushBuffer;
+use crate::dataflow::channels::pushers::CounterCore as PushCounter;
+use crate::dataflow::channels::pushers::TeeCore;
 use crate::dataflow::operators::capability::Capability;
-use crate::dataflow::operators::generic::handles::{InputHandleCore, new_input_handle, OutputWrapper};
-use crate::dataflow::operators::generic::operator_info::OperatorInfo;
 use crate::dataflow::operators::generic::builder_raw::OperatorShape;
+use crate::dataflow::operators::generic::handles::{
+    new_input_handle, InputHandleCore, OutputWrapper,
+};
+use crate::dataflow::operators::generic::operator_info::OperatorInfo;
+use crate::dataflow::{Scope, StreamCore};
+use crate::Container;
 
 use crate::logging::TimelyLogger as Logger;
 
@@ -38,7 +40,6 @@ pub struct OperatorBuilder<G: Scope> {
 }
 
 impl<G: Scope> OperatorBuilder<G> {
-
     /// Allocates a new generic operator builder from its containing scope.
     pub fn new(name: String, scope: G) -> Self {
         let logging = scope.logging();
@@ -59,11 +60,16 @@ impl<G: Scope> OperatorBuilder<G> {
     }
 
     /// Adds a new input to a generic operator builder, returning the `Pull` implementor to use.
-    pub fn new_input<D: Container, P>(&mut self, stream: &StreamCore<G, D>, pact: P) -> InputHandleCore<G::Timestamp, D, P::Puller>
+    pub fn new_input<D: Container, P>(
+        &mut self,
+        stream: &StreamCore<G, D>,
+        pact: P,
+    ) -> InputHandleCore<G::Timestamp, D, P::Puller>
     where
-        P: ParallelizationContractCore<G::Timestamp, D> {
-
-        let connection = vec![Antichain::from_elem(Default::default()); self.builder.shape().outputs()];
+        P: ParallelizationContractCore<G::Timestamp, D>,
+    {
+        let connection =
+            vec![Antichain::from_elem(Default::default()); self.builder.shape().outputs()];
         self.new_input_connection(stream, pact, connection)
     }
 
@@ -75,11 +81,18 @@ impl<G: Scope> OperatorBuilder<G> {
     ///
     /// Commonly the connections are either the unit summary, indicating the same timestamp might be produced as output, or an empty
     /// antichain indicating that there is no connection from the input to the output.
-    pub fn new_input_connection<D: Container, P>(&mut self, stream: &StreamCore<G, D>, pact: P, connection: Vec<Antichain<<G::Timestamp as Timestamp>::Summary>>) -> InputHandleCore<G::Timestamp, D, P::Puller>
-        where
-            P: ParallelizationContractCore<G::Timestamp, D> {
-
-        let puller = self.builder.new_input_connection(stream, pact, connection.clone());
+    pub fn new_input_connection<D: Container, P>(
+        &mut self,
+        stream: &StreamCore<G, D>,
+        pact: P,
+        connection: Vec<Antichain<<G::Timestamp as Timestamp>::Summary>>,
+    ) -> InputHandleCore<G::Timestamp, D, P::Puller>
+    where
+        P: ParallelizationContractCore<G::Timestamp, D>,
+    {
+        let puller = self
+            .builder
+            .new_input_connection(stream, pact, connection.clone());
 
         let input = PullCounter::new(puller);
         self.frontier.push(MutableAntichain::new());
@@ -88,12 +101,23 @@ impl<G: Scope> OperatorBuilder<G> {
         let shared_summary = Rc::new(RefCell::new(connection));
         self.summaries.push(shared_summary.clone());
 
-        new_input_handle(input, self.internal.clone(), shared_summary, self.logging.clone())
+        new_input_handle(
+            input,
+            self.internal.clone(),
+            shared_summary,
+            self.logging.clone(),
+        )
     }
 
     /// Adds a new output to a generic operator builder, returning the `Push` implementor to use.
-    pub fn new_output<D: Container>(&mut self) -> (OutputWrapper<G::Timestamp, D, TeeCore<G::Timestamp, D>>, StreamCore<G, D>) {
-        let connection = vec![Antichain::from_elem(Default::default()); self.builder.shape().inputs()];
+    pub fn new_output<D: Container>(
+        &mut self,
+    ) -> (
+        OutputWrapper<G::Timestamp, D, TeeCore<G::Timestamp, D>>,
+        StreamCore<G, D>,
+    ) {
+        let connection =
+            vec![Antichain::from_elem(Default::default()); self.builder.shape().inputs()];
         self.new_output_connection(connection)
     }
 
@@ -105,8 +129,13 @@ impl<G: Scope> OperatorBuilder<G> {
     ///
     /// Commonly the connections are either the unit summary, indicating the same timestamp might be produced as output, or an empty
     /// antichain indicating that there is no connection from the input to the output.
-    pub fn new_output_connection<D: Container>(&mut self, connection: Vec<Antichain<<G::Timestamp as Timestamp>::Summary>>) -> (OutputWrapper<G::Timestamp, D, TeeCore<G::Timestamp, D>>, StreamCore<G, D>) {
-
+    pub fn new_output_connection<D: Container>(
+        &mut self,
+        connection: Vec<Antichain<<G::Timestamp as Timestamp>::Summary>>,
+    ) -> (
+        OutputWrapper<G::Timestamp, D, TeeCore<G::Timestamp, D>>,
+        StreamCore<G, D>,
+    ) {
         let (tee, stream) = self.builder.new_output_connection(connection.clone());
 
         let internal = Rc::new(RefCell::new(ChangeBatch::new()));
@@ -126,11 +155,14 @@ impl<G: Scope> OperatorBuilder<G> {
     pub fn build<B, L>(self, constructor: B)
     where
         B: FnOnce(Vec<Capability<G::Timestamp>>) -> L,
-        L: FnMut(&[MutableAntichain<G::Timestamp>])+'static
+        L: FnMut(&[MutableAntichain<G::Timestamp>]) + 'static,
     {
         self.build_reschedule(|caps| {
             let mut logic = constructor(caps);
-            move |frontier| { logic(frontier); false }
+            move |frontier| {
+                logic(frontier);
+                false
+            }
         })
     }
 
@@ -143,7 +175,7 @@ impl<G: Scope> OperatorBuilder<G> {
     pub fn build_reschedule<B, L>(self, constructor: B)
     where
         B: FnOnce(Vec<Capability<G::Timestamp>>) -> L,
-        L: FnMut(&[MutableAntichain<G::Timestamp>])->bool+'static
+        L: FnMut(&[MutableAntichain<G::Timestamp>]) -> bool + 'static,
     {
         // create capabilities, discard references to their creation.
         let mut capabilities = Vec::with_capacity(self.internal.borrow().len());
@@ -160,11 +192,10 @@ impl<G: Scope> OperatorBuilder<G> {
         let self_internal = self.internal;
         let self_produced = self.produced;
 
-        let raw_logic =
-        move |progress: &mut SharedProgress<G::Timestamp>| {
-
+        let raw_logic = move |progress: &mut SharedProgress<G::Timestamp>| {
             // drain frontier changes
-            for (progress, frontier) in progress.frontiers.iter_mut().zip(self_frontier.iter_mut()) {
+            for (progress, frontier) in progress.frontiers.iter_mut().zip(self_frontier.iter_mut())
+            {
                 frontier.update_iter(progress.drain());
             }
 
@@ -178,7 +209,7 @@ impl<G: Scope> OperatorBuilder<G> {
 
             // move batches of internal changes.
             let self_internal_borrow = self_internal.borrow_mut();
-            for index in 0 .. self_internal_borrow.len() {
+            for index in 0..self_internal_borrow.len() {
                 let mut borrow = self_internal_borrow[index].borrow_mut();
                 progress.internals[index].extend(borrow.drain());
             }
@@ -215,21 +246,18 @@ impl<G: Scope> OperatorBuilder<G> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
 
     #[test]
     #[should_panic]
     fn incorrect_capabilities() {
-
         // This tests that if we attempt to use a capability associated with the
         // wrong output, there is a run-time assertion.
 
         use crate::dataflow::operators::generic::builder_rc::OperatorBuilder;
 
         crate::example(|scope| {
-
             let mut builder = OperatorBuilder::new("Failure".to_owned(), scope.clone());
 
             // let mut input = builder.new_input(stream, Pipeline);
@@ -238,7 +266,6 @@ mod tests {
 
             builder.build(move |capabilities| {
                 move |_frontiers| {
-
                     let mut output_handle1 = output1.activate();
                     let mut output_handle2 = output2.activate();
 
@@ -252,14 +279,12 @@ mod tests {
 
     #[test]
     fn correct_capabilities() {
-
         // This tests that if we attempt to use capabilities with the correct outputs
         // there is no runtime assertion
 
         use crate::dataflow::operators::generic::builder_rc::OperatorBuilder;
 
         crate::example(|scope| {
-
             let mut builder = OperatorBuilder::new("Failure".to_owned(), scope.clone());
 
             // let mut input = builder.new_input(stream, Pipeline);
@@ -268,13 +293,11 @@ mod tests {
 
             builder.build(move |mut capabilities| {
                 move |_frontiers| {
-
                     let mut output_handle1 = output1.activate();
                     let mut output_handle2 = output2.activate();
 
                     // Avoid second call.
                     if !capabilities.is_empty() {
-
                         // NOTE: Using correct capabilities here.
                         output_handle1.session(&capabilities[0]);
                         output_handle2.session(&capabilities[1]);

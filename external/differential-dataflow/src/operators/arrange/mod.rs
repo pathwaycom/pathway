@@ -39,12 +39,12 @@
 //! Traces may be directly inspected by any code with access to them, and they can even be
 //! used to introduce the batches to other dataflows with the `import` method.
 
-use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::{Rc, Weak};
 
-use timely::scheduling::Activator;
 use timely::progress::Antichain;
+use timely::scheduling::Activator;
 use trace::TraceReader;
 
 /// Operating instructions on how to replay a trace.
@@ -63,13 +63,13 @@ type BatchQueue<Tr> = VecDeque<TraceReplayInstruction<Tr>>;
 type TraceAgentQueueReader<Tr> = Rc<(Activator, RefCell<BatchQueue<Tr>>)>;
 type TraceAgentQueueWriter<Tr> = Weak<(Activator, RefCell<BatchQueue<Tr>>)>;
 
-pub mod writer;
 pub mod agent;
 pub mod arrangement;
+pub mod writer;
 
 pub mod upsert;
 
+pub use self::agent::{ShutdownButton, TraceAgent};
 pub use self::writer::TraceWriter;
-pub use self::agent::{TraceAgent, ShutdownButton};
 
-pub use self::arrangement::{Arranged, Arrange, ArrangeByKey, ArrangeBySelf};
+pub use self::arrangement::{Arrange, ArrangeByKey, ArrangeBySelf, Arranged};

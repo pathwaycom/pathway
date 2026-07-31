@@ -68,20 +68,19 @@
 //! should still extract fuel from new updates even though they have completed, at least until they
 //! have paid back any "debt" to higher layers by continuing to provide fuel as updates arrive.
 
-
 use std::collections::VecDeque;
 use std::fmt::Debug;
 
-use ::logging::Logger;
-use ::difference::Semigroup;
+use difference::Semigroup;
 use lattice::Lattice;
-use trace::{Batch, BatchReader, Trace, TraceReader};
+use logging::Logger;
 use trace::cursor::{Cursor, CursorList};
 use trace::Merger;
+use trace::{Batch, BatchReader, Trace, TraceReader};
 
-use ::timely::dataflow::operators::generic::OperatorInfo;
-use ::timely::progress::{Antichain, frontier::AntichainRef};
-use ::timely::order::PartialOrder;
+use timely::dataflow::operators::generic::OperatorInfo;
+use timely::order::PartialOrder;
+use timely::progress::{frontier::AntichainRef, Antichain};
 
 /// Batch introduction is expected to run regularly.
 /// If the batch queue size reaches the threshold, it indicates
@@ -93,13 +92,17 @@ const MAX_PENDING_QUEUE_SIZE: usize = 100_000;
 /// A spine maintains a small number of immutable collections of update tuples, merging the collections when
 /// two have similar sizes. In this way, it allows the addition of more tuples, which may then be merged with
 /// other immutable collections.
-pub struct Spine<B: Batch> where B::Time: Lattice+Ord, B::R: Semigroup {
+pub struct Spine<B: Batch>
+where
+    B::Time: Lattice + Ord,
+    B::R: Semigroup,
+{
     operator: OperatorInfo,
     logger: Option<Logger>,
-    pub(crate) logical_frontier: Antichain<B::Time>,   // Times after which the trace must accumulate correctly.
-    pub(crate) physical_frontier: Antichain<B::Time>,  // Times after which the trace must be able to subset its inputs.
-    pub(crate) merging: Vec<MergeState<B>>,            // Several possibly shared collections of updates.
-    pub(crate) pending: VecDeque<B>,                   // Batches at times in advance of `frontier`.
+    pub(crate) logical_frontier: Antichain<B::Time>, // Times after which the trace must accumulate correctly.
+    pub(crate) physical_frontier: Antichain<B::Time>, // Times after which the trace must be able to subset its inputs.
+    pub(crate) merging: Vec<MergeState<B>>, // Several possibly shared collections of updates.
+    pub(crate) pending: VecDeque<B>,        // Batches at times in advance of `frontier`.
     upper: Antichain<B::Time>,
     effort: usize,
     activator: Option<timely::scheduling::activate::Activator>,
@@ -107,10 +110,10 @@ pub struct Spine<B: Batch> where B::Time: Lattice+Ord, B::R: Semigroup {
 
 impl<B> TraceReader for Spine<B>
 where
-    B: Batch+Clone+'static,
-    B::Key: Ord+Clone,           // Clone is required by `batch::advance_*` (in-place could remove).
-    B::Val: Ord+Clone,           // Clone is required by `batch::advance_*` (in-place could remove).
-    B::Time: Lattice+timely::progress::Timestamp+Ord+Clone+Debug,
+    B: Batch + Clone + 'static,
+    B::Key: Ord + Clone, // Clone is required by `batch::advance_*` (in-place could remove).
+    B::Val: Ord + Clone, // Clone is required by `batch::advance_*` (in-place could remove).
+    B::Time: Lattice + timely::progress::Timestamp + Ord + Clone + Debug,
     B::R: Semigroup,
 {
     type Key = B::Key;
@@ -121,8 +124,10 @@ where
     type Batch = B;
     type Cursor = CursorList<<B as BatchReader>::Cursor>;
 
-    fn cursor_through(&mut self, upper: AntichainRef<Self::Time>) -> Option<(Self::Cursor, <Self::Cursor as Cursor>::Storage)> {
-
+    fn cursor_through(
+        &mut self,
+        upper: AntichainRef<Self::Time>,
+    ) -> Option<(Self::Cursor, <Self::Cursor as Cursor>::Storage)> {
         // If `upper` is the minimum frontier, we can return an empty cursor.
         // This can happen with operators that are written to expect the ability to acquire cursors
         // for their prior frontiers, and which start at `[T::minimum()]`, such as `Reduce`, sadly.
@@ -148,49 +153,48 @@ where
         // Check that `upper` is greater or equal to `self.physical_frontier`.
         // Otherwise, the cut could be in `self.merging` and it is user error anyhow.
         // assert!(upper.iter().all(|t1| self.physical_frontier.iter().any(|t2| t2.less_equal(t1))));
-        assert!(PartialOrder::less_equal(&self.physical_frontier.borrow(), &upper));
+        assert!(PartialOrder::less_equal(
+            &self.physical_frontier.borrow(),
+            &upper
+        ));
 
         let mut cursors = Vec::new();
         let mut storage = Vec::new();
 
         for merge_state in self.merging.iter().rev() {
             match merge_state {
-                MergeState::Double(variant) => {
-                    match variant {
-                        MergeVariant::InProgress(batch1, batch2, _) => {
-                            if !batch1.is_empty() {
-                                cursors.push(batch1.cursor());
-                                storage.push(batch1.clone());
-                            }
-                            if !batch2.is_empty() {
-                                cursors.push(batch2.cursor());
-                                storage.push(batch2.clone());
-                            }
-                        },
-                        MergeVariant::Complete(Some((batch, _))) => {
-                            if !batch.is_empty() {
-                                cursors.push(batch.cursor());
-                                storage.push(batch.clone());
-                            }
+                MergeState::Double(variant) => match variant {
+                    MergeVariant::InProgress(batch1, batch2, _) => {
+                        if !batch1.is_empty() {
+                            cursors.push(batch1.cursor());
+                            storage.push(batch1.clone());
                         }
-                        MergeVariant::Complete(None) => { },
+                        if !batch2.is_empty() {
+                            cursors.push(batch2.cursor());
+                            storage.push(batch2.clone());
+                        }
                     }
+                    MergeVariant::Complete(Some((batch, _))) => {
+                        if !batch.is_empty() {
+                            cursors.push(batch.cursor());
+                            storage.push(batch.clone());
+                        }
+                    }
+                    MergeVariant::Complete(None) => {}
                 },
                 MergeState::Single(Some(batch)) => {
                     if !batch.is_empty() {
                         cursors.push(batch.cursor());
                         storage.push(batch.clone());
                     }
-                },
-                MergeState::Single(None) => { },
-                MergeState::Vacant => { },
+                }
+                MergeState::Single(None) => {}
+                MergeState::Vacant => {}
             }
         }
 
         for batch in self.pending.iter() {
-
             if !batch.is_empty() {
-
                 // For a non-empty `batch`, it is a catastrophic error if `upper`
                 // requires some-but-not-all of the updates in the batch. We can
                 // determine this from `upper` and the lower and upper bounds of
@@ -222,26 +226,38 @@ where
         self.logical_frontier.extend(frontier.iter().cloned());
     }
     #[inline]
-    fn get_logical_compaction(&mut self) -> AntichainRef<B::Time> { self.logical_frontier.borrow() }
+    fn get_logical_compaction(&mut self) -> AntichainRef<B::Time> {
+        self.logical_frontier.borrow()
+    }
     #[inline]
     fn set_physical_compaction(&mut self, frontier: AntichainRef<B::Time>) {
         // We should never request to rewind the frontier.
-        debug_assert!(PartialOrder::less_equal(&self.physical_frontier.borrow(), &frontier), "FAIL\tthrough frontier !<= new frontier {:?} {:?}\n", self.physical_frontier, frontier);
+        debug_assert!(
+            PartialOrder::less_equal(&self.physical_frontier.borrow(), &frontier),
+            "FAIL\tthrough frontier !<= new frontier {:?} {:?}\n",
+            self.physical_frontier,
+            frontier
+        );
         self.physical_frontier.clear();
         self.physical_frontier.extend(frontier.iter().cloned());
         self.consider_merges();
     }
     #[inline]
-    fn get_physical_compaction(&mut self) -> AntichainRef<B::Time> { self.physical_frontier.borrow() }
+    fn get_physical_compaction(&mut self) -> AntichainRef<B::Time> {
+        self.physical_frontier.borrow()
+    }
 
     #[inline]
     fn map_batches<F: FnMut(&Self::Batch)>(&self, mut f: F) {
         for batch in self.merging.iter().rev() {
             match batch {
-                MergeState::Double(MergeVariant::InProgress(batch1, batch2, _)) => { f(batch1); f(batch2); },
-                MergeState::Double(MergeVariant::Complete(Some((batch, _)))) => { f(batch) },
-                MergeState::Single(Some(batch)) => { f(batch) },
-                _ => { },
+                MergeState::Double(MergeVariant::InProgress(batch1, batch2, _)) => {
+                    f(batch1);
+                    f(batch2);
+                }
+                MergeState::Double(MergeVariant::Complete(Some((batch, _)))) => f(batch),
+                MergeState::Single(Some(batch)) => f(batch),
+                _ => {}
             }
         }
         for batch in self.pending.iter() {
@@ -254,10 +270,10 @@ where
 // TODO: Almost all this implementation seems to be generic with respect to the trace and batch types.
 impl<B> Trace for Spine<B>
 where
-    B: Batch+Clone+'static,
-    B::Key: Ord+Clone,
-    B::Val: Ord+Clone,
-    B::Time: Lattice+timely::progress::Timestamp+Ord+Clone+Debug,
+    B: Batch + Clone + 'static,
+    B::Key: Ord + Clone,
+    B::Val: Ord + Clone,
+    B::Time: Lattice + timely::progress::Timestamp + Ord + Clone + Debug,
     B::R: Semigroup,
 {
     fn new(
@@ -277,7 +293,6 @@ where
         // If there is work to be done, ...
         self.tidy_layers();
         if !self.reduced() {
-
             // If any merges exist, we can directly call `apply_fuel`.
             if self.merging.iter().any(|b| b.is_double()) {
                 self.apply_fuel(effort);
@@ -299,12 +314,13 @@ where
     // merging the batch. This means it is a good time to perform amortized work proportional
     // to the size of batch.
     fn insert(&mut self, batch: Self::Batch) {
-
         // Log the introduction of a batch.
-        self.logger.as_ref().map(|l| l.log(::logging::BatchEvent {
-            operator: self.operator.global_id,
-            length: batch.len()
-        }));
+        self.logger.as_ref().map(|l| {
+            l.log(::logging::BatchEvent {
+                operator: self.operator.global_id,
+                length: batch.len(),
+            })
+        });
 
         assert!(batch.lower() != batch.upper());
         assert_eq!(batch.lower(), &self.upper);
@@ -326,7 +342,11 @@ where
         if !self.upper.borrow().is_empty() {
             use trace::Builder;
             let builder = B::Builder::new();
-            let batch = builder.done(self.upper.clone(), Antichain::new(), Antichain::from_elem(<Self::Time as timely::progress::Timestamp>::minimum()));
+            let batch = builder.done(
+                self.upper.clone(),
+                Antichain::new(),
+                Antichain::from_elem(<Self::Time as timely::progress::Timestamp>::minimum()),
+            );
             self.insert(batch);
         }
     }
@@ -336,7 +356,7 @@ where
 impl<B> Drop for Spine<B>
 where
     B: Batch,
-    B::Time: Lattice+Ord,
+    B::Time: Lattice + Ord,
     B::R: Semigroup,
 {
     fn drop(&mut self) {
@@ -344,11 +364,10 @@ where
     }
 }
 
-
 impl<B> Spine<B>
 where
     B: Batch,
-    B::Time: Lattice+Ord,
+    B::Time: Lattice + Ord,
     B::R: Semigroup,
 {
     /// Drops and logs batches. Used in `set_logical_compaction` and drop.
@@ -361,7 +380,7 @@ where
                             operator: self.operator.global_id,
                             length: batch.len(),
                         });
-                    },
+                    }
                     MergeState::Double(MergeVariant::InProgress(batch1, batch2, _)) => {
                         logger.log(::logging::DropEvent {
                             operator: self.operator.global_id,
@@ -371,14 +390,14 @@ where
                             operator: self.operator.global_id,
                             length: batch2.len(),
                         });
-                    },
+                    }
                     MergeState::Double(MergeVariant::Complete(Some((batch, _)))) => {
                         logger.log(::logging::DropEvent {
                             operator: self.operator.global_id,
                             length: batch.len(),
                         });
                     }
-                    _ => { },
+                    _ => {}
                 }
             }
             for batch in self.pending.drain(..) {
@@ -394,9 +413,9 @@ where
 impl<B> Spine<B>
 where
     B: Batch,
-    B::Key: Ord+Clone,
-    B::Val: Ord+Clone,
-    B::Time: Lattice+timely::progress::Timestamp+Ord+Clone+Debug,
+    B::Key: Ord + Clone,
+    B::Val: Ord + Clone,
+    B::Time: Lattice + timely::progress::Timestamp + Ord + Clone + Debug,
     B::R: Semigroup,
 {
     /// True iff there is at most one non-empty batch in `self.merging`.
@@ -406,10 +425,16 @@ where
     /// for now we are ignoring that.
     fn reduced(&self) -> bool {
         let mut non_empty = 0;
-        for index in 0 .. self.merging.len() {
-            if self.merging[index].is_double() { return false; }
-            if self.merging[index].len() > 0 { non_empty += 1; }
-            if non_empty > 1 { return false; }
+        for index in 0..self.merging.len() {
+            if self.merging[index].is_double() {
+                return false;
+            }
+            if self.merging[index].len() > 0 {
+                non_empty += 1;
+            }
+            if non_empty > 1 {
+                return false;
+            }
         }
         true
     }
@@ -440,15 +465,20 @@ where
         logger: Option<::logging::Logger>,
         activator: Option<timely::scheduling::activate::Activator>,
     ) -> Self {
-
         // Zero effort is .. not smart.
-        if effort == 0 { effort = 1; }
+        if effort == 0 {
+            effort = 1;
+        }
 
         Spine {
             operator,
             logger,
-            logical_frontier: Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
-            physical_frontier: Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
+            logical_frontier: Antichain::from_elem(
+                <B::Time as timely::progress::Timestamp>::minimum(),
+            ),
+            physical_frontier: Antichain::from_elem(
+                <B::Time as timely::progress::Timestamp>::minimum(),
+            ),
             merging: Vec::new(),
             pending: VecDeque::new(),
             upper: Antichain::from_elem(<B::Time as timely::progress::Timestamp>::minimum()),
@@ -463,10 +493,10 @@ where
     /// case that new batches can be introduced to the pile of mergeable batches, it gets on that.
     #[inline(never)]
     fn consider_merges(&mut self) {
-
         // TODO: Consider merging pending batches before introducing them.
-        while self.pending.len() > 0 && PartialOrder::less_equal(self.pending[0].upper(), &self.physical_frontier)
-            //   self.physical_frontier.iter().all(|t1| self.pending[0].upper().iter().any(|t2| t2.less_equal(t1)))
+        while self.pending.len() > 0
+            && PartialOrder::less_equal(self.pending[0].upper(), &self.physical_frontier)
+        //   self.physical_frontier.iter().all(|t1| self.pending[0].upper().iter().any(|t2| t2.less_equal(t1)))
         {
             // Batch can be taken in optimized insertion.
             // Otherwise it is inserted normally at the end of the method.
@@ -506,7 +536,6 @@ where
     /// it can also be used to artificially fuel the computation by supplying
     /// empty batches at non-trivial indices, to move merges along.
     pub fn introduce_batch(&mut self, batch: Option<B>, batch_index: usize) {
-
         // Step 0.  Determine an amount of fuel to use for the computation.
         //
         //          Fuel is used to drive maintenance of the data structure,
@@ -527,7 +556,9 @@ where
         // performing maintenance work. We need to ensure that each merge in
         // progress receives fuel for each introduced batch, and so multiply
         // by that as well.
-        if batch_index > 32 { println!("Large batch index: {}", batch_index); }
+        if batch_index > 32 {
+            println!("Large batch index: {}", batch_index);
+        }
 
         // We believe that eight units of fuel is sufficient for each introduced
         // record, accounted as four for each record, and a potential four more
@@ -589,18 +620,16 @@ where
     /// we should not introduce more virtual records than 2^index, as that
     /// is the amount of excess fuel we have budgeted for completing merges.
     fn roll_up(&mut self, index: usize) {
-
         // Ensure entries sufficient for `index`.
         while self.merging.len() <= index {
             self.merging.push(MergeState::Vacant);
         }
 
         // We only need to roll up if there are non-vacant layers.
-        if self.merging[.. index].iter().any(|m| !m.is_vacant()) {
-
+        if self.merging[..index].iter().any(|m| !m.is_vacant()) {
             // Collect and merge all batches at layers up to but not including `index`.
             let mut merged = None;
-            for i in 0 .. index {
+            for i in 0..index {
                 self.insert_at(merged, i);
                 merged = self.complete_at(i);
             }
@@ -630,7 +659,7 @@ where
         // great idea, but we need better accounting in place to ensure that merges
         // that borrow against later layers but then complete still "acquire" fuel
         // to pay back their debts.
-        for index in 0 .. self.merging.len() {
+        for index in 0..self.merging.len() {
             // Give each level independent fuel, for now.
             let mut fuel = *fuel;
             // Pass along various logging stuffs, in case we need to report success.
@@ -647,7 +676,7 @@ where
             // fueling discipline.
             if self.merging[index].is_complete() {
                 let complete = self.complete_at(index);
-                self.insert_at(complete, index+1);
+                self.insert_at(complete, index + 1);
             }
         }
     }
@@ -669,15 +698,15 @@ where
             }
             MergeState::Single(old) => {
                 // Log the initiation of a merge.
-                self.logger.as_ref().map(|l| l.log(
-                    ::logging::MergeEvent {
+                self.logger.as_ref().map(|l| {
+                    l.log(::logging::MergeEvent {
                         operator: self.operator.global_id,
                         scale: index,
                         length1: old.as_ref().map(|b| b.len()).unwrap_or(0),
                         length2: batch.as_ref().map(|b| b.len()).unwrap_or(0),
                         complete: None,
-                    }
-                ));
+                    })
+                });
                 let compaction_frontier = Some(self.logical_frontier.borrow());
                 self.merging[index] = MergeState::begin_merge(old, batch, compaction_frontier);
             }
@@ -692,79 +721,80 @@ where
         if let Some((merged, inputs)) = self.merging[index].complete() {
             if let Some((input1, input2)) = inputs {
                 // Log the completion of a merge from existing parts.
-                self.logger.as_ref().map(|l| l.log(
-                    ::logging::MergeEvent {
+                self.logger.as_ref().map(|l| {
+                    l.log(::logging::MergeEvent {
                         operator: self.operator.global_id,
                         scale: index,
                         length1: input1.len(),
                         length2: input2.len(),
                         complete: Some(merged.len()),
-                    }
-                ));
+                    })
+                });
             }
             Some(merged)
-        }
-        else {
+        } else {
             None
         }
     }
 
     /// Attempts to draw down large layers to size appropriate layers.
     fn tidy_layers(&mut self) {
-
         // If the largest layer is complete (not merging), we can attempt
         // to draw it down to the next layer. This is permitted if we can
         // maintain our invariant that below each merge there are at most
         // half the records that would be required to invade the merge.
         if !self.merging.is_empty() {
             let mut length = self.merging.len();
-            if self.merging[length-1].is_single() {
-
+            if self.merging[length - 1].is_single() {
                 // To move a batch down, we require that it contain few
                 // enough records that the lower level is appropriate,
                 // and that moving the batch would not create a merge
                 // violating our invariant.
 
-                let appropriate_level = self.merging[length-1].len().next_power_of_two().trailing_zeros() as usize;
+                let appropriate_level = self.merging[length - 1]
+                    .len()
+                    .next_power_of_two()
+                    .trailing_zeros() as usize;
 
                 // Continue only as far as is appropriate
-                while appropriate_level < length-1 {
-
-                    match self.merging[length-2].take() {
+                while appropriate_level < length - 1 {
+                    match self.merging[length - 2].take() {
                         // Vacant or structurally empty batches can be absorbed.
                         MergeState::Vacant | MergeState::Single(None) => {
-                            self.merging.remove(length-2);
+                            self.merging.remove(length - 2);
                             length = self.merging.len();
                         }
                         // Single batches may initiate a merge, if sizes are
                         // within bounds, but terminate the loop either way.
                         MergeState::Single(Some(batch)) => {
-
                             // Determine the number of records that might lead
                             // to a merge. Importantly, this is not the number
                             // of actual records, but the sum of upper bounds
                             // based on indices.
                             let mut smaller = 0;
-                            for (index, batch) in self.merging[..(length-2)].iter().enumerate() {
+                            for (index, batch) in self.merging[..(length - 2)].iter().enumerate() {
                                 match batch {
-                                    MergeState::Vacant => { },
-                                    MergeState::Single(_) => { smaller += 1 << index; },
-                                    MergeState::Double(_) => { smaller += 2 << index; },
+                                    MergeState::Vacant => {}
+                                    MergeState::Single(_) => {
+                                        smaller += 1 << index;
+                                    }
+                                    MergeState::Double(_) => {
+                                        smaller += 2 << index;
+                                    }
                                 }
                             }
 
                             if smaller <= (1 << length) / 8 {
-                                self.merging.remove(length-2);
-                                self.insert_at(Some(batch), length-2);
-                            }
-                            else {
-                                self.merging[length-2] = MergeState::Single(Some(batch));
+                                self.merging.remove(length - 2);
+                                self.insert_at(Some(batch), length - 2);
+                            } else {
+                                self.merging[length - 2] = MergeState::Single(Some(batch));
                             }
                             return;
                         }
                         // If a merge is in progress there is nothing to do.
                         MergeState::Double(state) => {
-                            self.merging[length-2] = MergeState::Double(state);
+                            self.merging[length - 2] = MergeState::Double(state);
                             return;
                         }
                     }
@@ -773,7 +803,6 @@ where
         }
     }
 }
-
 
 /// Describes the state of a layer.
 ///
@@ -791,13 +820,15 @@ pub(crate) enum MergeState<B: Batch> {
     Double(MergeVariant<B>),
 }
 
-impl<B: Batch> MergeState<B> where B::Time: Eq {
-
+impl<B: Batch> MergeState<B>
+where
+    B::Time: Eq,
+{
     /// The number of actual updates contained in the level.
     fn len(&self) -> usize {
         match self {
             MergeState::Single(Some(b)) => b.len(),
-            MergeState::Double(MergeVariant::InProgress(b1,b2,_)) => b1.len() + b2.len(),
+            MergeState::Double(MergeVariant::InProgress(b1, b2, _)) => b1.len() + b2.len(),
             MergeState::Double(MergeVariant::Complete(Some((b, _)))) => b.len(),
             _ => 0,
         }
@@ -805,17 +836,29 @@ impl<B: Batch> MergeState<B> where B::Time: Eq {
 
     /// True only for the MergeState::Vacant variant.
     fn is_vacant(&self) -> bool {
-        if let MergeState::Vacant = self { true } else { false }
+        if let MergeState::Vacant = self {
+            true
+        } else {
+            false
+        }
     }
 
     /// True only for the MergeState::Single variant.
     fn is_single(&self) -> bool {
-        if let MergeState::Single(_) = self { true } else { false }
+        if let MergeState::Single(_) = self {
+            true
+        } else {
+            false
+        }
     }
 
     /// True only for the MergeState::Double variant.
     fn is_double(&self) -> bool {
-        if let MergeState::Double(_) = self { true } else { false }
+        if let MergeState::Double(_) = self {
+            true
+        } else {
+            false
+        }
     }
 
     /// Immediately complete any merge.
@@ -826,7 +869,7 @@ impl<B: Batch> MergeState<B> where B::Time: Eq {
     /// with the `is_complete()` method.
     ///
     /// There is the addional option of input batches.
-    fn complete(&mut self) -> Option<(B, Option<(B, B)>)>  {
+    fn complete(&mut self) -> Option<(B, Option<(B, B)>)> {
         match std::mem::replace(self, MergeState::Vacant) {
             MergeState::Vacant => None,
             MergeState::Single(batch) => batch.map(|b| (b, None)),
@@ -838,8 +881,7 @@ impl<B: Batch> MergeState<B> where B::Time: Eq {
     fn is_complete(&mut self) -> bool {
         if let MergeState::Double(MergeVariant::Complete(_)) = self {
             true
-        }
-        else {
+        } else {
             false
         }
     }
@@ -872,9 +914,12 @@ impl<B: Batch> MergeState<B> where B::Time: Eq {
     /// empty batch whose upper and lower froniers are equal. This
     /// option exists purely for bookkeeping purposes, and no computation
     /// is performed to merge the two batches.
-    fn begin_merge(batch1: Option<B>, batch2: Option<B>, compaction_frontier: Option<AntichainRef<B::Time>>) -> MergeState<B> {
-        let variant =
-        match (batch1, batch2) {
+    fn begin_merge(
+        batch1: Option<B>,
+        batch2: Option<B>,
+        compaction_frontier: Option<AntichainRef<B::Time>>,
+    ) -> MergeState<B> {
+        let variant = match (batch1, batch2) {
             (Some(batch1), Some(batch2)) => {
                 assert!(batch1.upper() == batch2.lower());
                 let begin_merge = <B as Batch>::begin_merge(&batch1, &batch2, compaction_frontier);
@@ -897,7 +942,6 @@ pub(crate) enum MergeVariant<B: Batch> {
 }
 
 impl<B: Batch> MergeVariant<B> {
-
     /// Completes and extracts the batch, unless structurally empty.
     ///
     /// The result is either `None`, for structurally empty batches,
@@ -905,8 +949,11 @@ impl<B: Batch> MergeVariant<B> {
     fn complete(mut self) -> Option<(B, Option<(B, B)>)> {
         let mut fuel = isize::max_value();
         self.work(&mut fuel);
-        if let MergeVariant::Complete(batch) = self { batch }
-        else { panic!("Failed to complete a merge!"); }
+        if let MergeVariant::Complete(batch) = self {
+            batch
+        } else {
+            panic!("Failed to complete a merge!");
+        }
     }
 
     /// Applies some amount of work, potentially completing the merge.
@@ -915,16 +962,14 @@ impl<B: Batch> MergeVariant<B> {
     /// This allows the caller to manage the released resources.
     fn work(&mut self, fuel: &mut isize) {
         let variant = std::mem::replace(self, MergeVariant::Complete(None));
-        if let MergeVariant::InProgress(b1,b2,mut merge) = variant {
-            merge.work(&b1,&b2,fuel);
+        if let MergeVariant::InProgress(b1, b2, mut merge) = variant {
+            merge.work(&b1, &b2, fuel);
             if *fuel > 0 {
-                *self = MergeVariant::Complete(Some((merge.done(), Some((b1,b2)))));
+                *self = MergeVariant::Complete(Some((merge.done(), Some((b1, b2)))));
+            } else {
+                *self = MergeVariant::InProgress(b1, b2, merge);
             }
-            else {
-                *self = MergeVariant::InProgress(b1,b2,merge);
-            }
-        }
-        else {
+        } else {
             *self = variant;
         }
     }

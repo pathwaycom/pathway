@@ -3,12 +3,12 @@
 use crate::communication::Push;
 use crate::Container;
 
-/// A collection of types that may be pushed at.
-pub mod pushers;
-/// A collection of types that may be pulled from.
-pub mod pullers;
 /// Parallelization contracts, describing how data must be exchanged between operators.
 pub mod pact;
+/// A collection of types that may be pulled from.
+pub mod pullers;
+/// A collection of types that may be pushed at.
+pub mod pushers;
 
 /// The input to and output from timely dataflow communication channels.
 pub type BundleCore<T, D> = crate::communication::Message<Message<T, D>>;
@@ -40,14 +40,18 @@ impl<T, D> Message<T, D> {
 impl<T, D: Container> Message<T, D> {
     /// Creates a new message instance from arguments.
     pub fn new(time: T, data: D, from: usize, seq: usize) -> Self {
-        Message { time, data, from, seq }
+        Message {
+            time,
+            data,
+            from,
+            seq,
+        }
     }
 
     /// Forms a message, and pushes contents at `pusher`. Replaces `buffer` with what the pusher
     /// leaves in place, or the container's default element.
     #[inline]
     pub fn push_at<P: Push<BundleCore<T, D>>>(buffer: &mut D, time: T, pusher: &mut P) {
-
         let data = ::std::mem::take(buffer);
         let message = Message::new(time, data, 0, 0);
         let mut bundle = Some(BundleCore::from_typed(message));

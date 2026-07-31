@@ -1,46 +1,43 @@
 //! A demonstration of timely dataflow progress tracking, using differential dataflow operators.
 
-extern crate timely;
 extern crate differential_dataflow;
+extern crate timely;
 
-use timely::PartialOrder;
-use timely::dataflow::*;
 use timely::dataflow::operators::probe::Handle;
+use timely::dataflow::*;
+use timely::PartialOrder;
 
 use differential_dataflow::input::Input;
-use differential_dataflow::Collection;
 use differential_dataflow::operators::*;
+use differential_dataflow::Collection;
 
 use differential_dataflow::lattice::Lattice;
 
-use timely::progress::{Timestamp, Source, Target, Location};
 use timely::progress::timestamp::PathSummary;
+use timely::progress::{Location, Source, Target, Timestamp};
 
 fn main() {
-
     timely::execute_from_args(std::env::args(), move |worker| {
-
         let timer = worker.timer();
         let mut probe = Handle::new();
 
-        let (mut nodes, mut edges, mut times) = worker.dataflow::<usize,_,_>(|scope| {
-
+        let (mut nodes, mut edges, mut times) = worker.dataflow::<usize, _, _>(|scope| {
             let (node_input, nodes) = scope.new_collection();
             let (edge_input, edges) = scope.new_collection();
             let (time_input, times) = scope.new_collection();
 
             // Detect cycles that do not increment timestamps.
-            find_cycles::<_,usize>(nodes.clone(), edges.clone())
+            find_cycles::<_, usize>(nodes.clone(), edges.clone())
                 .inspect(move |x| println!("{:?}\tcycles: {:?}", timer.elapsed(), x))
                 .probe_with(&mut probe);
 
             // Summarize all paths to inputs of operator zero.
-            summarize::<_,usize>(nodes.clone(), edges.clone())
+            summarize::<_, usize>(nodes.clone(), edges.clone())
                 .inspect(move |x| println!("{:?}\tsummary: {:?}", timer.elapsed(), x))
                 .probe_with(&mut probe);
 
             // Track the frontier at each dataflow location.
-            frontier::<_,usize>(nodes, edges, times)
+            frontier::<_, usize>(nodes, edges, times)
                 .inspect(move |x| println!("{:?}\tfrontier: {:?}", timer.elapsed(), x))
                 .probe_with(&mut probe);
 
@@ -60,9 +57,12 @@ fn main() {
         edges.insert((Source::new(2, 0), Target::new(3, 1)));
 
         // Initially no capabilities.
-        nodes.advance_to(1); nodes.flush();
-        edges.advance_to(1); edges.flush();
-        times.advance_to(1); times.flush();
+        nodes.advance_to(1);
+        nodes.flush();
+        edges.advance_to(1);
+        edges.flush();
+        times.advance_to(1);
+        times.flush();
 
         while probe.less_than(times.time()) {
             worker.step();
@@ -71,9 +71,12 @@ fn main() {
         // Introduce a new input capability at time zero.
         times.insert((Location::new_source(1, 0), 0));
 
-        nodes.advance_to(2); nodes.flush();
-        edges.advance_to(2); edges.flush();
-        times.advance_to(2); times.flush();
+        nodes.advance_to(2);
+        nodes.flush();
+        edges.advance_to(2);
+        edges.flush();
+        times.advance_to(2);
+        times.flush();
 
         while probe.less_than(times.time()) {
             worker.step();
@@ -83,9 +86,12 @@ fn main() {
         times.remove((Location::new_source(1, 0), 0));
         times.insert((Location::new_target(3, 0), 0));
 
-        nodes.advance_to(3); nodes.flush();
-        edges.advance_to(3); edges.flush();
-        times.advance_to(3); times.flush();
+        nodes.advance_to(3);
+        nodes.flush();
+        edges.advance_to(3);
+        edges.flush();
+        times.advance_to(3);
+        times.flush();
 
         while probe.less_than(times.time()) {
             worker.step();
@@ -94,16 +100,20 @@ fn main() {
         // Consume the message, and .. do nothing, I guess.
         times.remove((Location::new_target(3, 0), 0));
 
-        nodes.advance_to(4); nodes.flush();
-        edges.advance_to(4); edges.flush();
-        times.advance_to(4); times.flush();
+        nodes.advance_to(4);
+        nodes.flush();
+        edges.advance_to(4);
+        edges.flush();
+        times.advance_to(4);
+        times.flush();
 
         while probe.less_than(times.time()) {
             worker.step();
         }
 
         println!("finished; elapsed: {:?}", timer.elapsed());
-    }).unwrap();
+    })
+    .unwrap();
 }
 
 /// Propagates times along a timely dataflow graph.
@@ -123,19 +133,28 @@ fn frontier<G: Scope, T: Timestamp>(
     times: Collection<G, (Location, T)>,
 ) -> Collection<G, (Location, T)>
 where
-    G::Timestamp: Lattice+Ord,
+    G::Timestamp: Lattice + Ord,
     T::Summary: differential_dataflow::ExchangeData,
 {
     // Translate node and edge transitions into a common Location to Location edge with an associated Summary.
-    let nodes = nodes.map(|(target, source, summary)| (Location::from(target), (Location::from(source), summary)));
-    let edges = edges.map(|(source, target)| (Location::from(source), (Location::from(target), Default::default())));
+    let nodes = nodes.map(|(target, source, summary)| {
+        (Location::from(target), (Location::from(source), summary))
+    });
+    let edges = edges.map(|(source, target)| {
+        (
+            Location::from(source),
+            (Location::from(target), Default::default()),
+        )
+    });
     let transitions: Collection<G, (Location, (Location, T::Summary))> = nodes.concat(&edges);
 
     times
         .iterate(|reach| {
             transitions
                 .enter(&reach.scope())
-                .join_map(&reach, |_from, (dest, summ), time| (dest.clone(), summ.results_in(time)))
+                .join_map(&reach, |_from, (dest, summ), time| {
+                    (dest.clone(), summ.results_in(time))
+                })
                 .flat_map(|(dest, time)| time.map(move |time| (dest, time)))
                 .concat(&times.enter(&reach.scope()))
                 .reduce(|_location, input, output: &mut Vec<(T, isize)>| {
@@ -156,26 +175,34 @@ fn summarize<G: Scope, T: Timestamp>(
     edges: Collection<G, (Source, Target)>,
 ) -> Collection<G, (Location, (Location, T::Summary))>
 where
-    G::Timestamp: Lattice+Ord,
-    T::Summary: differential_dataflow::ExchangeData+std::hash::Hash,
+    G::Timestamp: Lattice + Ord,
+    T::Summary: differential_dataflow::ExchangeData + std::hash::Hash,
 {
     // Start from trivial reachability from each input to itself.
-    let zero_inputs =
-    edges
+    let zero_inputs = edges
         .map(|(_source, target)| Location::from(target))
         .filter(|location| location.node == 0)
         .map(|location| (location, (location, Default::default())));
 
     // Retain node connections along "default" timestamp summaries.
-    let nodes = nodes.map(|(target, source, summary)| (Location::from(source), (Location::from(target), summary)));
-    let edges = edges.map(|(source, target)| (Location::from(target), (Location::from(source), Default::default())));
+    let nodes = nodes.map(|(target, source, summary)| {
+        (Location::from(source), (Location::from(target), summary))
+    });
+    let edges = edges.map(|(source, target)| {
+        (
+            Location::from(target),
+            (Location::from(source), Default::default()),
+        )
+    });
     let transitions: Collection<G, (Location, (Location, T::Summary))> = nodes.concat(&edges);
 
     zero_inputs
         .iterate(|summaries| {
             transitions
                 .enter(&summaries.scope())
-                .join_map(summaries, |_middle, (from, summ1), (to, summ2)| (from.clone(), to.clone(), summ1.followed_by(summ2)))
+                .join_map(summaries, |_middle, (from, summ1), (to, summ2)| {
+                    (from.clone(), to.clone(), summ1.followed_by(summ2))
+                })
                 .flat_map(|(from, to, summ)| summ.map(move |summ| (from, (to, summ))))
                 .concat(&zero_inputs.enter(&summaries.scope()))
                 .map(|(from, (to, summary))| ((from, to), summary))
@@ -187,11 +214,9 @@ where
                     }
                 })
                 .map(|((from, to), summary)| (from, (to, summary)))
-
         })
         .consolidate()
 }
-
 
 /// Identifies cycles along paths that do not increment timestamps.
 fn find_cycles<G: Scope, T: Timestamp>(
@@ -199,15 +224,14 @@ fn find_cycles<G: Scope, T: Timestamp>(
     edges: Collection<G, (Source, Target)>,
 ) -> Collection<G, (Location, Location)>
 where
-    G::Timestamp: Lattice+Ord,
+    G::Timestamp: Lattice + Ord,
     T::Summary: differential_dataflow::ExchangeData,
 {
     // Retain node connections along "default" timestamp summaries.
     let nodes = nodes.flat_map(|(target, source, summary)| {
         if summary == Default::default() {
             Some((Location::from(target), Location::from(source)))
-        }
-        else {
+        } else {
             None
         }
     });
@@ -217,13 +241,8 @@ where
     // Repeatedly restrict to locations with an incoming path.
     transitions
         .iterate(|locations| {
-            let active =
-            locations
-                .map(|(_source, target)| target)
-                .distinct();
-            transitions
-                .enter(&locations.scope())
-                .semijoin(&active)
+            let active = locations.map(|(_source, target)| target).distinct();
+            transitions.enter(&locations.scope()).semijoin(&active)
         })
         .consolidate()
 }

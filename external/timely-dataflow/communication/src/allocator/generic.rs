@@ -3,16 +3,16 @@
 //! This type is useful in settings where it is difficult to write code generic in `A: Allocate`,
 //! for example closures whose type arguments must be specified.
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
-use crate::allocator::thread::ThreadBuilder;
 use crate::allocator::process::ProcessBuilder as TypedProcessBuilder;
-use crate::allocator::{Allocate, AllocateBuilder, Thread, Process};
-use crate::allocator::zero_copy::allocator_process::{ProcessBuilder, ProcessAllocator};
-use crate::allocator::zero_copy::allocator::{TcpBuilder, TcpAllocator};
+use crate::allocator::thread::ThreadBuilder;
+use crate::allocator::zero_copy::allocator::{TcpAllocator, TcpBuilder};
+use crate::allocator::zero_copy::allocator_process::{ProcessAllocator, ProcessBuilder};
+use crate::allocator::{Allocate, AllocateBuilder, Process, Thread};
 
-use crate::{Push, Pull, Data, Message};
+use crate::{Data, Message, Pull, Push};
 
 /// Enumerates known implementors of `Allocate`.
 /// Passes trait method calls on to members.
@@ -47,7 +47,10 @@ impl Generic {
         }
     }
     /// Constructs several send endpoints and one receive endpoint.
-    fn allocate<T: Data>(&mut self, identifier: usize) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
+    fn allocate<T: Data>(
+        &mut self,
+        identifier: usize,
+    ) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
         match self {
             Generic::Thread(t) => t.allocate(identifier),
             Generic::Process(p) => p.allocate(identifier),
@@ -84,15 +87,28 @@ impl Generic {
 }
 
 impl Allocate for Generic {
-    fn index(&self) -> usize { self.index() }
-    fn peers(&self) -> usize { self.peers() }
-    fn allocate<T: Data>(&mut self, identifier: usize) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
+    fn index(&self) -> usize {
+        self.index()
+    }
+    fn peers(&self) -> usize {
+        self.peers()
+    }
+    fn allocate<T: Data>(
+        &mut self,
+        identifier: usize,
+    ) -> (Vec<Box<dyn Push<Message<T>>>>, Box<dyn Pull<Message<T>>>) {
         self.allocate(identifier)
     }
 
-    fn receive(&mut self) { self.receive(); }
-    fn release(&mut self) { self.release(); }
-    fn events(&self) -> &Rc<RefCell<Vec<usize>>> { self.events() }
+    fn receive(&mut self) {
+        self.receive();
+    }
+    fn release(&mut self) {
+        self.release();
+    }
+    fn events(&self) -> &Rc<RefCell<Vec<usize>>> {
+        self.events()
+    }
     fn await_events(&self, _duration: Option<std::time::Duration>) {
         match self {
             Generic::Thread(t) => t.await_events(_duration),
@@ -102,7 +118,6 @@ impl Allocate for Generic {
         }
     }
 }
-
 
 /// Enumerations of constructable implementors of `Allocate`.
 ///

@@ -1,10 +1,10 @@
 use timely::dataflow::Scope;
 
-use differential_dataflow::{ExchangeData, Collection, Hashable};
 use differential_dataflow::difference::{Monoid, Multiply};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::TraceReader;
+use differential_dataflow::{Collection, ExchangeData, Hashable};
 
 /// Reports a number of extensions to a stream of prefixes.
 ///
@@ -21,20 +21,25 @@ pub fn count<G, Tr, R, F, P>(
 where
     G: Scope,
     G::Timestamp: Lattice,
-    Tr: TraceReader<Val=(), Time=G::Timestamp, R=isize>+Clone+'static,
-    Tr::Key: Ord+Hashable+Default,
-    R: Monoid+Multiply<Output = R>+ExchangeData,
-    F: Fn(&P)->Tr::Key+Clone+'static,
+    Tr: TraceReader<Val = (), Time = G::Timestamp, R = isize> + Clone + 'static,
+    Tr::Key: Ord + Hashable + Default,
+    R: Monoid + Multiply<Output = R> + ExchangeData,
+    F: Fn(&P) -> Tr::Key + Clone + 'static,
     P: ExchangeData,
 {
     crate::operators::lookup_map(
         prefixes,
         arrangement,
-        move |p: &(P,usize,usize), k: &mut Tr::Key| { *k = key_selector(&p.0); },
-        move |(p,c,i), r, &(), s| {
+        move |p: &(P, usize, usize), k: &mut Tr::Key| {
+            *k = key_selector(&p.0);
+        },
+        move |(p, c, i), r, &(), s| {
             let s = *s as usize;
-            if *c < s { ((p.clone(), *c, *i), r.clone()) }
-            else      { ((p.clone(), s, index), r.clone()) }
+            if *c < s {
+                ((p.clone(), *c, *i), r.clone())
+            } else {
+                ((p.clone(), s, index), r.clone())
+            }
         },
         Default::default(),
         Default::default(),

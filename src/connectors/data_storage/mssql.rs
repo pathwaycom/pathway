@@ -2924,3 +2924,55 @@ fn mssql_read_err(e: tiberius::error::Error) -> ReadError {
 fn mssql_write_err(e: tiberius::error::Error) -> WriteError {
     WriteError::Mssql(classify_mssql_error(e))
 }
+
+type ConnectorColumns = Vec<(String, crate::engine::Type, bool)>;
+type PrimaryKeys = Vec<String>;
+type ConnectorSchemaResult =
+    Result<(ConnectorColumns, PrimaryKeys), Box<dyn std::error::Error + Send + Sync>>;
+
+pub fn explore_schema(connection_string: &str, full_table_name: &str) -> ConnectorSchemaResult {
+    let config = Config::from_ado_string(connection_string)?;
+    let runtime = create_async_tokio_runtime()?;
+    let full_table_lit = n_string_literal(full_table_name);
+
+    runtime.block_on(async {
+        let mut client = connect_mssql(&config).await?;
+        let query = format!(
+            "SELECT c.name AS column_name, t.name AS type_name, c.is_nullable, \
+            ISNULL((SELECT 1 FROM sys.index_columns ic JOIN sys.indexes i ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+            WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id AND ic.column_id = c.column_id), 0) AS is_primary_key \
+            FROM sys.columns c \
+            JOIN sys.types t ON c.user_type_id = t.user_type_id \
+            WHERE c.object_id = OBJECT_ID({full_table_lit}, N'U') \
+            ORDER BY c.column_id"
+        );
+        let rows = client
+            .simple_query(query)
+            .await?
+            .into_first_result()
+            .await?;
+
+        let mut columns = Vec::new();
+        let mut pks = Vec::new();
+        for r in rows {
+            let col_name: &str = r.get(0).unwrap_or("");
+            let data_type: &str = r.get(1).unwrap_or("");
+            let is_nullable: bool = r.get(2).unwrap_or(true);
+            let is_pk: i32 = r.get(3).unwrap_or(0);
+
+            let engine_type = match data_type.to_lowercase().as_str() {
+                "tinyint" | "smallint" | "int" | "bigint" => crate::engine::Type::Int,
+                "bit" => crate::engine::Type::Bool,
+                "real" | "float" | "decimal" | "numeric" => crate::engine::Type::Float,
+                _ => crate::engine::Type::String,
+            };
+
+            columns.push((col_name.to_owned(), engine_type, is_nullable));
+            if is_pk == 1 {
+                pks.push(col_name.to_owned());
+            }
+        }
+
+        Ok((columns, pks))
+    })
+}

@@ -1,17 +1,17 @@
 //! A shared ordered log.
 
-use std::rc::Rc;
 use std::cell::RefCell;
-use std::time::{Instant, Duration};
 use std::collections::VecDeque;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use crate::{communication::Allocate, ExchangeData, PartialOrder};
-use crate::scheduling::Scheduler;
-use crate::worker::Worker;
 use crate::dataflow::channels::pact::Exchange;
 use crate::dataflow::operators::generic::operator::source;
 use crate::dataflow::operators::generic::operator::Operator;
 use crate::scheduling::activate::Activator;
+use crate::scheduling::Scheduler;
+use crate::worker::Worker;
+use crate::{communication::Allocate, ExchangeData, PartialOrder};
 
 // A Sequencer needs all operators firing with high frequency, because
 // it uses the timer to gauge progress. If other workers cease
@@ -53,7 +53,6 @@ pub struct Sequencer<T> {
 }
 
 impl<T: ExchangeData> Sequencer<T> {
-
     /// Creates a new Sequencer.
     ///
     /// The `timer` instant is used to synchronize the workers, who use this
@@ -94,8 +93,11 @@ impl<T: ExchangeData> Sequencer<T> {
 
     /// Creates a new Sequencer preloaded with a queue of
     /// elements.
-    pub fn preloaded<A: Allocate>(worker: &mut Worker<A>, timer: Instant, preload: VecDeque<T>) -> Self {
-
+    pub fn preloaded<A: Allocate>(
+        worker: &mut Worker<A>,
+        timer: Instant,
+        preload: VecDeque<T>,
+    ) -> Self {
         let send: Rc<RefCell<VecDeque<T>>> = Rc::new(RefCell::new(VecDeque::new()));
         let recv = Rc::new(RefCell::new(preload));
         let send_weak = Rc::downgrade(&send);
@@ -110,8 +112,7 @@ impl<T: ExchangeData> Sequencer<T> {
         let activator_sink = activator.clone();
 
         // build a dataflow used to serialize and circulate commands
-        worker.dataflow::<Duration,_,_>(move |dataflow| {
-
+        worker.dataflow::<Duration, _, _>(move |dataflow| {
             let scope = dataflow.clone();
             let peers = dataflow.peers();
 
@@ -123,23 +124,18 @@ impl<T: ExchangeData> Sequencer<T> {
 
             // a source that attempts to pull from `recv` and produce commands for everyone
             source(dataflow, "SequenceInput", move |capability, info| {
-
                 // intialize activator, now that we have the address
-                activator_source
-                    .borrow_mut()
-                    .replace(CatchupActivator {
-                        activator: scope.activator_for(&info.address[..]),
-                        catchup_until: None,
-                    });
+                activator_source.borrow_mut().replace(CatchupActivator {
+                    activator: scope.activator_for(&info.address[..]),
+                    catchup_until: None,
+                });
 
                 // so we can drop, if input queue vanishes.
                 let mut capability = Some(capability);
 
                 // closure broadcasts any commands it grabs.
                 move |output| {
-
                     if let Some(send_queue) = send_weak.upgrade() {
-
                         // capability *should* still be non-None.
                         let capability = capability.as_mut().expect("Capability unavailable");
 
@@ -150,7 +146,7 @@ impl<T: ExchangeData> Sequencer<T> {
                         let mut session = output.session(&capability);
                         let mut borrow = send_queue.borrow_mut();
                         for element in borrow.drain(..) {
-                            for worker_index in 0 .. peers {
+                            for worker_index in 0..peers {
                                 session.give((worker_index, counter, element.clone()));
                             }
                             counter += 1;
@@ -175,7 +171,6 @@ impl<T: ExchangeData> Sequencer<T> {
                 Exchange::new(|x: &(usize, usize, T)| x.0 as u64),
                 "SequenceOutput",
                 move |input| {
-
                     // grab each command and queue it up
                     input.for_each(|time, data| {
                         data.swap(&mut vector);
@@ -186,7 +181,7 @@ impl<T: ExchangeData> Sequencer<T> {
                         }
                     });
 
-                    recvd.sort_by(|x,y| x.0.cmp(&y.0));
+                    recvd.sort_by(|x, y| x.0.cmp(&y.0));
 
                     if let Some(last) = recvd.last() {
                         let mut activator_borrow = activator_sink.borrow_mut();
@@ -197,17 +192,24 @@ impl<T: ExchangeData> Sequencer<T> {
                     }
 
                     // determine how many (which) elements to read from `recvd`.
-                    let count = recvd.iter().filter(|&((ref time, _, _), _)| !input.frontier().less_equal(time)).count();
+                    let count = recvd
+                        .iter()
+                        .filter(|&((ref time, _, _), _)| !input.frontier().less_equal(time))
+                        .count();
                     let iter = recvd.drain(..count);
 
                     if let Some(recv_queue) = recv_weak.upgrade() {
-                        recv_queue.borrow_mut().extend(iter.map(|(_,elem)| elem));
+                        recv_queue.borrow_mut().extend(iter.map(|(_, elem)| elem));
                     }
-                }
+                },
             );
         });
 
-        Sequencer { activator, send, recv, }
+        Sequencer {
+            activator,
+            send,
+            recv,
+        }
     }
 
     /// Adds an element to the shared log.

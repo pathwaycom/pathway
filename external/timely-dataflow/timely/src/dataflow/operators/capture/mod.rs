@@ -74,14 +74,14 @@
 //! ```
 
 pub use self::capture::Capture;
-pub use self::replay::Replay;
-pub use self::extract::{Extract, ExtractCore};
-pub use self::event::{Event, EventCore, EventPusher, EventPusherCore};
-pub use self::event::link::{EventLink, EventLinkCore};
 pub use self::event::binary::{EventReader, EventReaderCore};
 pub use self::event::binary::{EventWriter, EventWriterCore};
+pub use self::event::link::{EventLink, EventLinkCore};
+pub use self::event::{Event, EventCore, EventPusher, EventPusherCore};
+pub use self::extract::{Extract, ExtractCore};
+pub use self::replay::Replay;
 
 pub mod capture;
-pub mod replay;
-pub mod extract;
 pub mod event;
+pub mod extract;
+pub mod replay;

@@ -5,7 +5,7 @@
 /// This trait is distinct from Rust's `PartialOrd` trait, because the implementation
 /// of that trait precludes a distinct `Ord` implementation. We need an independent
 /// trait if we want to have a partially ordered type that can also be sorted.
-pub trait PartialOrder : Eq {
+pub trait PartialOrder: Eq {
     /// Returns true iff one element is strictly less than the other.
     fn less_than(&self, other: &Self) -> bool {
         self.less_equal(other) && self != other
@@ -23,16 +23,16 @@ pub trait PartialOrder : Eq {
 /// This trait is distinct from Rust's `Ord` trait, because several implementors of
 /// `PartialOrd` also implement `Ord` for efficient canonicalization, deduplication,
 /// and other sanity-maintaining operations.
-pub trait TotalOrder : PartialOrder { }
+pub trait TotalOrder: PartialOrder {}
 
 /// A type that does not affect total orderedness.
 ///
 /// This trait is not useful, but must be made public and documented or else Rust
 /// complains about its existence in the constraints on the implementation of
 /// public traits for public types.
-pub trait Empty : PartialOrder { }
+pub trait Empty: PartialOrder {}
 
-impl Empty for () { }
+impl Empty for () {}
 
 macro_rules! implement_partial {
     ($($index_type:ty,)*) => (
@@ -53,26 +53,68 @@ macro_rules! implement_total {
     )
 }
 
-implement_partial!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, (), ::std::time::Duration,);
-implement_total!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, (), ::std::time::Duration,);
+implement_partial!(
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    isize,
+    (),
+    ::std::time::Duration,
+);
+implement_total!(
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    isize,
+    (),
+    ::std::time::Duration,
+);
 
 pub use product::Product;
 /// A pair of timestamps, partially ordered by the product order.
 mod product {
-    use std::fmt::{Formatter, Error, Debug};
+    use std::fmt::{Debug, Error, Formatter};
 
     #[cfg(feature = "columnation")]
     use crate::container::columnation::{Columnation, Region};
     use crate::order::{Empty, TotalOrder};
-    use crate::progress::Timestamp;
     use crate::progress::timestamp::PathSummary;
     use crate::progress::timestamp::Refines;
+    use crate::progress::Timestamp;
 
     /// A nested pair of timestamps, one outer and one inner.
     ///
     /// We use `Product` rather than `(TOuter, TInner)` so that we can derive our own `PartialOrder`,
     /// because Rust just uses the lexicographic total order.
-    #[derive(Abomonation, Copy, Clone, Hash, Eq, PartialEq, Default, Ord, PartialOrd, Serialize, Deserialize)]
+    #[derive(
+        Abomonation,
+        Copy,
+        Clone,
+        Hash,
+        Eq,
+        PartialEq,
+        Default,
+        Ord,
+        PartialOrd,
+        Serialize,
+        Deserialize,
+    )]
     pub struct Product<TOuter, TInner> {
         /// Outer timestamp.
         pub outer: TOuter,
@@ -83,10 +125,7 @@ mod product {
     impl<TOuter, TInner> Product<TOuter, TInner> {
         /// Creates a new product from outer and inner coordinates.
         pub fn new(outer: TOuter, inner: TInner) -> Self {
-            Product {
-                outer,
-                inner,
-            }
+            Product { outer, inner }
         }
     }
 
@@ -107,25 +146,32 @@ mod product {
 
     impl<TOuter: Timestamp, TInner: Timestamp> Timestamp for Product<TOuter, TInner> {
         type Summary = Product<TOuter::Summary, TInner::Summary>;
-        fn minimum() -> Self { Self { outer: TOuter::minimum(), inner: TInner::minimum() }}
+        fn minimum() -> Self {
+            Self {
+                outer: TOuter::minimum(),
+                inner: TInner::minimum(),
+            }
+        }
     }
 
-    impl<TOuter: Timestamp, TInner: Timestamp> PathSummary<Product<TOuter, TInner>> for Product<TOuter::Summary, TInner::Summary> {
+    impl<TOuter: Timestamp, TInner: Timestamp> PathSummary<Product<TOuter, TInner>>
+        for Product<TOuter::Summary, TInner::Summary>
+    {
         #[inline]
         fn results_in(&self, product: &Product<TOuter, TInner>) -> Option<Product<TOuter, TInner>> {
-            self.outer.results_in(&product.outer)
-                .and_then(|outer|
-                    self.inner.results_in(&product.inner)
-                        .map(|inner| Product::new(outer, inner))
-                )
+            self.outer.results_in(&product.outer).and_then(|outer| {
+                self.inner
+                    .results_in(&product.inner)
+                    .map(|inner| Product::new(outer, inner))
+            })
         }
         #[inline]
         fn followed_by(&self, other: &Self) -> Option<Self> {
-            self.outer.followed_by(&other.outer)
-                .and_then(|outer|
-                    self.inner.followed_by(&other.inner)
-                        .map(|inner| Product::new(outer, inner))
-                )
+            self.outer.followed_by(&other.outer).and_then(|outer| {
+                self.inner
+                    .followed_by(&other.inner)
+                    .map(|inner| Product::new(outer, inner))
+            })
         }
     }
 
@@ -141,8 +187,13 @@ mod product {
         }
     }
 
-    impl<T1: Empty, T2: Empty> Empty for Product<T1, T2> { }
-    impl<T1, T2> TotalOrder for Product<T1, T2> where T1: Empty, T2: TotalOrder { }
+    impl<T1: Empty, T2: Empty> Empty for Product<T1, T2> {}
+    impl<T1, T2> TotalOrder for Product<T1, T2>
+    where
+        T1: Empty,
+        T2: TotalOrder,
+    {
+    }
 
     #[cfg(feature = "columnation")]
     impl<T1: Columnation, T2: Columnation> Columnation for Product<T1, T2> {
@@ -162,7 +213,10 @@ mod product {
 
         #[inline]
         unsafe fn copy(&mut self, item: &Self::Item) -> Self::Item {
-            Product { outer: self.outer_region.copy(&item.outer), inner: self.inner_region.copy(&item.inner) }
+            Product {
+                outer: self.outer_region.copy(&item.outer),
+                inner: self.inner_region.copy(&item.inner),
+            }
         }
 
         fn clear(&mut self) {
@@ -170,16 +224,26 @@ mod product {
             self.inner_region.clear();
         }
 
-        fn reserve_items<'a, I>(&mut self, items1: I) where Self: 'a, I: Iterator<Item=&'a Self::Item> + Clone {
+        fn reserve_items<'a, I>(&mut self, items1: I)
+        where
+            Self: 'a,
+            I: Iterator<Item = &'a Self::Item> + Clone,
+        {
             let items2 = items1.clone();
             self.outer_region.reserve_items(items1.map(|x| &x.outer));
             self.inner_region.reserve_items(items2.map(|x| &x.inner))
         }
 
-        fn reserve_regions<'a, I>(&mut self, regions1: I) where Self: 'a, I: Iterator<Item=&'a Self> + Clone {
+        fn reserve_regions<'a, I>(&mut self, regions1: I)
+        where
+            Self: 'a,
+            I: Iterator<Item = &'a Self> + Clone,
+        {
             let regions2 = regions1.clone();
-            self.outer_region.reserve_regions(regions1.map(|r| &r.outer_region));
-            self.inner_region.reserve_regions(regions2.map(|r| &r.inner_region));
+            self.outer_region
+                .reserve_regions(regions1.map(|r| &r.outer_region));
+            self.inner_region
+                .reserve_regions(regions2.map(|r| &r.inner_region));
         }
 
         fn heap_size(&self, mut callback: impl FnMut(usize, usize)) {
@@ -202,31 +266,39 @@ mod tuple {
     }
 
     use super::TotalOrder;
-    impl<T1, T2> TotalOrder for (T1, T2) where T1: TotalOrder, T2: TotalOrder { }
+    impl<T1, T2> TotalOrder for (T1, T2)
+    where
+        T1: TotalOrder,
+        T2: TotalOrder,
+    {
+    }
 
     use crate::progress::Timestamp;
     impl<TOuter: Timestamp, TInner: Timestamp> Timestamp for (TOuter, TInner) {
         type Summary = (TOuter::Summary, TInner::Summary);
-        fn minimum() -> Self { (TOuter::minimum(), TInner::minimum()) }
+        fn minimum() -> Self {
+            (TOuter::minimum(), TInner::minimum())
+        }
     }
 
     use crate::progress::timestamp::PathSummary;
-    impl<TOuter: Timestamp, TInner: Timestamp> PathSummary<(TOuter, TInner)> for (TOuter::Summary, TInner::Summary) {
+    impl<TOuter: Timestamp, TInner: Timestamp> PathSummary<(TOuter, TInner)>
+        for (TOuter::Summary, TInner::Summary)
+    {
         #[inline]
         fn results_in(&self, (outer, inner): &(TOuter, TInner)) -> Option<(TOuter, TInner)> {
-            self.0.results_in(outer)
-                .and_then(|outer|
-                    self.1.results_in(inner)
-                        .map(|inner| (outer, inner))
-                )
+            self.0
+                .results_in(outer)
+                .and_then(|outer| self.1.results_in(inner).map(|inner| (outer, inner)))
         }
         #[inline]
-        fn followed_by(&self, (outer, inner): &(TOuter::Summary, TInner::Summary)) -> Option<(TOuter::Summary, TInner::Summary)> {
-            self.0.followed_by(outer)
-                .and_then(|outer|
-                    self.1.followed_by(inner)
-                        .map(|inner| (outer, inner))
-                )
+        fn followed_by(
+            &self,
+            (outer, inner): &(TOuter::Summary, TInner::Summary),
+        ) -> Option<(TOuter::Summary, TInner::Summary)> {
+            self.0
+                .followed_by(outer)
+                .and_then(|outer| self.1.followed_by(inner).map(|inner| (outer, inner)))
         }
     }
 
@@ -244,5 +316,5 @@ mod tuple {
     }
 
     use super::Empty;
-    impl<T1: Empty, T2: Empty> Empty for (T1, T2) { }
+    impl<T1: Empty, T2: Empty> Empty for (T1, T2) {}
 }

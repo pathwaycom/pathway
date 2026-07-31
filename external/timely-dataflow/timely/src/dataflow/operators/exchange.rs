@@ -1,10 +1,10 @@
 //! Exchange records between workers.
 
-use crate::ExchangeData;
 use crate::container::PushPartitioned;
 use crate::dataflow::channels::pact::ExchangeCore;
 use crate::dataflow::operators::generic::operator::Operator;
 use crate::dataflow::{Scope, StreamCore};
+use crate::ExchangeData;
 
 /// Exchange records between workers.
 pub trait Exchange<D> {

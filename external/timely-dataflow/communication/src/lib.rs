@@ -74,54 +74,54 @@
 //! ```
 
 #![forbid(missing_docs)]
-
 // Disabling warnings since we try to keep the forks as close to the original, while the
 // suggestions are applied for the principal framework library.
 #![allow(warnings)]
 
-#[cfg(feature = "getopts")]
-extern crate getopts;
 #[cfg(feature = "bincode")]
 extern crate bincode;
+#[cfg(feature = "getopts")]
+extern crate getopts;
 #[cfg(feature = "bincode")]
 extern crate serde;
 
 extern crate abomonation;
-#[macro_use] extern crate abomonation_derive;
+#[macro_use]
+extern crate abomonation_derive;
 
 extern crate timely_bytes as bytes;
 extern crate timely_logging as logging_core;
 
 pub mod allocator;
-pub mod networking;
+pub mod buzzer;
 pub mod initialize;
 pub mod logging;
 pub mod message;
-pub mod buzzer;
+pub mod networking;
 
 use std::any::Any;
 
-#[cfg(feature = "bincode")]
-use serde::{Serialize, Deserialize};
 #[cfg(not(feature = "bincode"))]
 use abomonation::Abomonation;
+#[cfg(feature = "bincode")]
+use serde::{Deserialize, Serialize};
 
-pub use allocator::Generic as Allocator;
 pub use allocator::Allocate;
+pub use allocator::Generic as Allocator;
 pub use initialize::{initialize, initialize_from, Config, WorkerGuards};
 pub use message::Message;
 
 /// A composite trait for types that may be used with channels.
 #[cfg(not(feature = "bincode"))]
-pub trait Data : Send+Sync+Any+Abomonation+'static { }
+pub trait Data: Send + Sync + Any + Abomonation + 'static {}
 #[cfg(not(feature = "bincode"))]
-impl<T: Send+Sync+Any+Abomonation+'static> Data for T { }
+impl<T: Send + Sync + Any + Abomonation + 'static> Data for T {}
 
 /// A composite trait for types that may be used with channels.
 #[cfg(feature = "bincode")]
-pub trait Data : Send+Sync+Any+Serialize+for<'a>Deserialize<'a>+'static { }
+pub trait Data: Send + Sync + Any + Serialize + for<'a> Deserialize<'a> + 'static {}
 #[cfg(feature = "bincode")]
-impl<T: Send+Sync+Any+Serialize+for<'a>Deserialize<'a>+'static> Data for T { }
+impl<T: Send + Sync + Any + Serialize + for<'a> Deserialize<'a> + 'static> Data for T {}
 
 /// Pushing elements of type `T`.
 ///
@@ -138,15 +138,21 @@ pub trait Push<T> {
     fn push(&mut self, element: &mut Option<T>);
     /// Pushes `element` and drops any resulting resources.
     #[inline]
-    fn send(&mut self, element: T) { self.push(&mut Some(element)); }
+    fn send(&mut self, element: T) {
+        self.push(&mut Some(element));
+    }
     /// Pushes `None`, conventionally signalling a flush.
     #[inline]
-    fn done(&mut self) { self.push(&mut None); }
+    fn done(&mut self) {
+        self.push(&mut None);
+    }
 }
 
 impl<T, P: ?Sized + Push<T>> Push<T> for Box<P> {
     #[inline]
-    fn push(&mut self, element: &mut Option<T>) { (**self).push(element) }
+    fn push(&mut self, element: &mut Option<T>) {
+        (**self).push(element)
+    }
 }
 
 /// Pulling elements of type `T`.
@@ -162,29 +168,31 @@ pub trait Pull<T> {
     fn pull(&mut self) -> &mut Option<T>;
     /// Takes an `Option<T>` and leaves `None` behind.
     #[inline]
-    fn recv(&mut self) -> Option<T> { self.pull().take() }
+    fn recv(&mut self) -> Option<T> {
+        self.pull().take()
+    }
 }
 
 impl<T, P: ?Sized + Pull<T>> Pull<T> for Box<P> {
     #[inline]
-    fn pull(&mut self) -> &mut Option<T> { (**self).pull() }
+    fn pull(&mut self) -> &mut Option<T> {
+        (**self).pull()
+    }
 }
 
-
-use crossbeam_channel::{Sender, Receiver};
+use crossbeam_channel::{Receiver, Sender};
 
 /// Allocate a matrix of send and receive changes to exchange items.
 ///
 /// This method constructs channels for `sends` threads to create and send
 /// items of type `T` to `recvs` receiver threads.
 fn promise_futures<T>(sends: usize, recvs: usize) -> (Vec<Vec<Sender<T>>>, Vec<Vec<Receiver<T>>>) {
-
     // each pair of workers has a sender and a receiver.
-    let mut senders: Vec<_> = (0 .. sends).map(|_| Vec::with_capacity(recvs)).collect();
-    let mut recvers: Vec<_> = (0 .. recvs).map(|_| Vec::with_capacity(sends)).collect();
+    let mut senders: Vec<_> = (0..sends).map(|_| Vec::with_capacity(recvs)).collect();
+    let mut recvers: Vec<_> = (0..recvs).map(|_| Vec::with_capacity(sends)).collect();
 
-    for sender in 0 .. sends {
-        for recver in 0 .. recvs {
+    for sender in 0..sends {
+        for recver in 0..recvs {
             let (send, recv) = crossbeam_channel::unbounded();
             senders[sender].push(send);
             recvers[recver].push(recv);

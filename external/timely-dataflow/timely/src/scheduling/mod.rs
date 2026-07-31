@@ -1,11 +1,11 @@
 //! Types and traits to activate and schedule fibers.
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 pub mod activate;
 
-pub use self::activate::{Activations, Activator, ActivateOnDrop, SyncActivator};
+pub use self::activate::{ActivateOnDrop, Activations, Activator, SyncActivator};
 
 /// A type that can be scheduled.
 pub trait Schedule {

@@ -23,7 +23,7 @@ use std::hash::Hasher;
 /// can take advantage of the smaller size.
 pub trait Hashable {
     /// The type of the output value.
-    type Output: Into<u64>+Copy;
+    type Output: Into<u64> + Copy;
     /// A well-distributed integer derived from the data.
     fn hashed(&self) -> Self::Output;
 }

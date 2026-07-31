@@ -5,11 +5,10 @@
 //! `Lattice` trait, and all reasoning in operators are done it terms of `Lattice` methods.
 
 use timely::order::PartialOrder;
-use timely::progress::{Antichain, frontier::AntichainRef};
+use timely::progress::{frontier::AntichainRef, Antichain};
 
 /// A bounded partially ordered type supporting joins and meets.
-pub trait Lattice : PartialOrder {
-
+pub trait Lattice: PartialOrder {
     /// The smallest element greater than or equal to both arguments.
     ///
     /// # Examples
@@ -50,7 +49,10 @@ pub trait Lattice : PartialOrder {
     /// assert_eq!(time1, Product::new(4, 7));
     /// # }
     /// ```
-    fn join_assign(&mut self, other: &Self) where Self: Sized {
+    fn join_assign(&mut self, other: &Self)
+    where
+        Self: Sized,
+    {
         *self = self.join(other);
     }
 
@@ -94,7 +96,10 @@ pub trait Lattice : PartialOrder {
     /// assert_eq!(time1, Product::new(3, 6));
     /// # }
     /// ```
-    fn meet_assign(&mut self, other: &Self) where Self: Sized  {
+    fn meet_assign(&mut self, other: &Self)
+    where
+        Self: Sized,
+    {
         *self = self.meet(other);
     }
 
@@ -140,7 +145,10 @@ pub trait Lattice : PartialOrder {
     /// # }
     /// ```
     #[inline]
-    fn advance_by(&mut self, frontier: AntichainRef<Self>) where Self: Sized {
+    fn advance_by(&mut self, frontier: AntichainRef<Self>)
+    where
+        Self: Sized,
+    {
         let mut iter = frontier.iter();
         if let Some(first) = iter.next() {
             let mut result = self.join(first);
@@ -189,13 +197,17 @@ macro_rules! implement_maximum {
 }
 
 implement_maximum!(usize, u128, u64, u32, u16, u8, isize, i128, i64, i32, i16, i8, Duration,);
-impl Maximum for () { fn maximum() -> () { () }}
+impl Maximum for () {
+    fn maximum() -> () {
+        ()
+    }
+}
 
 use timely::progress::Timestamp;
 
 // Tuples have the annoyance that they are only a lattice for `T2` with maximal elements,
 // as the `meet` operator on `(x, _)` and `(y, _)` would be `(x meet y, maximum())`.
-impl<T1: Lattice+Clone, T2: Lattice+Clone+Maximum+Timestamp> Lattice for (T1, T2) {
+impl<T1: Lattice + Clone, T2: Lattice + Clone + Maximum + Timestamp> Lattice for (T1, T2) {
     #[inline]
     fn join(&self, other: &(T1, T2)) -> (T1, T2) {
         if self.0.eq(&other.0) {
@@ -223,12 +235,18 @@ impl<T1: Lattice+Clone, T2: Lattice+Clone+Maximum+Timestamp> Lattice for (T1, T2
 }
 
 macro_rules! implement_lattice {
-    ($index_type:ty, $minimum:expr) => (
+    ($index_type:ty, $minimum:expr) => {
         impl Lattice for $index_type {
-            #[inline] fn join(&self, other: &Self) -> Self { ::std::cmp::max(*self, *other) }
-            #[inline] fn meet(&self, other: &Self) -> Self { ::std::cmp::min(*self, *other) }
+            #[inline]
+            fn join(&self, other: &Self) -> Self {
+                ::std::cmp::max(*self, *other)
+            }
+            #[inline]
+            fn meet(&self, other: &Self) -> Self {
+                ::std::cmp::min(*self, *other)
+            }
         }
-    )
+    };
 }
 
 use std::time::Duration;
@@ -337,7 +355,7 @@ pub fn antichain_join_into<T: Lattice>(one: &[T], other: &[T], upper: &mut Antic
 /// assert_eq!(&*meet.elements(), &[Product::new(3, 7), Product::new(4, 6)]);
 /// # }
 /// ```
-pub fn antichain_meet<T: Lattice+Clone>(one: &[T], other: &[T]) -> Antichain<T> {
+pub fn antichain_meet<T: Lattice + Clone>(one: &[T], other: &[T]) -> Antichain<T> {
     let mut upper = Antichain::new();
     for time1 in one {
         upper.insert(time1.clone());
@@ -348,7 +366,7 @@ pub fn antichain_meet<T: Lattice+Clone>(one: &[T], other: &[T]) -> Antichain<T> 
     upper
 }
 
-impl<T: Lattice+Clone> Lattice for Antichain<T> {
+impl<T: Lattice + Clone> Lattice for Antichain<T> {
     fn join(&self, other: &Self) -> Self {
         let mut upper = Antichain::new();
         for time1 in self.elements().iter() {

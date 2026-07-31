@@ -1,7 +1,7 @@
 //! A helper struct to report when something has been dropped.
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// An opaque type that reports when it is dropped.
 pub struct Canary {

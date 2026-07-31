@@ -66,7 +66,7 @@ use timely::progress::PathSummary;
 
 /// Describes an action on a `PointStamp`: truncation to `length` followed by `actions`.
 #[derive(
-    Hash, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize, Abomonation
+    Hash, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize, Abomonation,
 )]
 pub struct PointStampSummary<TS> {
     /// Number of leading coordinates to retain.
@@ -130,7 +130,8 @@ impl<T: Timestamp> PathSummary<PointStamp<T>> for PointStampSummary<T::Summary> 
             &self.actions[..]
         };
 
-        let mut actions = Vec::with_capacity(std::cmp::max(self_actions.len(), other.actions.len()));
+        let mut actions =
+            Vec::with_capacity(std::cmp::max(self_actions.len(), other.actions.len()));
         // Introduce actions where both input actions apply.
         let min_len = std::cmp::min(self_actions.len(), other.actions.len());
         for (action1, action2) in self_actions.iter().zip(other.actions.iter()) {

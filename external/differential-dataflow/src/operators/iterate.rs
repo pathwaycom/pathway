@@ -33,17 +33,17 @@
 use std::fmt::Debug;
 use std::ops::Deref;
 
-use timely::progress::{Timestamp, PathSummary};
 use timely::order::Product;
+use timely::progress::{PathSummary, Timestamp};
 
-use timely::dataflow::*;
-use timely::dataflow::scopes::child::Iterative;
-use timely::dataflow::operators::{Feedback, ConnectLoop, Map};
 use timely::dataflow::operators::feedback::Handle;
+use timely::dataflow::operators::{ConnectLoop, Feedback, Map};
+use timely::dataflow::scopes::child::Iterative;
+use timely::dataflow::*;
 
-use ::{Data, Collection};
-use ::difference::{Semigroup, Abelian};
+use difference::{Abelian, Semigroup};
 use lattice::Lattice;
+use {Collection, Data};
 
 /// An extension trait for the `iterate` method.
 pub trait Iterate<G: Scope, D: Data, R: Semigroup> {
@@ -76,16 +76,21 @@ pub trait Iterate<G: Scope, D: Data, R: Semigroup> {
     /// }
     /// ```
     fn iterate<F>(&self, logic: F) -> Collection<G, D, R>
-        where
-            G::Timestamp: Lattice,
-            for<'a> F: FnOnce(&Collection<Iterative<'a, G, u64>, D, R>)->Collection<Iterative<'a, G, u64>, D, R>;
+    where
+        G::Timestamp: Lattice,
+        for<'a> F: FnOnce(
+            &Collection<Iterative<'a, G, u64>, D, R>,
+        ) -> Collection<Iterative<'a, G, u64>, D, R>;
 }
 
-impl<G: Scope, D: Ord+Data+Debug, R: Abelian> Iterate<G, D, R> for Collection<G, D, R> {
+impl<G: Scope, D: Ord + Data + Debug, R: Abelian> Iterate<G, D, R> for Collection<G, D, R> {
     fn iterate<F>(&self, logic: F) -> Collection<G, D, R>
-        where G::Timestamp: Lattice,
-              for<'a> F: FnOnce(&Collection<Iterative<'a, G, u64>, D, R>)->Collection<Iterative<'a, G, u64>, D, R> {
-
+    where
+        G::Timestamp: Lattice,
+        for<'a> F: FnOnce(
+            &Collection<Iterative<'a, G, u64>, D, R>,
+        ) -> Collection<Iterative<'a, G, u64>, D, R>,
+    {
         self.inner.scope().scoped("Iterate", |subgraph| {
             // create a new variable, apply logic, bind variable, return.
             //
@@ -93,7 +98,8 @@ impl<G: Scope, D: Ord+Data+Debug, R: Abelian> Iterate<G, D, R> for Collection<G,
             // wrapped by `variable`, but it also results in substantially more
             // diffs produced; `result` is post-consolidation, and means fewer
             // records are yielded out of the loop.
-            let variable = Variable::new_from(self.enter(subgraph), Product::new(Default::default(), 1));
+            let variable =
+                Variable::new_from(self.enter(subgraph), Product::new(Default::default(), 1));
             let result = logic(&variable);
             variable.set(&result);
             result.leave()
@@ -101,27 +107,28 @@ impl<G: Scope, D: Ord+Data+Debug, R: Abelian> Iterate<G, D, R> for Collection<G,
     }
 }
 
-impl<G: Scope, D: Ord+Data+Debug, R: Semigroup> Iterate<G, D, R> for G {
+impl<G: Scope, D: Ord + Data + Debug, R: Semigroup> Iterate<G, D, R> for G {
     fn iterate<F>(&self, logic: F) -> Collection<G, D, R>
-        where G::Timestamp: Lattice,
-              for<'a> F: FnOnce(&Collection<Iterative<'a, G, u64>, D, R>)->Collection<Iterative<'a, G, u64>, D, R> {
-
+    where
+        G::Timestamp: Lattice,
+        for<'a> F: FnOnce(
+            &Collection<Iterative<'a, G, u64>, D, R>,
+        ) -> Collection<Iterative<'a, G, u64>, D, R>,
+    {
         // TODO: This makes me think we have the wrong ownership pattern here.
         let mut clone = self.clone();
-        clone
-            .scoped("Iterate", |subgraph| {
-                // create a new variable, apply logic, bind variable, return.
-                //
-                // this could be much more succinct if we returned the collection
-                // wrapped by `variable`, but it also results in substantially more
-                // diffs produced; `result` is post-consolidation, and means fewer
-                // records are yielded out of the loop.
-                let variable = SemigroupVariable::new(subgraph, Product::new(Default::default(), 1));
-                let result = logic(&variable);
-                variable.set(&result);
-                result.leave()
-            }
-        )
+        clone.scoped("Iterate", |subgraph| {
+            // create a new variable, apply logic, bind variable, return.
+            //
+            // this could be much more succinct if we returned the collection
+            // wrapped by `variable`, but it also results in substantially more
+            // diffs produced; `result` is post-consolidation, and means fewer
+            // records are yielded out of the loop.
+            let variable = SemigroupVariable::new(subgraph, Product::new(Default::default(), 1));
+            let result = logic(&variable);
+            variable.set(&result);
+            result.leave()
+        })
     }
 }
 
@@ -162,14 +169,19 @@ impl<G: Scope, D: Ord+Data+Debug, R: Semigroup> Iterate<G, D, R> for G {
 /// }
 /// ```
 pub struct Variable<G: Scope, D: Data, R: Abelian>
-where G::Timestamp: Lattice {
+where
+    G::Timestamp: Lattice,
+{
     collection: Collection<G, D, R>,
     feedback: Handle<G, (D, G::Timestamp, R)>,
     source: Option<Collection<G, D, R>>,
     step: <G::Timestamp as Timestamp>::Summary,
 }
 
-impl<G: Scope, D: Data, R: Abelian> Variable<G, D, R> where G::Timestamp: Lattice {
+impl<G: Scope, D: Data, R: Abelian> Variable<G, D, R>
+where
+    G::Timestamp: Lattice,
+{
     /// Creates a new initially empty `Variable`.
     ///
     /// This method produces a simpler dataflow graph than `new_from`, and should
@@ -177,14 +189,27 @@ impl<G: Scope, D: Data, R: Abelian> Variable<G, D, R> where G::Timestamp: Lattic
     pub fn new(scope: &mut G, step: <G::Timestamp as Timestamp>::Summary) -> Self {
         let (feedback, updates) = scope.feedback(step.clone());
         let collection = Collection::new(updates);
-        Variable { collection, feedback, source: None, step }
+        Variable {
+            collection,
+            feedback,
+            source: None,
+            step,
+        }
     }
 
     /// Creates a new `Variable` from a supplied `source` stream.
-    pub fn new_from(source: Collection<G, D, R>, step: <G::Timestamp as Timestamp>::Summary) -> Self {
+    pub fn new_from(
+        source: Collection<G, D, R>,
+        step: <G::Timestamp as Timestamp>::Summary,
+    ) -> Self {
         let (feedback, updates) = source.inner.scope().feedback(step.clone());
         let collection = Collection::new(updates).concat(&source);
-        Variable { collection, feedback, source: Some(source), step }
+        Variable {
+            collection,
+            feedback,
+            source: Some(source),
+            step,
+        }
     }
 
     /// Set the definition of the `Variable` to a collection.
@@ -212,14 +237,17 @@ impl<G: Scope, D: Data, R: Abelian> Variable<G, D, R> where G::Timestamp: Lattic
         let step = self.step;
         result
             .inner
-            .flat_map(move |(x,t,d)| step.results_in(&t).map(|t| (x,t,d)))
+            .flat_map(move |(x, t, d)| step.results_in(&t).map(|t| (x, t, d)))
             .connect_loop(self.feedback);
 
         self.collection
     }
 }
 
-impl<G: Scope, D: Data, R: Abelian> Deref for Variable<G, D, R> where G::Timestamp: Lattice {
+impl<G: Scope, D: Data, R: Abelian> Deref for Variable<G, D, R>
+where
+    G::Timestamp: Lattice,
+{
     type Target = Collection<G, D, R>;
     fn deref(&self) -> &Self::Target {
         &self.collection
@@ -233,18 +261,27 @@ impl<G: Scope, D: Data, R: Abelian> Deref for Variable<G, D, R> where G::Timesta
 /// that it can be used in settings where the difference type does not support
 /// negation.
 pub struct SemigroupVariable<G: Scope, D: Data, R: Semigroup>
-where G::Timestamp: Lattice {
+where
+    G::Timestamp: Lattice,
+{
     collection: Collection<G, D, R>,
     feedback: Handle<G, (D, G::Timestamp, R)>,
     step: <G::Timestamp as Timestamp>::Summary,
 }
 
-impl<G: Scope, D: Data, R: Semigroup> SemigroupVariable<G, D, R> where G::Timestamp: Lattice {
+impl<G: Scope, D: Data, R: Semigroup> SemigroupVariable<G, D, R>
+where
+    G::Timestamp: Lattice,
+{
     /// Creates a new initially empty `SemigroupVariable`.
     pub fn new(scope: &mut G, step: <G::Timestamp as Timestamp>::Summary) -> Self {
         let (feedback, updates) = scope.feedback(step.clone());
         let collection = Collection::new(updates);
-        SemigroupVariable { collection, feedback, step }
+        SemigroupVariable {
+            collection,
+            feedback,
+            step,
+        }
     }
 
     /// Adds a new source of data to `self`.
@@ -252,14 +289,17 @@ impl<G: Scope, D: Data, R: Semigroup> SemigroupVariable<G, D, R> where G::Timest
         let step = self.step;
         result
             .inner
-            .flat_map(move |(x,t,d)| step.results_in(&t).map(|t| (x,t,d)))
+            .flat_map(move |(x, t, d)| step.results_in(&t).map(|t| (x, t, d)))
             .connect_loop(self.feedback);
 
         self.collection
     }
 }
 
-impl<G: Scope, D: Data, R: Semigroup> Deref for SemigroupVariable<G, D, R> where G::Timestamp: Lattice {
+impl<G: Scope, D: Data, R: Semigroup> Deref for SemigroupVariable<G, D, R>
+where
+    G::Timestamp: Lattice,
+{
     type Target = Collection<G, D, R>;
     fn deref(&self) -> &Self::Target {
         &self.collection

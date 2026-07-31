@@ -8,19 +8,19 @@
 
 use timely::dataflow::Scope;
 
-use ::{Collection, ExchangeData, Hashable};
-use ::difference::Semigroup;
+use difference::Semigroup;
+use {Collection, ExchangeData, Hashable};
 
-use Data;
 use lattice::Lattice;
+use Data;
 
 /// Methods which require data be arrangeable.
 impl<G, D, R> Collection<G, D, R>
 where
     G: Scope,
-    G::Timestamp: Data+Lattice,
-    D: ExchangeData+Hashable,
-    R: Semigroup+ExchangeData,
+    G::Timestamp: Data + Lattice,
+    D: ExchangeData + Hashable,
+    R: Semigroup + ExchangeData,
 {
     /// Aggregates the weights of equal records into at most one record.
     ///
@@ -49,13 +49,15 @@ where
     /// ```
     pub fn consolidate(&self) -> Self {
         use trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
-        self.consolidate_named::<DefaultKeyTrace<_,_,_>>("Consolidate")
+        self.consolidate_named::<DefaultKeyTrace<_, _, _>>("Consolidate")
     }
 
     /// As `consolidate` but with the ability to name the operator and specify the trace type.
     pub fn consolidate_named<Tr>(&self, name: &str) -> Self
     where
-        Tr: crate::trace::Trace+crate::trace::TraceReader<Key=D,Val=(),Time=G::Timestamp,R=R>+'static,
+        Tr: crate::trace::Trace
+            + crate::trace::TraceReader<Key = D, Val = (), Time = G::Timestamp, R = R>
+            + 'static,
         Tr::Batch: crate::trace::Batch,
     {
         use operators::arrange::arrangement::Arrange;
@@ -93,14 +95,12 @@ where
     /// }
     /// ```
     pub fn consolidate_stream(&self) -> Self {
-
+        use collection::AsCollection;
         use timely::dataflow::channels::pact::Pipeline;
         use timely::dataflow::operators::Operator;
-        use collection::AsCollection;
 
         self.inner
             .unary(Pipeline, "ConsolidateStream", |_cap, _info| {
-
                 let mut vector = Vec::new();
                 move |input, output| {
                     input.for_each(|time, data| {

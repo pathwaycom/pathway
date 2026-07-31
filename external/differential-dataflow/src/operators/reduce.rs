@@ -5,29 +5,32 @@
 //! to the key and the list of values.
 //! The function is expected to populate a list of output values.
 
+use difference::{Abelian, Semigroup};
 use hashable::Hashable;
-use ::{Data, ExchangeData, Collection};
-use ::difference::{Semigroup, Abelian};
+use {Collection, Data, ExchangeData};
 
+use timely::dataflow::channels::pact::Pipeline;
+use timely::dataflow::operators::Capability;
+use timely::dataflow::operators::Operator;
+use timely::dataflow::*;
 use timely::order::PartialOrder;
 use timely::progress::frontier::Antichain;
 use timely::progress::Timestamp;
-use timely::dataflow::*;
-use timely::dataflow::operators::Operator;
-use timely::dataflow::channels::pact::Pipeline;
-use timely::dataflow::operators::Capability;
 
-use operators::arrange::{Arranged, ArrangeByKey, ArrangeBySelf, TraceAgent};
 use lattice::Lattice;
-use trace::{Batch, BatchReader, Cursor, Trace, Builder};
+use operators::arrange::{ArrangeByKey, ArrangeBySelf, Arranged, TraceAgent};
 use trace::cursor::CursorList;
-use trace::implementations::ord::OrdValSpine as DefaultValTrace;
 use trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
+use trace::implementations::ord::OrdValSpine as DefaultValTrace;
+use trace::{Batch, BatchReader, Builder, Cursor, Trace};
 
 use trace::TraceReader;
 
 /// Extension trait for the `reduce` differential dataflow method.
-pub trait Reduce<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestamp: Lattice+Ord {
+pub trait Reduce<G: Scope, K: Data, V: Data, R: Semigroup>
+where
+    G::Timestamp: Lattice + Ord,
+{
     /// Applies a reduction function on records grouped by key.
     ///
     /// Input data must be structured as `(key, val)` pairs.
@@ -62,25 +65,38 @@ pub trait Reduce<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestamp: L
     /// }
     /// ```
     fn reduce<L, V2: Data, R2: Abelian>(&self, logic: L) -> Collection<G, (K, V2), R2>
-    where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
+    where
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>) + 'static,
+    {
         self.reduce_named("Reduce", logic)
     }
 
     /// As `reduce` with the ability to name the operator.
-    fn reduce_named<L, V2: Data, R2: Abelian>(&self, name: &str, logic: L) -> Collection<G, (K, V2), R2>
-    where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static;
+    fn reduce_named<L, V2: Data, R2: Abelian>(
+        &self,
+        name: &str,
+        logic: L,
+    ) -> Collection<G, (K, V2), R2>
+    where
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>) + 'static;
 }
 
 impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
+where
+    G: Scope,
+    G::Timestamp: Lattice + Ord,
+    K: ExchangeData + Hashable,
+    V: ExchangeData,
+    R: ExchangeData + Semigroup,
+{
+    fn reduce_named<L, V2: Data, R2: Abelian>(
+        &self,
+        name: &str,
+        logic: L,
+    ) -> Collection<G, (K, V2), R2>
     where
-        G: Scope,
-        G::Timestamp: Lattice+Ord,
-        K: ExchangeData+Hashable,
-        V: ExchangeData,
-        R: ExchangeData+Semigroup,
- {
-    fn reduce_named<L, V2: Data, R2: Abelian>(&self, name: &str, logic: L) -> Collection<G, (K, V2), R2>
-        where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>) + 'static,
+    {
         self.arrange_by_key_named(&format!("Arrange: {}", name))
             .reduce_named(name, logic)
     }
@@ -88,18 +104,27 @@ impl<G, K, V, R> Reduce<G, K, V, R> for Collection<G, (K, V), R>
 
 impl<G: Scope, K: Data, V: Data, T1, R: Semigroup> Reduce<G, K, V, R> for Arranged<G, T1>
 where
-    G::Timestamp: Lattice+Ord,
-    T1: TraceReader<Key=K, Val=V, Time=G::Timestamp, R=R>+Clone+'static,
+    G::Timestamp: Lattice + Ord,
+    T1: TraceReader<Key = K, Val = V, Time = G::Timestamp, R = R> + Clone + 'static,
 {
-    fn reduce_named<L, V2: Data, R2: Abelian>(&self, name: &str, logic: L) -> Collection<G, (K, V2), R2>
-        where L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>)+'static {
-        self.reduce_abelian::<_,DefaultValTrace<_,_,_,_>>(name, logic)
-            .as_collection(|k,v| (k.clone(), v.clone()))
+    fn reduce_named<L, V2: Data, R2: Abelian>(
+        &self,
+        name: &str,
+        logic: L,
+    ) -> Collection<G, (K, V2), R2>
+    where
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(V2, R2)>) + 'static,
+    {
+        self.reduce_abelian::<_, DefaultValTrace<_, _, _, _>>(name, logic)
+            .as_collection(|k, v| (k.clone(), v.clone()))
     }
 }
 
 /// Extension trait for the `threshold` and `distinct` differential dataflow methods.
-pub trait Threshold<G: Scope, K: Data, R1: Semigroup> where G::Timestamp: Lattice+Ord {
+pub trait Threshold<G: Scope, K: Data, R1: Semigroup>
+where
+    G::Timestamp: Lattice + Ord,
+{
     /// Transforms the multiplicity of records.
     ///
     /// The `threshold` function is obliged to map `R1::zero` to `R2::zero`, or at
@@ -124,12 +149,19 @@ pub trait Threshold<G: Scope, K: Data, R1: Semigroup> where G::Timestamp: Lattic
     ///     });
     /// }
     /// ```
-    fn threshold<R2: Abelian, F: FnMut(&K, &R1)->R2+'static>(&self, thresh: F) -> Collection<G, K, R2> {
+    fn threshold<R2: Abelian, F: FnMut(&K, &R1) -> R2 + 'static>(
+        &self,
+        thresh: F,
+    ) -> Collection<G, K, R2> {
         self.threshold_named("Threshold", thresh)
     }
 
     /// A `threshold` with the ability to name the operator.
-    fn threshold_named<R2: Abelian, F: FnMut(&K, &R1)->R2+'static>(&self, name: &str, thresh: F) -> Collection<G, K, R2>;
+    fn threshold_named<R2: Abelian, F: FnMut(&K, &R1) -> R2 + 'static>(
+        &self,
+        name: &str,
+        thresh: F,
+    ) -> Collection<G, K, R2>;
 
     /// Reduces the collection to one occurrence of each distinct element.
     ///
@@ -160,14 +192,21 @@ pub trait Threshold<G: Scope, K: Data, R1: Semigroup> where G::Timestamp: Lattic
     /// This method allows `distinct` to produce collections whose difference
     /// type is something other than an `isize` integer, for example perhaps an
     /// `i32`.
-    fn distinct_core<R2: Abelian+From<i8>>(&self) -> Collection<G, K, R2> {
-        self.threshold_named("Distinct", |_,_| R2::from(1i8))
+    fn distinct_core<R2: Abelian + From<i8>>(&self) -> Collection<G, K, R2> {
+        self.threshold_named("Distinct", |_, _| R2::from(1i8))
     }
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, R1: ExchangeData+Semigroup> Threshold<G, K, R1> for Collection<G, K, R1>
-where G::Timestamp: Lattice+Ord {
-    fn threshold_named<R2: Abelian, F: FnMut(&K,&R1)->R2+'static>(&self, name: &str, thresh: F) -> Collection<G, K, R2> {
+impl<G: Scope, K: ExchangeData + Hashable, R1: ExchangeData + Semigroup> Threshold<G, K, R1>
+    for Collection<G, K, R1>
+where
+    G::Timestamp: Lattice + Ord,
+{
+    fn threshold_named<R2: Abelian, F: FnMut(&K, &R1) -> R2 + 'static>(
+        &self,
+        name: &str,
+        thresh: F,
+    ) -> Collection<G, K, R2> {
         self.arrange_by_self_named(&format!("Arrange: {}", name))
             .threshold_named(name, thresh)
     }
@@ -175,17 +214,26 @@ where G::Timestamp: Lattice+Ord {
 
 impl<G: Scope, K: Data, T1, R1: Semigroup> Threshold<G, K, R1> for Arranged<G, T1>
 where
-    G::Timestamp: Lattice+Ord,
-    T1: TraceReader<Key=K, Val=(), Time=G::Timestamp, R=R1>+Clone+'static,
+    G::Timestamp: Lattice + Ord,
+    T1: TraceReader<Key = K, Val = (), Time = G::Timestamp, R = R1> + Clone + 'static,
 {
-    fn threshold_named<R2: Abelian, F: FnMut(&K,&R1)->R2+'static>(&self, name: &str, mut thresh: F) -> Collection<G, K, R2> {
-        self.reduce_abelian::<_,DefaultKeyTrace<_,_,_>>(name, move |k,s,t| t.push(((), thresh(k, &s[0].1))))
-            .as_collection(|k,_| k.clone())
+    fn threshold_named<R2: Abelian, F: FnMut(&K, &R1) -> R2 + 'static>(
+        &self,
+        name: &str,
+        mut thresh: F,
+    ) -> Collection<G, K, R2> {
+        self.reduce_abelian::<_, DefaultKeyTrace<_, _, _>>(name, move |k, s, t| {
+            t.push(((), thresh(k, &s[0].1)))
+        })
+        .as_collection(|k, _| k.clone())
     }
 }
 
 /// Extension trait for the `count` differential dataflow method.
-pub trait Count<G: Scope, K: Data, R: Semigroup> where G::Timestamp: Lattice+Ord {
+pub trait Count<G: Scope, K: Data, R: Semigroup>
+where
+    G::Timestamp: Lattice + Ord,
+{
     /// Counts the number of occurrences of each element.
     ///
     /// # Examples
@@ -218,29 +266,34 @@ pub trait Count<G: Scope, K: Data, R: Semigroup> where G::Timestamp: Lattice+Ord
     fn count_core<R2: Abelian + From<i8>>(&self) -> Collection<G, (K, R), R2>;
 }
 
-impl<G: Scope, K: ExchangeData+Hashable, R: ExchangeData+Semigroup> Count<G, K, R> for Collection<G, K, R>
+impl<G: Scope, K: ExchangeData + Hashable, R: ExchangeData + Semigroup> Count<G, K, R>
+    for Collection<G, K, R>
 where
-    G::Timestamp: Lattice+Ord,
+    G::Timestamp: Lattice + Ord,
 {
     fn count_core<R2: Abelian + From<i8>>(&self) -> Collection<G, (K, R), R2> {
-        self.arrange_by_self_named("Arrange: Count")
-            .count_core()
+        self.arrange_by_self_named("Arrange: Count").count_core()
     }
 }
 
 impl<G: Scope, K: Data, T1, R: Semigroup> Count<G, K, R> for Arranged<G, T1>
 where
-    G::Timestamp: Lattice+Ord,
-    T1: TraceReader<Key=K, Val=(), Time=G::Timestamp, R=R>+Clone+'static,
+    G::Timestamp: Lattice + Ord,
+    T1: TraceReader<Key = K, Val = (), Time = G::Timestamp, R = R> + Clone + 'static,
 {
     fn count_core<R2: Abelian + From<i8>>(&self) -> Collection<G, (K, R), R2> {
-        self.reduce_abelian::<_,DefaultValTrace<_,_,_,_>>("Count", |_k,s,t| t.push((s[0].1.clone(), R2::from(1i8))))
-            .as_collection(|k,c| (k.clone(), c.clone()))
+        self.reduce_abelian::<_, DefaultValTrace<_, _, _, _>>("Count", |_k, s, t| {
+            t.push((s[0].1.clone(), R2::from(1i8)))
+        })
+        .as_collection(|k, c| (k.clone(), c.clone()))
     }
 }
 
 /// Extension trait for the `reduce_core` differential dataflow method.
-pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestamp: Lattice+Ord {
+pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Semigroup>
+where
+    G::Timestamp: Lattice + Ord,
+{
     /// Applies `reduce` to arranged data, and returns an arrangement of output data.
     ///
     /// This method is used by the more ergonomic `reduce`, `distinct`, and `count` methods, although
@@ -272,21 +325,21 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestam
     /// }
     /// ```
     fn reduce_abelian<L, T2>(&self, name: &str, mut logic: L) -> Arranged<G, TraceAgent<T2>>
-        where
-            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
-            T2::Val: Data,
-            T2::R: Abelian,
-            T2::Batch: Batch,
-            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>)+'static,
-        {
-            self.reduce_core::<_,T2>(name, move |key, input, output, change| {
-                if !input.is_empty() {
-                    logic(key, input, change);
-                }
-                change.extend(output.drain(..).map(|(x,d)| (x, d.negate())));
-                crate::consolidation::consolidate(change);
-            })
-        }
+    where
+        T2: Trace + TraceReader<Key = K, Time = G::Timestamp> + 'static,
+        T2::Val: Data,
+        T2::R: Abelian,
+        T2::Batch: Batch,
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>) + 'static,
+    {
+        self.reduce_core::<_, T2>(name, move |key, input, output, change| {
+            if !input.is_empty() {
+                logic(key, input, change);
+            }
+            change.extend(output.drain(..).map(|(x, d)| (x, d.negate())));
+            crate::consolidation::consolidate(change);
+        })
+    }
 
     /// Solves for output updates when presented with inputs and would-be outputs.
     ///
@@ -294,30 +347,29 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestam
     /// and it may not be safe to index into the first element.
     /// At least one of the two collections will be non-empty.
     fn reduce_core<L, T2>(&self, name: &str, logic: L) -> Arranged<G, TraceAgent<T2>>
-        where
-            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
-            T2::Val: Data,
-            T2::R: Semigroup,
-            T2::Batch: Batch,
-            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val,T2::R)>)+'static
-            ;
+    where
+        T2: Trace + TraceReader<Key = K, Time = G::Timestamp> + 'static,
+        T2::Val: Data,
+        T2::R: Semigroup,
+        T2::Batch: Batch,
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>, &mut Vec<(T2::Val, T2::R)>) + 'static;
 }
 
 impl<G, K, V, R> ReduceCore<G, K, V, R> for Collection<G, (K, V), R>
 where
     G: Scope,
-    G::Timestamp: Lattice+Ord,
-    K: ExchangeData+Hashable,
+    G::Timestamp: Lattice + Ord,
+    K: ExchangeData + Hashable,
     V: ExchangeData,
-    R: ExchangeData+Semigroup,
+    R: ExchangeData + Semigroup,
 {
     fn reduce_core<L, T2>(&self, name: &str, logic: L) -> Arranged<G, TraceAgent<T2>>
-        where
-            T2::Val: Data,
-            T2::R: Semigroup,
-            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
-            T2::Batch: Batch,
-            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static
+    where
+        T2::Val: Data,
+        T2::R: Semigroup,
+        T2: Trace + TraceReader<Key = K, Time = G::Timestamp> + 'static,
+        T2::Batch: Batch,
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>, &mut Vec<(T2::Val, T2::R)>) + 'static,
     {
         self.arrange_by_key_named(&format!("Arrange: {}", name))
             .reduce_core(name, logic)
@@ -326,22 +378,21 @@ where
 
 impl<G: Scope, K: Data, V: Data, T1, R: Semigroup> ReduceCore<G, K, V, R> for Arranged<G, T1>
 where
-    G::Timestamp: Lattice+Ord,
-    T1: TraceReader<Key=K, Val=V, Time=G::Timestamp, R=R>+Clone+'static,
+    G::Timestamp: Lattice + Ord,
+    T1: TraceReader<Key = K, Val = V, Time = G::Timestamp, R = R> + Clone + 'static,
 {
     fn reduce_core<L, T2>(&self, name: &str, mut logic: L) -> Arranged<G, TraceAgent<T2>>
-        where
-            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
-            T2::Val: Data,
-            T2::R: Semigroup,
-            T2::Batch: Batch,
-            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static {
-
+    where
+        T2: Trace + TraceReader<Key = K, Time = G::Timestamp> + 'static,
+        T2::Val: Data,
+        T2::R: Semigroup,
+        T2::Batch: Batch,
+        L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val, T2::R)>, &mut Vec<(T2::Val, T2::R)>) + 'static,
+    {
         let mut result_trace = None;
 
         // fabricate a data-parallel operator using the `unary_notify` pattern.
         let stream = {
-
             let result_trace = &mut result_trace;
             self.stream.unary_frontier(Pipeline, name, move |_capability, operator_info| {
 
@@ -637,7 +688,10 @@ where
         )
         };
 
-        Arranged { stream: stream, trace: result_trace.unwrap() }
+        Arranged {
+            stream: stream,
+            trace: result_trace.unwrap(),
+        }
     }
 }
 
@@ -650,9 +704,9 @@ fn sort_dedup<T: Ord>(list: &mut Vec<T>) {
 
 trait PerKeyCompute<'a, V1, V2, T, R1, R2>
 where
-    V1: Ord+Clone+'a,
-    V2: Ord+Clone+'a,
-    T: Lattice+Ord+Clone,
+    V1: Ord + Clone + 'a,
+    V2: Ord + Clone + 'a,
+    T: Lattice + Ord + Clone,
     R1: Semigroup,
     R2: Semigroup,
 {
@@ -667,34 +721,34 @@ where
         logic: &mut L,
         upper_limit: &Antichain<T>,
         outputs: &mut [(T, Vec<(V2, T, R2)>)],
-        new_interesting: &mut Vec<T>) -> (usize, usize)
+        new_interesting: &mut Vec<T>,
+    ) -> (usize, usize)
     where
-        K: Eq+Clone,
+        K: Eq + Clone,
         C1: Cursor<Key = K, Val = V1, Time = T, R = R1>,
         C2: Cursor<Key = K, Val = V2, Time = T, R = R2>,
         C3: Cursor<Key = K, Val = V1, Time = T, R = R1>,
         L: FnMut(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>);
 }
 
-
 /// Implementation based on replaying historical and new updates together.
 mod history_replay {
 
-    use ::difference::Semigroup;
+    use difference::Semigroup;
     use lattice::Lattice;
-    use trace::Cursor;
     use operators::ValueHistory;
     use timely::progress::Antichain;
+    use trace::Cursor;
 
-    use super::{PerKeyCompute, sort_dedup};
+    use super::{sort_dedup, PerKeyCompute};
 
     /// The `HistoryReplayer` is a compute strategy based on moving through existing inputs, interesting times, etc in
     /// time order, maintaining consolidated representations of updates with respect to future interesting times.
     pub struct HistoryReplayer<'a, V1, V2, T, R1, R2>
     where
-        V1: Ord+Clone+'a,
-        V2: Ord+Clone+'a,
-        T: Lattice+Ord+Clone,
+        V1: Ord + Clone + 'a,
+        V2: Ord + Clone + 'a,
+        T: Lattice + Ord + Clone,
         R1: Semigroup,
         R2: Semigroup,
     {
@@ -711,11 +765,12 @@ mod history_replay {
         temporary: Vec<T>,
     }
 
-    impl<'a, V1, V2, T, R1, R2> PerKeyCompute<'a, V1, V2, T, R1, R2> for HistoryReplayer<'a, V1, V2, T, R1, R2>
+    impl<'a, V1, V2, T, R1, R2> PerKeyCompute<'a, V1, V2, T, R1, R2>
+        for HistoryReplayer<'a, V1, V2, T, R1, R2>
     where
-        V1: Ord+Clone,
-        V2: Ord+Clone,
-        T: Lattice+Ord+Clone,
+        V1: Ord + Clone,
+        V2: Ord + Clone,
+        T: Lattice + Ord + Clone,
         R1: Semigroup,
         R2: Semigroup,
     {
@@ -745,15 +800,15 @@ mod history_replay {
             logic: &mut L,
             upper_limit: &Antichain<T>,
             outputs: &mut [(T, Vec<(V2, T, R2)>)],
-            new_interesting: &mut Vec<T>) -> (usize, usize)
+            new_interesting: &mut Vec<T>,
+        ) -> (usize, usize)
         where
-            K: Eq+Clone,
+            K: Eq + Clone,
             C1: Cursor<Key = K, Val = V1, Time = T, R = R1>,
             C2: Cursor<Key = K, Val = V2, Time = T, R = R2>,
             C3: Cursor<Key = K, Val = V1, Time = T, R = R1>,
-            L: FnMut(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>)
+            L: FnMut(&K, &[(&V1, R1)], &mut Vec<(V2, R2)>, &mut Vec<(V2, R2)>),
         {
-
             // The work we need to perform is at times defined principally by the contents of `batch_cursor`
             // and `times`, respectively "new work we just received" and "old times we were warned about".
             //
@@ -763,7 +818,9 @@ mod history_replay {
             // loaded times by performing the lattice `join` with this value.
 
             // Load the batch contents.
-            let mut batch_replay = self.batch_history.replay_key(batch_cursor, batch_storage, key, |time| time.clone());
+            let mut batch_replay =
+                self.batch_history
+                    .replay_key(batch_cursor, batch_storage, key, |time| time.clone());
 
             // We determine the meet of times we must reconsider (those from `batch` and `times`). This meet
             // can be used to advance other historical times, which may consolidate their representation. As
@@ -772,8 +829,8 @@ mod history_replay {
 
             self.meets.clear();
             self.meets.extend(times.iter().cloned());
-            for index in (1 .. self.meets.len()).rev() {
-                self.meets[index-1] = self.meets[index-1].meet(&self.meets[index]);
+            for index in (1..self.meets.len()).rev() {
+                self.meets[index - 1] = self.meets[index - 1].meet(&self.meets[index]);
             }
 
             // Determine the meet of times in `batch` and `times`.
@@ -799,16 +856,18 @@ mod history_replay {
 
             // Load the input and output histories.
             let mut input_replay = if let Some(meet) = meet.as_ref() {
-                self.input_history.replay_key(source_cursor, source_storage, key, |time| time.join(&meet))
-            }
-            else {
-                self.input_history.replay_key(source_cursor, source_storage, key, |time| time.clone())
+                self.input_history
+                    .replay_key(source_cursor, source_storage, key, |time| time.join(&meet))
+            } else {
+                self.input_history
+                    .replay_key(source_cursor, source_storage, key, |time| time.clone())
             };
             let mut output_replay = if let Some(meet) = meet.as_ref() {
-                self.output_history.replay_key(output_cursor, output_storage, key, |time| time.join(&meet))
-            }
-            else {
-                self.output_history.replay_key(output_cursor, output_storage, key, |time| time.clone())
+                self.output_history
+                    .replay_key(output_cursor, output_storage, key, |time| time.join(&meet))
+            } else {
+                self.output_history
+                    .replay_key(output_cursor, output_storage, key, |time| time.clone())
             };
 
             self.synth_times.clear();
@@ -828,13 +887,19 @@ mod history_replay {
             // `input` or `output`. Finally, we may have synthetic times produced as the join of times
             // we consider in the course of evaluation. As long as any of these times exist, we need to
             // keep examining times.
-            while let Some(next_time) = [   batch_replay.time(),
-                                            times_slice.first(),
-                                            input_replay.time(),
-                                            output_replay.time(),
-                                            self.synth_times.last(),
-                                        ].iter().cloned().filter_map(|t| t).min().map(|t| t.clone()) {
-
+            while let Some(next_time) = [
+                batch_replay.time(),
+                times_slice.first(),
+                input_replay.time(),
+                output_replay.time(),
+                self.synth_times.last(),
+            ]
+            .iter()
+            .cloned()
+            .filter_map(|t| t)
+            .min()
+            .map(|t| t.clone())
+            {
                 // Advance input and output history replayers. This marks applicable updates as active.
                 input_replay.step_while_time_is(&next_time);
                 output_replay.step_while_time_is(&next_time);
@@ -856,7 +921,11 @@ mod history_replay {
                 while self.synth_times.last() == Some(&next_time) {
                     // We don't know enough about `next_time` to avoid putting it in to `times_current`.
                     // TODO: If we knew that the time derived from a canceled batch update, we could remove the time.
-                    self.times_current.push(self.synth_times.pop().expect("failed to pop from synth_times")); // <-- TODO: this could be a min-heap.
+                    self.times_current.push(
+                        self.synth_times
+                            .pop()
+                            .expect("failed to pop from synth_times"),
+                    ); // <-- TODO: this could be a min-heap.
                     interesting = true;
                 }
                 while times_slice.first() == Some(&next_time) {
@@ -872,8 +941,13 @@ mod history_replay {
                 // are tracking may not have advanced far enough.
                 // TODO: `batch_history` may or may not be super compact at this point, and so this check might
                 //       yield false positives if not sufficiently compact. Maybe we should into this and see.
-                interesting = interesting || batch_replay.buffer().iter().any(|&((_, ref t),_)| t.less_equal(&next_time));
-                interesting = interesting || self.times_current.iter().any(|t| t.less_equal(&next_time));
+                interesting = interesting
+                    || batch_replay
+                        .buffer()
+                        .iter()
+                        .any(|&((_, ref t), _)| t.less_equal(&next_time));
+                interesting =
+                    interesting || self.times_current.iter().any(|t| t.less_equal(&next_time));
 
                 // We should only process times that are not in advance of `upper_limit`.
                 //
@@ -881,49 +955,45 @@ mod history_replay {
                 // We may have the guarantee that synthetic times will not be, as we test against the limit
                 // before we add the time to `synth_times`.
                 if !upper_limit.less_equal(&next_time) {
-
                     // We should re-evaluate the computation if this is an interesting time.
                     // If the time is uninteresting (and our logic is sound) it is not possible for there to be
                     // output produced. This sounds like a good test to have for debug builds!
                     if interesting {
-
                         compute_counter += 1;
 
                         // Assemble the input collection at `next_time`. (`self.input_buffer` cleared just after use).
                         debug_assert!(self.input_buffer.is_empty());
-                        meet.as_ref().map(|meet| input_replay.advance_buffer_by(&meet));
+                        meet.as_ref()
+                            .map(|meet| input_replay.advance_buffer_by(&meet));
                         for &((value, ref time), ref diff) in input_replay.buffer().iter() {
                             if time.less_equal(&next_time) {
                                 self.input_buffer.push((value, diff.clone()));
-                            }
-                            else {
+                            } else {
                                 self.temporary.push(next_time.join(time));
                             }
                         }
                         for &((value, ref time), ref diff) in batch_replay.buffer().iter() {
                             if time.less_equal(&next_time) {
                                 self.input_buffer.push((value, diff.clone()));
-                            }
-                            else {
+                            } else {
                                 self.temporary.push(next_time.join(time));
                             }
                         }
                         crate::consolidation::consolidate(&mut self.input_buffer);
 
-                        meet.as_ref().map(|meet| output_replay.advance_buffer_by(&meet));
+                        meet.as_ref()
+                            .map(|meet| output_replay.advance_buffer_by(&meet));
                         for &((ref value, ref time), ref diff) in output_replay.buffer().iter() {
                             if time.less_equal(&next_time) {
                                 self.output_buffer.push(((*value).clone(), diff.clone()));
-                            }
-                            else {
+                            } else {
                                 self.temporary.push(next_time.join(time));
                             }
                         }
                         for &((ref value, ref time), ref diff) in self.output_produced.iter() {
                             if time.less_equal(&next_time) {
                                 self.output_buffer.push(((*value).clone(), diff.clone()));
-                            }
-                            else {
+                            } else {
                                 self.temporary.push(next_time.join(&time));
                             }
                         }
@@ -931,7 +1001,12 @@ mod history_replay {
 
                         // Apply user logic if non-empty input and see what happens!
                         if self.input_buffer.len() > 0 || self.output_buffer.len() > 0 {
-                            logic(key, &self.input_buffer[..], &mut self.output_buffer, &mut self.update_buffer);
+                            logic(
+                                key,
+                                &self.input_buffer[..],
+                                &mut self.output_buffer,
+                                &mut self.update_buffer,
+                            );
                             self.input_buffer.clear();
                             self.output_buffer.clear();
                         }
@@ -964,16 +1039,19 @@ mod history_replay {
                         // through times, but we cannot compact the output buffers because we need their actual
                         // times.
                         if self.update_buffer.len() > 0 {
-
                             output_counter += 1;
 
                             // We *should* be able to find a capability for `next_time`. Any thing else would
                             // indicate a logical error somewhere along the way; either we release a capability
                             // we should have kept, or we have computed the output incorrectly (or both!)
-                            let idx = outputs.iter().rev().position(|&(ref time, _)| time.less_equal(&next_time));
+                            let idx = outputs
+                                .iter()
+                                .rev()
+                                .position(|&(ref time, _)| time.less_equal(&next_time));
                             let idx = outputs.len() - idx.expect("failed to find index") - 1;
                             for (val, diff) in self.update_buffer.drain(..) {
-                                self.output_produced.push(((val.clone(), next_time.clone()), diff.clone()));
+                                self.output_produced
+                                    .push(((val.clone(), next_time.clone()), diff.clone()));
                                 outputs[idx].1.push((val, next_time.clone(), diff));
                             }
 
@@ -1018,20 +1096,17 @@ mod history_replay {
                     for time in self.temporary.drain(..) {
                         // We can either service `join` now, or must delay for the future.
                         if upper_limit.less_equal(&time) {
-                            debug_assert!(outputs.iter().any(|&(ref t,_)| t.less_equal(&time)));
+                            debug_assert!(outputs.iter().any(|&(ref t, _)| t.less_equal(&time)));
                             new_interesting.push(time);
-                        }
-                        else {
+                        } else {
                             self.synth_times.push(time);
                         }
                     }
                     if self.synth_times.len() > synth_len {
-                        self.synth_times.sort_by(|x,y| y.cmp(x));
+                        self.synth_times.sort_by(|x, y| y.cmp(x));
                         self.synth_times.dedup();
                     }
-                }
-                else {
-
+                } else {
                     if interesting {
                         // We cannot process `next_time` now, and must delay it.
                         //
@@ -1039,16 +1114,18 @@ mod history_replay {
                         // as initial interesting times are filtered to be in interval, and synthetic times are also
                         // filtered before introducing them to `self.synth_times`.
                         new_interesting.push(next_time.clone());
-                        debug_assert!(outputs.iter().any(|&(ref t,_)| t.less_equal(&next_time)))
+                        debug_assert!(outputs.iter().any(|&(ref t, _)| t.less_equal(&next_time)))
                     }
                 }
 
                 // Update `meet` to track the meet of each source of times.
-                meet = None;//T::maximum();
+                meet = None; //T::maximum();
                 update_meet(&mut meet, batch_replay.meet());
                 update_meet(&mut meet, input_replay.meet());
                 update_meet(&mut meet, output_replay.meet());
-                for time in self.synth_times.iter() { update_meet(&mut meet, Some(time)); }
+                for time in self.synth_times.iter() {
+                    update_meet(&mut meet, Some(time));
+                }
                 // if let Some(time) = batch_replay.meet() { meet = meet.meet(time); }
                 // if let Some(time) = input_replay.meet() { meet = meet.meet(time); }
                 // if let Some(time) = output_replay.meet() { meet = meet.meet(time); }
@@ -1074,7 +1151,7 @@ mod history_replay {
     }
 
     /// Updates an optional meet by an optional time.
-    fn update_meet<T: Lattice+Clone>(meet: &mut Option<T>, other: Option<&T>) {
+    fn update_meet<T: Lattice + Clone>(meet: &mut Option<T>, other: Option<&T>) {
         if let Some(time) = other {
             if let Some(meet) = meet.as_mut() {
                 *meet = meet.meet(time);

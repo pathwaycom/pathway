@@ -1,4 +1,3 @@
-
 /// Information about the operator being constructed
 #[derive(Clone)]
 pub struct OperatorInfo {

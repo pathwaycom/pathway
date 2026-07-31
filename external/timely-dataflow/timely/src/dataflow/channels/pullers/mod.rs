@@ -1,7 +1,6 @@
 pub use self::counter::Counter;
 pub mod counter;
 
-
 // pub trait Pullable<T, D> {
 //     fn pull(&mut self) -> Option<(&T, &mut Message<D>)>;
 // }

@@ -729,3 +729,65 @@ def init_mode_from_str(init_mode: str) -> api.TableWriterInitMode:
             return api.TableWriterInitMode.REPLACE
         case _:
             raise ValueError(f"Invalid init_mode: {init_mode}")
+
+
+def auto_explore_sql_schema(
+    data_storage: api.DataStorage,
+    table_name: str,
+    schema_name: str | None = None,
+):
+    import logging
+    from typing import Any, Optional
+
+    try:
+        import pathway.engine as _engine
+        from pathway.schema import schema_builder
+
+        explore_schema = getattr(_engine, "explore_schema", None)
+        if explore_schema is None:
+            raise RuntimeError(
+                "Automatic schema exploration is unavailable in this build. "
+                "Please provide an explicit schema."
+            )
+
+        columns_data, pk_columns = explore_schema(data_storage)
+
+        schema_columns = {}
+        for col_name, py_type, is_nullable in columns_data:
+            if is_nullable and py_type is not Any:
+                py_type = Optional[py_type]
+
+            is_pk = col_name in pk_columns
+            from pathway.internals.schema import column_definition
+
+            schema_columns[col_name] = column_definition(
+                dtype=py_type,
+                primary_key=is_pk,
+            )
+
+        clean_table_name = table_name.strip("[]")
+        struct_identifier = (
+            f"{schema_name.strip('[]')}.{clean_table_name}"
+            if schema_name
+            else clean_table_name
+        )
+
+        if not pk_columns:
+            logging.getLogger(__name__).warning(
+                f"No primary key found for {struct_identifier} during schema exploration. "
+                "Falling back to auto-generated row identifiers. "
+                "This may cause issues in streaming mode if the table is not append-only."
+            )
+
+        schema_name_class = (
+            "".join(c.capitalize() for c in clean_table_name.split("_")) + "Schema"
+        )
+        schema = schema_builder(schema_columns, name=schema_name_class)
+        logging.getLogger(__name__).info(
+            f"Derived schema for {struct_identifier}:\n{schema}"
+        )
+        return schema
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to explore schema automatically: {e}. Please provide an explicit schema."
+        ) from e

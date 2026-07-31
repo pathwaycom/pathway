@@ -14,5 +14,5 @@
 pub use self::aggregate::Aggregate;
 pub use self::state_machine::StateMachine;
 
-pub mod state_machine;
 pub mod aggregate;
+pub mod state_machine;

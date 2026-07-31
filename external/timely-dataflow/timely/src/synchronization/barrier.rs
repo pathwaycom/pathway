@@ -12,7 +12,6 @@ pub struct Barrier<A: Allocate> {
 }
 
 impl<A: Allocate> Barrier<A> {
-
     /// Allocates a new barrier.
     pub fn new(worker: &mut Worker<A>) -> Self {
         use crate::dataflow::operators::{Input, Probe};
@@ -20,7 +19,11 @@ impl<A: Allocate> Barrier<A> {
             let (handle, stream) = scope.new_input::<()>();
             (handle, stream.probe())
         });
-        Barrier { input, probe, worker: worker.clone() }
+        Barrier {
+            input,
+            probe,
+            worker: worker.clone(),
+        }
     }
 
     /// Blocks until all other workers have reached this barrier.
@@ -51,4 +54,3 @@ impl<A: Allocate> Barrier<A> {
         !self.probe.less_than(self.input.time())
     }
 }
-

@@ -1,14 +1,19 @@
 //! Methods to construct flow-controlled sources.
 
-use crate::Data;
-use crate::order::{PartialOrder, TotalOrder};
-use crate::progress::timestamp::Timestamp;
 use crate::dataflow::operators::generic::operator::source;
 use crate::dataflow::operators::probe::Handle;
-use crate::dataflow::{Stream, Scope};
+use crate::dataflow::{Scope, Stream};
+use crate::order::{PartialOrder, TotalOrder};
+use crate::progress::timestamp::Timestamp;
+use crate::Data;
 
 /// Output of the input reading function for iterator_source.
-pub struct IteratorSourceInput<T: Clone, D: Data, DI: IntoIterator<Item=D>, I: IntoIterator<Item=(T, DI)>> {
+pub struct IteratorSourceInput<
+    T: Clone,
+    D: Data,
+    DI: IntoIterator<Item = D>,
+    I: IntoIterator<Item = (T, DI)>,
+> {
     /// Lower bound on timestamps that can be emitted by this input in the future.
     pub lower_bound: T,
     /// Any `T: IntoIterator` of new input data in the form (time, data): time must be
@@ -75,47 +80,57 @@ pub struct IteratorSourceInput<T: Clone, D: Data, DI: IntoIterator<Item=D>, I: I
 pub fn iterator_source<
     G: Scope,
     D: Data,
-    DI: IntoIterator<Item=D>,
-    I: IntoIterator<Item=(G::Timestamp, DI)>,
-    F: FnMut(&G::Timestamp)->Option<IteratorSourceInput<G::Timestamp, D, DI, I>>+'static>(
-        scope: &G,
-        name: &str,
-        mut input_f: F,
-        probe: Handle<G::Timestamp>,
-        ) -> Stream<G, D> where G::Timestamp: TotalOrder {
-
+    DI: IntoIterator<Item = D>,
+    I: IntoIterator<Item = (G::Timestamp, DI)>,
+    F: FnMut(&G::Timestamp) -> Option<IteratorSourceInput<G::Timestamp, D, DI, I>> + 'static,
+>(
+    scope: &G,
+    name: &str,
+    mut input_f: F,
+    probe: Handle<G::Timestamp>,
+) -> Stream<G, D>
+where
+    G::Timestamp: TotalOrder,
+{
     let mut target = G::Timestamp::minimum();
     source(scope, name, |cap, info| {
         let mut cap = Some(cap);
         let activator = scope.activator_for(&info.address[..]);
         move |output| {
-            cap = cap.take().and_then(|mut cap| {
-                loop {
-                    if !probe.less_than(&target) {
-                        if let Some(IteratorSourceInput {
-                             lower_bound,
-                             data,
-                             target: new_target,
-                         }) = input_f(cap.time()) {
-                            target = new_target;
-                            let mut has_data = false;
-                            for (t, ds) in data.into_iter() {
-                                cap = if cap.time() != &t { cap.delayed(&t) } else { cap };
-                                let mut session = output.session(&cap);
-                                session.give_iterator(ds.into_iter());
-                                has_data = true;
-                            }
+            cap = cap.take().and_then(|mut cap| loop {
+                if !probe.less_than(&target) {
+                    if let Some(IteratorSourceInput {
+                        lower_bound,
+                        data,
+                        target: new_target,
+                    }) = input_f(cap.time())
+                    {
+                        target = new_target;
+                        let mut has_data = false;
+                        for (t, ds) in data.into_iter() {
+                            cap = if cap.time() != &t {
+                                cap.delayed(&t)
+                            } else {
+                                cap
+                            };
+                            let mut session = output.session(&cap);
+                            session.give_iterator(ds.into_iter());
+                            has_data = true;
+                        }
 
-                            cap = if cap.time().less_than(&lower_bound) { cap.delayed(&lower_bound) } else { cap };
-                            if !has_data {
-                                break Some(cap);
-                            }
+                        cap = if cap.time().less_than(&lower_bound) {
+                            cap.delayed(&lower_bound)
                         } else {
-                            break None;
+                            cap
+                        };
+                        if !has_data {
+                            break Some(cap);
                         }
                     } else {
-                        break Some(cap);
+                        break None;
                     }
+                } else {
+                    break Some(cap);
                 }
             });
 

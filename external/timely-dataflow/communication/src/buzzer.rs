@@ -12,7 +12,7 @@ impl Buzzer {
     /// Creates a new buzzer for the current thread.
     pub fn new() -> Self {
         Self {
-            thread: std::thread::current()
+            thread: std::thread::current(),
         }
     }
     /// Unparks the target thread.

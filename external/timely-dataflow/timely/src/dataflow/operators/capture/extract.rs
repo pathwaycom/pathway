@@ -49,17 +49,16 @@ pub trait Extract<T: Ord, D: Ord> {
     fn extract(self) -> Vec<(T, Vec<D>)>;
 }
 
-impl<T: Ord, D: Ord+Data> Extract<T,D> for ::std::sync::mpsc::Receiver<EventCore<T, Vec<D>>> {
+impl<T: Ord, D: Ord + Data> Extract<T, D> for ::std::sync::mpsc::Receiver<EventCore<T, Vec<D>>> {
     fn extract(self) -> Vec<(T, Vec<D>)> {
         let mut result = self.extract_core();
 
         let mut current = 0;
-        for i in 1 .. result.len() {
+        for i in 1..result.len() {
             if result[current].0 == result[i].0 {
                 let dataz = ::std::mem::replace(&mut result[i].1, Vec::new());
                 result[current].1.extend(dataz);
-            }
-            else {
+            } else {
                 current = i;
             }
         }
