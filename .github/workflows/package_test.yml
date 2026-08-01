@@ -38,6 +38,9 @@ jobs:
       - name: Git checkout
         uses: actions/checkout@v6
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
       - name: License files
         run: |
           rm -f LICENSE_*-LICENSE-*
