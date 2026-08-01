@@ -71,8 +71,12 @@ impl NatsPoller {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct NatsReader {
+    // Dropping a NATS subscriber spawns its unsubscribe command onto the
+    // current tokio runtime and panics if the thread is not inside one, so
+    // the poller is dropped explicitly under `runtime.enter()` (see the
+    // `Drop` impl below).
+    poller: Option<NatsPoller>,
     runtime: TokioRuntime,
-    poller: NatsPoller,
     worker_index: usize,
     total_entries_read: usize,
     topic: String,
@@ -80,7 +84,8 @@ pub struct NatsReader {
 
 impl Reader for NatsReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(message) = self.runtime.block_on(async { self.poller.poll().await })? {
+        let poller = self.poller.as_mut().expect("poller is set until drop");
+        if let Some(message) = self.runtime.block_on(async { poller.poll().await })? {
             let payload = ReaderContext::from_raw_bytes(DataEventType::Insert, message);
             self.total_entries_read += 1;
             let offset = (
@@ -127,11 +132,19 @@ impl NatsReader {
     ) -> NatsReader {
         NatsReader {
             runtime,
-            poller,
+            poller: Some(poller),
             worker_index,
             topic,
             total_entries_read: 0,
         }
+    }
+}
+
+impl Drop for NatsReader {
+    fn drop(&mut self) {
+        // See the comment on the `poller` field.
+        let _guard = self.runtime.enter();
+        self.poller.take();
     }
 }
 
@@ -302,17 +315,24 @@ impl WriteAccessor for JetStreamWriteAccessor {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct NatsWriter {
+    // The JetStream accessor owns subscriptions whose drop spawns onto the
+    // current tokio runtime and panics if the thread is not inside one, so
+    // the accessor is dropped explicitly under `runtime.enter()` (see the
+    // `Drop` impl below).
+    accessor: Option<Box<dyn WriteAccessor>>,
     runtime: TokioRuntime,
-    accessor: Box<dyn WriteAccessor>,
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
 }
 
 impl Writer for NatsWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        let accessor = self.accessor.as_mut().expect("accessor is set until drop");
+        let topic = &self.topic;
+        let header_fields = &self.header_fields;
         self.runtime.block_on(async {
             let last_payload_index = data.payloads.len() - 1;
-            let mut common_headers = data.construct_nats_headers(&self.header_fields);
+            let mut common_headers = data.construct_nats_headers(header_fields);
             for (index, payload) in data.payloads.into_iter().enumerate() {
                 // Avoid copying data on the last iteration, reuse the existing headers
                 let headers = {
@@ -323,8 +343,8 @@ impl Writer for NatsWriter {
                     }
                 };
                 let payload = payload.into_raw_bytes()?;
-                let effective_topic = self.topic.get_for_posting(&data.values)?;
-                self.accessor
+                let effective_topic = topic.get_for_posting(&data.values)?;
+                accessor
                     .publish_with_headers(effective_topic, headers, payload)
                     .await?;
             }
@@ -333,7 +353,8 @@ impl Writer for NatsWriter {
     }
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
-        self.runtime.block_on(async { self.accessor.flush().await })
+        let accessor = self.accessor.as_mut().expect("accessor is set until drop");
+        self.runtime.block_on(async { accessor.flush().await })
     }
 
     fn retriable(&self) -> bool {
@@ -352,6 +373,9 @@ impl Writer for NatsWriter {
 impl Drop for NatsWriter {
     fn drop(&mut self) {
         self.flush(true).expect("failed to send the final messages");
+        // See the comment on the `accessor` field.
+        let _guard = self.runtime.enter();
+        self.accessor.take();
     }
 }
 
@@ -364,7 +388,7 @@ impl NatsWriter {
     ) -> Self {
         NatsWriter {
             runtime,
-            accessor,
+            accessor: Some(accessor),
             topic,
             header_fields,
         }

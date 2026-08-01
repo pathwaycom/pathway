@@ -27,7 +27,7 @@ impl DeepCopy for S3Bucket {
         // outlives the runtime behind some of its connections - and the
         // requests that reuse them then fail with "runtime dropped the dispatch
         // task" or, worse, return a body that ends early under a 200 status.
-        let mut result = S3Bucket::new(&self.name, self.region.clone(), credentials)
+        let mut result = *S3Bucket::new(&self.name, self.region.clone(), credentials)
             .expect("bucket recreation from its own parameters should succeed");
         if self.is_path_style() {
             result.set_path_style();

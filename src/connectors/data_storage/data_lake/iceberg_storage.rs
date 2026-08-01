@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use iceberg::io::{
     FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile, Storage,
     StorageConfig, StorageFactory,
@@ -36,15 +38,10 @@ pub struct PathwayMultiStorage {
 
 impl PathwayMultiStorage {
     fn dispatch(&self, path: &str) -> IcebergResult<Arc<dyn Storage>> {
-        if path.starts_with("s3://") {
+        if path.starts_with("s3://") || path.starts_with("s3a://") {
+            // Since iceberg-storage-opendal 0.10 the factory infers the URI
+            // scheme from the path itself, so both schemes share one variant.
             OpenDalStorageFactory::S3 {
-                configured_scheme: "s3".to_string(),
-                customized_credential_load: None,
-            }
-            .build(&self.config)
-        } else if path.starts_with("s3a://") {
-            OpenDalStorageFactory::S3 {
-                configured_scheme: "s3a".to_string(),
                 customized_credential_load: None,
             }
             .build(&self.config)
@@ -87,6 +84,15 @@ impl Storage for PathwayMultiStorage {
 
     async fn delete_prefix(&self, path: &str) -> IcebergResult<()> {
         self.dispatch(path)?.delete_prefix(path).await
+    }
+
+    async fn delete_stream(&self, mut paths: BoxStream<'static, String>) -> IcebergResult<()> {
+        // Paths in one stream may belong to different backends, so dispatch
+        // per path instead of forwarding the whole stream to one storage.
+        while let Some(path) = paths.next().await {
+            self.dispatch(&path)?.delete(&path).await?;
+        }
+        Ok(())
     }
 
     fn new_input(&self, path: &str) -> IcebergResult<InputFile> {

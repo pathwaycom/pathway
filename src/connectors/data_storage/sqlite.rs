@@ -837,7 +837,7 @@ impl SqliteReader {
     pub fn data_version(&self) -> i64 {
         loop {
             let version: ::rusqlite::Result<i64> = self.connection.pragma_query_value(
-                Some(::rusqlite::DatabaseName::Main),
+                Some("main"),
                 SQLITE_DATA_VERSION_PRAGMA,
                 |row| row.get(0),
             );

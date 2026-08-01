@@ -4543,6 +4543,7 @@ impl AwsS3Settings {
             self.region.clone(),
             credentials,
         )
+        .map(|bucket| *bucket)
         .map_err(|err| {
             PyRuntimeError::new_err(format!("Failed to connect to private AWS bucket: {err}"))
         })
@@ -4576,7 +4577,9 @@ impl AwsS3Settings {
                                 .as_deref(),
                         )
                     })
-                    .or_else(|_| AwsCredentials::from_instance_metadata());
+                    // `true` skips the crate's new is-this-EC2 heuristic and attempts
+                    // the instance metadata endpoint unconditionally, as before.
+                    .or_else(|_| AwsCredentials::from_instance_metadata(true));
 
                 // first, try to deduce credentials from various sources
                 if let Ok(credentials) = aws_credentials {
@@ -4589,7 +4592,7 @@ impl AwsS3Settings {
         };
 
         if self.with_path_style {
-            bucket = bucket.with_path_style();
+            bucket = *bucket.with_path_style();
         }
 
         Ok(bucket)
@@ -7526,10 +7529,16 @@ impl DataStorage {
                 .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
             Ok::<NatsClient, PyErr>(client)
         })?;
-        let accessor: Box<dyn nats::WriteAccessor> = if self.js_stream_name.is_some() {
-            Box::new(nats::JetStreamWriteAccessor::new(client))
-        } else {
-            Box::new(nats::SimpleWriteAccessor::new(client))
+        let accessor: Box<dyn nats::WriteAccessor> = {
+            // jetstream::new spawns the ack-handling task at construction
+            // time, so the accessor must be created inside the runtime
+            // context.
+            let _guard = runtime.enter();
+            if self.js_stream_name.is_some() {
+                Box::new(nats::JetStreamWriteAccessor::new(client))
+            } else {
+                Box::new(nats::SimpleWriteAccessor::new(client))
+            }
         };
         let writer = NatsWriter::new(
             runtime,

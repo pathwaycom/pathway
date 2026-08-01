@@ -20,7 +20,7 @@ mockall = "0.13.1"
 [dependencies]
 arc-swap = "1.7.1"
 arcstr = { version = "1.2.0", default-features = false, features = ["serde", "std"] }
-async-nats = "0.41.0"
+async-nats = "0.50.0"
 async-trait = "0.1.89"
 aws-config = "1.8.1"
 aws-sdk-dynamodb = "1.82.0"
@@ -30,7 +30,7 @@ azure_core = "0.21.0"
 azure_storage = "0.21.0"
 azure_storage_blobs = "0.21.0"
 base32 = "0.5.1"
-base64 = "0.22.1"
+base64 = "0.23.0"
 bincode = "1.3.3"
 bitflags = { version = "2.9.1", features = ["std"] } # Hack to keep features unified between normal and dev deps
 bytes = "1.10.1"
@@ -46,7 +46,7 @@ chrono-tz-0_8 = { package = "chrono-tz", version = "0.8" }
 clickhouse-rs = "1.1.0-alpha.1"
 crossbeam-channel = "0.5.16"
 csv = "1.3.1"
-deltalake = { version = "0.31.1", features = ["datafusion", "s3"] }
+deltalake = { version = "0.32.4", features = ["datafusion", "s3"] }
 derivative = "2.2.0"
 differential-dataflow = { path = "./external/differential-dataflow" }
 duckdb = { version = "1.10504.0", features = ["bundled", "json"] }
@@ -58,30 +58,30 @@ half = "2.6.0"
 hex = "0.4.3"
 hyper = { version = "0.14", features = ["server"] }
 hyperloglogplus = "0.4.1"
-iceberg = "0.9.0"
-iceberg-catalog-glue = "0.9.0"
-iceberg-catalog-rest = "0.9.0"
-iceberg-storage-opendal = "0.9.0"
+iceberg = "0.10.0"
+iceberg-catalog-glue = "0.10.0"
+iceberg-catalog-rest = "0.10.0"
+iceberg-storage-opendal = "0.10.0"
 id-arena = "2.2.1"
 indexmap = "2.9.0"
 itertools = "0.14.0"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
-jmespath = "0.3.0"
+jmespath = "0.5.0"
 libc = "0.2.172"
 log = { version = "0.4.27", features = ["std"] }
-lz4_flex = "0.11.5"
+lz4_flex = "0.14.0"
 mongodb = { version = "3.2.2", features = ["sync"] }
-mysql = { version = "26.0.1", features = ["binlog"] }
+mysql = { version = "28.0.0", features = ["binlog"] }
 native-tls = "0.2.14"
 ndarray = { version = "0.15.6", features = ["serde"] }
 nix = { version = "0.30.1", features = ["fs", "user", "resource"] }
 num-integer = "0.1.46"
 numpy = "0.29.0"
 once_cell = "1.21.3"
-opentelemetry = { version = "0.30.0", features = ["trace", "metrics"] }
-opentelemetry-otlp = { version = "0.30.0", features = ["default", "tls", "tls-roots", "metrics", "grpc-tonic"] }
-opentelemetry-semantic-conventions = { version = "0.30.0", features = ["semconv_experimental"] }
-opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio", "rt-tokio-current-thread"] }
+opentelemetry = { version = "0.32.0", features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.32.0", features = ["default", "tls", "tls-roots", "metrics", "grpc-tonic"] }
+opentelemetry-semantic-conventions = { version = "0.32.1", features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "rt-tokio-current-thread"] }
 ordered-float = { version = "4.6.0", features = ["serde"] }
 pg_walstream = "0.8.1"
 pgvector = { version = "0.4.1", features = ["postgres", "halfvec"] }
@@ -92,16 +92,16 @@ pyo3 = { version = "0.29.0", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-async-runtimes = "0.29.0"
 pyo3-log = "0.13.4"
 qdrant-client = "1.15.0"
-questdb-rs = "4.0.5"
+questdb-rs = "6.1.0"
 rabbitmq-stream-client = "0.11.0"
 rand = "0.9.1"
 rayon = "1.10.0"
 rdkafka = { version = "0.39.0", features = ["ssl-vendored", "cmake-build", "zstd", "curl"] }
 regex = "1.11.1"
 reqwest = { version = "0.12.15", features = ["blocking", "json"] }
-rumqttc = { version = "0.24.0", features = ["url", "use-native-tls"] }
-rusqlite = { version = "0.35.0", features = ["bundled"] }
-rust-s3 = { version = "0.34.0", features = ["use-tokio-native-tls", "fail-on-err"], default-features = false }
+rumqttc = { version = "0.25.1", features = ["url", "use-native-tls"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+rust-s3 = { version = "0.37.2", features = ["tokio-native-tls", "fail-on-err"], default-features = false }
 schema_registry_converter = { version = "4.4.0", features = ["blocking", "json"] }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
@@ -110,7 +110,7 @@ serde_json = "1.0"
 serde_with = "3.12.0"
 smallvec = { version = "1.15.0", features = ["union", "const_generics"] }
 syn = { version = "2.0.101", features = ["default", "full", "visit", "visit-mut"] } # Hack to keep features unified between normal and build deps
-sysinfo = "0.35.1"
+sysinfo = "0.39.6"
 tantivy = "0.22.1"  # Note: don't bump this dependency before the RAG integration test failure is investigated
 tempfile = "3.20.0"
 thiserror = "1.0.63"
@@ -118,7 +118,7 @@ tiberius = { version = "0.12", default-features = false, features = ["tds73", "w
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }
-tonic = { version = "0.13.1", features = ["tls-native-roots"] }
+tonic = { version = "0.14.6", features = ["tls-native-roots"] }
 typetag = "0.2.21"
 usearch = "2.26.0"
 uuid = { version = "1.17.0", features = ["v4", "v5"] }

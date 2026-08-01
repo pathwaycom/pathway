@@ -54,8 +54,9 @@ impl QuestDBWriter {
         // The ILP buffer is row-oriented: every row begins with a
         // `table()` call and ends with `at()`/`at_now()`. We therefore
         // start each row inside `write` rather than priming the buffer
-        // here.
-        let buffer = QuestDBBuffer::new();
+        // here. The buffer must come from the sender so it uses the
+        // protocol version negotiated with the server.
+        let buffer = sender.new_buffer();
         let max_buffer_bytes = std::env::var("PATHWAY_QUESTDB_FLUSH_BYTES")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())

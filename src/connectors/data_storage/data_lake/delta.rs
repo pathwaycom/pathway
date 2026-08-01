@@ -926,6 +926,18 @@ pub fn read_delta_table<S: std::hash::BuildHasher>(
 }
 
 #[allow(clippy::module_name_repetitions)]
+// Delta table versions are non-negative and far below `i64::MAX`. The engine
+// stores them as `i64` in persisted offsets, while deltalake 0.32 switched its
+// APIs to `u64`; convert at the crate boundary so the offset format stays
+// unchanged.
+fn version_as_i64(version: u64) -> i64 {
+    i64::try_from(version).expect("delta table version fits in i64")
+}
+
+fn version_as_u64(version: i64) -> u64 {
+    u64::try_from(version).expect("delta table version is non-negative")
+}
+
 pub struct DeltaTableReader {
     table: DeltaTable,
     streaming_mode: ConnectorMode,
@@ -1003,7 +1015,7 @@ impl DeltaTableReader {
                 );
             }
         }
-        let mut current_version = table.version().unwrap_or(0);
+        let mut current_version = table.version().map_or(0, version_as_i64);
 
         let mut parquet_files_queue = VecDeque::new();
         let mut backfilling_entries_queue = VecDeque::new();
@@ -1070,17 +1082,17 @@ impl DeltaTableReader {
         let earliest_version: i64 = 0;
         // `get_latest_version` hits `_delta_log/` over S3 — same unretriable
         // `HttpErrorKind::Unknown` risk as other open-path calls.
-        let latest_version = execute_with_retries(
+        let latest_version = version_as_i64(execute_with_retries(
             || runtime.block_on(async { table.get_latest_version().await }),
             RetryConfig::default(),
             MAX_DELTA_OPEN_RETRIES,
-        )?;
+        )?);
         let snapshot = table.snapshot()?;
 
         let mut last_version_below_threshold = None;
         let mut version_at_threshold = None;
         for version in earliest_version..=latest_version {
-            let Some(timestamp) = snapshot.version_timestamp(version) else {
+            let Some(timestamp) = snapshot.version_timestamp(version_as_u64(version)) else {
                 continue;
             };
             if timestamp < start_from_timestamp_ms {
@@ -1114,7 +1126,10 @@ impl DeltaTableReader {
 
         // `load_version` also hits `_delta_log/` — wrap it for the same reason.
         execute_with_retries(
-            || runtime.block_on(async { table.load_version(*current_version).await }),
+            || {
+                runtime
+                    .block_on(async { table.load_version(version_as_u64(*current_version)).await })
+            },
             RetryConfig::default(),
             MAX_DELTA_OPEN_RETRIES,
         )?;
@@ -1142,7 +1157,13 @@ impl DeltaTableReader {
         column_types: &mut HashMap<String, Type>,
     ) -> Result<VecDeque<BackfillingEntry>, ReadError> {
         let mut binary_partition_columns = Vec::new();
-        for partition_column in table.snapshot()?.metadata().partition_columns().clone() {
+        for partition_column in table
+            .snapshot()?
+            .metadata()
+            .partition_columns()
+            .iter()
+            .map(ToString::to_string)
+        {
             let Some(type_) = column_types.get(&partition_column) else {
                 continue;
             };
@@ -1308,7 +1329,7 @@ impl DeltaTableReader {
         // `EagerSnapshot::file_views()`. The latter re-encodes Binary partition values via
         // `Scalar::serialize()`, producing a doubly-escaped string that cannot be decoded
         // correctly on our side; reading the raw log bypasses this conversion.
-        let current_version = table.version().unwrap_or(-1);
+        let current_version = table.version().map_or(-1, version_as_i64);
         // `table.history(None)` lists `_delta_log/` over S3 and `read_commit_entry`
         // GETs each version file. Both are subject to the same unretriable
         // `HttpErrorKind::Unknown` condition as `open_delta_table`; retry the whole
@@ -1319,11 +1340,14 @@ impl DeltaTableReader {
                     let history: Vec<DeltaTableCommitInfo> = table.history(None).await?.collect();
                     let mut adds: HashMap<String, deltalake::kernel::Add> = HashMap::new();
                     for version in 0..=current_version {
-                        let Some(bytes) = table.log_store().read_commit_entry(version).await?
+                        let Some(bytes) = table
+                            .log_store()
+                            .read_commit_entry(version_as_u64(version))
+                            .await?
                         else {
                             continue;
                         };
-                        for action in get_delta_actions(version, &bytes)? {
+                        for action in get_delta_actions(version_as_u64(version), &bytes)? {
                             match action {
                                 DeltaLakeAction::Add(add) => {
                                     adds.insert(add.path.clone(), add);
@@ -1557,7 +1581,7 @@ impl DeltaTableReader {
                 let commit_bytes = self
                     .table
                     .log_store()
-                    .read_commit_entry(next_version)
+                    .read_commit_entry(version_as_u64(next_version))
                     .await?;
                 let Some(commit_bytes) = commit_bytes else {
                     if !is_polling_enabled {
@@ -1571,7 +1595,7 @@ impl DeltaTableReader {
                     }
                     continue;
                 };
-                let txn_actions = get_delta_actions(next_version, &commit_bytes)?;
+                let txn_actions = get_delta_actions(version_as_u64(next_version), &commit_bytes)?;
 
                 let mut added_blocks = VecDeque::new();
                 let mut data_changed = false;
@@ -1744,7 +1768,11 @@ impl Reader for DeltaTableReader {
         let runtime = create_async_tokio_runtime()?;
 
         self.current_version = *version;
-        runtime.block_on(async { self.table.load_version(self.current_version).await })?;
+        runtime.block_on(async {
+            self.table
+                .load_version(version_as_u64(self.current_version))
+                .await
+        })?;
         self.parquet_files_queue.clear();
         // The constructor populates `backfilling_entries_queue` from the table's
         // snapshot at construction time; re-emitting it on restart would replay

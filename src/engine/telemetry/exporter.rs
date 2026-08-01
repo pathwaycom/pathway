@@ -191,7 +191,9 @@ impl SqliteExporter {
 
             for sample in samples {
                 stmt.execute(params![
-                    sample.worker_id,
+                    // rusqlite no longer implements ToSql for usize; SQLite
+                    // integers are i64 anyway.
+                    i64::try_from(sample.worker_id).expect("worker id fits in i64"),
                     sample.timestamp,
                     sample.operator_id,
                     sample.name,
