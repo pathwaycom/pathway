@@ -94,6 +94,11 @@ xpack-llm-docs = [
     "pypdf",
     # unstructured dependency, but unstructured doesn't force this version even though it's needed
     "pdfminer.six == 20250506",
+    # unstructured dependency; nltk 3.10.1 ships an import hook that aborts
+    # imports resolved while the CWD is on sys.path, which breaks `import nltk`
+    # in ordinary `python script.py` and `python -m pytest` runs. Revisit when
+    # a release relaxes the hook.
+    "nltk < 3.10.1",
     "paddleocr[doc-parser] >= 3.3.1, < 4.0.0",
 ]
 xpack-sharepoint = [
