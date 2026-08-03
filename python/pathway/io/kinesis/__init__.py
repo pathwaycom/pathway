@@ -19,6 +19,30 @@ from pathway.io._utils import (
     construct_schema_and_data_format,
 )
 
+def _configure_kinesis_sse(
+    stream_name: str,
+    encryption_type: str | None,
+    key_id: str | None,
+) -> None:
+    if not encryption_type and not key_id:
+        return
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    client = boto3.client("kinesis")
+    try:
+        client.start_stream_encryption(
+            StreamName=stream_name,
+            EncryptionType=encryption_type or "KMS",
+            KeyId=key_id,
+        )
+    except ClientError as e:
+        # If stream is already encrypted or modifying encryption state, handle or re-raise
+        if e.response["Error"]["Code"] == "ResourceInUseException":
+            pass
+        else:
+            raise
 
 @check_arg_types
 @trace_user_frame
@@ -31,6 +55,8 @@ def read(
     json_field_paths: dict[str, str] | None = None,
     name: str | None = None,
     max_backlog_size: int | None = None,
+    encryption_type: str | None = None,
+    key_id: str | None = None,
     debug_data=None,
     **kwargs,
 ) -> Table:
@@ -144,7 +170,9 @@ def read(
     Once running, the connector continuously monitors the Kinesis stream and writes both
     existing and newly arriving messages to ``output.jsonl``.
     """
+    _configure_kinesis_sse(stream_name, encryption_type, key_id)
 
+    
     _check_entitlements("kinesis")
     data_storage = api.DataStorage(
         storage_type="kinesis",
@@ -186,6 +214,8 @@ def write(
     data: ColumnReference | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    encryption_type: str | None = None,
+    key_id: str | None = None,
 ) -> None:
     """
     Streams ``table`` into an
@@ -374,6 +404,8 @@ def write(
     added to the ``"other"`` stream, which must be created beforehand if you are testing
     this part locally.
     """
+    if isinstance(stream_name, str):
+        _configure_kinesis_sse(stream_name, encryption_type, key_id)
 
     output_format = MessageQueueOutputFormat.construct(
         table,
