@@ -20,7 +20,8 @@ def _in_notebook():
     try:
         from IPython import get_ipython  # noqa
 
-        if "IPKernelApp" not in get_ipython().config:  # noqa
+        ipython = get_ipython()  # noqa
+        if ipython is None or "IPKernelApp" not in ipython.config:
             return False
     except ImportError:
         return False
