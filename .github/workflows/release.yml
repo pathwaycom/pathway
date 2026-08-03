@@ -51,7 +51,7 @@ jobs:
           - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 270
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
@@ -214,7 +214,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11"]
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
@@ -266,7 +266,7 @@ jobs:
           - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder

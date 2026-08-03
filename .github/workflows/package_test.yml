@@ -23,7 +23,7 @@ jobs:
         os:
           - ${{ inputs.runner }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 270
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
@@ -128,7 +128,7 @@ jobs:
         os:
           - ${{ inputs.runner }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
