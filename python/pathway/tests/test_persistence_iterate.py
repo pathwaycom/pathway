@@ -1,6 +1,5 @@
 # Copyright © 2026 Pathway
 
-import multiprocessing
 import os
 import pathlib
 import time
@@ -16,6 +15,7 @@ from pathway.tests.utils import (
     assert_sets_equality_from_path,
     combine_columns,
     consolidate,
+    mp_fork,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
@@ -1072,7 +1072,7 @@ def test_iterate_persistence_streaming_restart(persistence_mode, tmp_path):
         c     | 5
     """,
     )
-    p = multiprocessing.Process(
+    p = mp_fork.Process(
         target=run_pipeline, daemon=True, args=(output_path_1 / "out.csv",)
     )
     p.start()
@@ -1099,7 +1099,7 @@ def test_iterate_persistence_streaming_restart(persistence_mode, tmp_path):
         d     | 100
     """,
     )
-    p = multiprocessing.Process(
+    p = mp_fork.Process(
         target=run_pipeline, daemon=True, args=(output_path_2 / "out.csv",)
     )
     p.start()

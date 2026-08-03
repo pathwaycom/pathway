@@ -6,7 +6,6 @@ import copy
 import datetime
 import json
 import logging
-import multiprocessing
 import os
 import pathlib
 import pickle
@@ -44,6 +43,7 @@ from pathway.tests.utils import (
     assert_sets_equality_from_path,
     assert_table_equality,
     assert_table_equality_wo_index,
+    mp_fork,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
@@ -56,6 +56,7 @@ from pathway.tests.utils import (
 from pathway.third_party.airbyte_serverless.sources import (
     DockerAirbyteSource,
     VenvAirbyteSource,
+    find_connector_python,
 )
 
 MESSAGE_QUEUE_WRITE_KWARGS = {
@@ -3346,6 +3347,9 @@ def test_airbyte_venv_connector_install_is_bounded_in_time(monkeypatch):
     attempt a clear error is raised."""
     from pathway.third_party.airbyte_serverless import sources
 
+    # The interpreter probe also goes through subprocess.run, which this
+    # test replaces — pin the choice to the running interpreter upfront.
+    monkeypatch.setattr(sources, "find_connector_python", lambda: sys.executable)
     monkeypatch.setattr(sources.venv, "create", lambda *args, **kwargs: None)
     monkeypatch.setattr(sources, "PIP_INSTALL_RETRY_DELAY", 0.0)
     attempts = []
@@ -3364,6 +3368,9 @@ def test_airbyte_venv_connector_install_is_bounded_in_time(monkeypatch):
 def test_airbyte_venv_connector_install_runs_pip_once_on_success(monkeypatch):
     from pathway.third_party.airbyte_serverless import sources
 
+    # The interpreter probe also goes through subprocess.run, which this
+    # test replaces — pin the choice to the running interpreter upfront.
+    monkeypatch.setattr(sources, "find_connector_python", lambda: sys.executable)
     monkeypatch.setattr(sources.venv, "create", lambda *args, **kwargs: None)
     successful_runs = []
 
@@ -3412,6 +3419,10 @@ def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
 
 @needs_multiprocessing_fork
 @xfail_on_python_3_10
+@pytest.mark.skipif(
+    find_connector_python() is None,
+    reason="no CPython supported by the Airbyte connector packages is available",
+)
 def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
     output_path = tmp_path_with_airbyte_config / "table.jsonl"
     pstorage_path = tmp_path_with_airbyte_config / "PStorage"
@@ -4306,7 +4317,7 @@ def test_fs_metadata_only(tmp_path, scenario):
     pw.io.jsonlines.write(table, output_path)
 
     stream_thread = ExceptionAwareThread(target=stream_inputs, daemon=True)
-    pathway_process = multiprocessing.Process(target=run)
+    pathway_process = mp_fork.Process(target=run)
     try:
         # Fork the Pathway process before starting the writer thread so the
         # child is not forked mid-write (see test_streaming_from_deltalake).

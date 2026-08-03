@@ -72,9 +72,16 @@ else:
 try:
     parsers.PaddleOCRParser()
 except ImportError as e:
+    # Below 3.14 the parser asks for the extra that provides paddleocr.
+    assert sys.version_info < (3, 14), str(e)
     assert "xpack-llm-docs" in str(e), str(e)
+except RuntimeError as e:
+    # On 3.14+ the parser reports upfront that paddlepaddle has no
+    # packages for this Python version, before any import is attempted.
+    assert sys.version_info >= (3, 14), str(e)
+    assert "paddlepaddle does not publish packages" in str(e), str(e)
 else:
-    raise AssertionError("PaddleOCRParser() should require xpack-llm-docs")
+    raise AssertionError("PaddleOCRParser() should be unavailable here")
 """
 
 

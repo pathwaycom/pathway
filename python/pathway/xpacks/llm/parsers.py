@@ -11,6 +11,7 @@ import inspect
 import io
 import logging
 import re
+import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
@@ -1210,6 +1211,16 @@ class PaddleOCRParser(pw.UDF):
         cache_strategy: udfs.CacheStrategy | None = None,
         async_mode: Literal["batch_async", "fully_async"] = "batch_async",
     ):
+        if sys.version_info >= (3, 14):
+            # Without this check the user would be pointed at the
+            # xpack-llm-docs extra, which deliberately omits the paddle
+            # packages on 3.14, or at a pip install that cannot succeed.
+            raise RuntimeError(
+                "PaddleOCRParser is not available on Python 3.14 or newer: "
+                "paddlepaddle does not publish packages for these Python "
+                "versions yet. To use PaddleOCR-based parsing, run Pathway "
+                "on Python 3.13 or earlier."
+            )
         super().__init__(
             executor=_prepare_executor(async_mode=async_mode),
             cache_strategy=cache_strategy,

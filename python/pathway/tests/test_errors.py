@@ -398,10 +398,16 @@ def test_udf(sync: bool) -> None:
         6 |  3
     """
     )
+    try:
+        _ = 1 // 0
+    except ZeroDivisionError as e:
+        # The message differs between Python versions (3.14 says just
+        # "division by zero"), so take it from the running interpreter.
+        zero_division_message = str(e)
     expected_errors = T(
-        """
+        f"""
         message | line
-        ZeroDivisionError: integer division or modulo by zero | t2 = t1.select(pw.this.a, x=div(pw.this.a, pw.this.b))
+        ZeroDivisionError: {zero_division_message} | t2 = t1.select(pw.this.a, x=div(pw.this.a, pw.this.b))
     """,
         split_on_whitespace=False,
     )

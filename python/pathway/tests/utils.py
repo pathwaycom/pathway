@@ -39,6 +39,13 @@ from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.schema import is_subschema, schema_from_columns
 from pathway.internals.table import Table
 
+# Pathway pipelines are built in the parent process and are not picklable, so
+# tests that hand a constructed pipeline to a child process must inherit it
+# via fork(). Python 3.14 switched the default start method on Linux to
+# forkserver, so the fork context is requested explicitly instead of relying
+# on the default.
+mp_fork = multiprocessing.get_context("fork") if sys.platform != "win32" else None
+
 needs_multiprocessing_fork = pytest.mark.xfail(
     sys.platform != "linux",
     reason="multiprocessing needs to use fork() for pw.run() to work",
@@ -852,7 +859,7 @@ assert_stream_split_into_groups_wo_index_types = run_graph_and_validate_result(
 )
 
 
-def terminate_process(p: multiprocessing.Process) -> None:
+def terminate_process(p: multiprocessing.process.BaseProcess) -> None:
     """Terminate a test child process without risking an unbounded wait.
 
     A child that doesn't react to SIGTERM (e.g. stuck in uninterruptible I/O
@@ -894,12 +901,12 @@ def wait_result_with_checker(
     args: Iterable[Any] = (),
     kwargs: Mapping[str, Any] = {},
 ) -> None:
-    handles: list[multiprocessing.Process] = []
+    handles: list[multiprocessing.process.BaseProcess] = []
     try:
         if target is not None:
             assert (
-                multiprocessing.get_start_method() == "fork"
-            ), "multiprocessing does not use fork(), pw.run() will not work"
+                mp_fork is not None
+            ), "multiprocessing cannot use fork(), pw.run() will not work"
 
             if processes != 1:
                 assert first_port is not None
@@ -917,14 +924,14 @@ def wait_result_with_checker(
                     target(*args, **kwargs)
 
                 for process_id in range(processes):
-                    p = multiprocessing.Process(
+                    p = mp_fork.Process(
                         target=target_wrapped, args=(process_id, *args), kwargs=kwargs
                     )
                     p.start()
                     handles.append(p)
             else:
                 target_wrapped = target
-                p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
+                p = mp_fork.Process(target=target, args=args, kwargs=kwargs)
                 p.start()
                 handles.append(p)
 
@@ -990,8 +997,8 @@ def wait_result_with_checker(
             if "persistence_config" in kwargs:
                 time.sleep(5.0)  # allow a little gap to persist state
 
-            for p in handles:
-                terminate_process(p)
+            for handle in handles:
+                terminate_process(handle)
 
 
 def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):

@@ -3,7 +3,6 @@
 import base64
 import datetime
 import json
-import multiprocessing
 import os
 import pathlib
 import re
@@ -23,6 +22,7 @@ from pathway.tests.utils import (
     ExceptionAwareThread,
     T,
     assert_table_equality,
+    mp_fork,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
@@ -286,7 +286,7 @@ def test_streaming_from_deltalake(tmp_path, with_backfilling_thresholds):
     pw.io.csv.write(table, output_path)
 
     stream_thread = ExceptionAwareThread(target=create_new_versions, args=(1, 10))
-    pathway_process = multiprocessing.Process(target=run)
+    pathway_process = mp_fork.Process(target=run)
     try:
         # Fork the Pathway process before starting the writer thread: forking
         # while another thread is inside a native Delta write can leave the

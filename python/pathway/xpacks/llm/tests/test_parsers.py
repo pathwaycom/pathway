@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import nltk
 import pandas as pd
+import pytest
 from fpdf import FPDF
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.parsers import PypdfParser, Utf8Parser
+from pathway.xpacks.llm.parsers import PaddleOCRParser, PypdfParser, Utf8Parser
 
 for _ in range(10):
     try:
@@ -102,3 +104,12 @@ def test_parse_pypdf(tmp_path: Path):
     assert_table_equality(
         result, pw.debug.table_from_pandas(pd.DataFrame([dict(ret=txt)]))
     )
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 14),
+    reason="the guard fires only where paddlepaddle is unavailable",
+)
+def test_paddle_parser_reports_unavailability_on_python_3_14():
+    with pytest.raises(RuntimeError, match="paddlepaddle does not publish packages"):
+        PaddleOCRParser()

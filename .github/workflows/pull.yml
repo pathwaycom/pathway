@@ -9,7 +9,7 @@ on:
       - main
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.10"
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:

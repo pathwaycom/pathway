@@ -886,7 +886,9 @@ def test_udf_warn_on_too_specific_return_type() -> None:
 
     msg = (
         "The value of return_type parameter (<class 'int'>) is inconsistent with UDF's"
-        + " return type annotation (typing.Optional[int])."
+        # The annotation is formatted with str(); its form differs between
+        # Python versions (typing.Optional[int] vs int | None).
+        + f" return type annotation ({Optional[int]})."
     )
     with warns_here(Warning, match=re.escape(msg)):
         f(pw.this.a)
@@ -1680,7 +1682,9 @@ def test_error_in_batch_udf(sync: bool):
     )
 
     input.select(c=foo(pw.this.a, pw.this.b))
-    with pytest.raises(ZeroDivisionError, match="integer division or modulo by zero"):
+    with pytest.raises(
+        ZeroDivisionError, match="(integer division or modulo|division) by zero"
+    ):
         run_all()
 
 

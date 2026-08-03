@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import multiprocessing
 import os
 import pathlib
 import time
@@ -18,6 +17,7 @@ from pathway.tests.utils import (
     CsvPathwayChecker,
     LogicChecker,
     assert_sets_equality_from_path,
+    mp_fork,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
@@ -77,7 +77,7 @@ def test_groupby_count(persistence_mode, tmp_path):
     foo
     """
     write_csv(input_path / "1.csv", file1)
-    p = multiprocessing.Process(target=run, daemon=True, args=(output_path / "1.csv",))
+    p = mp_fork.Process(target=run, daemon=True, args=(output_path / "1.csv",))
     p.start()
     time.sleep(2)  # sleep to write file2 after some time to simulate streaming behavior
     file2 = """
@@ -105,7 +105,7 @@ def test_groupby_count(persistence_mode, tmp_path):
     xxx
     """
     write_csv(input_path / "3.csv", file3)
-    p = multiprocessing.Process(target=run, daemon=True, args=(output_path / "2.csv",))
+    p = mp_fork.Process(target=run, daemon=True, args=(output_path / "2.csv",))
     p.start()
     time.sleep(2)
     file4 = """
@@ -133,7 +133,7 @@ def test_groupby_count(persistence_mode, tmp_path):
     def
     """
     write_csv(input_path / "5.csv", file5)
-    p = multiprocessing.Process(target=run, daemon=True, args=(output_path / "3.csv",))
+    p = mp_fork.Process(target=run, daemon=True, args=(output_path / "3.csv",))
     p.start()
     time.sleep(2)
     file6 = """

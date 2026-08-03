@@ -60,6 +60,7 @@ import logging
 import time
 import shlex
 import subprocess
+import sys
 import tempfile
 import pathlib
 import zlib
@@ -139,6 +140,94 @@ class DockerAirbyteSource(ExecutableAirbyteSource):
         )
 
 
+# airbyte-cdk declares requires-python < 3.14, so on newer interpreters pip
+# backtracks to years-old connector releases whose dependencies no longer
+# build. The connector runs as a separate process speaking the Airbyte
+# protocol over stdout, so its virtual environment does not have to use the
+# interpreter running Pathway — any supported CPython found on the machine
+# will do. Remove once the cdk allows newer versions.
+_CONNECTOR_MAX_PYTHON = (3, 13)
+
+
+def _probe_python(executable: str) -> tuple[int, int] | None:
+    """Returns the interpreter's version if it can host a connector venv.
+
+    The binary is executed rather than trusted by name: a file called
+    python3.12 may be anything, and an interpreter without ensurepip (e.g. a
+    Debian python without the venv package) cannot create an environment
+    with pip.
+    """
+    try:
+        result = subprocess.run(
+            [
+                executable,
+                "-c",
+                # ssl/sqlite3/zlib are canaries for broken hand-built
+                # interpreters whose extension modules were linked against
+                # libraries the machine does not actually provide.
+                "import importlib.util, sqlite3, ssl, sys, zlib; "
+                "print(sys.version_info[0], sys.version_info[1], "
+                "int(importlib.util.find_spec('ensurepip') is not None))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        major, minor, has_ensurepip = map(int, result.stdout.split())
+    except ValueError:
+        return None
+    if not has_ensurepip:
+        return None
+    return (major, minor)
+
+
+def find_connector_python() -> str | None:
+    """Returns an interpreter suitable for installing Airbyte connectors.
+
+    The PATHWAY_AIRBYTE_PYTHON environment variable overrides the search and
+    may point at a binary with any name. Otherwise the running interpreter is
+    preferred when the connector ecosystem supports it, and the newest
+    supported CPython discoverable on PATH is used as a fallback.
+    """
+    override = os.environ.get("PATHWAY_AIRBYTE_PYTHON")
+    if override:
+        if _probe_python(override) is None:
+            raise RuntimeError(
+                f"PATHWAY_AIRBYTE_PYTHON points at {override!r}, which is not "
+                "a working Python interpreter with ensurepip available"
+            )
+        return override
+    if sys.version_info[:2] <= _CONNECTOR_MAX_PYTHON:
+        return sys.executable
+    candidates: list[tuple[tuple[int, int], str]] = []
+    names = [f"python3.{minor}" for minor in range(_CONNECTOR_MAX_PYTHON[1], 9, -1)]
+    # Generic names cover environments that install no versioned aliases
+    # (conda, pixi, pyenv shims).
+    names += ["python3", "python"]
+    seen: set[str] = set()
+    for name in names:
+        path = shutil.which(name)
+        if path is None:
+            continue
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        version = _probe_python(path)
+        if version is None:
+            continue
+        if (3, 10) <= version <= _CONNECTOR_MAX_PYTHON:
+            candidates.append((version, path))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
 class VenvAirbyteSource(ExecutableAirbyteSource):
 
     def __init__(
@@ -153,11 +242,35 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
         self._venv_directory = tempfile.TemporaryDirectory()
         self._venv_path = pathlib.Path(self._venv_directory.name)
         logging.info(f"Creating an isolated virtual environment for {connector}...")
-        venv.create(self._venv_path, with_pip=True)
+        connector_python = find_connector_python()
+        if connector_python is None:
+            raise RuntimeError(
+                "The Airbyte connector packages do not support Python "
+                f"{sys.version_info.major}.{sys.version_info.minor} yet, and no "
+                "older CPython (3.10-3.13) was found on this machine to host "
+                "the connector's virtual environment. Install one, point the "
+                "PATHWAY_AIRBYTE_PYTHON environment variable at one, or run "
+                'the connector with enforce_method="docker".'
+            )
+        if connector_python == sys.executable:
+            venv.create(self._venv_path, with_pip=True)
+        else:
+            logging.info(
+                f"Using {connector_python} for the connector environment: the "
+                "Airbyte connector packages do not support the running Python "
+                "version yet"
+            )
+            subprocess.run(
+                [connector_python, "-m", "venv", os.fspath(self._venv_path)],
+                check=True,
+            )
 
         logging.info(f"Installing python connector package for {connector}...")
         pip_path = os.fspath(self._venv_path / "bin" / "pip")
-        packages = [f"airbyte-{connector}"] + (dependency_overrides or [])
+        # venvs on Python >= 3.12 no longer ship setuptools, while some
+        # connector builds invoke distutils-based scripts with the venv
+        # interpreter; setuptools provides the distutils shim.
+        packages = ["setuptools", f"airbyte-{connector}"] + (dependency_overrides or [])
         print("Packages:", packages)
         for n_attempt in range(MAX_PIP_INSTALL_ATTEMPTS):
             try:
@@ -191,12 +304,19 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
                 )
                 time.sleep(PIP_INSTALL_RETRY_DELAY)
             else:
-                raise RuntimeError(
+                message = (
                     f"Failed to install package airbyte-{connector} into a virtual "
                     "environment. If the problem persists, please check that the "
                     "package exists on PyPI and consider using enforce_method "
                     "setting."
                 )
+                if sys.version_info >= (3, 14):
+                    message += (
+                        " Note: the current Airbyte connector packages do not "
+                        "support Python 3.14 and newer; running the connector "
+                        'with enforce_method="docker" avoids the issue.'
+                    )
+                raise RuntimeError(message)
         self.executable = self._venv_path / "bin" / connector
 
 

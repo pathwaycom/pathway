@@ -99,7 +99,10 @@ xpack-llm-docs = [
     # in ordinary `python script.py` and `python -m pytest` runs. Revisit when
     # a release relaxes the hook.
     "nltk < 3.10.1",
-    "paddleocr[doc-parser] >= 3.3.1, < 4.0.0",
+    # The whole paddle stack is unavailable on Python 3.14: paddlepaddle has
+    # no cp314 wheels, and paddlex pins pyyaml==6.0.2, which only builds from
+    # source there. The parser reports a clear error when paddleocr is absent.
+    "paddleocr[doc-parser] >= 3.3.1, < 4.0.0; python_version < '3.14'",
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
@@ -133,8 +136,10 @@ tests = [
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
     "fpdf",
-    "paddlepaddle >= 3.2.0, < 3.3.0", # required by paddleocr
-    "paddlex >= 3.0.0, <= 3.3.8",  # pinning the latest working version, then the format changes
+    # paddlepaddle has no CPython 3.14 wheels yet; the paddle-based parser
+    # degrades gracefully when the import is missing.
+    "paddlepaddle >= 3.2.0, < 3.3.0; python_version < '3.14'", # required by paddleocr
+    "paddlex >= 3.0.0, <= 3.3.8; python_version < '3.14'",  # pinning the latest working version, then the format changes
     "aioboto3 >= 13.0.0",
 ]
 airbyte = [

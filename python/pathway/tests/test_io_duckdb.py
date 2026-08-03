@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import multiprocessing
 import os
 import pathlib
 import time
@@ -14,6 +13,7 @@ import pytest
 
 import pathway as pw
 from pathway.tests.utils import (
+    mp_fork,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
@@ -964,7 +964,7 @@ def test_detach_allows_concurrent_readonly_reader(tmp_path: pathlib.Path):
         [json.dumps({"value": value}) for value in first_batch],
     )
 
-    pathway_process = multiprocessing.Process(target=run)
+    pathway_process = mp_fork.Process(target=run)
     pathway_process.start()
     try:
         _wait_for_row_count(
@@ -1016,7 +1016,7 @@ def test_default_mode_keeps_file_locked_while_running(tmp_path: pathlib.Path):
         init_mode="create_if_not_exists",
     )
 
-    pathway_process = multiprocessing.Process(target=run)
+    pathway_process = mp_fork.Process(target=run)
     pathway_process.start()
     try:
         # The writer creates the database file when it opens it, so the file
