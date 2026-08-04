@@ -4,14 +4,32 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import linecache
 import sys
-import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import FrameType
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
     from pathway.internals import api
+
+_MARKER_FUNCTION = "_pathway_trace_marker"
+
+
+def _is_external_file(filename: str) -> bool:
+    # Flat chain of substring checks: this predicate runs for every frame
+    # examined by ``Trace.from_traceback``, so it must not allocate.
+    if "pathway/tests/test_" in filename:
+        return True
+    return (
+        "pathway/tests" not in filename
+        and "pathway/internals" not in filename
+        and "pathway/io" not in filename
+        and "pathway/stdlib" not in filename
+        and "pathway/debug" not in filename
+        and "@beartype" not in filename
+    )
 
 
 @dataclass(frozen=True)
@@ -22,47 +40,44 @@ class Frame:
     function: str
 
     def is_external(self) -> bool:
-        if "pathway/tests/test_" in self.filename:
-            return True
-        exclude_patterns = [
-            "pathway/tests",
-            "pathway/internals",
-            "pathway/io",
-            "pathway/stdlib",
-            "pathway/debug",
-            "@beartype",
-        ]
-        return all(pattern not in self.filename for pattern in exclude_patterns)
-
-    def is_marker(self) -> bool:
-        return self.function == "_pathway_trace_marker"
+        return _is_external_file(self.filename)
 
 
 @dataclass(frozen=True)
 class Trace:
-    frames: list[Frame]
     user_frame: Frame | None
 
     @staticmethod
     def from_traceback():
-        frames = [
-            Frame(
-                filename=e.filename,
-                line_number=e.lineno,
-                line=e.line,
-                function=e.name,
-            )
-            for e in traceback.extract_stack()[:-1]
-        ]
+        # The user frame is the newest external frame older than the oldest
+        # trace marker on the stack (or the newest external frame overall when
+        # no marker is present).  Walking raw frames newest-to-oldest keeps
+        # this hot path cheap: no stack materialization, and the source line
+        # is read only once, for the single frame chosen.
+        frame: FrameType | None = sys._getframe(1)
+        candidate: tuple[str, int, str] | None = None
+        want_external = True
+        while frame is not None:
+            code = frame.f_code
+            if code.co_name == _MARKER_FUNCTION:
+                candidate = None
+                want_external = True
+            elif want_external and _is_external_file(code.co_filename):
+                candidate = (code.co_filename, frame.f_lineno, code.co_name)
+                want_external = False
+            frame = frame.f_back
 
         user_frame: Frame | None = None
-        for frame in frames:
-            if frame.is_marker():
-                break
-            elif frame.is_external():
-                user_frame = frame
+        if candidate is not None:
+            filename, line_number, function = candidate
+            user_frame = Frame(
+                filename=filename,
+                line_number=line_number,
+                line=linecache.getline(filename, line_number).strip(),
+                function=function,
+            )
 
-        return Trace(frames=frames, user_frame=user_frame)
+        return Trace(user_frame=user_frame)
 
     def to_engine(self) -> api.Trace | None:
         user_frame = self.user_frame

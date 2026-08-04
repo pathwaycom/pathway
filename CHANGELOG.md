@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - Python 3.14 is now supported. The published wheels install on CPython 3.10 through 3.14, and the test suite is run against both the minimum (3.10) and the maximum (3.14) supported versions. One exception: the PaddleOCR-based document parsing is unavailable on 3.14 until paddlepaddle publishes wheels for it — the `xpack-llm-docs` extra installs without the paddle packages there, and using the paddle-based parser reports a clear error. Airbyte connectors in the `venv` mode run in a virtual environment built with the newest supported CPython (3.10-3.13) found on the machine, since the connector packages do not support 3.14 yet; without one, a clear error suggests `enforce_method="docker"`.
 
+### Changed
+- Building a pipeline is now significantly faster: the location information attached to every expression and operator (used in the `Occurred here` part of error messages) is collected without materializing full stack traces. The speedup is most visible in code that constructs many small pipelines, such as unit test suites, where graph construction could previously dominate the run time — measured up to ~6x faster on pytest suites of small-data pipeline tests. Error messages are unchanged.
+
 ## [0.32.1] - 2026-07-29
 
 ### Added
