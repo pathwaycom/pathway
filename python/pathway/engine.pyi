@@ -11,6 +11,8 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any, Generic, TypeVar, TypeVarTuple, Union, final
 
+from typing_extensions import Unpack
+
 from pathway.internals.api import (
     CapturedStream,
     CombineMany,
@@ -25,7 +27,7 @@ from pathway.internals.monitoring import StatsMonitor
 _T = TypeVarTuple("_T")
 
 @final
-class Pointer(Generic[*_T]):
+class Pointer(Generic[Unpack[_T]]):
     pass
 
 def ref_scalar(*args, optional=False) -> Pointer: ...
