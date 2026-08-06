@@ -79,7 +79,14 @@ xpack-llm = [
     "instructor ~= 1.2",
     "google-generativeai ~= 0.8.4",
     "google-api-core ~= 2.24.1",
-    "fastmcp >= 2.11.0, < 2.13.0",
+    # google-generativeai's google-ai-generativelanguage dependency forces
+    # protobuf < 6; stating it up front keeps pip from backtracking through
+    # dozens of grpcio-status / grpc-google-iam-v1 releases (newer ones require
+    # protobuf 6) before discovering the cap on its own
+    "protobuf >= 5.26.1, < 6.0.0",
+    # >= 2.12 because 2.11.x declares an unbounded mcp >= 1.10, which sends
+    # pip's resolver into deep backtracking now that mcp 2.x is on PyPI
+    "fastmcp >= 2.12.0, < 2.13.0",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "sentence_transformers", 
