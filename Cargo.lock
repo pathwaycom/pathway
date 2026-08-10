@@ -6815,6 +6815,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
+ "socket2 0.6.5",
  "syn 2.0.119",
  "sysinfo 0.39.6",
  "tantivy",

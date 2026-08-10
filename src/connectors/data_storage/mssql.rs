@@ -21,6 +21,7 @@ use crate::connectors::data_storage::{
 };
 use crate::connectors::metadata::MssqlMetadata;
 use crate::connectors::offset::{Offset, OffsetKey, OffsetValue, EMPTY_OFFSET};
+use crate::connectors::socket_guard::{connect_tcp_guarded, SilenceProfile, StallGuard};
 use crate::connectors::{DataEventType, ReadError, ReadResult, Reader, ReaderContext, StorageType};
 use crate::connectors::{WriteError, Writer};
 use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
@@ -54,6 +55,11 @@ fn is_transient_mssql(err: &MssqlError) -> bool {
         MssqlError::Driver(tiberius::error::Error::Server(token)) => {
             token.code() == MSSQL_ERR_DEADLOCK_VICTIM
         }
+        // An I/O error means the connection itself broke — including the
+        // socket guards declaring a silently dead flow (see
+        // `crate::connectors::socket_guard`). A retry reconnects from
+        // scratch, so it has a realistic chance of succeeding.
+        MssqlError::Driver(tiberius::error::Error::Io { .. }) => true,
         _ => false,
     }
 }
@@ -66,7 +72,7 @@ fn is_transient_write(err: &WriteError) -> bool {
     matches!(err, WriteError::Mssql(m) if is_transient_mssql(m))
 }
 
-type MssqlClient = Client<Compat<TcpStream>>;
+type MssqlClient = Client<Compat<StallGuard<TcpStream>>>;
 
 /// Errors specific to MSSQL connector operations.
 ///
@@ -325,9 +331,17 @@ fn qualified_table_name(schema_name: &str, table_name: &str) -> String {
     )
 }
 
-async fn connect_mssql(config: &Config) -> Result<MssqlClient, tiberius::error::Error> {
-    let tcp = TcpStream::connect(config.get_addr()).await?;
-    tcp.set_nodelay(true)?;
+async fn connect_mssql(
+    config: &Config,
+    profile: SilenceProfile,
+) -> Result<MssqlClient, tiberius::error::Error> {
+    // The client library performs no socket-level guarding of its own (no
+    // connect timeout, no keepalive, no bound on a pending read), so a
+    // silently dead TCP flow would park the connector thread forever. Open
+    // the stream through the shared guards instead: bounded connect,
+    // kernel-level liveness probing, and a wire-silence bound on every
+    // read/write.
+    let tcp = connect_tcp_guarded(config.get_addr(), profile).await?;
     let client = Client::connect(config.clone(), tcp.compat_write()).await?;
     Ok(client)
 }
@@ -718,7 +732,7 @@ impl MssqlReader {
         let outcome = execute_with_retries_if(
             || {
                 runtime.block_on(async {
-                    let mut client = connect_mssql(&config)
+                    let mut client = connect_mssql(&config, SilenceProfile::Reader)
                         .await
                         .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?;
 
@@ -1031,7 +1045,7 @@ impl MssqlReader {
                 runtime.block_on(async {
                     if client_opt.is_none() {
                         client_opt = Some(
-                            connect_mssql(&config)
+                            connect_mssql(&config, SilenceProfile::Reader)
                                 .await
                                 .map_err(|e| ReadError::Mssql(classify_mssql_error(e)))?,
                         );
@@ -1152,9 +1166,7 @@ impl MssqlReader {
     ///
     /// `fn_cdc_get_max_lsn` returns NULL until the capture agent has processed
     /// at least one transaction; we retry up to 20 times (10 s) before giving up.
-    async fn fetch_lsn_before(
-        client: &mut Client<Compat<TcpStream>>,
-    ) -> Result<Option<Vec<u8>>, ReadError> {
+    async fn fetch_lsn_before(client: &mut MssqlClient) -> Result<Option<Vec<u8>>, ReadError> {
         let mut lsn: Option<Vec<u8>> = None;
         for _ in 0..20usize {
             let row = client
@@ -1175,7 +1187,7 @@ impl MssqlReader {
 
     /// Step 2: Read the full table snapshot via a plain SELECT.
     async fn fetch_snapshot_rows(
-        client: &mut Client<Compat<TcpStream>>,
+        client: &mut MssqlClient,
         query_str: &str,
     ) -> Result<Vec<tiberius::Row>, ReadError> {
         client
@@ -1188,9 +1200,7 @@ impl MssqlReader {
     }
 
     /// Step 3: Record the CDC max LSN again, immediately after the snapshot SELECT.
-    async fn fetch_lsn_after(
-        client: &mut Client<Compat<TcpStream>>,
-    ) -> Result<Option<Vec<u8>>, ReadError> {
+    async fn fetch_lsn_after(client: &mut MssqlClient) -> Result<Option<Vec<u8>>, ReadError> {
         let row = client
             .simple_query("SELECT sys.fn_cdc_get_max_lsn()")
             .await
@@ -2089,7 +2099,7 @@ impl MssqlWriter {
         let mut client = execute_with_retries_if(
             || {
                 runtime.block_on(async {
-                    let mut client = connect_mssql(&config)
+                    let mut client = connect_mssql(&config, SilenceProfile::Writer)
                         .await
                         .map_err(|e| WriteError::Mssql(classify_mssql_error(e)))?;
 
@@ -2653,7 +2663,7 @@ impl MssqlWriter {
             self.runtime.block_on(async move {
                 let mut client = match taken_client {
                     Some(c) => c,
-                    None => match connect_mssql(&config).await {
+                    None => match connect_mssql(&config, SilenceProfile::Writer).await {
                         Ok(c) => c,
                         Err(e) => return (Err(WriteError::Mssql(classify_mssql_error(e))), None),
                     },

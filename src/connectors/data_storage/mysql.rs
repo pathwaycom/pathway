@@ -16,9 +16,9 @@ use mysql::prelude::Queryable;
 pub use mysql::Error as MysqlError;
 use mysql::{
     BinlogDumpFlags, BinlogRequest, Conn as MysqlRawConn, LocalInfileHandler, Opts as MysqlOpts,
-    Params as MysqlParams, Pool as MysqlConnectionPool, PooledConn as MysqlConnection,
-    Row as MysqlQueryRow, Transaction as MysqlTransaction, TxOpts as MysqlTxOpts,
-    Value as MysqlValue,
+    OptsBuilder as MysqlOptsBuilder, Params as MysqlParams, Pool as MysqlConnectionPool,
+    PooledConn as MysqlConnection, Row as MysqlQueryRow, Transaction as MysqlTransaction,
+    TxOpts as MysqlTxOpts, Value as MysqlValue,
 };
 
 use crate::connectors::data_format::{FormatterContext, FormatterError};
@@ -28,6 +28,10 @@ use crate::connectors::data_storage::{
 };
 use crate::connectors::metadata::MysqlMetadata;
 use crate::connectors::offset::{Offset, OffsetKey, OffsetValue, EMPTY_OFFSET};
+use crate::connectors::socket_guard::{
+    SilenceProfile, TCP_CONNECT_TIMEOUT, TCP_KEEPALIVE_IDLE, TCP_KEEPALIVE_INTERVAL,
+    TCP_KEEPALIVE_RETRIES, TCP_USER_TIMEOUT,
+};
 use crate::connectors::{
     DataEventType, ReadError, ReadResult, Reader, ReaderContext, StorageType, WriteError, Writer,
 };
@@ -40,6 +44,55 @@ use crate::python_api::ValueField;
 use crate::retry::{execute_with_retries_if, RetryConfig};
 
 const MAX_MYSQL_RETRIES: usize = 3;
+
+/// Apply the shared socket-guard policy (see `crate::connectors::socket_guard`
+/// for the rationale and the canonical constants) to `opts`, through the
+/// driver's native options — the driver owns its sockets, so the generic
+/// stream wrapper does not apply here. `profile` selects the wire-silence cap:
+/// reader operations stream bytes continuously and get the tight bound, while
+/// a writer's single statement may legitimately keep the server silent while
+/// it executes, so the writer bound is more generous.
+fn with_socket_guards(opts: MysqlOpts, profile: SilenceProfile) -> MysqlOpts {
+    let socket_timeout = profile.max_silence();
+    let builder = MysqlOptsBuilder::from_opts(opts)
+        .tcp_connect_timeout(Some(TCP_CONNECT_TIMEOUT))
+        .read_timeout(Some(socket_timeout))
+        .write_timeout(Some(socket_timeout))
+        .tcp_keepalive_time_ms(Some(
+            u32::try_from(TCP_KEEPALIVE_IDLE.as_millis()).expect("keepalive idle must fit u32"),
+        ));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let builder = builder
+        .tcp_keepalive_probe_interval_secs(Some(
+            u32::try_from(TCP_KEEPALIVE_INTERVAL.as_secs())
+                .expect("keepalive interval must fit u32"),
+        ))
+        .tcp_keepalive_probe_count(Some(TCP_KEEPALIVE_RETRIES));
+    #[cfg(target_os = "linux")]
+    let builder = builder.tcp_user_timeout_ms(Some(
+        u32::try_from(TCP_USER_TIMEOUT.as_millis()).expect("user timeout must fit u32"),
+    ));
+    builder.into()
+}
+
+/// Build the writer's connection pool from already-guarded options.
+///
+/// The pool is bounded: the `mysql` crate's default constraints are
+/// min=10/max=100, and the pool eagerly opens `min` connections the moment it
+/// is created. A single writer needs only one live connection (plus, at most,
+/// a transient replacement when reconnecting after a recoverable error), so
+/// the default would open nine idle connections per writer for nothing. Under
+/// parallel test or production fan-out that silently exhausts the server's
+/// `max_connections` and surfaces as a spurious "Too many connections"
+/// failure. min=0 keeps the pool lazy (no eager connections) and max=2 leaves
+/// headroom for one in-flight reconnection.
+fn make_writer_pool(opts: MysqlOpts) -> Result<MysqlConnectionPool, MysqlError> {
+    let pool_opts = mysql::PoolOpts::new().with_constraints(
+        mysql::PoolConstraints::new(0, 2).expect("0 <= 2 is a valid pool constraint"),
+    );
+    let opts = MysqlOptsBuilder::from_opts(opts).pool_opts(pool_opts);
+    MysqlConnectionPool::new(opts)
+}
 
 /// Upper bound on the number of `?` placeholders packed into a single
 /// multi-row statement. The `MySQL` client/server protocol caps a prepared
@@ -81,6 +134,11 @@ enum WriteStrategy {
 }
 
 pub struct MysqlWriter {
+    /// Connection options (with socket guards applied), kept so the retry
+    /// path can rebuild the pool from scratch: after a stalled-connection
+    /// timeout the pool may still hold other sockets of the same broken flow,
+    /// and handing one out would burn another full timeout before recovery.
+    opts: MysqlOpts,
     pool: MysqlConnectionPool,
     current_connection: MysqlConnection,
     max_batch_size: Option<usize>,
@@ -449,7 +507,7 @@ fn is_transient_mysql_write(error: &WriteError) -> bool {
 
 impl MysqlWriter {
     pub fn new(
-        pool: MysqlConnectionPool,
+        opts: MysqlOpts,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
         table_name: &str,
@@ -457,6 +515,8 @@ impl MysqlWriter {
         key_field_names: Option<&[String]>,
         mode: TableWriterInitMode,
     ) -> Result<MysqlWriter, WriteError> {
+        let opts = with_socket_guards(opts, SilenceProfile::Writer);
+        let pool = make_writer_pool(opts.clone())?;
         // Interpolating `table_name` raw would reject reserved words and
         // characters requiring backticks; pre-quote once so the shared
         // template builders see the safe form, mirroring how the
@@ -506,6 +566,7 @@ impl MysqlWriter {
         };
 
         let writer = MysqlWriter {
+            opts,
             current_connection,
             pool,
             max_batch_size,
@@ -944,22 +1005,41 @@ impl MysqlWriter {
             ..
         } = self;
         let mut transaction = current_connection.start_transaction(MysqlTxOpts::default())?;
-        match (*strategy, *snapshot_mode) {
-            (WriteStrategy::LoadDataInfile, true) => {
-                Self::flush_snapshot_load_data(batch, buffer, infile_buffer, &mut transaction)?;
+        let flush_result = (|| {
+            match (*strategy, *snapshot_mode) {
+                (WriteStrategy::LoadDataInfile, true) => {
+                    Self::flush_snapshot_load_data(batch, buffer, infile_buffer, &mut transaction)?;
+                }
+                (WriteStrategy::LoadDataInfile, false) => {
+                    Self::flush_stream_load_data(batch, buffer, infile_buffer, &mut transaction)?;
+                }
+                (WriteStrategy::MultiRowInsert, true) => {
+                    Self::flush_snapshot(batch, buffer, &mut transaction)?;
+                }
+                (WriteStrategy::MultiRowInsert, false) => {
+                    Self::flush_stream(batch, buffer, &mut transaction)?;
+                }
             }
-            (WriteStrategy::LoadDataInfile, false) => {
-                Self::flush_stream_load_data(batch, buffer, infile_buffer, &mut transaction)?;
+            Ok(())
+        })();
+        match flush_result {
+            Ok(()) => {
+                transaction.commit()?;
+                Ok(())
             }
-            (WriteStrategy::MultiRowInsert, true) => {
-                Self::flush_snapshot(batch, buffer, &mut transaction)?;
-            }
-            (WriteStrategy::MultiRowInsert, false) => {
-                Self::flush_stream(batch, buffer, &mut transaction)?;
+            Err(error) => {
+                if is_transient_mysql_write(&error) {
+                    // The connection is (or may be) a dead flow. Dropping the
+                    // transaction would attempt a ROLLBACK over it and block
+                    // for another full socket timeout before the retry can
+                    // run. Skip the rollback: the retry path discards this
+                    // connection entirely, and the server rolls the open
+                    // transaction back when the connection goes away.
+                    std::mem::forget(transaction);
+                }
+                Err(error)
             }
         }
-        transaction.commit()?;
-        Ok(())
     }
 }
 
@@ -982,16 +1062,31 @@ impl Writer for MysqlWriter {
         execute_with_retries_if(
             || {
                 let cc_save_result = self.flush_with_current_connection();
-                // Only replace the connection when the failure is
-                // transient and a retry will follow; a permanent error
-                // (missing table, bad SQL, …) is about to propagate, so
-                // reconnecting would just open an unused connection.
+                // Only reconnect when the failure is transient and a retry
+                // will follow; a permanent error (missing table, bad SQL, …)
+                // is about to propagate, so reconnecting would just open an
+                // unused connection. Rebuild the whole pool rather than
+                // taking another pooled connection: after a stalled-flow
+                // timeout the pool may still hold sockets of the same dead
+                // flow, and reusing one would burn another full socket
+                // timeout before the flush finally lands.
                 if cc_save_result
                     .as_ref()
                     .err()
                     .is_some_and(is_transient_mysql_write)
                 {
-                    self.current_connection = self.pool.get_conn()?;
+                    self.pool = make_writer_pool(self.opts.clone())?;
+                    let stalled =
+                        std::mem::replace(&mut self.current_connection, self.pool.get_conn()?);
+                    // Dropping the old connection returns it to its
+                    // (now-orphaned) pool, which resets it over the wire
+                    // first — on a dead flow that blocks for another full
+                    // socket timeout. Hand it to a detached thread so the
+                    // retry proceeds immediately.
+                    std::thread::Builder::new()
+                        .name("pathway:mysql_conn_reaper".to_owned())
+                        .spawn(move || drop(stalled))
+                        .expect("spawning the connection reaper thread should not fail");
                 }
                 cc_save_result
             },
@@ -1337,7 +1432,7 @@ impl MysqlReader {
         let key_column_names = key_field_names
             .unwrap_or_else(|| schema.iter().map(|(name, _)| name.clone()).collect());
         Ok(Self {
-            opts,
+            opts: with_socket_guards(opts, SilenceProfile::Reader),
             database,
             table_name,
             schema,

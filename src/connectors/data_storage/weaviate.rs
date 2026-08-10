@@ -128,7 +128,10 @@ impl WeaviateWriter {
                 .map_err(|e| WeaviateError::ClientBuild(e.to_string()))?;
             header_map.insert(name, value);
         }
-        let client = HttpClient::builder()
+        // Built through the shared guard policy (connect + whole-request
+        // timeouts), so a silently dead connection fails a request in bounded
+        // time instead of hanging it forever.
+        let client = crate::connectors::socket_guard::http_client_builder()
             .default_headers(header_map)
             .build()
             .map_err(WeaviateError::Http)?;

@@ -318,7 +318,21 @@ pub fn create_psql_client(
     ssl_mode: SslMode,
     ssl_cert_path: Option<String>,
 ) -> Result<PsqlClient, PostgresError> {
-    ssl_mode.connect(connection_string, ssl_cert_path)
+    // Bound connection establishment unless the caller configured it
+    // explicitly: without a cap, a host that silently drops packets blocks
+    // the connect for ~130 s of kernel-level retries (twice that under
+    // sslmode=prefer/allow, which attempt two connections in sequence). The
+    // Python layer injects the same default; filling it here as well keeps
+    // every construction path covered.
+    if connection_string.contains("connect_timeout") {
+        ssl_mode.connect(connection_string, ssl_cert_path)
+    } else {
+        let bounded = format!(
+            "{connection_string} connect_timeout={}",
+            crate::connectors::socket_guard::TCP_CONNECT_TIMEOUT.as_secs()
+        );
+        ssl_mode.connect(&bounded, ssl_cert_path)
+    }
 }
 
 /// Bundle of inputs sufficient to (re)open a `PostgreSQL` connection.

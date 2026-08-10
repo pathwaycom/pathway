@@ -4937,6 +4937,7 @@ def test_psql_augment_postgres_settings_injects_pathway_defaults():
         "keepalives_interval": "30",
         "keepalives_count": "3",
         "tcp_user_timeout": "300000",
+        "connect_timeout": "30",
     }
 
     # `unique_name=None` → application_name has no suffix.
@@ -4957,6 +4958,7 @@ def test_psql_augment_postgres_settings_injects_pathway_defaults():
         "keepalives_interval": "5",
         "keepalives_count": "10",
         "tcp_user_timeout": "120000",
+        "connect_timeout": "5",
     }
     augmented = _augment_postgres_settings(user_settings, unique_name="ignored")
     assert augmented == user_settings

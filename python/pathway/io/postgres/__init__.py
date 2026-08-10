@@ -99,6 +99,11 @@ _LIBPQ_TIMEOUT_DEFAULTS = {
     "keepalives_interval": "30",
     "keepalives_count": "3",
     "tcp_user_timeout": "300000",
+    # Establishing a connection never legitimately takes half a minute;
+    # without this cap a host that silently drops packets blocks the
+    # connect for ~130 seconds of kernel-level retries (twice that under
+    # sslmode=prefer/allow, which attempt two connections in sequence).
+    "connect_timeout": "30",
 }
 
 

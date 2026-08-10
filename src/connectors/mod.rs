@@ -25,6 +25,7 @@ pub mod metadata;
 pub mod monitoring;
 pub mod offset;
 pub mod posix_like;
+pub mod socket_guard;
 pub mod synchronization;
 
 use crate::connectors::monitoring::ConnectorMonitor;

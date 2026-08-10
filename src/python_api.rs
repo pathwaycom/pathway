@@ -44,10 +44,7 @@ use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
 use mongodb::Namespace as MongoNamespace;
-use mysql::{
-    Opts as MysqlOpts, OptsBuilder as MysqlOptsBuilder, Pool as MysqlConnectionPool,
-    PoolConstraints as MysqlPoolConstraints, PoolOpts as MysqlPoolOpts,
-};
+use mysql::Opts as MysqlOpts;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
@@ -4820,6 +4817,10 @@ impl ElasticSearchParams {
         let transport = TransportBuilder::new(conn_pool)
             .auth(creds)
             .disable_proxy()
+            // Whole-request cap from the shared socket-guard policy: without
+            // it a server whose TCP stays alive but which never answers
+            // (wedged process, stuck balancer) hangs the request forever.
+            .timeout(crate::connectors::socket_guard::HTTP_REQUEST_TIMEOUT)
             .build()
             .map_err(|e| {
                 PyValueError::new_err(format!(
@@ -6028,7 +6029,16 @@ impl IcebergCatalogSettings {
             ::iceberg_catalog_rest::REST_CATALOG_PROP_WAREHOUSE,
             self.warehouse.as_ref(),
         );
+        // The catalog client is built through the shared guard policy
+        // (connect + whole-request timeouts); the library's own default
+        // client has no request timeout at all.
+        let catalog_http_client = crate::connectors::socket_guard::http_client_builder()
+            .build()
+            .map_err(|e| {
+                PyValueError::new_err(format!("failed to build Iceberg catalog HTTP client: {e}"))
+            })?;
         let catalog = ::iceberg_catalog_rest::RestCatalogBuilder::default()
+            .with_client(catalog_http_client)
             .with_storage_factory(Arc::new(PathwayStorageFactory))
             .load("rest", props)
             .await
@@ -7646,6 +7656,17 @@ impl DataStorage {
         }
 
         let uri = self.path()?;
+        if uri.starts_with("tcp::") || uri.starts_with("tcps::") {
+            // The client library keeps a read timeout only during connection
+            // setup and exposes no socket controls afterwards, so this
+            // transport cannot be guarded from our side. The default HTTP
+            // transport bounds every request and is not affected.
+            crate::connectors::socket_guard::warn_unguardable_transport(
+                "QuestDB",
+                "the tcp:: transport has no timeouts past connection setup \
+                 (prefer the default http:: transport)",
+            );
+        }
         let sender = QuestDBSender::from_conf(uri)
             .map_err(|e| PyValueError::new_err(format!("Failed to create QuestDB sender: {e}")))?;
         let table_name = self.table_name()?;
@@ -7814,27 +7835,10 @@ impl DataStorage {
             license.check_entitlements(["mysql"])?;
         }
         let connection_string = self.connection_string()?;
-        // Bound the connection pool. The `mysql` crate's default pool
-        // constraints are min=10/max=100, and the pool eagerly opens `min`
-        // connections the moment it is created. A single writer needs only one
-        // live connection (plus, at most, a transient replacement when
-        // reconnecting after a recoverable error), so the default would open
-        // nine idle connections per writer for nothing. Under parallel test or
-        // production fan-out that silently exhausts the server's
-        // `max_connections` and surfaces as a spurious "Too many connections"
-        // failure. min=0 keeps the pool lazy (no eager connections) and max=2
-        // leaves headroom for one in-flight reconnection.
         let opts = MysqlOpts::from_url(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MySQL connection string: {e}")))?;
-        let pool_opts = MysqlPoolOpts::new().with_constraints(
-            MysqlPoolConstraints::new(0, 2).expect("0 <= 2 is a valid pool constraint"),
-        );
-        let opts = MysqlOptsBuilder::from_opts(opts).pool_opts(pool_opts);
-        let pool = MysqlConnectionPool::new(opts).map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to create MySQL connection pool: {e}"))
-        })?;
         let writer = MysqlWriter::new(
-            pool,
+            opts,
             self.max_batch_size,
             self.snapshot_maintenance_on_output,
             self.table_name()?,

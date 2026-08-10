@@ -132,7 +132,12 @@ impl ChromaWriter {
                 header_map.insert(name, value);
             }
         }
-        let client = Client::builder().default_headers(header_map).build()?;
+        // Built through the shared guard policy (connect + whole-request
+        // timeouts), so a silently dead connection fails a request in bounded
+        // time instead of hanging it forever.
+        let client = crate::connectors::socket_guard::blocking_http_client_builder()
+            .default_headers(header_map)
+            .build()?;
 
         let (max_batch_size, use_base64_embeddings) = Self::fetch_preflight(&client, &origin);
 

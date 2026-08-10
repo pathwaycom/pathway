@@ -152,6 +152,17 @@ class MysqlRowCountChecker:
             return False
         return len(rows) == self.n_rows_expected
 
+    def provide_information_on_failure(self) -> str:
+        try:
+            rows = self.mysql.get_table_contents(self.table_name, ["pkey", "item"])
+        except Exception as e:
+            return f"failed to query {self.table_name}: {e!r}"
+        pkeys = sorted(row["pkey"] for row in rows)
+        return (
+            f"table {self.table_name}: expected {self.n_rows_expected} rows, "
+            f"got {len(rows)} (pkeys={pkeys})"
+        )
+
 
 def _test_mysql_static(mysql: MySQLContext, item_type: Any, items: list[Any]) -> str:
     G.clear()

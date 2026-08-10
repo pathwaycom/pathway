@@ -15,10 +15,12 @@ import pytest
 from utils import (
     MSSQL_CONNECTION_STRING,
     MSSQL_DB_HOST,
+    MSSQL_DB_NAME,
     MSSQL_DB_PASSWORD,
     MSSQL_DB_PORT,
     MSSQL_DB_USER,
     SimpleObject,
+    TcpBlackholeProxy,
     check_write_quotes_reserved_word_column_name,
     check_write_quotes_table_name_with_special_characters,
 )
@@ -562,6 +564,7 @@ def _start_mssql_cdc_streaming_reader(
     table_name: str,
     schema: type[pw.Schema],
     output_path: pathlib.Path,
+    connection_string: str = MSSQL_CONNECTION_STRING,
 ) -> multiprocessing.Process:
     """Start ``pw.io.mssql.read(mode='streaming') -> jsonlines.write`` in a
     forked process.
@@ -583,7 +586,7 @@ def _start_mssql_cdc_streaming_reader(
     def worker():
         G.clear()
         table = pw.io.mssql.read(
-            connection_string=MSSQL_CONNECTION_STRING,
+            connection_string=connection_string,
             table_name=table_name,
             schema=schema,
             mode="streaming",
@@ -641,6 +644,69 @@ def test_mssql_cdc_read_inserts(mssql, tmp_path):
         assert "Charlie" in names
     finally:
         _stop_mssql_cdc_streaming_reader(proc)
+
+
+def test_mssql_streaming_recovers_after_stalled_connections(tcp_port, mssql, tmp_path):
+    """A streaming CDC pipeline keeps delivering changes after a network
+    stall freezes its established server connections.
+
+    The reader talks to SQL Server through a proxy that mid-run stops
+    forwarding on every open connection while keeping the sockets alive —
+    what a half-open connection or a dropped NAT/conntrack entry looks like
+    on a loaded host (the server itself stays healthy and reachable). The
+    shared socket guards must detect the dead flows in bounded time and
+    reconnect, so a row inserted after the stall still reaches the output —
+    the pipeline must not freeze silently.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE {table_name} ("
+        f"  id INT PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.enable_cdc(table_name)
+    mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
+    mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
+
+    class TestSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    proxy = TcpBlackholeProxy(
+        listen_port=tcp_port, target_host=MSSQL_DB_HOST, target_port=MSSQL_DB_PORT
+    )
+    proxy.start()
+    proxied_connection_string = (
+        f"Server=tcp:127.0.0.1,{tcp_port};"
+        f"Database={MSSQL_DB_NAME};"
+        f"User Id={MSSQL_DB_USER};"
+        f"Password={MSSQL_DB_PASSWORD};"
+        "TrustServerCertificate=true"
+    )
+
+    output_path = tmp_path / "cdc_stall_output.jsonl"
+    proc = _start_mssql_cdc_streaming_reader(
+        table_name, TestSchema, output_path, proxied_connection_string
+    )
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), timeout_sec=60, target=None
+        )
+        stalled = proxy.blackhole_current()
+        assert stalled > 0, "the reader should hold at least one live connection"
+        mssql.insert_row(table_name, {"id": 3, "name": "Charlie"})
+        # Recovery budget: one reader silence timeout plus reconnect, retry
+        # backoff and CDC poll latency, with headroom for a loaded machine.
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), timeout_sec=150, target=None
+        )
+        records = [json.loads(line) for line in output_path.read_text().splitlines()]
+        names = sorted(r["name"] for r in records)
+        assert names == ["Alice", "Bob", "Charlie"]
+    finally:
+        _stop_mssql_cdc_streaming_reader(proc)
+        proxy.close()
 
 
 def test_mssql_cdc_read_updates(mssql, tmp_path):

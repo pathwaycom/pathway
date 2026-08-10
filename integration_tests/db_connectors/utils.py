@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import socket
 import tempfile
 import threading
 import time
@@ -246,6 +247,87 @@ def binlog_purge_access():
         fcntl.flock(gate_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
         os.close(gate_fd)
+
+
+class TcpBlackholeProxy(threading.Thread):
+    """Forwarding TCP proxy that can blackhole its live connections.
+
+    ``blackhole_current()`` stops forwarding on every connection open at that
+    moment while keeping the sockets open: both peers see an established but
+    completely silent flow — exactly what a half-open connection or a dropped
+    NAT/conntrack entry looks like on a loaded host. Connections opened
+    afterwards are proxied normally, so the server itself stays reachable.
+
+    Used to verify that connectors detect a stalled connection in bounded time
+    and recover, instead of silently freezing the pipeline.
+    """
+
+    def __init__(self, listen_port: int, target_host: str, target_port: int):
+        super().__init__(daemon=True)
+        self.target_host = target_host
+        self.target_port = target_port
+        self._lock = threading.Lock()
+        self._blackholed_conns: list[threading.Event] = []
+        self._closed = False
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Loopback only, and the IPv4 literal on the connect side must
+        # match: inside the test containers `localhost` resolves to the
+        # IPv6 `::1` first, which this IPv4 listener would refuse.
+        self.listener.bind(("127.0.0.1", listen_port))
+        self.listener.listen(64)
+
+    def run(self) -> None:
+        while True:
+            try:
+                client, _ = self.listener.accept()
+                upstream = socket.create_connection(
+                    (self.target_host, self.target_port)
+                )
+            except OSError:
+                return  # listener closed
+            blackholed = threading.Event()
+            with self._lock:
+                if self._closed:
+                    client.close()
+                    upstream.close()
+                    return
+                self._blackholed_conns.append(blackholed)
+            for src, dst in ((client, upstream), (upstream, client)):
+                threading.Thread(
+                    target=self._pump, args=(src, dst, blackholed), daemon=True
+                ).start()
+
+    def _pump(self, src: socket.socket, dst: socket.socket, blackholed) -> None:
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                if blackholed.is_set():
+                    # Swallow traffic but keep both sockets open, so the
+                    # peers observe a live-but-silent flow, not a reset. The
+                    # thread is daemonic, so it dies with the test process.
+                    while True:
+                        time.sleep(3600)
+                dst.sendall(data)
+        except OSError:
+            pass
+
+    def blackhole_current(self) -> int:
+        """Stop forwarding on every currently-open connection; return how many
+        connections were affected."""
+        with self._lock:
+            for blackholed in self._blackholed_conns:
+                blackholed.set()
+            affected = len(self._blackholed_conns)
+            self._blackholed_conns = []
+        return affected
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+        self.listener.close()
 
 
 MSSQL_DB_HOST = "mssql"

@@ -11,10 +11,15 @@ import pandas as pd
 import pytest
 from utils import (
     MYSQL_CONNECTION_STRING,
+    MYSQL_DB_HOST,
     MYSQL_DB_NAME,
+    MYSQL_DB_PASSWORD,
+    MYSQL_DB_PORT,
+    MYSQL_DB_USER,
     MYSQL_LOCAL_INFILE_DB_HOST,
     MySQLContext,
     SimpleObject,
+    TcpBlackholeProxy,
     binlog_purge_access,
     binlog_reader_access,
     check_write_quotes_reserved_word_column_name,
@@ -847,6 +852,96 @@ def test_mysql_read_streaming_reflects_inserts_updates_deletes(mysql):
             120,
         )
         mutate_thread.join()
+
+
+def test_mysql_streaming_recovers_after_stalled_connections(tcp_port, mysql):
+    """A streaming pipeline keeps delivering changes after a network stall
+    freezes its established server connections.
+
+    The pipeline talks to MySQL through a proxy that mid-run stops forwarding
+    on every open connection while keeping the sockets alive — what a
+    half-open connection or a dropped NAT/conntrack entry looks like on a
+    loaded host (the server itself stays healthy and reachable). The
+    connector's socket guards must detect the dead flows in bounded time and
+    reconnect, so a row inserted after the stall still reaches the output —
+    the pipeline must not freeze silently and must not duplicate the rows it
+    had already delivered.
+    """
+    _skip_if_no_binlog(mysql)
+    mysql.grant_replication_privileges()
+
+    input_table = mysql.random_table_name()
+    output_table = mysql.random_table_name()
+    mysql.cursor.execute(
+        f"CREATE TABLE {input_table} (id BIGINT PRIMARY KEY, name VARCHAR(255))"
+    )
+    for identity, name in [(1, "a"), (2, "b")]:
+        mysql.insert_row(input_table, {"id": identity, "name": name})
+
+    proxy = TcpBlackholeProxy(
+        listen_port=tcp_port, target_host=MYSQL_DB_HOST, target_port=MYSQL_DB_PORT
+    )
+    proxy.start()
+    proxied_connection_string = (
+        f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
+        f"@127.0.0.1:{tcp_port}/{MYSQL_DB_NAME}"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    def stall_and_insert():
+        # A separate connection (direct, not proxied) so this thread does not
+        # race the main thread's checker and is immune to the stall itself.
+        thread_mysql = MySQLContext()
+        try:
+            # Wait for the snapshot to be mirrored: at that point the writer's
+            # connection has delivered data and is among the ones stalled.
+            wait_result_with_checker(
+                _MysqlRowCountChecker(thread_mysql, output_table, 2),
+                60,
+                target=None,
+            )
+            proxy.blackhole_current()
+            thread_mysql.insert_row(input_table, {"id": 3, "name": "c"})
+        finally:
+            thread_mysql.close()
+
+    try:
+        # Hold the binlog reader lock for the tailing phase so a concurrent
+        # PURGE BINARY LOGS (persistence-purge test) cannot delete this
+        # reader's log file (see ``binlog_reader_access`` in utils.py).
+        with binlog_reader_access():
+            stall_thread = ExceptionAwareThread(target=stall_and_insert, daemon=True)
+            stall_thread.start()
+
+            G.clear()
+            table = pw.io.mysql.read(
+                proxied_connection_string, input_table, InputSchema, mode="streaming"
+            )
+            pw.io.mysql.write(
+                table,
+                proxied_connection_string,
+                table_name=output_table,
+                init_mode="create_if_not_exists",
+            )
+            # Recovery budget: one writer socket timeout plus retry backoff
+            # and delivery, with headroom for a loaded machine.
+            wait_result_with_checker(
+                _MysqlRowCountChecker(mysql, output_table, 3),
+                150,
+            )
+            stall_thread.join()
+
+        rows = mysql.get_table_contents(output_table, ["id", "name"], sort_by="id")
+        assert rows == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+            {"id": 3, "name": "c"},
+        ]
+    finally:
+        proxy.close()
 
 
 def test_mysql_read_streaming_delivers_entire_large_single_statement(mysql):
