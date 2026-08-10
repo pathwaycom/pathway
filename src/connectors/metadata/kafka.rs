@@ -2,7 +2,7 @@
 
 use base64::engine::general_purpose;
 use base64::Engine;
-use rdkafka::message::{BorrowedMessage as KafkaMessage, Headers, Message};
+use rdkafka::message::{Headers, Message};
 use serde::Serialize;
 
 #[allow(clippy::module_name_repetitions)]
@@ -19,7 +19,7 @@ impl KafkaMetadata {
     // TODO: Note that if row deletions take place, one needs to ensure
     // that the deletion uses the same metadata entry as the one used
     // during the row insertion.
-    pub fn from_rdkafka_message(message: &KafkaMessage) -> Self {
+    pub fn from_rdkafka_message<M: Message>(message: &M) -> Self {
         let headers = if let Some(message_headers) = message.headers() {
             let mut headers = Vec::with_capacity(message_headers.count());
             for header in message_headers.iter() {

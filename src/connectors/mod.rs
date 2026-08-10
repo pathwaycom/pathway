@@ -386,6 +386,31 @@ impl Connector {
         Ok(frontier)
     }
 
+    /// How often a send blocked by backpressure wakes up to service the
+    /// reader's connection (see `Reader::keep_alive`).
+    const BACKPRESSURE_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
+
+    /// Sends an entry to the engine, blocking while the bounded channel
+    /// (`max_backlog_size` backpressure) is full. While blocked, periodically
+    /// calls `reader.keep_alive()` so the source's connection survives an
+    /// arbitrarily long stall. Returns `false` if the receiver disconnected.
+    fn send_entry_with_keep_alive(
+        sender: &Sender<Entry>,
+        reader: &mut dyn Reader,
+        mut entry: Entry,
+    ) -> bool {
+        loop {
+            match sender.send_timeout(entry, Self::BACKPRESSURE_KEEP_ALIVE_INTERVAL) {
+                Ok(()) => return true,
+                Err(channel::SendTimeoutError::Timeout(returned)) => {
+                    entry = returned;
+                    reader.keep_alive();
+                }
+                Err(channel::SendTimeoutError::Disconnected(_)) => return false,
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn read_realtime_updates(
         reader: &mut dyn Reader,
@@ -425,12 +450,16 @@ impl Connector {
                                     let mut can_be_sent = group.can_entry_be_sent(&entry);
                                     while can_be_sent.is_wait() {
                                         if !entries_for_sending.is_empty() {
-                                            let send_res = sender.send(Entry::RealtimeEntries(
-                                                take(&mut entries_for_sending),
-                                                offset.clone(),
-                                                Some(take(&mut approvals)),
-                                            ));
-                                            if send_res.is_err() {
+                                            let sent = Self::send_entry_with_keep_alive(
+                                                sender,
+                                                reader,
+                                                Entry::RealtimeEntries(
+                                                    take(&mut entries_for_sending),
+                                                    offset.clone(),
+                                                    Some(take(&mut approvals)),
+                                                ),
+                                            );
+                                            if !sent {
                                                 disconnected = true;
                                                 break;
                                             }
@@ -447,25 +476,36 @@ impl Connector {
                                     entries_for_sending.push(entry);
                                     approvals.push(approval);
                                 }
-                                let send_res = sender.send(Entry::RealtimeEntries(
-                                    take(&mut entries_for_sending),
-                                    offset,
-                                    Some(take(&mut approvals)),
-                                ));
-                                if disconnected || send_res.is_err() {
+                                let sent = Self::send_entry_with_keep_alive(
+                                    sender,
+                                    reader,
+                                    Entry::RealtimeEntries(
+                                        take(&mut entries_for_sending),
+                                        offset,
+                                        Some(take(&mut approvals)),
+                                    ),
+                                );
+                                if disconnected || !sent {
                                     break;
                                 }
                             } else {
-                                let send_res =
-                                    sender.send(Entry::RealtimeEntries(entries, offset, None));
-                                if send_res.is_err() {
+                                let sent = Self::send_entry_with_keep_alive(
+                                    sender,
+                                    reader,
+                                    Entry::RealtimeEntries(entries, offset, None),
+                                );
+                                if !sent {
                                     break;
                                 }
                             }
                         }
                         Err(e) => {
-                            let send_res = sender.send(Entry::RealtimeParsingError(e));
-                            if send_res.is_err() {
+                            let sent = Self::send_entry_with_keep_alive(
+                                sender,
+                                reader,
+                                Entry::RealtimeParsingError(e),
+                            );
+                            if !sent {
                                 break;
                             }
                         }
@@ -475,8 +515,12 @@ impl Connector {
                     if let ReadResult::NewSource(ref metadata) = other_read_result {
                         parser.on_new_source_started(metadata);
                     }
-                    let send_res = sender.send(Entry::RealtimeEvent(other_read_result));
-                    if send_res.is_err() {
+                    let sent = Self::send_entry_with_keep_alive(
+                        sender,
+                        reader,
+                        Entry::RealtimeEvent(other_read_result),
+                    );
+                    if !sent {
                         break;
                     }
                     consecutive_errors = 0;

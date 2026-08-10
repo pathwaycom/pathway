@@ -1,7 +1,7 @@
 // Copyright © 2026 Pathway
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::mem::take;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ use super::{
 };
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
-use rdkafka::message::BorrowedMessage;
+use rdkafka::message::{BorrowedMessage, OwnedMessage};
 use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedProducer};
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
 use rdkafka::Message;
@@ -225,6 +225,16 @@ pub struct KafkaReader {
     positions_for_seek: HashMap<i32, KafkaOffset>,
     watermarks: Vec<RdkafkaWatermark>,
     deferred_read_result: Option<ReadResult>,
+    // Streaming mode: partitions are paused while backpressure blocks the
+    // delivery of an already-read message (see `keep_alive`); `read` resumes
+    // them, since it is only called once the blocked message got through.
+    paused_for_backpressure: bool,
+    // Messages returned by a keep-alive poll despite the pause. Possible only
+    // when a rebalance assigns fresh (unpaused) partitions mid-pause: at most
+    // one message slips out before the re-pause, so this holds ≤1 entry per
+    // rebalance. The consume position is already past these messages, so they
+    // must be delivered, not dropped; `read` drains them before polling.
+    pending_messages: VecDeque<OwnedMessage>,
     mode: ConnectorMode,
     // Whether this reader was given any partitions in static mode (see
     // `KafkaReader::build`). False in streaming mode, and for a static reader
@@ -241,60 +251,50 @@ impl Reader for KafkaReader {
             return Ok(deferred_read_result);
         }
 
-        loop {
-            let kafka_message = match self.mode {
-                ConnectorMode::Streaming => self
-                    .consumer
-                    .poll(None)
-                    .expect("poll in streaming mode should never timeout")?,
-                ConnectorMode::Static => {
-                    if let Some(kafka_message) = self.next_message_in_static_mode()? {
-                        kafka_message
-                    } else {
-                        return Ok(ReadResult::Finished);
-                    }
-                }
-            };
-            let message_key = kafka_message.key().map(<[u8]>::to_vec);
-            let message_payload = kafka_message.payload().map(<[u8]>::to_vec);
+        if self.paused_for_backpressure {
+            // read() is called only after the blocked message got through,
+            // so the backpressure stall is over. On error the connector's
+            // retry loop calls read() again, retrying the resume.
+            let assignment = self.consumer.assignment()?;
+            self.consumer.resume(&assignment)?;
+            self.paused_for_backpressure = false;
+        }
 
-            if let Some(lazy_seek_offset) = self.positions_for_seek.get(&kafka_message.partition())
-            {
-                info!(
-                    "Performing Kafka topic seek for ({}, {}) to {:?}",
-                    kafka_message.topic(),
-                    kafka_message.partition(),
-                    lazy_seek_offset
-                );
-                // If there is a need for seek, perform it and remove the seek requirement.
-                if let Err(e) = self.consumer.seek(
-                    kafka_message.topic(),
-                    kafka_message.partition(),
-                    *lazy_seek_offset,
-                    None,
-                ) {
-                    error!(
-                        "Failed to seek topic and partition ({}, {}) to offset {:?}: {e}",
-                        kafka_message.topic(),
-                        kafka_message.partition(),
-                        lazy_seek_offset,
-                    );
-                } else {
-                    self.positions_for_seek.remove(&kafka_message.partition());
+        loop {
+            if let Some(pending_message) = self.pending_messages.pop_front() {
+                if let Some(read_result) = self.prepare_read_result_split(&pending_message) {
+                    return Ok(read_result);
                 }
                 continue;
             }
-
-            let offset = {
-                let offset_key = OffsetKey::Kafka(self.topic.clone(), kafka_message.partition());
-                let offset_value = OffsetValue::KafkaOffset(kafka_message.offset());
-                (offset_key, offset_value)
-            };
-            let metadata = KafkaMetadata::from_rdkafka_message(&kafka_message);
-            let message = ReaderContext::from_key_value(message_key, message_payload);
-            self.deferred_read_result = Some(ReadResult::Data(message, offset));
-
-            return Ok(ReadResult::NewSource(metadata.into()));
+            match self.mode {
+                ConnectorMode::Streaming => {
+                    let kafka_message = self
+                        .consumer
+                        .poll(None)
+                        .expect("poll in streaming mode should never timeout")?;
+                    if let Some(read_result) = Self::prepare_read_result(
+                        &self.consumer,
+                        &self.topic,
+                        &mut self.positions_for_seek,
+                        &mut self.deferred_read_result,
+                        &kafka_message,
+                    ) {
+                        return Ok(read_result);
+                    }
+                }
+                ConnectorMode::Static => {
+                    let Some(kafka_message) = self.next_message_in_static_mode()? else {
+                        return Ok(ReadResult::Finished);
+                    };
+                    // detach() copies the message to end the borrow of self;
+                    // fine off the hot path (static mode is a one-shot read).
+                    let kafka_message = kafka_message.detach();
+                    if let Some(read_result) = self.prepare_read_result_split(&kafka_message) {
+                        return Ok(read_result);
+                    }
+                }
+            }
         }
     }
 
@@ -343,6 +343,48 @@ impl Reader for KafkaReader {
     fn max_allowed_consecutive_errors(&self) -> usize {
         32
     }
+
+    fn keep_alive(&mut self) {
+        // Only streaming mode joins a consumer group; static mode uses manual
+        // assignment, with no membership to keep alive.
+        if !matches!(self.mode, ConnectorMode::Streaming) {
+            return;
+        }
+        if !self.paused_for_backpressure {
+            // First tick of a stall: stop fetching. librdkafka drops the
+            // prefetch buffers and refetches after resume, so nothing is lost
+            // and no memory accumulates while paused.
+            match self.pause_assigned_partitions() {
+                Ok(()) => self.paused_for_backpressure = true,
+                // Best-effort: retried on the next tick. Keep polling anyway —
+                // staying in the group matters more, and any message a poll
+                // returns is stashed below, not lost.
+                Err(error) => warn!("Failed to pause partitions of {}: {error}", self.topic),
+            }
+        }
+        // Poll with the partitions paused: returns no data, but resets the
+        // max.poll.interval timer and serves rebalance callbacks. Without
+        // this, a stall longer than max.poll.interval.ms gets the consumer
+        // evicted from its group, and the rejoin re-delivers (duplicates)
+        // everything after the group's committed offset.
+        match self.consumer.poll(Duration::ZERO) {
+            None => {}
+            Some(Ok(message)) => {
+                // A rebalance during the pause assigns fresh partitions
+                // unpaused, and one message can slip out before the re-pause.
+                self.pending_messages.push_back(message.detach());
+                if let Err(error) = self.pause_assigned_partitions() {
+                    warn!("Failed to re-pause partitions of {}: {error}", self.topic);
+                }
+            }
+            Some(Err(error)) => {
+                warn!(
+                    "Consumer error in a keep-alive poll of {}: {error}",
+                    self.topic
+                );
+            }
+        }
+    }
 }
 
 impl KafkaReader {
@@ -362,7 +404,79 @@ impl KafkaReader {
             mode,
             has_assigned_partitions,
             deferred_read_result: None,
+            paused_for_backpressure: false,
+            pending_messages: VecDeque::new(),
         }
+    }
+
+    fn pause_assigned_partitions(&self) -> Result<(), KafkaError> {
+        let assignment = self.consumer.assignment()?;
+        self.consumer.pause(&assignment)
+    }
+
+    /// `prepare_read_result` for a message that does not borrow `self`.
+    fn prepare_read_result_split<M: Message>(&mut self, kafka_message: &M) -> Option<ReadResult> {
+        Self::prepare_read_result(
+            &self.consumer,
+            &self.topic,
+            &mut self.positions_for_seek,
+            &mut self.deferred_read_result,
+            kafka_message,
+        )
+    }
+
+    /// Shared tail of `read` for freshly-polled and pending messages alike.
+    /// Returns `None` if the message was consumed by a lazy seek (the caller
+    /// polls again); otherwise stores the `Data` part in
+    /// `deferred_read_result` and returns the `NewSource` announcement.
+    /// An associated fn over split field borrows, because a freshly-polled
+    /// message already borrows `self.consumer`.
+    fn prepare_read_result<M: Message>(
+        consumer: &BaseConsumer<DefaultConsumerContext>,
+        topic: &ArcStr,
+        positions_for_seek: &mut HashMap<i32, KafkaOffset>,
+        deferred_read_result: &mut Option<ReadResult>,
+        kafka_message: &M,
+    ) -> Option<ReadResult> {
+        let message_key = kafka_message.key().map(<[u8]>::to_vec);
+        let message_payload = kafka_message.payload().map(<[u8]>::to_vec);
+
+        if let Some(lazy_seek_offset) = positions_for_seek.get(&kafka_message.partition()) {
+            info!(
+                "Performing Kafka topic seek for ({}, {}) to {:?}",
+                kafka_message.topic(),
+                kafka_message.partition(),
+                lazy_seek_offset
+            );
+            // If there is a need for seek, perform it and remove the seek requirement.
+            if let Err(e) = consumer.seek(
+                kafka_message.topic(),
+                kafka_message.partition(),
+                *lazy_seek_offset,
+                None,
+            ) {
+                error!(
+                    "Failed to seek topic and partition ({}, {}) to offset {:?}: {e}",
+                    kafka_message.topic(),
+                    kafka_message.partition(),
+                    lazy_seek_offset,
+                );
+            } else {
+                positions_for_seek.remove(&kafka_message.partition());
+            }
+            return None;
+        }
+
+        let offset = {
+            let offset_key = OffsetKey::Kafka(topic.clone(), kafka_message.partition());
+            let offset_value = OffsetValue::KafkaOffset(kafka_message.offset());
+            (offset_key, offset_value)
+        };
+        let metadata = KafkaMetadata::from_rdkafka_message(kafka_message);
+        let message = ReaderContext::from_key_value(message_key, message_payload);
+        *deferred_read_result = Some(ReadResult::Data(message, offset));
+
+        Some(ReadResult::NewSource(metadata.into()))
     }
 
     /// Builds a reader from an already-created consumer: fetches the topic's

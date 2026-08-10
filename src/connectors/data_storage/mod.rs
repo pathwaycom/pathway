@@ -695,6 +695,13 @@ pub trait Reader {
     fn max_allowed_consecutive_errors(&self) -> usize {
         0
     }
+
+    /// Called periodically while backpressure (`max_backlog_size`) blocks the
+    /// delivery of an already-read entry. Sources whose connection degrades
+    /// when unserviced override this to keep it alive without reading new
+    /// data — e.g. Kafka must keep polling, or the broker evicts the consumer
+    /// from its group and re-delivers messages after the rejoin.
+    fn keep_alive(&mut self) {}
 }
 
 pub trait ReaderBuilder: Send + 'static {
