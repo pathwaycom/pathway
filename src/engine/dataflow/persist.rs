@@ -768,7 +768,7 @@ where
         .unary_frontier(exchange, name, move |_capability, info| {
             let activator = scope_for_activator.activator_for(&info.address[..]);
             let mut delay_until: Option<Instant> = None;
-            // The opreator streams input to output.
+            // The operator streams input to output.
             // It holds capabilities, only drop them if the input frontier advances.
             // Without holding the capabities, frontier can advance in output connectors
             // earlier than we persist the data for this frontier.

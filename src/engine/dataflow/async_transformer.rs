@@ -204,7 +204,7 @@ where
         .as_collection()
         .negate();
 
-    // safe because it is created inside a timely worker and a single worker exectues all operators in a single thread
+    // safe because it is created inside a timely worker and a single worker executes all operators in a single thread
     let max_time_in_original_stream = Rc::new(RefCell::new(StreamCloseData::new(
         Timestamp::minimum(),
         false,
@@ -321,7 +321,7 @@ where
         )?;
     }
 
-    // safe because it is created inside a single timely worker and a single worker exectues all operators in a single thread
+    // safe because it is created inside a single timely worker and a single worker executes all operators in a single thread
     let values_currently_processed: Rc<RefCell<HashMap<Key, (Key, Tuple)>>> =
         Rc::new(RefCell::new(HashMap::new()));
 

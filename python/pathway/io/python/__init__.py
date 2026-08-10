@@ -107,7 +107,7 @@ class ConnectorSubject(ABC):
 
     def _is_finite(self) -> bool:
         """
-        Denotes if the connector teminates after the code inside run() routine
+        Denotes if the connector terminates after the code inside run() routine
         is completed.
         """
         return True

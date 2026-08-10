@@ -191,14 +191,14 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
     run_pathway_program({4, 5, 6})
 
     # The fourth run: optimize the storage, and then write some data
-    DeltaTable(lake_path).optimize()
+    DeltaTable(lake_path).optimize.compact()
     additional_data = [{"k": 9, "v": "nine"}]
     df = pd.DataFrame(additional_data)
     write_deltalake(lake_path, df, mode="append")
     run_pathway_program({9})
 
     # The fifth run: only reorganize the data according to Z-order
-    DeltaTable(lake_path).optimize.z_order("k")
+    DeltaTable(lake_path).optimize.z_order(["k"])
     run_pathway_program({})
 
     # The sixth run: add some data on top of the reordered table
@@ -670,7 +670,7 @@ def test_deltalake_schema_mismatch_with_optionality(
             pa.field("diff", pa.int64(), nullable=False),
         ]
     )
-    write_deltalake(lake_path, df, schema=schema)
+    write_deltalake(lake_path, pa.Table.from_pandas(df.reset_index(), schema=schema))
 
     class InputSchema(pw.Schema):
         k: int = pw.column_definition(primary_key=True)
@@ -728,7 +728,7 @@ def test_deltalake_schema_custom_metadata_flexibility(tmp_path: pathlib.Path):
             ),
         ]
     )
-    write_deltalake(lake_path, df, schema=schema)
+    write_deltalake(lake_path, pa.Table.from_pandas(df.reset_index(), schema=schema))
 
     class InputSchema(pw.Schema):
         k: int = pw.column_definition(primary_key=True)
@@ -1354,7 +1354,7 @@ def test_delta_optimizer_rule(tmp_path):
     delta_table = DeltaTable(output_path)
     pd_table_from_delta = delta_table.to_pandas()
     assert pd_table_from_delta.shape[0] == 2
-    assert len(delta_table.files()) == 2
+    assert len(delta_table.file_uris()) == 2
 
     data = [
         {
@@ -1368,7 +1368,7 @@ def test_delta_optimizer_rule(tmp_path):
     pd_table_from_delta = delta_table.to_pandas()
     assert pd_table_from_delta.shape[0] == 3
     # Same as in the previous run thanks to the compression
-    assert len(delta_table.files()) == 2
+    assert len(delta_table.file_uris()) == 2
 
     raw_history = delta_table.history()
     operations_history = []

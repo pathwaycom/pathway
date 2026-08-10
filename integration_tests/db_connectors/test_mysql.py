@@ -381,8 +381,8 @@ def test_mysql_composite_snapshot_key(mysql):
     ]
 
 
-@pytest.mark.parametrize("malfomed_primary_key", [None, []])
-def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
+@pytest.mark.parametrize("malformed_primary_key", [None, []])
+def test_mysql_no_snapshot_key(malformed_primary_key, mysql):
     table_name = mysql.random_table_name()
 
     class InputSchema(pw.Schema):
@@ -409,7 +409,7 @@ def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
             table_name=table_name,
             init_mode="create_if_not_exists",
             output_table_type="snapshot",
-            primary_key=malfomed_primary_key,
+            primary_key=malformed_primary_key,
         )
         pw.run()
 

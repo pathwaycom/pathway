@@ -194,7 +194,7 @@ def test_timestamp_without_unit_deprecated() -> None:
 
     with deprecated_call_here(
         match=re.escape(
-            "Not specyfying the `unit` argument of the `timestamp()` method is deprecated. "
+            "Not specifying the `unit` argument of the `timestamp()` method is deprecated. "
             "Please specify its value. Without specifying, it will default to 'ns'."
         ),
     ):

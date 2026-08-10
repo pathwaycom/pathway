@@ -185,7 +185,7 @@ def compute_price(
     return math.exp(-r * T) * sign * (norm.cdf(sign * d1) * F - norm.cdf(sign * d2) * K)
 
 
-# The volatility is computed by solvin the following equation, by finding the roots of
+# The volatility is computed by solving the following equation, by finding the roots of
 #
 # $$
 # BlackPrice(\sigma) - Meanprice = 0

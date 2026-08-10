@@ -452,7 +452,7 @@ class DateTimeNamespace:
 
         if unit is None:
             warn(
-                "Not specyfying the `unit` argument of the `timestamp()` method is deprecated."
+                "Not specifying the `unit` argument of the `timestamp()` method is deprecated."
                 + " Please specify its value. Without specifying, it will default to 'ns'.",
                 DeprecationWarning,
                 stacklevel=2,

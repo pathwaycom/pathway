@@ -235,17 +235,21 @@ async def parse_image_details(
     with optional_imports("xpack-llm"):
         import instructor
         import openai
+        from openai.types.chat import (
+            ChatCompletionContentPartParam,
+            ChatCompletionMessageParam,
+        )
 
     client = instructor.from_openai(openai.AsyncOpenAI(**openai_client_args))
 
-    content = [
+    content: list[ChatCompletionContentPartParam] = [
         {
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b_64_img}"},
         },
     ]
 
-    messages = [
+    messages: list[ChatCompletionMessageParam] = [
         {
             "role": "user",
             "content": content,

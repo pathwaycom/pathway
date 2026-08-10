@@ -119,7 +119,7 @@ class IcebergEntriesCountChecker:
     def provide_information_on_failure(self) -> str:
         try:
             table = _get_pandas_table(self.backend, self.table_name)
-            unique_keys = ", ".join(table["user_id"].astype(str))
+            unique_keys = ", ".join(str(x) for x in table["user_id"])
             failure_report_parts = [
                 f"Table length is: {len(table)}.",
                 f"Expected count is {self.expected_count}.",

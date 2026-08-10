@@ -107,7 +107,7 @@ impl<D, T, R> Drop for MockSnapshotWriter<D, T, R> {
 
 fn run_test<D, T, R>(
     input_data: Vec<Vec<(D, T, R)>>,
-    peristed_data: Vec<(D, R)>,
+    persisted_data: Vec<(D, R)>,
     expected_output: Vec<(D, T, R)>,
     expected_persisted: Vec<(T, Vec<(D, R)>)>,
 ) where
@@ -121,7 +121,7 @@ fn run_test<D, T, R>(
 {
     let guards = timely::execute(Config::thread(), move |worker: &mut Worker<Generic>| {
         let snapshot_writer = MockSnapshotWriter::new(expected_persisted.clone());
-        let snapshot_reader = MockSnapshotReader::new(peristed_data.clone());
+        let snapshot_reader = MockSnapshotReader::new(persisted_data.clone());
         let mut input: InputSession<T, D, R> = InputSession::new();
         let mut expected_output_session: InputSession<T, D, R> = InputSession::new();
         let (probe, mut poller, thread_handle) = worker.dataflow(|scope| {
