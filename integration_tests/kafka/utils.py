@@ -108,8 +108,11 @@ def random_topic_name():
 # creating/deleting topics can fail transiently while the cluster is still
 # settling at startup (no broker reachable yet, controller not elected, request
 # timed out). On a shared CI host every connector stack contends for the same
-# resources, so that window is generous on purpose.
-KAFKA_READY_TIMEOUT = 90.0
+# resources, so that window is generous on purpose: observed brownouts (the
+# broker starved of CPU/IO by dozens of parallel workers) last minutes, and
+# admin requests burn up to 30s each before timing out, so a 90s budget was
+# exhausted by just a few attempts. Matches _TOPIC_SETTLE_HARD_TIMEOUT below.
+KAFKA_READY_TIMEOUT = 240.0
 KAFKA_RETRY_INTERVAL = 0.2
 
 
@@ -181,8 +184,24 @@ class KafkaTestContext:
     # that silently vanishes and the test sees an empty topic. Waiting for each
     # operation to settle in the cluster metadata makes the sequence
     # deterministic.
-    _TOPIC_SETTLE_TIMEOUT = 60.0
+    #
+    # The settle budget counts only *answered* metadata polls: like
+    # KAFKA_READY_TIMEOUT it is generous because on a shared CI host the
+    # controller can lag far behind an acknowledged create/delete while dozens
+    # of workers hammer the broker. A poll that fails with a KafkaError says
+    # nothing about the topic — the broker could not be asked (admin requests
+    # time out after 30s and reconnects back off up to 30s, so a broker
+    # brownout starves the whole window with just a couple of attempts). Such
+    # polls must not eat the settle budget, otherwise a transient brownout
+    # surfaces as a misleading "topic did not appear": every failed poll
+    # extends the deadline so that at least _TOPIC_SETTLE_ERROR_GRACE of
+    # answered polling remains once the broker responds again, with
+    # _TOPIC_SETTLE_HARD_TIMEOUT capping the total wait so a genuinely dead
+    # broker still fails loudly (and with the real error attached).
+    _TOPIC_SETTLE_TIMEOUT = 90.0
     _TOPIC_SETTLE_INTERVAL = 0.2
+    _TOPIC_SETTLE_ERROR_GRACE = 30.0
+    _TOPIC_SETTLE_HARD_TIMEOUT = 240.0
 
     def _topic_partition_count(self, name: str) -> int | None:
         """Number of partitions ``name`` currently has in the cluster metadata,
@@ -200,20 +219,44 @@ class KafkaTestContext:
         return None
 
     def _wait_for_topic_metadata(self, name: str, predicate, description: str) -> None:
-        deadline = time.monotonic() + self._TOPIC_SETTLE_TIMEOUT
+        start = time.monotonic()
+        deadline = start + self._TOPIC_SETTLE_TIMEOUT
+        hard_deadline = start + self._TOPIC_SETTLE_HARD_TIMEOUT
+        answered = 0
+        failed = 0
+        last_count: int | None = None
+        last_error: KafkaError | None = None
         while True:
             try:
-                count: int | None = self._topic_partition_count(name)
-            except KafkaError:
+                last_count = self._topic_partition_count(name)
+            except KafkaError as error:
                 # Only genuine broker/metadata errors are transient here (the
-                # cluster is still in flux); retry those. Programming errors
-                # (e.g. an unexpected response shape) are NOT swallowed — they
-                # propagate immediately instead of masquerading as a timeout.
-                count = -2  # sentinel: satisfies no predicate, keep polling
-            if count != -2 and predicate(count):
-                return
+                # cluster is still in flux); those polls carry no information
+                # about the topic, so they extend the deadline (see the comment
+                # on the constants above). Programming errors (e.g. an
+                # unexpected response shape) are NOT swallowed — they propagate
+                # immediately instead of masquerading as a timeout.
+                failed += 1
+                last_error = error
+                deadline = max(
+                    deadline,
+                    min(
+                        time.monotonic() + self._TOPIC_SETTLE_ERROR_GRACE,
+                        hard_deadline,
+                    ),
+                )
+            else:
+                answered += 1
+                if predicate(last_count):
+                    return
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"topic {name!r} {description}")
+                elapsed = time.monotonic() - start
+                raise TimeoutError(
+                    f"topic {name!r} {description} after {elapsed:.1f}s: "
+                    f"{answered} metadata poll(s) answered "
+                    f"(last saw partition count {last_count}), "
+                    f"{failed} failed (last error: {last_error!r})"
+                ) from last_error
             time.sleep(self._TOPIC_SETTLE_INTERVAL)
 
     def _create_topic(self, name: str, num_partitions: int = 1) -> None:
