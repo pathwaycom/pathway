@@ -701,6 +701,11 @@ impl Connector {
         .map_err(|e| EngineError::SnapshotWriter(Box::new(e)))?;
 
         let realtime_reader_group = self.group.clone();
+        // Deferred broker acknowledgements are pointless without the input
+        // snapshot: the ack frontier is derived from the snapshot's
+        // `AdvanceTime` records. Leaving the worker untaken keeps the reader
+        // acknowledging inline, exactly as in a non-persisted run.
+        let deferred_acks_supported = snapshot_writer.is_some();
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
             .spawn_with_reporter(error_reporter, move |reporter| {
@@ -712,6 +717,18 @@ impl Connector {
                 });
 
                 let mut reader = reader.build()?;
+                if deferred_acks_supported {
+                    if let (Some(persistent_storage), Some(persistent_id)) =
+                        (persistent_storage.as_ref(), persistent_id)
+                    {
+                        if let Some(ack_worker) = reader.take_deferred_ack_worker() {
+                            persistent_storage
+                                .lock()
+                                .unwrap()
+                                .register_deferred_ack_worker(persistent_id, ack_worker);
+                        }
+                    }
+                }
                 Self::read_snapshot(
                     &mut *reader,
                     persistent_storage.as_ref(),

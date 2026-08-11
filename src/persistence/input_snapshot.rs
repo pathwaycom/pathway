@@ -290,6 +290,18 @@ pub struct InputSnapshotWriter {
     current_chunk_entries: usize,
     chunk_save_futures: Vec<BackendPutFuture>,
     next_chunk_id: ChunkId,
+
+    // The `AdvanceTime` frontiers buffered since the last flush and the ones
+    // already handed to the backend, kept for `take_ack_frontier`. Only the
+    // flushed ones may be acknowledged to the source: an entry is safe to
+    // acknowledge when its chunk is durable and recovery is guaranteed to
+    // replay everything it covers. Recorded only when the source has a
+    // deferred ack worker: `take_ack_frontier` is the only consumer and also
+    // the only place the record is pruned, so recording without it would
+    // grow the record unboundedly.
+    ack_frontier_tracking_enabled: bool,
+    pending_frontiers_by_time: Vec<(Timestamp, OffsetAntichain)>,
+    flushed_frontiers_by_time: Vec<(Timestamp, OffsetAntichain)>,
 }
 
 impl InputSnapshotWriter {
@@ -302,7 +314,14 @@ impl InputSnapshotWriter {
             current_chunk_entries: 0,
             chunk_save_futures: Vec::new(),
             next_chunk_id: chunk_keys.iter().max().copied().unwrap_or_default() + 1,
+            ack_frontier_tracking_enabled: false,
+            pending_frontiers_by_time: Vec::new(),
+            flushed_frontiers_by_time: Vec::new(),
         })
+    }
+
+    pub fn enable_ack_frontier_tracking(&mut self) {
+        self.ack_frontier_tracking_enabled = true;
     }
 
     /// A non-blocking call, pushing an entry in the buffer.
@@ -310,6 +329,13 @@ impl InputSnapshotWriter {
     pub fn write(&mut self, event: &Event) {
         if !self.mode.is_event_included(event) {
             return;
+        }
+
+        if self.ack_frontier_tracking_enabled {
+            if let Event::AdvanceTime(time, frontier) = event {
+                self.pending_frontiers_by_time
+                    .push((*time, frontier.clone()));
+            }
         }
 
         let mut entry_serialized = serialize(&event).expect("unable to serialize an entry");
@@ -334,7 +360,39 @@ impl InputSnapshotWriter {
             let chunk_save_future = self.save_current_chunk();
             self.chunk_save_futures.push(chunk_save_future);
         }
+        self.flushed_frontiers_by_time
+            .append(&mut self.pending_frontiers_by_time);
         take(&mut self.chunk_save_futures)
+    }
+
+    /// The frontier that is safe to acknowledge to the data source after the
+    /// checkpoint for `finalized_time` has been durably saved.
+    ///
+    /// Recovery replays the snapshot up to the first `AdvanceTime` event whose
+    /// time is not smaller than the finalized threshold (see
+    /// `InputSnapshotReader::read`) and seeks the reader to that event's
+    /// frontier. Acknowledging exactly that frontier releases everything the
+    /// snapshot is guaranteed to replay, and nothing else. If no flushed
+    /// `AdvanceTime` crosses the threshold yet, the answer falls back to the
+    /// last flushed one: strictly conservative, so a crash can only lead to
+    /// redeliveries (duplicates), never to losses.
+    ///
+    /// The entries preceding the returned one are dropped; the returned entry
+    /// is kept, as it may serve as the fallback for the next call.
+    pub fn take_ack_frontier(
+        &mut self,
+        finalized_time: TotalFrontier<Timestamp>,
+    ) -> Option<OffsetAntichain> {
+        let terminator_idx = self
+            .flushed_frontiers_by_time
+            .iter()
+            .position(|(time, _)| TotalFrontier::At(*time) >= finalized_time);
+        let result_idx = match terminator_idx {
+            Some(idx) => idx,
+            None => self.flushed_frontiers_by_time.len().checked_sub(1)?,
+        };
+        self.flushed_frontiers_by_time.drain(..result_idx);
+        Some(self.flushed_frontiers_by_time[0].1.clone())
     }
 
     fn save_current_chunk(&mut self) -> BackendPutFuture {

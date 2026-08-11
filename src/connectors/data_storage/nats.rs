@@ -1,9 +1,10 @@
-use log::error;
+use log::{error, warn};
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::future::{Future, IntoFuture};
 use std::mem::take;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use async_nats::header::HeaderMap as NatsHeaders;
 use async_nats::jetstream;
@@ -11,14 +12,16 @@ use async_nats::jetstream::consumer::pull::Stream as NatsPullStream;
 use async_nats::jetstream::context::Context as JetStream;
 use async_nats::jetstream::context::PublishAckFuture as JetStreamAckFuture;
 use async_nats::jetstream::context::PublishErrorKind;
+use async_nats::jetstream::message::Acker as NatsAcker;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
 use bytes::Bytes;
 use futures::StreamExt;
+use tokio::runtime::Handle as TokioHandle;
 use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::connectors::data_format::FormatterContext;
-use crate::connectors::data_storage::MessageQueueTopic;
+use crate::connectors::data_storage::{DeferredAckWorker, MessageQueueTopic};
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
     StorageType, WriteError, Writer,
@@ -48,19 +51,21 @@ pub enum NatsPoller {
 }
 
 impl NatsPoller {
-    async fn poll(&mut self) -> Result<Option<Vec<u8>>, ReadError> {
+    /// Returns the message payload along with the ack handle when the
+    /// underlying consumer expects an explicit acknowledgement (`JetStream`).
+    /// The caller decides when to acknowledge: right away, or - with
+    /// persistence - once a durable checkpoint covers the message.
+    async fn poll(&mut self) -> Result<Option<(Vec<u8>, Option<NatsAcker>)>, ReadError> {
         match self {
             Self::Simple(subscriber) => Ok(subscriber
                 .next()
                 .await
-                .map(|message| message.payload.to_vec())),
+                .map(|message| (message.payload.to_vec(), None))),
             Self::JetStream(messages) => {
                 let mut next_message = messages.take(1);
                 if let Some(message) = next_message.next().await {
-                    let message = message?;
-                    let message_contents = message.payload.to_vec();
-                    message.ack().await.map_err(ReadError::NatsMessageAck)?;
-                    Ok(Some(message_contents))
+                    let (message, acker) = message?.split();
+                    Ok(Some((message.payload.to_vec(), Some(acker))))
                 } else {
                     Ok(None)
                 }
@@ -80,14 +85,33 @@ pub struct NatsReader {
     worker_index: usize,
     total_entries_read: usize,
     topic: String,
+    deferred_mode: bool,
+    // Entries are pushed in the reading order, so the sequence numbers grow
+    // monotonically and every acknowledged frontier cuts off a queue prefix.
+    pending_acks: Arc<Mutex<VecDeque<(usize, NatsAcker)>>>,
 }
 
 impl Reader for NatsReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
         let poller = self.poller.as_mut().expect("poller is set until drop");
-        if let Some(message) = self.runtime.block_on(async { poller.poll().await })? {
-            let payload = ReaderContext::from_raw_bytes(DataEventType::Insert, message);
+        if let Some((message, acker)) = self.runtime.block_on(async { poller.poll().await })? {
             self.total_entries_read += 1;
+            if let Some(acker) = acker {
+                if self.deferred_mode {
+                    // Must happen before the message is returned to the
+                    // engine, so that no checkpoint can cover an offset whose
+                    // ack handle is not in the queue yet.
+                    self.pending_acks
+                        .lock()
+                        .unwrap()
+                        .push_back((self.total_entries_read, acker));
+                } else {
+                    self.runtime
+                        .block_on(async { acker.ack().await })
+                        .map_err(ReadError::NatsMessageAck)?;
+                }
+            }
+            let payload = ReaderContext::from_raw_bytes(DataEventType::Insert, message);
             let offset = (
                 OffsetKey::Nats(self.worker_index),
                 OffsetValue::NatsReadEntriesCount(self.total_entries_read),
@@ -96,6 +120,20 @@ impl Reader for NatsReader {
         } else {
             Ok(ReadResult::Finished)
         }
+    }
+
+    fn take_deferred_ack_worker(&mut self) -> Option<Box<dyn DeferredAckWorker>> {
+        if !matches!(self.poller, Some(NatsPoller::JetStream(_))) {
+            // Core NATS is fire-and-forget: there is nothing to acknowledge,
+            // and nothing the broker would redeliver after a crash.
+            return None;
+        }
+        self.deferred_mode = true;
+        Some(Box::new(NatsDeferredAckWorker {
+            runtime_handle: self.runtime.handle().clone(),
+            worker_index: self.worker_index,
+            pending_acks: self.pending_acks.clone(),
+        }))
     }
 
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
@@ -136,7 +174,57 @@ impl NatsReader {
             worker_index,
             topic,
             total_entries_read: 0,
+            deferred_mode: false,
+            pending_acks: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+}
+
+pub struct NatsDeferredAckWorker {
+    runtime_handle: TokioHandle,
+    worker_index: usize,
+    pending_acks: Arc<Mutex<VecDeque<(usize, NatsAcker)>>>,
+}
+
+impl DeferredAckWorker for NatsDeferredAckWorker {
+    fn ack_up_to(&mut self, frontier: &OffsetAntichain) {
+        let threshold = match frontier.get_offset(&OffsetKey::Nats(self.worker_index)) {
+            Some(OffsetValue::NatsReadEntriesCount(entries_read)) => *entries_read,
+            Some(other) => {
+                error!("Unexpected offset type in the NATS ack frontier: {other:?}");
+                return;
+            }
+            None => return,
+        };
+        let mut to_ack = Vec::new();
+        {
+            let mut pending_acks = self.pending_acks.lock().unwrap();
+            loop {
+                match pending_acks.front() {
+                    Some((sequence_number, _)) if *sequence_number <= threshold => {}
+                    _ => break,
+                }
+                to_ack.push(pending_acks.pop_front().unwrap().1);
+            }
+        }
+        if to_ack.is_empty() {
+            return;
+        }
+        // The acknowledgements are sent from the reader's runtime instead of
+        // the checkpoint-committing thread, which must not block. JetStream
+        // acknowledgements are per-message, so a failed one doesn't have to
+        // stop the batch: the server redelivers the message after `ack_wait`,
+        // which is a duplicate, never a loss.
+        self.runtime_handle.spawn(async move {
+            for acker in to_ack {
+                if let Err(e) = acker.ack().await {
+                    warn!(
+                        "Failed to acknowledge a JetStream message, \
+                         it will be redelivered by the server: {e}"
+                    );
+                }
+            }
+        });
     }
 }
 

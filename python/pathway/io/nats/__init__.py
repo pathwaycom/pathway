@@ -110,6 +110,18 @@ def read(
     Keep in mind that NATS doesn't normally store messages. So, make sure to start your
     The Pathway Live Data Framework program before sending any messages.
 
+    Message delivery guarantees depend on the mode. With JetStream
+    (``jetstream_stream_name`` is set) and persistence enabled, the connector
+    acknowledges each message to the server only after a durable checkpoint covers it,
+    which gives at-least-once delivery across restarts: no acknowledged-but-unprocessed
+    message is ever lost, while the messages between the last checkpoint and a crash may
+    be delivered again. The auto-created durable consumer is configured for this
+    automatically; if you pass your own ``durable_consumer_name``, make sure its
+    ``ack_wait`` exceeds the checkpoint interval and its ``max_ack_pending`` can
+    accommodate a checkpoint window of messages. Without JetStream the server gives no
+    delivery guarantees, and messages that arrive while the pipeline is down or shortly
+    before a crash are lost even with persistence enabled.
+
     You can also parse messages as UTF-8 during reading by using the ``"format"`` parameter.
     Here's how the reading process would look:
 

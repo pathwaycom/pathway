@@ -87,12 +87,31 @@ def read(
     >>> import pathway as pw
     >>> table = pw.io.mqtt.read("mqtt://localhost:1883/?client_id=test", "test/data")
 
-    Keep in mind that MQTT does not guarantee message storage. In other words, you cannot
-    assume that a message present in the queue will remain there. MQTT also lacks any
-    concept of message offsets within a topic. As a result, when Pathway Live Data Framework persistence is enabled,
-    it saves the message stream without making assumptions about the topic's state at the time of a
-    restart. Therefore, we recommend designing your data flow to tolerate at-least-once or
-    at-most-once delivery semantics depending on the configuration.
+    MQTT lacks any concept of message offsets within a topic, so a restarted pipeline
+    cannot re-read the messages it has already consumed. When persistence is enabled
+    and ``qos`` is 1 or 2, the connector therefore acknowledges each message to the
+    broker only after a durable checkpoint covers it, and keeps a persistent broker
+    session between runs. This gives at-least-once delivery across restarts: no
+    acknowledged-but-unprocessed message is ever lost, while the messages between the
+    last checkpoint and a crash may be delivered again. The same applies to network
+    reconnects: the messages received but not yet covered by a checkpoint are
+    redelivered by the broker and enter the table twice. This direction of the
+    trade-off is deliberate. Of the two possible failure modes, a loss is invisible
+    and impossible to repair downstream, while a duplicate is detectable and can be
+    eliminated with a deduplication step right after reading — see the example
+    below. Two things are required from
+    the setup: the connection URI must carry a stable ``client_id`` (the broker keeps
+    the not-yet-checkpointed messages in a session bound to it), and the broker must be
+    configured to hold enough in-flight and queued messages per client to cover one
+    checkpoint interval plus the expected downtime (for Mosquitto:
+    ``max_inflight_messages`` and ``max_queued_messages``). With ``qos=0`` the broker
+    gives no delivery guarantees, and messages that arrive while the pipeline is down
+    or shortly before a crash are lost.
+
+    Without persistence the connector never duplicates a message, but gives no
+    delivery guarantees at all (at-most-once): a restart starts from a clean slate,
+    and the messages published during a network outage are dropped by the broker
+    together with the clean session.
 
     You can also parse messages as UTF-8 during reading by using the ``"format"`` parameter.
     Here's how the reading process would look:
@@ -126,6 +145,37 @@ def read(
 
     As a result, you will have a table with three columns: ``"user_id"``, ``"username"``, and
     ``"phone"``. The ``"user_id"`` column will also act as the primary key for the Pathway Live Data Framework table.
+
+    Finally, deduplication. With persistence enabled the delivery is best-effort in
+    the following sense: when the connection to the broker breaks or the pipeline is
+    restarted, the connector makes sure that no message is lost — at the price of the
+    messages from the affected window occasionally arriving twice (at-least-once
+    delivery). A redelivered copy lands in the table as a separate row, so an
+    aggregation built directly on the raw table would count it twice. If your
+    messages carry a natural identifier, add a deduplication step right after
+    reading: group the table by that identifier and keep one copy per group. The
+    identifier becomes the key of the resulting table, and everything computed on
+    top of it sees every message exactly once:
+
+    >>> class SensorReading(pw.Schema):
+    ...     event_id: str
+    ...     temperature: float
+    >>> readings = pw.io.mqtt.read(
+    ...     "mqtt://localhost:1883/?client_id=sensors-reader",
+    ...     "sensors/temperature",
+    ...     format="json",
+    ...     schema=SensorReading,
+    ... )
+    >>> deduplicated = readings.groupby(readings.event_id).reduce(
+    ...     readings.event_id,
+    ...     temperature=pw.reducers.any(readings.temperature),
+    ... )
+
+    The duplicates are exact copies of one message, so it does not matter which of
+    them ``pw.reducers.any`` picks. Which field to use as the identifier depends on
+    your data: a device-generated event id, a ``(device_id, timestamp)`` pair passed
+    to ``groupby`` as two columns, or any other combination that uniquely identifies
+    a message at the source.
     """
     if topic == "":
         raise ValueError("The MQTT topic to read from must not be empty.")

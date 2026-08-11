@@ -4979,6 +4979,15 @@ impl PyDeltaOptimizerRule {
 // perfectly valid larger payloads.
 const MQTT_MAX_PACKET_SIZE_BYTES: usize = 268_435_455;
 
+// The `ack_wait` of the auto-created JetStream consumer when persistence is
+// enabled. With deferred acknowledgements a message stays unacknowledged for
+// up to one checkpoint interval after delivery, and an expired `ack_wait`
+// makes the server redeliver it to a perfectly healthy pipeline - so the value
+// must comfortably exceed the checkpoint interval. It also bounds how soon the
+// server redelivers the genuinely unacknowledged tail after a crash, so it
+// shouldn't be excessive either.
+const NATS_PERSISTED_CONSUMER_ACK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 // Raise `rumqttc`'s 10 KiB incoming/outgoing packet size limits to the MQTT
 // protocol maximum, so that ordinary payloads larger than 10 KiB are transported
 // instead of crashing the connector. If the user pinned a packet size explicitly
@@ -6700,8 +6709,17 @@ impl DataStorage {
         let runtime = create_async_tokio_runtime()?;
         let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
         let readers_group_name = format!("pathway-reader-{connector_index}");
+        let is_persisted = scope.is_persisted;
 
         let poller = if let Some(js_stream_name) = &self.js_stream_name {
+            if is_persisted && self.durable_consumer_name.is_some() {
+                info!(
+                    "A user-provided durable consumer is used with persistence enabled. \
+                     Messages are acknowledged only when a checkpoint covers them, so the \
+                     consumer's ack_wait must exceed the checkpoint interval and its \
+                     max_ack_pending must accommodate a checkpoint window of messages."
+                );
+            }
             let messages = runtime.block_on(async {
                 let client = async_nats::connect(uri)
                     .await
@@ -6725,20 +6743,30 @@ impl DataStorage {
                             )
                         })?
                 } else {
+                    let mut config = async_nats::jetstream::consumer::pull::Config {
+                        durable_name: Some(readers_group_name.clone()),
+                        // Restrict the consumer to the requested topic.
+                        // A JetStream stream can span several subjects,
+                        // so without this filter the consumer would
+                        // deliver every subject in the stream instead of
+                        // just the one the user asked to read.
+                        filter_subject: topic.clone(),
+                        ..Default::default()
+                    };
+                    if is_persisted {
+                        // With persistence the messages are acknowledged only
+                        // once a durable checkpoint covers them, so up to a
+                        // checkpoint window of deliveries stays unacknowledged.
+                        // The default cap of 1000 pending acks would throttle
+                        // the delivery to the checkpoint cadence, and an
+                        // `ack_wait` shorter than the checkpoint interval would
+                        // make the server redeliver messages to a healthy
+                        // pipeline.
+                        config.max_ack_pending = -1;
+                        config.ack_wait = NATS_PERSISTED_CONSUMER_ACK_WAIT;
+                    }
                     stream
-                        .get_or_create_consumer(
-                            &readers_group_name.clone(),
-                            async_nats::jetstream::consumer::pull::Config {
-                                durable_name: Some(readers_group_name),
-                                // Restrict the consumer to the requested topic.
-                                // A JetStream stream can span several subjects,
-                                // so without this filter the consumer would
-                                // deliver every subject in the stream instead of
-                                // just the one the user asked to read.
-                                filter_subject: topic.clone(),
-                                ..Default::default()
-                            },
-                        )
+                        .get_or_create_consumer(&readers_group_name.clone(), config)
                         .await
                         .map_err(|e| {
                             PyIOError::new_err(format!("Failed to create JetStream consumer: {e}"))
@@ -6753,6 +6781,13 @@ impl DataStorage {
             })?;
             nats::NatsPoller::JetStream(Box::new(messages))
         } else {
+            if is_persisted {
+                warn!(
+                    "The NATS reader is subscribed without JetStream: the server gives no \
+                     delivery guarantees, so persistence cannot prevent message losses on \
+                     restart. Use jetstream_stream_name for lossless recovery."
+                );
+            }
             let subscriber = runtime.block_on(async {
                 let client = nats_connect(uri)
                     .await
@@ -6915,13 +6950,43 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
-    fn construct_mqtt_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_mqtt_reader(&self, scope: &Scope) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let settings = self.mqtt_settings()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
         let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
         relax_mqtt_packet_size_limits(&mut connection_options, uri);
+
+        // MQTT has no replayable log, so `seek` can't re-read messages that
+        // the broker already considers delivered. With persistence enabled the
+        // reader therefore runs a two-phase commit against the broker: it
+        // consumes messages without acknowledging them and lets the deferred
+        // ack worker acknowledge each message only after a durable checkpoint
+        // covers it. The unacknowledged messages, as well as the messages
+        // published while the pipeline is down, are kept by the broker in the
+        // client session - which must survive both reconnects and restarts,
+        // hence the persistent session bound to a stable client id. None of
+        // this is possible with QoS 0, which has no acknowledgements at all.
+        let manual_acks = scope.is_persisted && settings.qos != MqttQoS::AtMostOnce;
+        if manual_acks {
+            if connection_options.client_id().is_empty() {
+                return Err(PyValueError::new_err(
+                    "MQTT reader with persistence enabled requires a stable client_id in the \
+                     connection URI: the broker keeps the not-yet-checkpointed messages in a \
+                     session bound to it",
+                ));
+            }
+            connection_options.set_clean_session(false);
+            connection_options.set_manual_acks(true);
+        } else if scope.is_persisted {
+            warn!(
+                "The MQTT reader is subscribed with QoS 0: the broker gives no delivery \
+                 guarantees, so persistence cannot prevent message losses on restart. \
+                 Use QoS 1 or 2 for lossless recovery."
+            );
+        }
+
         let (client, mut connection) =
             MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
         client.subscribe(topic.clone(), settings.qos).map_err(|e| {
@@ -6930,7 +6995,11 @@ impl DataStorage {
             ))
         })?;
 
-        // Wait for the subscription acknowledgement from the broker
+        // Wait for the subscription acknowledgement from the broker. When a
+        // persistent session is resumed, the broker may start redelivering
+        // the unacknowledged messages before confirming the subscription;
+        // they are collected and served to the engine first.
+        let mut preloaded = Vec::new();
         loop {
             let maybe_event = connection
                 .recv_timeout(std::time::Duration::from_secs(1))
@@ -6942,13 +7011,22 @@ impl DataStorage {
                     "Failed to receive subscription confirmation from MQTT broker: {e:?}"
                 ))
             })?;
-            if matches!(event, MqttEvent::Incoming(MqttPacket::SubAck(_))) {
-                break;
+            match event {
+                MqttEvent::Incoming(MqttPacket::SubAck(_)) => break,
+                MqttEvent::Incoming(MqttPacket::Publish(message)) => preloaded.push(message),
+                _ => {}
             }
         }
 
         Ok((
-            Box::new(MqttReader::new(client, connection, topic, settings.qos)),
+            Box::new(MqttReader::new(
+                client,
+                connection,
+                topic,
+                settings.qos,
+                manual_acks,
+                preloaded,
+            )),
             1,
         ))
     }
@@ -7118,7 +7196,7 @@ impl DataStorage {
             "nats" => self.construct_nats_reader(py, scope, properties),
             "rabbitmq" => self.construct_rabbitmq_reader(scope, properties),
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
-            "mqtt" => self.construct_mqtt_reader(),
+            "mqtt" => self.construct_mqtt_reader(scope),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
             "postgres" => self.construct_postgres_reader(py, data_format, scope, properties),
             "mongodb" => self.construct_mongodb_reader(scope),

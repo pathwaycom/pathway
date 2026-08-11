@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `pw.io.mqtt.read` with persistence enabled and `qos` 1 or 2 now requires a stable `client_id` in the connection URI and fails at construction without one. Previously such a pipeline started, but silently lost messages on restart.
+- With persistence enabled, the MQTT broker must be able to buffer a checkpoint window of unacknowledged and queued messages per client (for Mosquitto: `max_inflight_messages`, `max_queued_messages`). Default broker limits may throttle throughput.
+- The JetStream pull consumer auto-created by `pw.io.nats.read` is now configured for checkpoint-deferred acknowledgements when persistence is enabled (unlimited `max_ack_pending`, longer `ack_wait`). A consumer that already exists on the server keeps its old settings; recreate it to pick up the new ones.
+
+### Fixed
+- `pw.io.mqtt.read` with persistence enabled no longer loses messages on restart. With `qos` 1 or 2, a message is acknowledged to the broker only after a durable checkpoint covers it, and the broker session now survives restarts — so both the messages received shortly before a crash and the messages published while the pipeline was down are redelivered (at-least-once delivery).
+- `pw.io.nats.read` with persistence enabled and a JetStream stream no longer loses the messages read between the last checkpoint and a crash: they are acknowledged only once a checkpoint covers them, so the server redelivers them after the restart (at-least-once delivery).
+
 ### Added
 - Python 3.14 is now supported. The published wheels install on CPython 3.10 through 3.14, and the test suite is run against both the minimum (3.10) and the maximum (3.14) supported versions. One exception: the PaddleOCR-based document parsing is unavailable on 3.14 until paddlepaddle publishes wheels for it — the `xpack-llm-docs` extra installs without the paddle packages there, and using the paddle-based parser reports a clear error. Airbyte connectors in the `venv` mode run in a virtual environment built with the newest supported CPython (3.10-3.13) found on the machine, since the connector packages do not support 3.14 yet; without one, a clear error suggests `enforce_method="docker"`.
 

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem::take;
 use std::sync::{Arc, Mutex};
 
+use crate::connectors::data_storage::DeferredAckWorker;
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::backends::BackendPutFuture as PersistenceBackendFlushFuture;
@@ -58,6 +59,7 @@ pub struct WorkerPersistentStorage {
     sink_threshold_times: Vec<TotalFrontier<Timestamp>>,
     registered_persistent_ids: HashSet<PersistentId>,
     cached_object_accessors: Vec<SharedCachedObjectsExternalAccessor>,
+    deferred_ack_workers: HashMap<PersistentId, Box<dyn DeferredAckWorker>>,
 }
 
 pub type SharedWorkerPersistentStorage = Arc<Mutex<WorkerPersistentStorage>>;
@@ -104,7 +106,31 @@ impl WorkerPersistentStorage {
             sink_threshold_times: Vec::new(),
             registered_persistent_ids: HashSet::new(),
             cached_object_accessors: Vec::new(),
+            deferred_ack_workers: HashMap::new(),
         })
+    }
+
+    /// Register the worker that acknowledges the source's messages once they
+    /// are covered by a durable checkpoint (see `DeferredAckWorker`).
+    pub fn register_deferred_ack_worker(
+        &mut self,
+        persistent_id: PersistentId,
+        ack_worker: Box<dyn DeferredAckWorker>,
+    ) {
+        // The snapshot writer starts recording per-time frontiers only for
+        // sources with a deferred ack worker: `take_ack_frontier` is both the
+        // only consumer of the record and the only thing pruning it.
+        if let Some(snapshot_writer) = self.snapshot_writers.get(&persistent_id) {
+            snapshot_writer
+                .lock()
+                .unwrap()
+                .enable_ack_frontier_tracking();
+        }
+        let previous = self.deferred_ack_workers.insert(persistent_id, ack_worker);
+        assert!(
+            previous.is_none(),
+            "Deferred ack worker is registered twice for the same data source: {persistent_id}"
+        );
     }
 
     pub fn create_cached_object_storage(
@@ -255,9 +281,35 @@ impl WorkerPersistentStorage {
         if let Err(e) = self.metadata_storage.save_current_state() {
             // The data dump isn't corrupt, so we can continue execution.
             error!("Failed to save the current state, the data may duplicate in the re-run: {e}");
+            // The checkpoint is not durable, so nothing can be acknowledged to
+            // the sources: skipping the acks only postpones them (possible
+            // redeliveries), while acknowledging would risk losses.
+            return Ok(());
         }
 
+        self.send_deferred_acks(commit_data.timestamp);
+
         Ok(())
+    }
+
+    /// The second phase of the source-side two-phase commit: after the
+    /// checkpoint for `finalized_timestamp` became durable, let the registered
+    /// sources acknowledge the messages the checkpoint covers. `ack_up_to`
+    /// only enqueues acknowledgements into the source clients' outgoing
+    /// queues, so this doesn't block the checkpoint path.
+    fn send_deferred_acks(&mut self, finalized_timestamp: TotalFrontier<Timestamp>) {
+        for (persistent_id, ack_worker) in &mut self.deferred_ack_workers {
+            let Some(snapshot_writer) = self.snapshot_writers.get(persistent_id) else {
+                continue;
+            };
+            let ack_frontier = snapshot_writer
+                .lock()
+                .unwrap()
+                .take_ack_frontier(finalized_timestamp);
+            if let Some(ack_frontier) = ack_frontier {
+                ack_worker.ack_up_to(&ack_frontier);
+            }
+        }
     }
 
     pub fn create_snapshot_readers(

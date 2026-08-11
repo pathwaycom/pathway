@@ -36,6 +36,10 @@ from rstream.exceptions import (
 
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
+# A dedicated broker with the in-flight/queued limits lifted, required by the
+# persistence tests (see the `mqtt-persistent` service in
+# `.jenkins/integration_tests/docker-compose-integration.yml`).
+MQTT_PERSISTENT_BASE_ROUTE = "mqtt://mqtt-persistent:1883?client_id=$CLIENT_ID"
 SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
 # How long to keep retrying a schema-registry request while the service is
 # still coming up (connection refused or a transient 5xx).

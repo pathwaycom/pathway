@@ -513,11 +513,38 @@ impl StorageType {
     }
 }
 
+/// The second phase of the two-phase commit between a persisted pipeline and a
+/// message broker that deletes data once it is acknowledged.
+///
+/// A reader whose source cannot be re-read by `seek` (MQTT, NATS, ...) defers
+/// the broker acknowledgements: `read` only buffers the ack handles, and this
+/// worker sends them once the offsets are covered by a durably saved
+/// checkpoint. On a crash the unacknowledged messages are redelivered by the
+/// broker, which restores at-least-once delivery.
+///
+/// `ack_up_to` runs on the checkpoint-committing thread, so it must not
+/// block: acknowledgements are handed to the client's outgoing queue, never
+/// awaited over the network. Handles that cannot be enqueued right now must be
+/// kept and retried on the next call.
+pub trait DeferredAckWorker: Send {
+    fn ack_up_to(&mut self, frontier: &OffsetAntichain);
+}
+
 pub trait Reader {
     fn read(&mut self) -> Result<ReadResult, ReadError>;
 
     #[allow(clippy::missing_errors_doc)]
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError>;
+
+    /// Called once, before reading starts, if this source takes part in
+    /// persistence. A reader that defers broker acknowledgements until the
+    /// checkpoint switches itself into the deferred mode here and returns the
+    /// worker that performs the acknowledgements. If the engine never calls
+    /// this method (persistence is off), the reader keeps acknowledging
+    /// inline and nothing changes.
+    fn take_deferred_ack_worker(&mut self) -> Option<Box<dyn DeferredAckWorker>> {
+        None
+    }
 
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()
