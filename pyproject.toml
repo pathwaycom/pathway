@@ -74,11 +74,9 @@ xpack-llm = [
     "litellm == 1.83.0; python_version >= '3.14'",
     "cohere >= 5.1, < 8.0",
     "tiktoken >= 0.5",
-    # the aioboto3/aiobotocore floors keep pip away from the boto version-alignment
-    # lattice (every aiobotocore pins an exact boto3/botocore window, so an
-    # unbounded range sends the resolver walking through all combinations)
-    "aioboto3 >= 15.0.0",
-    "aiobotocore >= 2.25.0",
+    # aiobotocore 3.x declares a ranged botocore window; aioboto3 (stale, pins an
+    # exact aiobotocore/botocore) was dropped to keep pip out of the boto lattice
+    "aiobotocore >= 3.0.0",
     "langchain >= 0.2.0, < 0.4.0",
     "langchain_community >= 0.2.0, < 0.4.0",
     "llama-index-core >= 0.13.0, < 0.15.0",
@@ -168,11 +166,9 @@ tests = [
     # degrades gracefully when the import is missing.
     "paddlepaddle >= 3.2.0, < 3.3.0; python_version < '3.14'", # required by paddleocr
     "paddlex >= 3.0.0, <= 3.3.8; python_version < '3.14'",  # pinning the latest working version, then the format changes
-    # the aioboto3/aiobotocore floors keep pip away from the boto version-alignment
-    # lattice (every aiobotocore pins an exact boto3/botocore window, so an
-    # unbounded range sends the resolver walking through all combinations)
-    "aioboto3 >= 15.0.0",
-    "aiobotocore >= 2.25.0",
+    # aiobotocore 3.x declares a ranged botocore window; aioboto3 (stale, pins an
+    # exact aiobotocore/botocore) was dropped to keep pip out of the boto lattice
+    "aiobotocore >= 3.0.0",
 ]
 airbyte = [
     "google-cloud-run",

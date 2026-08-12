@@ -704,7 +704,7 @@ class BedrockEmbedder(BaseEmbedder):
         **bedrock_kwargs,
     ):
         with optional_imports("xpack-llm"):
-            import aioboto3  # noqa:F401
+            import aiobotocore.session  # noqa:F401
 
         # Retries are applied inside `__wrapped__` rather than at the executor
         # level, so that direct `__wrapped__` calls (`get_embedding_dimension`)
@@ -720,7 +720,9 @@ class BedrockEmbedder(BaseEmbedder):
         if model_id is not None:
             self.kwargs["model_id"] = model_id
 
-        self._session = aioboto3.Session(
+        self._session = aiobotocore.session.AioSession()
+        # None values fall back to the default credential chain (env, IAM role)
+        self._client_kwargs = dict(
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
@@ -770,7 +772,9 @@ class BedrockEmbedder(BaseEmbedder):
         # The client is recreated on each attempt: after a failure it may be
         # left in a broken state, so the retry covers its creation as well.
         async def _invoke_model():
-            async with self._session.client("bedrock-runtime") as client:
+            async with self._session.create_client(
+                "bedrock-runtime", **self._client_kwargs
+            ) as client:
                 response = await client.invoke_model(
                     modelId=model_id,
                     body=json.dumps(request_body),

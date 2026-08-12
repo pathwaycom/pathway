@@ -205,7 +205,7 @@ async def test_bedrock_embedder_wrapped_retries_transient_errors():
     mock_client_cm.__aenter__.return_value = mock_client
     mock_client_cm.__aexit__.return_value = None
     mock_session = MagicMock()
-    mock_session.client.return_value = mock_client_cm
+    mock_session.create_client.return_value = mock_client_cm
 
     with patch.object(embedder, "_session", mock_session):
         result = await embedder.__wrapped__("hello")

@@ -253,7 +253,7 @@ async def test_bedrock_chat_wrapped_retries_transient_errors():
     mock_client_cm.__aenter__.return_value = mock_client
     mock_client_cm.__aexit__.return_value = None
     mock_session = MagicMock()
-    mock_session.client.return_value = mock_client_cm
+    mock_session.create_client.return_value = mock_client_cm
 
     with patch.object(llm, "_session", mock_session):
         response = await llm.__wrapped__([{"role": "user", "content": "hi"}])
@@ -273,13 +273,13 @@ async def test_bedrock_dynamic_args_routing():
         return_value={"output": {"message": {"content": [{"text": "mocked"}]}}}
     )
 
-    # Explicit async context manager returned by session.client(...)
+    # Explicit async context manager returned by session.create_client(...)
     mock_client_cm = AsyncMock()
     mock_client_cm.__aenter__.return_value = mock_client
     mock_client_cm.__aexit__.return_value = None
 
     mock_session = MagicMock()
-    mock_session.client.return_value = mock_client_cm
+    mock_session.create_client.return_value = mock_client_cm
 
     with patch.object(llm, "_session", mock_session):
         await llm.__wrapped__(
