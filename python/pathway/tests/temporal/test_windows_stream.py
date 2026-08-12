@@ -19,6 +19,24 @@ class TimeColumnInputSchema(pw.Schema):
     value: int
 
 
+def generate_input_stream(nb_rows: int = 68, period: int = 17) -> pw.Table:
+    # 68 is 4*17, 17 is a nice number chosen arbitrarily
+    # 4 comes from the fact that we want 2 old entries and two fresh (possibly late)
+    # entries in a window
+    #
+    # Each row gets its own engine mini-batch (a distinct even __time__), so the
+    # advancement of processing time is deterministic and matches the expected-output
+    # simulators in this file, which advance "now" entry by entry. A wall-clock-driven
+    # source must not be used here: under load many rows may share one mini-batch, and
+    # then the engine (which updates its time only between mini-batches) correctly
+    # accepts entries that a per-entry simulation considers late.
+    return pw.debug.table_from_rows(
+        TimeColumnInputSchema,
+        [((i // 2) % period, i, 2 * (i + 1), 1) for i in range(nb_rows)],
+        is_stream=True,
+    )
+
+
 def get_windows(duration: int, hop: int, time: int):
     lowest_time = time - duration
     lower_time = lowest_time - lowest_time % hop + hop
@@ -83,22 +101,7 @@ def generate_buffer_output(
 
 
 def test_keep_results_manual():
-    value_functions = {
-        "time": lambda x: (x // 2) % 17,
-        "value": lambda x: x,
-    }
-
-    # 68 is 4*17, 17 is a nice number I chose arbitrarily
-    # 4 comes from the fact that I wanted 2 old entries and two fresh (possibly late)
-    # entries in a window
-
-    t = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeColumnInputSchema,
-        nb_rows=68,
-        autocommit_duration_ms=5,
-        input_rate=25,
-    )
+    t = generate_input_stream()
 
     gb = t.windowby(
         t.time,
@@ -178,22 +181,7 @@ def test_keep_results_manual():
 
 
 def create_windowby_scenario(duration, hop, delay, cutoff, keep_results):
-    value_functions = {
-        "time": lambda x: (x // 2) % 17,
-        "value": lambda x: x,
-    }
-
-    # 68 is 4*17, 17 is a nice number I chose arbitrarily
-    # 4 comes from the fact that I wanted 2 old entries and two fresh (possibly late)
-    # entries in a window
-
-    t = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeColumnInputSchema,
-        nb_rows=68,
-        autocommit_duration_ms=5,
-        input_rate=25,
-    )
+    t = generate_input_stream()
 
     gb = t.windowby(
         t.time,
@@ -393,22 +381,7 @@ def test_exactly_once_from_behavior():
     p = 17
     duration = 5
     hop = 3
-    value_functions = {
-        "time": lambda x: (x // 2) % p,
-        "value": lambda x: x,
-    }
-
-    # 68 is 4*17, 17 is a nice number I chose arbitrarily
-    # 4 comes from the fact that I wanted 2 old entries and two fresh (possibly late)
-    # entries in a window
-
-    t = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeColumnInputSchema,
-        nb_rows=4 * p,
-        autocommit_duration_ms=5,
-        input_rate=25,
-    )
+    t = generate_input_stream(nb_rows=4 * p, period=p)
     gb = t.windowby(
         t.time,
         window=pw.temporal.sliding(duration=duration, hop=hop),
