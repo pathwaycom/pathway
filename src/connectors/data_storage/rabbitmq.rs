@@ -16,7 +16,7 @@ use rabbitmq_stream_client::types::{Message, OffsetSpecification, SimpleValue};
 use rabbitmq_stream_client::{Consumer as RmqConsumer, Environment, Producer as RmqProducer};
 use tokio::runtime::Runtime as TokioRuntime;
 
-use crate::connectors::data_format::{serialize_value_to_json, FormatterContext};
+use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::MessageQueueTopic;
 use crate::connectors::metadata::RabbitmqMetadata;
 use crate::connectors::offset::RabbitmqStreamType;
@@ -109,18 +109,7 @@ impl Writer for RabbitmqWriter {
         // User-defined header values are serialized as AMQP strings using JSON
         // encoding because RabbitMQ Streams does not reliably confirm messages
         // with non-string application property values.
-        let mut header_props: Vec<(String, String)> =
-            Vec::with_capacity(self.header_fields.len() + 2);
-        // pathway_time and pathway_diff are always added, consistent with
-        // Kafka and NATS writers.
-        header_props.push(("pathway_time".to_string(), data.time.to_string()));
-        header_props.push(("pathway_diff".to_string(), data.diff.to_string()));
-        for (name, idx) in &self.header_fields {
-            let json = serialize_value_to_json(&data.values[*idx])
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-            header_props.push((name.clone(), json));
-        }
+        let mut header_props = data.construct_string_properties(&self.header_fields);
         let pending = self.pending_confirms.clone();
         let errs = self.send_errors.clone();
 

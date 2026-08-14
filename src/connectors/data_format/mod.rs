@@ -424,6 +424,27 @@ impl FormatterContext {
         kafka_headers
     }
 
+    /// String-to-string message properties: `pathway_time` and `pathway_diff`
+    /// first, then the user header fields with their values serialized to
+    /// JSON strings. Used by the brokers whose per-message metadata is a
+    /// string map (`RabbitMQ` Streams application properties, Pulsar message
+    /// properties).
+    pub fn construct_string_properties(
+        &self,
+        header_fields: &[(String, usize)],
+    ) -> Vec<(String, String)> {
+        let mut properties = Vec::with_capacity(header_fields.len() + 2);
+        properties.push(("pathway_time".to_string(), self.time.to_string()));
+        properties.push(("pathway_diff".to_string(), self.diff.to_string()));
+        for (name, index) in header_fields {
+            let value = serialize_value_to_json(&self.values[*index])
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            properties.push((name.clone(), value));
+        }
+        properties
+    }
+
     pub fn construct_nats_headers(&self, header_fields: &[(String, usize)]) -> NatsHeaders {
         let raw_headers = self.construct_message_headers(header_fields, true);
         let mut nats_headers = NatsHeaders::new();

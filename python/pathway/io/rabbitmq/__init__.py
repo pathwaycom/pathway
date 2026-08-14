@@ -19,6 +19,7 @@ from pathway.io._utils import (
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
     internal_connector_mode,
+    resolve_start_from_timestamp_ms,
 )
 
 
@@ -196,23 +197,9 @@ def read(
     ... )
     """
     _check_entitlements("rabbitmq")
-    effective_timestamp: int | None
-    if start_from == "timestamp":
-        if start_from_timestamp_ms is None:
-            raise ValueError(
-                "start_from_timestamp_ms is required when start_from='timestamp'"
-            )
-        effective_timestamp = start_from_timestamp_ms
-    else:
-        if start_from_timestamp_ms is not None:
-            raise ValueError(
-                "start_from_timestamp_ms must not be set when"
-                f" start_from='{start_from}'"
-            )
-        # Encode start_from as a sentinel in start_from_timestamp_ms:
-        # None → beginning (OffsetSpecification::First)
-        # -1   → end (OffsetSpecification::Next)
-        effective_timestamp = -1 if start_from == "end" else None
+    effective_timestamp = resolve_start_from_timestamp_ms(
+        start_from, start_from_timestamp_ms
+    )
 
     data_storage = api.DataStorage(
         storage_type="rabbitmq",

@@ -4879,6 +4879,24 @@ def test_rabbitmq_read_requires_timestamp_with_timestamp_start_from():
         )
 
 
+@pytest.mark.parametrize("timestamp_ms", [-1, -1000])
+def test_rabbitmq_read_rejects_negative_timestamp(timestamp_ms):
+    # The engine reserves -1 in the timestamp field as the internal sentinel
+    # for start_from="end". An explicit negative timestamp must be rejected:
+    # otherwise a user-provided -1 would silently start reading from the end
+    # of the stream instead of from the requested moment.
+    with pytest.raises(
+        ValueError,
+        match="start_from_timestamp_ms must be a non-negative",
+    ):
+        pw.io.rabbitmq.read(
+            uri="rabbitmq-stream://guest:guest@localhost:5552",
+            stream_name="test",
+            start_from="timestamp",
+            start_from_timestamp_ms=timestamp_ms,
+        )
+
+
 @pytest.mark.parametrize("bad_max_batch_size", [0, -1, -100])
 def test_output_rejects_nonpositive_max_batch_size(bad_max_batch_size):
     # ``max_batch_size`` is the buffer threshold at which the size-based

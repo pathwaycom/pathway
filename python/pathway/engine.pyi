@@ -902,6 +902,17 @@ class DeltaOptimizerRule:
 class MqttSettings:
     def __init__(self, qos: int, retain: bool): ...
 
+class PulsarSettings:
+    def __init__(
+        self,
+        auth_token: str | None = None,
+        oauth2_issuer_url: str | None = None,
+        oauth2_credentials_url: str | None = None,
+        oauth2_audience: str | None = None,
+        oauth2_scope: str | None = None,
+        subscription_type: str | None = None,
+    ) -> None: ...
+
 class TableWriterInitMode(Enum):
     DEFAULT: TableWriterInitMode
     CREATE_IF_NOT_EXISTS: TableWriterInitMode
@@ -969,6 +980,7 @@ class DataStorage:
         qdrant_params: QdrantParams | None = None,
         pinecone_params: PineconeParams | None = None,
         detach_between_batches: bool = False,
+        pulsar_settings: PulsarSettings | None = None,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 

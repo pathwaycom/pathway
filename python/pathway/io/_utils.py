@@ -665,6 +665,36 @@ def maybe_schema_registry_settings(
     return None
 
 
+def resolve_start_from_timestamp_ms(
+    start_from: str,
+    start_from_timestamp_ms: int | None,
+) -> int | None:
+    """Validates a (``start_from``, ``start_from_timestamp_ms``) pair and encodes
+    it into the single ``start_from_timestamp_ms`` field understood by the engine.
+
+    The engine reserves ``-1`` in this field as an internal sentinel for
+    ``start_from="end"``, so an explicit timestamp must be non-negative —
+    otherwise a user-provided ``-1`` would silently turn into "start from
+    the end of the stream" instead of raising an error.
+    """
+    if start_from == "timestamp":
+        if start_from_timestamp_ms is None:
+            raise ValueError(
+                "start_from_timestamp_ms is required when start_from='timestamp'"
+            )
+        if start_from_timestamp_ms < 0:
+            raise ValueError(
+                "start_from_timestamp_ms must be a non-negative number of"
+                f" milliseconds since the UNIX epoch; got {start_from_timestamp_ms}"
+            )
+        return start_from_timestamp_ms
+    if start_from_timestamp_ms is not None:
+        raise ValueError(
+            f"start_from_timestamp_ms must not be set when start_from='{start_from}'"
+        )
+    return -1 if start_from == "end" else None
+
+
 def _get_unique_name(
     name: str | None, kwargs: dict[str, Any], stacklevel: int = 6
 ) -> str:

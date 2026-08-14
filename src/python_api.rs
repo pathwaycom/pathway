@@ -48,6 +48,14 @@ use mysql::Opts as MysqlOpts;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
+use pulsar::authentication::oauth2::{
+    OAuth2Authentication as PulsarOAuth2Authentication, OAuth2Params as PulsarOAuth2Params,
+};
+use pulsar::consumer::InitialPosition as PulsarInitialPosition;
+use pulsar::{
+    Authentication as PulsarAuthentication, ConsumerOptions as PulsarConsumerOptions, Pulsar,
+    SubType as PulsarSubType, TokioExecutor,
+};
 use pyo3::exceptions::{
     PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
     PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
@@ -124,10 +132,11 @@ use crate::connectors::data_storage::{
     ChromaWriter, ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
     ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader, KafkaWriter, LakeWriter,
     MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader,
-    NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType,
-    PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader,
-    RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
-    TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PulsarReader, PulsarWriter,
+    PythonConnectorEventType, PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy,
+    QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder,
+    SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WeaviateWriter, WriteError,
+    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -5035,6 +5044,305 @@ impl MqttSettings {
 }
 
 #[derive(Clone, Debug)]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "PulsarSettings"
+)]
+pub struct PulsarSettings {
+    auth_token: Option<String>,
+    oauth2_issuer_url: Option<String>,
+    oauth2_credentials_url: Option<String>,
+    oauth2_audience: Option<String>,
+    oauth2_scope: Option<String>,
+    subscription_type: Option<String>,
+}
+
+#[pymethods]
+impl PulsarSettings {
+    #[new]
+    #[pyo3(signature = (
+        auth_token = None,
+        oauth2_issuer_url = None,
+        oauth2_credentials_url = None,
+        oauth2_audience = None,
+        oauth2_scope = None,
+        subscription_type = None,
+    ))]
+    pub fn new(
+        auth_token: Option<String>,
+        oauth2_issuer_url: Option<String>,
+        oauth2_credentials_url: Option<String>,
+        oauth2_audience: Option<String>,
+        oauth2_scope: Option<String>,
+        subscription_type: Option<String>,
+    ) -> Self {
+        Self {
+            auth_token,
+            oauth2_issuer_url,
+            oauth2_credentials_url,
+            oauth2_audience,
+            oauth2_scope,
+            subscription_type,
+        }
+    }
+}
+
+/// Builds a Pulsar reader in the partition-reader (Kafka-like) mode: the
+/// partitions of the topic are deterministically split between the workers
+/// (partition position modulo the effective reader count — the assignment the
+/// Kafka reader uses in static mode), and every partition is later consumed
+/// from an explicit position by its own pump task. Workers with an index at
+/// or above the returned parallelism do not construct a reader at all.
+#[allow(clippy::too_many_arguments)]
+fn construct_pulsar_partition_reader(
+    runtime: TokioRuntime,
+    client: Pulsar<TokioExecutor>,
+    topic: &str,
+    is_static: bool,
+    start_from_end: bool,
+    min_publish_timestamp_ms: Option<u64>,
+    reader_count: usize,
+    worker_index: usize,
+    connector_index: usize,
+) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    let num_partitions = runtime
+        .block_on(client.lookup_partitioned_topic_number(topic))
+        .map_err(|e| PyIOError::new_err(format!("Failed to look up the Pulsar topic: {e}")))?;
+    // 0 partitions means a non-partitioned topic: a single log,
+    // conventionally labeled as partition -1.
+    let all_partitions: Vec<i32> = if num_partitions == 0 {
+        vec![-1]
+    } else {
+        (0..i32::try_from(num_partitions).expect("partition count must fit i32")).collect()
+    };
+    let effective_readers = reader_count.min(all_partitions.len());
+    let my_partitions: Vec<i32> = all_partitions
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| position % effective_readers == worker_index)
+        .map(|(_, partition)| *partition)
+        .collect();
+    let reader = PulsarReader::new_with_partition_readers(
+        runtime,
+        client,
+        arcstr::ArcStr::from(topic),
+        my_partitions,
+        is_static,
+        start_from_end,
+        worker_index,
+        connector_index,
+        min_publish_timestamp_ms,
+    );
+    Ok((Box::new(reader), effective_readers))
+}
+
+/// Creates the consumer of the subscription-based Pulsar reading mode: all
+/// the workers attach to one subscription of the requested type, positioned
+/// at the earliest or the latest message when the subscription doesn't exist
+/// yet.
+///
+/// The subscription is durable only when the user provided its name: a
+/// durable cursor survives the pipeline and pins the topic backlog on the
+/// broker, so it must belong to someone who manages its lifecycle. The
+/// auto-generated per-run names would leak one abandoned cursor per launch.
+fn build_pulsar_subscription_consumer(
+    runtime: &TokioRuntime,
+    client: &Pulsar<TokioExecutor>,
+    topic: &str,
+    subscription_name: &str,
+    subscription_type: PulsarSubType,
+    options: PulsarConsumerOptions,
+    worker_index: usize,
+) -> PyResult<pulsar::consumer::Consumer<Vec<u8>, TokioExecutor>> {
+    runtime.block_on(async {
+        client
+            .consumer()
+            .with_topic(topic)
+            .with_subscription(subscription_name)
+            .with_subscription_type(subscription_type)
+            .with_consumer_name(format!("pathway-worker-{worker_index}"))
+            .with_options(options)
+            .build()
+            .await
+            .map_err(|e| PyIOError::new_err(format!("Failed to create Pulsar consumer: {e}")))
+    })
+}
+
+/// Parses the streaming-mode subscription type from the Pulsar settings.
+///
+/// With "shared" (the default) and "`key_shared`" the broker distributes the
+/// topic between the workers (the equivalent of a Kafka consumer group),
+/// while "exclusive" and "failover" permit one active consumer, so the
+/// reader must be limited to a single worker — the second element of the
+/// returned pair. Static mode ignores this setting: it always reads through
+/// a one-shot non-durable exclusive subscription.
+fn parse_pulsar_subscription_type(
+    settings: Option<&PulsarSettings>,
+) -> PyResult<(PulsarSubType, bool)> {
+    let requested = settings
+        .and_then(|settings| settings.subscription_type.as_deref())
+        .unwrap_or("shared");
+    match requested {
+        "shared" => Ok((PulsarSubType::Shared, false)),
+        "key_shared" => Ok((PulsarSubType::KeyShared, false)),
+        "exclusive" => Ok((PulsarSubType::Exclusive, true)),
+        "failover" => Ok((PulsarSubType::Failover, true)),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown Pulsar subscription type: {other:?}. Only \"shared\", \
+             \"key_shared\", \"exclusive\" and \"failover\" are supported"
+        ))),
+    }
+}
+
+/// The automatically generated subscription name carries a per-run
+/// component: a fully deterministic name would make independent deployments
+/// reading one topic join a single shared subscription and silently split
+/// the stream between themselves, and a rerun of the pipeline would continue
+/// from the previous run's cursor instead of honoring `start_from`. The
+/// run's start timestamp is used instead of a random value because it is
+/// shared by all the workers of one process group, and the workers of a
+/// shared subscription must join under one name. It is NOT guaranteed to be
+/// shared across separately launched processes — which is why multi-process
+/// runs of the shared subscription types require an explicit
+/// `subscription_name` instead. Persistent pipelines never reach this path:
+/// they read through the partition-reader mechanism, which creates no
+/// broker-side subscriptions at all.
+fn auto_pulsar_subscription_name(scope: &Scope, connector_index: usize) -> String {
+    let run_nonce = scope.timestamp_at_start.0;
+    format!("pathway-reader-{connector_index}-{run_nonce}")
+}
+
+/// The auto-generated subscription name carries a per-run component that is
+/// only guaranteed to be shared within one process group: separate launchers
+/// (e.g. `pathway spawn` on several machines) stamp their own run
+/// timestamps, so each process group would sit on its own subscription and
+/// read the whole topic independently, silently duplicating every row. The
+/// same reason Kafka requires an explicit `group.id`.
+/// An idle reader for the workers that must not connect to the broker (see
+/// [`PulsarReader::new_idle`]).
+fn idle_pulsar_reader(
+    runtime: TokioRuntime,
+    topic: &str,
+    worker_index: usize,
+    connector_index: usize,
+) -> Box<dyn ReaderBuilder> {
+    Box::new(PulsarReader::new_idle(
+        runtime,
+        arcstr::ArcStr::from(topic),
+        worker_index,
+        connector_index,
+    ))
+}
+
+fn multiprocess_auto_subscription_error(settings: Option<&PulsarSettings>) -> PyErr {
+    PyValueError::new_err(format!(
+        "The {:?} Pulsar subscription type requires an explicit subscription_name in a \
+         multi-process run: every process of the pipeline must attach to one shared \
+         subscription, and the automatically generated name is not guaranteed to be \
+         the same across processes",
+        settings
+            .and_then(|settings| settings.subscription_type.as_deref())
+            .unwrap_or("shared"),
+    ))
+}
+
+/// Decides the reading mechanism. The partition-reader (Kafka-like) mode is
+/// the only one whose restart recovery replays each partition from the
+/// positions saved in the checkpoint, independently of broker-side cursors —
+/// so it is the only mode allowed with persistence (and the implicit choice
+/// when persistence is on). The static mode uses the same mechanism: its
+/// snapshot semantics are position-based too.
+fn pulsar_partition_readers_requested(
+    settings: Option<&PulsarSettings>,
+    is_static: bool,
+    is_persisted: bool,
+    start_from_end: bool,
+) -> PyResult<bool> {
+    let requested = settings.and_then(|settings| settings.subscription_type.as_deref());
+    let use_partition_readers =
+        is_static || matches!(requested, Some("reader")) || (is_persisted && requested.is_none());
+    if is_persisted && !use_partition_readers {
+        return Err(PyValueError::new_err(format!(
+            "Pulsar subscription type {:?} cannot be used with persistence: broker-side \
+             subscriptions advance by acknowledgements and cannot replay the messages a \
+             restarted pipeline needs. Use subscription_type=\"reader\" (or leave it unset) \
+             so that every partition is read from the positions saved in the checkpoint",
+            requested.unwrap_or("shared"),
+        )));
+    }
+    if is_persisted && start_from_end {
+        // "end" is resolved into concrete positions when the pumps start,
+        // and nothing anchors it to the *first* run: a partition that had
+        // delivered nothing before a restart would resolve "end" anew,
+        // silently dropping everything published into it during the
+        // downtime.
+        return Err(PyValueError::new_err(
+            "start_from=\"end\" cannot be used with persistence: the \"end\" position \
+             would be re-resolved at every restart, losing the messages published while \
+             the pipeline was down. Use start_from=\"timestamp\" with an explicit \
+             timestamp instead — it identifies the same starting point \
+             deterministically across restarts",
+        ));
+    }
+    Ok(use_partition_readers)
+}
+
+/// Builds a Pulsar client from the connection URI, TLS settings and the
+/// authentication section. TLS encryption itself is chosen by the URI scheme
+/// (`pulsar+ssl://`); `TlsSettings` only supplies the trust configuration.
+/// Mutual TLS (client certificate) authentication is not supported by the
+/// underlying client library, so client certificate paths are rejected.
+fn build_pulsar_client(
+    runtime: &TokioRuntime,
+    uri: &str,
+    tls: &TlsSettings,
+    settings: Option<&PulsarSettings>,
+) -> PyResult<Pulsar<TokioExecutor>> {
+    let mut builder = Pulsar::builder(uri, TokioExecutor);
+    if tls.client_cert_path.is_some() || tls.client_key_path.is_some() {
+        return Err(PyValueError::new_err(
+            "Mutual TLS (client certificate) authentication is not supported \
+             by the Pulsar connector",
+        ));
+    }
+    if let Some(root_cert_path) = &tls.root_cert_path {
+        builder = builder
+            .with_certificate_chain_file(root_cert_path)
+            .map_err(|e| {
+                PyValueError::new_err(format!("Failed to read the certificate chain file: {e}"))
+            })?;
+    }
+    if tls.trust_certificates {
+        builder = builder.with_allow_insecure_connection(true);
+    }
+    if let Some(settings) = settings {
+        if let Some(token) = &settings.auth_token {
+            builder = builder.with_auth(PulsarAuthentication {
+                name: "token".to_string(),
+                data: token.as_bytes().to_vec(),
+            });
+        } else if let (Some(issuer_url), Some(credentials_url)) = (
+            &settings.oauth2_issuer_url,
+            &settings.oauth2_credentials_url,
+        ) {
+            builder = builder.with_auth_provider(PulsarOAuth2Authentication::client_credentials(
+                PulsarOAuth2Params {
+                    issuer_url: issuer_url.clone(),
+                    credentials_url: credentials_url.clone(),
+                    audience: settings.oauth2_audience.clone(),
+                    scope: settings.oauth2_scope.clone(),
+                },
+            ));
+        }
+    }
+    runtime
+        .block_on(builder.build())
+        .map_err(|e| PyIOError::new_err(format!("Failed to connect to Pulsar: {e}")))
+}
+
+#[derive(Clone, Debug)]
 #[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct PsqlReplicationSettings {
     connection_string: String,
@@ -5121,6 +5429,7 @@ pub struct DataStorage {
     qdrant_params: Option<Arc<Py<QdrantParams>>>,
     pinecone_params: Option<Arc<Py<PineconeParams>>>,
     detach_between_batches: bool,
+    pulsar_settings: Option<PulsarSettings>,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -5701,6 +6010,7 @@ impl DataStorage {
         qdrant_params = None,
         pinecone_params = None,
         detach_between_batches = false,
+        pulsar_settings = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5754,6 +6064,7 @@ impl DataStorage {
         qdrant_params: Option<Py<QdrantParams>>,
         pinecone_params: Option<Py<PineconeParams>>,
         detach_between_batches: bool,
+        pulsar_settings: Option<PulsarSettings>,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -5824,6 +6135,7 @@ impl DataStorage {
             qdrant_params: qdrant_params.map(Into::into),
             pinecone_params: pinecone_params.map(Into::into),
             detach_between_batches,
+            pulsar_settings,
         })
     }
 
@@ -6899,6 +7211,147 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    /// Decodes the `start_from` configuration of the Pulsar reader: whether
+    /// the reading starts at the end of the topic (the `-1` sentinel), and
+    /// the publish-timestamp threshold of `start_from="timestamp"`.
+    fn pulsar_start_from(&self, topic: &str, is_static: bool) -> (bool, Option<u64>) {
+        let start_from_end = self.start_from_timestamp_ms == Some(-1);
+        if start_from_end && is_static {
+            warn!(
+                "Pulsar reader for topic '{topic}' is configured with \
+                 start_from=\"end\" in static mode. This will produce an empty table \
+                 because there are no new messages to read after the current tail."
+            );
+        }
+        let min_publish_timestamp_ms = match self.start_from_timestamp_ms {
+            Some(timestamp_ms) if timestamp_ms >= 0 => {
+                Some(u64::try_from(timestamp_ms).expect("non-negative timestamp must fit u64"))
+            }
+            _ => None,
+        };
+        (start_from_end, min_publish_timestamp_ms)
+    }
+
+    fn construct_pulsar_reader(
+        &self,
+        py: pyo3::Python,
+        scope: &Scope,
+        properties: &ConnectorProperties,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["pulsar"])?;
+        }
+
+        let uri = self.path()?;
+        let topic = self.message_queue_fixed_topic()?;
+        let runtime = create_async_tokio_runtime()?;
+        let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
+        let worker_index = scope.worker_index();
+        let is_static = self.mode == ConnectorMode::Static;
+        let (start_from_end, min_publish_timestamp_ms) = self.pulsar_start_from(&topic, is_static);
+
+        let use_partition_readers = pulsar_partition_readers_requested(
+            self.pulsar_settings.as_ref(),
+            is_static,
+            scope.is_persisted,
+            start_from_end,
+        )?;
+        if use_partition_readers {
+            if self.durable_consumer_name.is_some() {
+                warn!(
+                    "The Pulsar reader for topic '{topic}' runs in the partition-reader mode, \
+                     which does not create broker-side subscriptions: the subscription_name \
+                     parameter is ignored. The reading position is tracked in the persistence \
+                     checkpoint instead."
+                );
+            }
+            // Partition sharding respects the same reader cap as Kafka: a
+            // synchronization group limits the readers to the first process,
+            // and assigning partitions by the raw worker count would hand
+            // them to workers that never run a reader.
+            let reader_count = scope
+                .worker_count()
+                .min(properties.max_parallel_readers(scope));
+            if worker_index >= reader_count {
+                let reader = idle_pulsar_reader(runtime, &topic, worker_index, connector_index);
+                return Ok((reader, reader_count));
+            }
+            let tls = self.tls_settings.clone().unwrap_or_default();
+            let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+            return construct_pulsar_partition_reader(
+                runtime,
+                client,
+                &topic,
+                is_static,
+                start_from_end,
+                min_publish_timestamp_ms,
+                reader_count,
+                worker_index,
+                connector_index,
+            );
+        }
+
+        let (streaming_subscription_type, single_consumer) =
+            parse_pulsar_subscription_type(self.pulsar_settings.as_ref())?;
+
+        if !single_consumer && self.durable_consumer_name.is_none() && scope.process_count() > 1 {
+            return Err(multiprocess_auto_subscription_error(
+                self.pulsar_settings.as_ref(),
+            ));
+        }
+
+        // The reader is constructed on every worker, but the engine only
+        // reads on the workers whose index is below the returned parallelism.
+        // Single-consumer subscription types (exclusive, failover) must not
+        // even *connect* from the other workers: a second consumer joining
+        // the same exclusive subscription is rejected by the broker with
+        // ConsumerBusy, which would fail the whole pipeline.
+        let parallel_readers = if single_consumer {
+            1
+        } else {
+            properties.max_parallel_readers(scope)
+        };
+        if worker_index >= parallel_readers {
+            let reader = idle_pulsar_reader(runtime, &topic, worker_index, connector_index);
+            return Ok((reader, parallel_readers));
+        }
+
+        let tls = self.tls_settings.clone().unwrap_or_default();
+        let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+
+        let subscription_name = self
+            .durable_consumer_name
+            .clone()
+            .unwrap_or_else(|| auto_pulsar_subscription_name(scope, connector_index));
+        let subscription_options = PulsarConsumerOptions::default()
+            .durable(self.durable_consumer_name.is_some())
+            .with_initial_position(if start_from_end {
+                PulsarInitialPosition::Latest
+            } else {
+                PulsarInitialPosition::Earliest
+            });
+        let consumer = build_pulsar_subscription_consumer(
+            &runtime,
+            &client,
+            &topic,
+            &subscription_name,
+            streaming_subscription_type,
+            subscription_options,
+            worker_index,
+        )?;
+
+        let reader = PulsarReader::new_with_subscription(
+            runtime,
+            client,
+            consumer,
+            arcstr::ArcStr::from(topic.as_str()),
+            worker_index,
+            connector_index,
+            min_publish_timestamp_ms,
+        );
+        Ok((Box::new(reader), parallel_readers))
+    }
+
     fn construct_iceberg_reader(
         &self,
         py: pyo3::Python,
@@ -7195,6 +7648,7 @@ impl DataStorage {
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
             "nats" => self.construct_nats_reader(py, scope, properties),
             "rabbitmq" => self.construct_rabbitmq_reader(scope, properties),
+            "pulsar" => self.construct_pulsar_reader(py, scope, properties),
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(scope),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
@@ -7651,6 +8105,25 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_pulsar_writer(&self, license: Option<&License>) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["pulsar"])?;
+        }
+        let uri = self.path()?;
+        let topic = self.message_queue_topic()?;
+        let runtime = create_async_tokio_runtime()?;
+        let tls = self.tls_settings.clone().unwrap_or_default();
+        let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+        let writer = PulsarWriter::new(
+            runtime,
+            client,
+            topic,
+            self.header_fields.clone(),
+            self.key_field_index,
+        );
+        Ok(Box::new(writer))
+    }
+
     fn construct_mongodb_writer(&self, sorted_output: bool) -> PyResult<Box<dyn Writer>> {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
@@ -7950,6 +8423,7 @@ impl DataStorage {
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
+            "pulsar" => self.construct_pulsar_writer(license),
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
@@ -8656,6 +9130,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<BackfillingThreshold>()?;
     m.add_class::<PyDeltaOptimizerRule>()?;
     m.add_class::<MqttSettings>()?;
+    m.add_class::<PulsarSettings>()?;
     m.add_class::<PySchemaRegistrySettings>()?;
     m.add_class::<IcebergCatalogSettings>()?;
     m.add_class::<PsqlReplicationSettings>()?;

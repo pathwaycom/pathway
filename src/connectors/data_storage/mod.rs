@@ -17,6 +17,7 @@ pub mod null;
 pub mod pinecone;
 pub mod polling;
 pub mod postgres;
+pub mod pulsar;
 pub mod python;
 pub mod qdrant;
 pub mod questdb;
@@ -69,6 +70,7 @@ use crate::connectors::data_storage::aws::kinesis::KinesisReader;
 use crate::connectors::data_storage::data_lake::buffering::IncorrectSnapshotError;
 use crate::connectors::data_storage::scanner::s3::S3CommandName;
 use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::offset::PulsarOffsetValue;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::{Offset, OffsetValue};
 use crate::engine::error::DynResult;
@@ -104,6 +106,7 @@ pub use self::polling::{LiveState, PolledRow, PollingDataSource, PollingReader};
 pub use self::postgres::{
     PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
+pub use self::pulsar::{PulsarError, PulsarReader, PulsarWriter};
 pub use self::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
 pub use self::sqlite::{SqliteError, SqliteReader, SqliteWriter};
 pub use self::weaviate::{WeaviateError, WeaviateWriter};
@@ -395,6 +398,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     ElasticSearch(#[from] ElasticSearchError),
+
+    #[error(transparent)]
+    Pulsar(#[from] PulsarError),
 }
 
 // Allow `?` on unboxed `AwsKinesisError` in functions returning `Result<_, ReadError>`.
@@ -481,6 +487,7 @@ pub enum StorageType {
     Rabbitmq,
     Mysql,
     ElasticSearch,
+    Pulsar,
 }
 
 impl StorageType {
@@ -509,6 +516,7 @@ impl StorageType {
             StorageType::Rabbitmq => RabbitmqReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mysql => MysqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::ElasticSearch => ElasticSearchReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Pulsar => PulsarReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -670,8 +678,42 @@ pub trait Reader {
                     (
                         OffsetValue::NatsReadEntriesCount(offset_entries_read),
                         OffsetValue::NatsReadEntriesCount(other_entries_read),
+                    )
+                    | (
+                        OffsetValue::MqttReadEntriesCount(offset_entries_read),
+                        OffsetValue::MqttReadEntriesCount(other_entries_read),
+                    )
+                    | (
+                        OffsetValue::PostgresReadEntriesCount(offset_entries_read),
+                        OffsetValue::PostgresReadEntriesCount(other_entries_read),
+                    )
+                    | (
+                        OffsetValue::Pulsar(PulsarOffsetValue::EntriesCount(offset_entries_read)),
+                        OffsetValue::Pulsar(PulsarOffsetValue::EntriesCount(other_entries_read)),
                     ) => {
                         if other_entries_read > offset_entries_read {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
+                        OffsetValue::Pulsar(PulsarOffsetValue::MessagePosition {
+                            ledger_id: offset_ledger_id,
+                            entry_id: offset_entry_id,
+                            batch_index: offset_batch_index,
+                        }),
+                        OffsetValue::Pulsar(PulsarOffsetValue::MessagePosition {
+                            ledger_id: other_ledger_id,
+                            entry_id: other_entry_id,
+                            batch_index: other_batch_index,
+                        }),
+                    ) => {
+                        // Positions within one partition are ordered
+                        // lexicographically: ledger ids grow monotonically
+                        // within a topic, entry ids within a ledger, and
+                        // batch indexes within an entry.
+                        if (other_ledger_id, other_entry_id, other_batch_index)
+                            > (offset_ledger_id, offset_entry_id, offset_batch_index)
+                        {
                             result.advance_offset(offset_key.clone(), other_value.clone());
                         }
                     }
@@ -833,6 +875,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     Rabbitmq(#[from] RabbitmqError),
+
+    #[error(transparent)]
+    Pulsar(#[from] PulsarError),
 
     #[error(transparent)]
     JetStream(#[from] NatsError<JetStreamPublishError>),
