@@ -6952,6 +6952,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-dynamodb",
  "aws-sdk-kinesis",
  "aws-smithy-runtime-api",

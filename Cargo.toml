@@ -23,6 +23,7 @@ arcstr = { version = "1.2.0", default-features = false, features = ["serde", "st
 async-nats = "0.50.0"
 async-trait = "0.1.89"
 aws-config = "1.8.1"
+aws-credential-types = "1.3.0"
 aws-sdk-dynamodb = "1.82.0"
 aws-sdk-kinesis = "1.89.0"
 aws-smithy-runtime-api = "1.8.3"

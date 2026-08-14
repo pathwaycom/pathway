@@ -5,14 +5,14 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import os
 
 from pathway.internals import api, schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
 S3_PATH_PREFIXES = ["s3://", "s3a://"]
-S3_DEFAULT_REGION = "us-east-1"
-S3_LOCATION_FIELD = "LocationConstraint"
+S3_REGION_DETECTION_TIMEOUT_S = 30.0
 
 
 class TLSSettings:
@@ -132,11 +132,10 @@ class AwsS3Settings:
     def new_from_path(cls, s3_path: str):
         """
         Constructs settings from S3 path. The engine will look for the credentials in
-        environment variables and in local AWS profiles. It will also automatically
-        detect the region of the bucket.
+        environment variables and in local AWS profiles. The region of the bucket is
+        detected automatically with an anonymous request, no credentials needed.
 
-        This method may fail if there are no credentials or they are incorrect. It may
-        also fail if the bucket does not exist.
+        This method may fail if the bucket does not exist or is unreachable.
 
         Args:
             s3_path: full path to the object in the form ``s3://<bucket_name>/<path>``.
@@ -151,19 +150,24 @@ class AwsS3Settings:
                 continue
             bucket = s3_path[len(s3_path_prefix) :].split("/")[0]
 
-            # the crate we use on the Rust-engine side can't detect the location
-            # of a bucket, so it's done on the Python side
-            import boto3
+            # the crate we use on the Rust-engine side can't detect the location of a
+            # bucket, so it's done here; S3 reports the region of a bucket in a response
+            # header, even for anonymous requests and even when it replies with a
+            # redirect or an access denial
+            import requests
 
-            s3_client = boto3.client("s3")
-            location_response = s3_client.get_bucket_location(Bucket=bucket)
-
-            # Buckets in Region us-east-1 have a LocationConstraint of None
-            location_constraint = location_response[S3_LOCATION_FIELD]
-            if location_constraint is None:
-                region = S3_DEFAULT_REGION
-            else:
-                region = location_constraint.split("|")[0]
+            response = requests.head(
+                f"https://s3.amazonaws.com/{bucket}",
+                allow_redirects=False,
+                timeout=S3_REGION_DETECTION_TIMEOUT_S,
+            )
+            region = response.headers.get("x-amz-bucket-region")
+            if region is None:
+                raise ValueError(
+                    f"Failed to detect the region of S3 bucket {bucket!r} "
+                    f"(HTTP status {response.status_code}): the bucket may not exist. "
+                    "If it does, pass AwsS3Settings with an explicit region"
+                )
 
             return cls(
                 bucket_name=bucket,
@@ -174,21 +178,38 @@ class AwsS3Settings:
         raise ValueError(f"Incorrect S3 path: {s3_path}")
 
     def authorize(self):
+        """Fills in the credentials that the downstream libraries can't deduce.
+
+        The DeltaLake library resolves environment variables and instance
+        credentials on its own, but does not read AWS profile files — those are
+        resolved here, with the official AWS SDK chain (environment, profile
+        files, SSO, assume-role, IMDS) built into the engine.
+        """
         if self._access_key is not None and self._secret_access_key is not None:
             return
-
-        # DeltaLake underlying AWS S3 library may fail to deduce the credentials, so
-        # we use boto3 to do that, which is more reliable
-        # Related github issue: https://github.com/delta-io/delta-rs/issues/854
-        import boto3.session
-
-        session = boto3.session.Session()
-        creds = session.get_credentials()
-        if creds.access_key is not None and creds.secret_key is not None:
-            self._access_key = creds.access_key
-            self._secret_access_key = creds.secret_key
-        elif creds.token is not None:
-            self._session_token = creds.token
+        env_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+        env_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        if env_access_key and env_secret_access_key:
+            # pinned explicitly instead of left for the engine to rediscover:
+            # this snapshot is immune to the credential vars that delta-rs
+            # writes into the process env for previously opened tables
+            self._access_key = env_access_key
+            self._secret_access_key = env_secret_access_key
+            session_token = os.environ.get("AWS_SESSION_TOKEN")
+            if session_token:
+                self._session_token = session_token
+            return
+        # boto3 also honored the legacy AWS_DEFAULT_PROFILE, at a lower precedence
+        resolved = api.resolve_aws_credentials(
+            os.environ.get("AWS_PROFILE") or os.environ.get("AWS_DEFAULT_PROFILE")
+        )
+        if resolved is None:
+            return
+        access_key, secret_access_key, session_token = resolved
+        self._access_key = access_key
+        self._secret_access_key = secret_access_key
+        if session_token:
+            self._session_token = session_token
 
 
 @dataclasses.dataclass(frozen=True)

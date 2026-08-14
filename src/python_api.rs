@@ -23,6 +23,7 @@ use async_nats::connect as nats_connect;
 use async_nats::jetstream;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sdk_dynamodb::Client as DynamoDBClient;
 use aws_sdk_kinesis::Client as KinesisClient;
 use azure_storage::StorageCredentials as AzureStorageCredentials;
@@ -4405,6 +4406,47 @@ pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
     let value: Value = bincode::deserialize(bytes)
         .map_err(|e| PyValueError::new_err(format!("failed to deserialize: {e}")))?;
     Ok(value)
+}
+
+#[pyfunction]
+#[pyo3(signature = (profile = None))]
+pub fn resolve_aws_credentials(
+    py: Python,
+    profile: Option<String>,
+) -> PyResult<Option<(String, String, Option<String>)>> {
+    py.detach(|| {
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let credentials = runtime.block_on(async {
+            // Environment credentials are deliberately not consulted here: the
+            // Python caller handles them from its own env snapshot, while the
+            // ambient process env may hold keys leaked by delta-rs
+            // (S3StorageOptions::from_map) for previously opened tables.
+            let profile_provider = ::aws_config::profile::ProfileFileCredentialsProvider::builder()
+                .profile_name(profile.as_deref().unwrap_or("default"))
+                .build();
+            let chain = ::aws_config::meta::credentials::CredentialsProviderChain::first_try(
+                "Profile",
+                profile_provider,
+            )
+            .or_else(
+                "Ecs",
+                ::aws_config::ecs::EcsCredentialsProvider::builder().build(),
+            )
+            .or_else(
+                "Imds",
+                ::aws_config::imds::credentials::ImdsCredentialsProvider::builder().build(),
+            );
+            chain.provide_credentials().await.ok()
+        });
+        Ok(credentials.map(|credentials| {
+            (
+                credentials.access_key_id().to_string(),
+                credentials.secret_access_key().to_string(),
+                credentials.session_token().map(ToString::to_string),
+            )
+        }))
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -9158,6 +9200,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_entitlements, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize, m)?)?;
     m.add_function(wrap_pyfunction!(serialize, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_aws_credentials, m)?)?;
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;

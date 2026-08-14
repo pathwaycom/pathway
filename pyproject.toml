@@ -29,7 +29,6 @@ dependencies = [
     "rich >= 12.6.0",
     "diskcache >= 5.2.1",
     "exceptiongroup >= 1.1.3; python_version < '3.11'",
-    "boto3 >= 1.26.76, < 2.0.0",
     "google-api-python-client >= 2.108.0",
     "typing_extensions >= 4.8.0",
     "panel >= 1.3.1",
@@ -169,6 +168,9 @@ tests = [
     # aiobotocore 3.x declares a ranged botocore window; aioboto3 (stale, pins an
     # exact aiobotocore/botocore) was dropped to keep pip out of the boto lattice
     "aiobotocore >= 3.0.0",
+    # the integration tests verify S3/DynamoDB/Kinesis connector results through boto3;
+    # the shipped package itself does not need it
+    "boto3 >= 1.26.76, < 2.0.0",
 ]
 airbyte = [
     "google-cloud-run",

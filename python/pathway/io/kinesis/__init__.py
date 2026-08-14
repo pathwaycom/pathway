@@ -104,7 +104,7 @@ def read(
     Now you can start testing. First, connect to the local Kinesis instance and create
     a client with `boto3 <https://pypi.org/project/boto3/>`_:
 
-    >>> import boto3
+    >>> import boto3  # doctest: +SKIP
     >>> client = boto3.client(  # doctest: +SKIP
     ...     "kinesis",
     ...     region_name="us-east-1",
@@ -254,7 +254,7 @@ def write(
     Now you can start testing. First, connect to the local Kinesis instance and create
     a client with `boto3 <https://pypi.org/project/boto3/>`_:
 
-    >>> import boto3
+    >>> import boto3  # doctest: +SKIP
     >>> client = boto3.client(  # doctest: +SKIP
     ...     "kinesis",
     ...     region_name="us-east-1",
