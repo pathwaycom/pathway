@@ -114,7 +114,10 @@ def test_streaming_from_deltalake(credentials, tmp_path, s3_path):
         s3_connection_settings=credentials,
     )
     pw.io.csv.write(table, output_path)
-    wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 60)
+    # 90 seconds, not 60: opening the Delta table against real S3 happens before
+    # the csv sink creates its file, and a single stalled request costs up to
+    # object_store's 30-second request timeout before being retried.
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 90)
     # The writer thread outlives the checker by up to its final sleep; join it
     # so its Delta writes (which mutate the process-wide AWS env vars, see
     # conftest) cannot bleed into the next test scheduled on this worker.

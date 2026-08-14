@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import fcntl
 import functools
 import inspect
 import json
@@ -183,23 +184,28 @@ class PortBlockRegistry:
 
     @contextmanager
     def _connection(self) -> Generator[sqlite3.Connection, None, None]:
-        # `timeout` is what makes concurrent writers queue up instead of
-        # failing with SQLITE_BUSY: only one of them can hold the write lock.
-        # Note there is no `journal_mode=WAL` here - switching the journal mode
-        # needs exclusive access, which `timeout` does not cover, so concurrent
-        # workers would fail outright. The default journal is enough: the
-        # readers here are all inside a write transaction anyway.
-        connection = sqlite3.connect(self.db_path, timeout=60, isolation_level=None)
-        try:
-            if not self._schema_ready:
-                connection.execute(
-                    "CREATE TABLE IF NOT EXISTS reservations ("
-                    "first_port INTEGER PRIMARY KEY, pid INTEGER NOT NULL)"
-                )
-                self._schema_ready = True
-            yield connection
-        finally:
-            connection.close()
+        # sqlite waits for a busy database by polling on a ~100 ms grid, and that
+        # polling is unfair: with enough writers and an fsync-bound disk a worker
+        # can lose every poll for longer than any `timeout`. The flock queues the
+        # workers in the kernel instead, so sqlite itself never contends here;
+        # `timeout` stays as a guard against processes running older code.
+        with open(f"{self.db_path}.lock", "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            connection = sqlite3.connect(self.db_path, timeout=60, isolation_level=None)
+            try:
+                # The registry is disposable bookkeeping on a tmp filesystem, so
+                # it does not need to survive a machine crash - and not fsyncing
+                # keeps the lock hold times short even on a loaded CI disk.
+                connection.execute("PRAGMA synchronous=OFF")
+                if not self._schema_ready:
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS reservations ("
+                        "first_port INTEGER PRIMARY KEY, pid INTEGER NOT NULL)"
+                    )
+                    self._schema_ready = True
+                yield connection
+            finally:
+                connection.close()
 
     def acquire(self) -> int:
         """Reserve a block of ports and return its first port."""

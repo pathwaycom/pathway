@@ -65,11 +65,13 @@ where
     P: FnMut(&E) -> bool,
 {
     let mut exec_result = func();
-    for _ in 0..max_retries {
+    for n_attempt in 0..max_retries {
         match exec_result {
             Ok(_) => return exec_result,
             Err(ref e) if !should_retry(e) => return exec_result,
-            Err(_) => {}
+            // A retried attempt that eventually succeeds leaves no trace
+            // otherwise, which hides a flaky backend behind a later failure.
+            Err(ref e) => warn!("Attempt {n_attempt} failed, retrying: {e:?}"),
         }
         retry_config.sleep_after_error();
         exec_result = func();
