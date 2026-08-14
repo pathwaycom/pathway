@@ -228,11 +228,6 @@ jobs:
           rm -rf ./* || true
           rm -rf ./.??* || true
           ls -la ./
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Create dir for wheels
         run: |
           mkdir -p wheels
@@ -242,16 +237,43 @@ jobs:
           name: pathway-x86-x64
           path: ./wheels/
 
+      - name: Provision uv
+        # Same uv provisioning as the monorepo verify jobs: uv's standalone
+        # CPython builds work uniformly on hosted and self-hosted runners.
+        run: |
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          # The installer picks its directory from its own idea of the home
+          # directory, which does not always match $HOME inside the step (on
+          # containerized runners they diverge) — locate the binary instead.
+          UV_BIN=$(command -v uv || true)
+          if [ -z "$UV_BIN" ]; then
+            for d in "$HOME/.local/bin" /root/.local/bin "$HOME/.cargo/bin"; do
+              if [ -x "$d/uv" ]; then UV_BIN="$d/uv"; break; fi
+            done
+          fi
+          if [ -z "$UV_BIN" ]; then echo "uv not found after install" >&2; exit 1; fi
+          UV_DIR=$(dirname "$UV_BIN")
+          export PATH="$UV_DIR:$PATH"
+          echo "$UV_DIR" >> "$GITHUB_PATH"
+          # Make sure a *stable* interpreter of the requested minor version is
+          # present: a stale uv cache on a runner may only hold a pre-release
+          # (e.g. 3.14.0a4), whose ABI differs from the final release and
+          # crashes extensions built for the stable cp314 ABI.
+          uv python install "${{ matrix.python-version }}"
+
       - name: Install and verify Linux package
         run: |
           set -ex
           ENV_NAME="testenv_${{ matrix.python-version }}"
           rm -rf "${ENV_NAME}"
-          python -m venv "${ENV_NAME}"
+          uv venv --seed --python "${{ matrix.python-version }}" "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
-          pip install -U "pip==25.0.1"
           WHEEL=(./wheels/pathway-*.whl)
-          pip install --no-cache-dir --prefer-binary "${WHEEL}[tests]"
+          # install with uv: pip backtracks for hours on the boto/google/openapi
+          # dependency lattices that uv solves in seconds
+          uv pip install --no-cache "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           export PYTEST_ADDOPTS="--dist worksteal -n auto --timeout=900"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
@@ -296,23 +318,51 @@ jobs:
           name: pathway-arch64
           path: ./wheels/
 
+      - name: Provision uv
+        # These self-hosted runners have no actions/setup-python, and the
+        # system pythons only cover the versions preinstalled on the runner.
+        # uv's standalone CPython builds work uniformly on all of them.
+        run: |
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          # The installer picks its directory from its own idea of the home
+          # directory, which does not always match $HOME inside the step (on
+          # containerized runners they diverge) — locate the binary instead.
+          UV_BIN=$(command -v uv || true)
+          if [ -z "$UV_BIN" ]; then
+            for d in "$HOME/.local/bin" /root/.local/bin "$HOME/.cargo/bin"; do
+              if [ -x "$d/uv" ]; then UV_BIN="$d/uv"; break; fi
+            done
+          fi
+          if [ -z "$UV_BIN" ]; then echo "uv not found after install" >&2; exit 1; fi
+          UV_DIR=$(dirname "$UV_BIN")
+          export PATH="$UV_DIR:$PATH"
+          echo "$UV_DIR" >> "$GITHUB_PATH"
+          # Make sure a *stable* interpreter of the requested minor version is
+          # present: a stale uv cache on a runner may only hold a pre-release
+          # (e.g. 3.14.0a4), whose ABI differs from the final release and
+          # crashes extensions built for the stable cp314 ABI.
+          uv python install "${{ matrix.python-version }}"
+
       - name: Install and verify ${{ matrix.os }} package
         run: |
           set -ex
           ENV_NAME="testenv_${{ matrix.python-version }}"
           rm -rf "${ENV_NAME}"
-          python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
+          uv venv --seed --python "${{ matrix.python-version }}" "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
           if [[ "${{ matrix.os }}" == 'selfhosted-macOS' ]]; then
             WHEEL=(./wheels/pathway-*arm64.whl)
           else
             WHEEL=(./wheels/pathway-*aarch64.whl)
           fi
-          pip install -U "pip==25.0.1"
           export PATHWAY_MONITORING_HTTP_PORT=20099
           export LLAMA_READER_PORT=8799
-          pip install --no-cache-dir --prefer-binary "${WHEEL}[tests]"
-          pip install llama_index
+          # install with uv: pip backtracks for hours on the boto/google/openapi
+          # dependency lattices that uv solves in seconds
+          uv pip install --no-cache "${WHEEL}[tests]"
+          uv pip install llama_index
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           if [[ "$RUNNER_NAME" == *mac* ]]; then
             export PYTEST_XDIST_AUTO_NUM_WORKERS=2
