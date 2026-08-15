@@ -7,6 +7,7 @@ use std::mem::take;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, StreamExt};
+use pulsar::compression::Compression as PulsarCompression;
 use pulsar::consumer::{Consumer as PulsarConsumer, ConsumerOptions as PulsarConsumerOptions};
 use pulsar::error::ConsumerError as PulsarConsumerError;
 use pulsar::message::proto::command_subscribe::SubType as PulsarSubType;
@@ -22,11 +23,13 @@ use tokio::task::JoinHandle;
 
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::MessageQueueTopic;
+use crate::connectors::metadata::PulsarMetadata;
 use crate::connectors::offset::{PulsarOffsetKey, PulsarOffsetValue};
 use crate::connectors::{
-    DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
-    StorageType, WriteError, Writer,
+    OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext, StorageType, WriteError,
+    Writer,
 };
+use crate::engine::time::DateTime;
 use crate::engine::Value;
 use crate::persistence::frontier::OffsetAntichain;
 
@@ -88,6 +91,19 @@ pub enum PulsarError {
          (the client may have exhausted its reconnection attempts)"
     )]
     StreamUnexpectedlyClosed { topic: String },
+
+    #[error(
+        "value {0} cannot be used as an event time: only non-negative integers \
+         (milliseconds since the UNIX epoch) and UTC datetimes at or after the \
+         epoch are supported"
+    )]
+    IncorrectEventTimeValue(Value),
+
+    #[error(
+        "value {0} can't be used as an ordering key because it's neither \
+         'bytes' nor 'string'"
+    )]
+    IncorrectOrderingKeyValue(Value),
 }
 
 /// The position of a message within one partition: `(ledger_id, entry_id,
@@ -107,7 +123,10 @@ const DELIVER_EVERYTHING: MessagePosition = (0, 0, i32::MIN);
 /// engine.
 struct PreloadedMessage {
     payload: Vec<u8>,
+    partition_key: Option<String>,
     publish_time: u64,
+    /// Built only when the user requested the `_metadata` column.
+    metadata: Option<Box<PulsarMetadata>>,
 }
 
 /// A message delivered by a partition pump task.
@@ -115,6 +134,34 @@ struct PumpedMessage {
     partition: i32,
     position: MessagePosition,
     payload: Vec<u8>,
+    partition_key: Option<String>,
+    /// Built only when the user requested the `_metadata` column.
+    metadata: Option<Box<PulsarMetadata>>,
+}
+
+/// Builds the user-facing metadata of one message from the message id and
+/// the protocol-level metadata the client delivered.
+fn build_message_metadata(
+    topic: &str,
+    id: &MessageIdData,
+    proto_metadata: &mut pulsar::message::Metadata,
+) -> Box<PulsarMetadata> {
+    let properties = take(&mut proto_metadata.properties)
+        .into_iter()
+        .map(|kv| (kv.key, kv.value))
+        .collect();
+    Box::new(PulsarMetadata::new(
+        topic.to_string(),
+        id.partition.unwrap_or(-1),
+        id.ledger_id,
+        id.entry_id,
+        id.batch_index(),
+        proto_metadata.publish_time,
+        proto_metadata.event_time,
+        take(&mut proto_metadata.producer_name),
+        proto_metadata.ordering_key.as_deref(),
+        properties,
+    ))
 }
 
 /// What a partition pump task reports to the reader.
@@ -200,6 +247,13 @@ pub struct PulsarReader {
     // unreliable, so the reader instead starts from the earliest position and
     // filters out the messages published before this timestamp.
     min_publish_timestamp_ms: Option<u64>,
+    // Whether the user requested the `_metadata` column: only then is the
+    // per-message metadata collected and reported to the engine.
+    with_metadata: bool,
+    // A metadata event is emitted *before* the data event of its message, so
+    // the data event waits here for the next `read` call — the same pattern
+    // the Kafka and RabbitMQ readers use.
+    deferred_read_result: Option<ReadResult>,
     mode: PulsarReaderMode,
 }
 
@@ -213,6 +267,7 @@ impl PulsarReader {
         worker_index: usize,
         connector_index: usize,
         min_publish_timestamp_ms: Option<u64>,
+        with_metadata: bool,
     ) -> PulsarReader {
         PulsarReader {
             runtime,
@@ -222,6 +277,8 @@ impl PulsarReader {
             connector_index,
             total_entries_read: 0,
             min_publish_timestamp_ms,
+            with_metadata,
+            deferred_read_result: None,
             mode: PulsarReaderMode::Subscription {
                 consumer: Some(Box::new(consumer)),
                 preloaded: VecDeque::new(),
@@ -240,6 +297,7 @@ impl PulsarReader {
         worker_index: usize,
         connector_index: usize,
         min_publish_timestamp_ms: Option<u64>,
+        with_metadata: bool,
     ) -> PulsarReader {
         PulsarReader {
             runtime,
@@ -249,6 +307,8 @@ impl PulsarReader {
             connector_index,
             total_entries_read: 0,
             min_publish_timestamp_ms,
+            with_metadata,
+            deferred_read_result: None,
             mode: PulsarReaderMode::PartitionReaders {
                 partitions,
                 static_mode,
@@ -274,6 +334,8 @@ impl PulsarReader {
             connector_index,
             total_entries_read: 0,
             min_publish_timestamp_ms: None,
+            with_metadata: false,
+            deferred_read_result: None,
             mode: PulsarReaderMode::Idle,
         }
     }
@@ -370,6 +432,7 @@ impl PulsarReader {
             *static_mode,
             *start_from_latest,
             self.min_publish_timestamp_ms,
+            self.with_metadata,
             initial_delay,
             sender,
         ))
@@ -454,8 +517,10 @@ impl PulsarReader {
                 PumpEvent::Message(message) => {
                     positions.insert(message.partition, message.position);
                     self.total_entries_read += 1;
-                    let payload =
-                        ReaderContext::from_raw_bytes(DataEventType::Insert, message.payload);
+                    let payload = ReaderContext::from_key_value(
+                        message.partition_key.map(String::into_bytes),
+                        Some(message.payload),
+                    );
                     let (ledger_id, entry_id, batch_index) = message.position;
                     let offset = (
                         OffsetKey::Pulsar(PulsarOffsetKey::Partition(
@@ -468,6 +533,10 @@ impl PulsarReader {
                             batch_index,
                         }),
                     );
+                    if let Some(metadata) = message.metadata {
+                        self.deferred_read_result = Some(ReadResult::Data(payload, offset));
+                        return Ok(ReadResult::NewSource((*metadata).into()));
+                    }
                     return Ok(ReadResult::Data(payload, offset));
                 }
                 PumpEvent::Drained => {
@@ -508,6 +577,7 @@ impl PulsarReader {
         };
         let consumer = consumer.as_mut().expect("consumer is set until drop");
         let base_topic = &self.base_topic;
+        let with_metadata = self.with_metadata;
         // An exhausted consumer stream is never a normal end of data in the
         // subscription mode: the topic is unbounded. It means the client gave
         // up — most likely it exhausted its reconnection attempts during a
@@ -519,6 +589,18 @@ impl PulsarReader {
                 topic: base_topic.to_string(),
             })
         };
+        let preload_message = |message: pulsar::consumer::Message<Vec<u8>>| -> PreloadedMessage {
+            let mut proto_metadata = message.payload.metadata;
+            let metadata = with_metadata.then(|| {
+                build_message_metadata(&message.topic, &message.message_id.id, &mut proto_metadata)
+            });
+            PreloadedMessage {
+                publish_time: proto_metadata.publish_time,
+                partition_key: proto_metadata.partition_key,
+                payload: message.payload.data,
+                metadata,
+            }
+        };
         self.runtime.block_on(async {
             let Some(first_message) = consumer.next().await else {
                 return Err(stream_closed());
@@ -528,10 +610,7 @@ impl PulsarReader {
                 .ack(&first_message)
                 .await
                 .map_err(PulsarError::from)?;
-            preloaded.push_back(PreloadedMessage {
-                publish_time: first_message.payload.metadata.publish_time,
-                payload: first_message.payload.data,
-            });
+            preloaded.push_back(preload_message(first_message));
             while preloaded.len() < MAX_READ_BATCH_SIZE {
                 let message = match consumer.next().now_or_never() {
                     None => break,
@@ -539,10 +618,7 @@ impl PulsarReader {
                     Some(Some(message)) => message.map_err(PulsarError::from)?,
                 };
                 consumer.ack(&message).await.map_err(PulsarError::from)?;
-                preloaded.push_back(PreloadedMessage {
-                    publish_time: message.payload.metadata.publish_time,
-                    payload: message.payload.data,
-                });
+                preloaded.push_back(preload_message(message));
             }
             Ok(())
         })
@@ -563,11 +639,18 @@ impl PulsarReader {
                 }
             }
             self.total_entries_read += 1;
-            let payload = ReaderContext::from_raw_bytes(DataEventType::Insert, message.payload);
+            let payload = ReaderContext::from_key_value(
+                message.partition_key.map(String::into_bytes),
+                Some(message.payload),
+            );
             let offset = (
                 OffsetKey::Pulsar(PulsarOffsetKey::Worker(self.worker_index)),
                 OffsetValue::Pulsar(PulsarOffsetValue::EntriesCount(self.total_entries_read)),
             );
+            if let Some(metadata) = message.metadata {
+                self.deferred_read_result = Some(ReadResult::Data(payload, offset));
+                return Ok(ReadResult::NewSource((*metadata).into()));
+            }
             return Ok(ReadResult::Data(payload, offset));
         }
     }
@@ -590,6 +673,7 @@ async fn pump_partition(
     static_mode: bool,
     start_from_latest: bool,
     min_publish_timestamp_ms: Option<u64>,
+    with_metadata: bool,
     initial_delay: Duration,
     sender: mpsc::Sender<PumpEvent>,
 ) {
@@ -610,6 +694,7 @@ async fn pump_partition(
         static_mode,
         start_from_latest,
         min_publish_timestamp_ms,
+        with_metadata,
         &mut watermark,
         &mut boundary,
         &sender,
@@ -658,6 +743,7 @@ async fn pump_partition_inner(
     static_mode: bool,
     start_from_latest: bool,
     min_publish_timestamp_ms: Option<u64>,
+    with_metadata: bool,
     watermark: &mut Option<MessagePosition>,
     boundary_slot: &mut Option<MessagePosition>,
     sender: &mpsc::Sender<PumpEvent>,
@@ -771,17 +857,23 @@ async fn pump_partition_inner(
         }
         let filtered_out =
             min_publish_timestamp_ms.is_some_and(|t| message.payload.metadata.publish_time < t);
-        if !filtered_out
-            && sender
+        if !filtered_out {
+            let mut proto_metadata = message.payload.metadata;
+            let metadata = with_metadata.then(|| {
+                build_message_metadata(physical_topic, &message.message_id.id, &mut proto_metadata)
+            });
+            let sent = sender
                 .send(PumpEvent::Message(PumpedMessage {
                     partition,
                     position,
                     payload: message.payload.data,
+                    partition_key: proto_metadata.partition_key,
+                    metadata,
                 }))
-                .await
-                .is_err()
-        {
-            return Ok(()); // the reader is gone
+                .await;
+            if sent.is_err() {
+                return Ok(()); // the reader is gone
+            }
         }
         *watermark = Some(position);
         if boundary.is_some_and(|boundary| position >= boundary) {
@@ -792,6 +884,9 @@ async fn pump_partition_inner(
 
 impl Reader for PulsarReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
+        if let Some(deferred_read_result) = self.deferred_read_result.take() {
+            return Ok(deferred_read_result);
+        }
         match &self.mode {
             PulsarReaderMode::Subscription { .. } => self.read_from_subscription(),
             PulsarReaderMode::PartitionReaders { .. } => self.read_from_partition_pump(),
@@ -895,15 +990,44 @@ pub struct PulsarWriter {
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    // The column whose value becomes the ordering key of the messages: the
+    // key the broker hashes when distributing a key_shared subscription, used
+    // when the ordering entity differs from the partition-routing key. `None`
+    // leaves the ordering key unset, and key_shared falls back to the
+    // partition key.
+    ordering_key_field_index: Option<usize>,
+    // Where the `event_time` of the messages comes from: a column of the
+    // table, the engine (minibatch) time — the same value the messages carry
+    // in the `pathway_time` property — or nowhere (the field is left unset).
+    // At most one of the two options is set; the caller validates that.
+    event_time_field_index: Option<usize>,
+    event_time_from_engine: bool,
+    // The codec the producers compress the outgoing messages with. `None`
+    // sends the payloads uncompressed. The reading side needs no matching
+    // setting: the codec travels in the message metadata and the consumers
+    // decompress transparently.
+    compression: Option<PulsarCompression>,
+    // The name the producers register themselves under, already made unique
+    // per worker by the caller (Pulsar rejects two producers with one name on
+    // one topic). `None` lets the broker assign a generated name. One writer
+    // may own several producers (dynamic topics); the name is shared, which
+    // is fine because the uniqueness is per topic.
+    producer_name: Option<String>,
 }
 
 impl PulsarWriter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         runtime: TokioRuntime,
         client: Pulsar<TokioExecutor>,
         topic: MessageQueueTopic,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
+        ordering_key_field_index: Option<usize>,
+        event_time_field_index: Option<usize>,
+        event_time_from_engine: bool,
+        compression: Option<PulsarCompression>,
+        producer_name: Option<String>,
     ) -> Self {
         PulsarWriter {
             runtime,
@@ -913,6 +1037,11 @@ impl PulsarWriter {
             topic,
             header_fields,
             key_field_index,
+            ordering_key_field_index,
+            event_time_field_index,
+            event_time_from_engine,
+            compression,
+            producer_name,
         }
     }
 
@@ -922,22 +1051,25 @@ impl PulsarWriter {
             .as_mut()
             .expect("producers are set until drop");
         if !producers.contains_key(topic) {
+            let mut builder =
+                self.client
+                    .producer()
+                    .with_topic(topic)
+                    .with_options(ProducerOptions {
+                        batch_size: Some(PRODUCER_BATCH_SIZE),
+                        // Await queue space instead of failing with
+                        // `SlowDown` when the client's outbound channel
+                        // is full.
+                        block_queue_if_full: true,
+                        compression: self.compression.clone(),
+                        ..ProducerOptions::default()
+                    });
+            if let Some(producer_name) = &self.producer_name {
+                builder = builder.with_name(producer_name);
+            }
             let producer = self
                 .runtime
-                .block_on(
-                    self.client
-                        .producer()
-                        .with_topic(topic)
-                        .with_options(ProducerOptions {
-                            batch_size: Some(PRODUCER_BATCH_SIZE),
-                            // Await queue space instead of failing with
-                            // `SlowDown` when the client's outbound channel
-                            // is full.
-                            block_queue_if_full: true,
-                            ..ProducerOptions::default()
-                        })
-                        .build(),
-                )
+                .block_on(builder.build())
                 .map_err(PulsarError::from)?;
             producers.insert(topic.to_string(), producer);
         }
@@ -970,23 +1102,69 @@ impl PulsarWriter {
     }
 }
 
+impl PulsarWriter {
+    fn row_partition_key(&self, data: &FormatterContext) -> Result<String, WriteError> {
+        match self.key_field_index {
+            Some(index) => match &data.values[index] {
+                Value::String(string) => Ok(string.to_string()),
+                Value::Bytes(bytes) => Ok(std::str::from_utf8(bytes)?.to_string()),
+                _ => Err(WriteError::IncorrectKeyFieldType(
+                    data.values[index].clone(),
+                )),
+            },
+            None => Ok(format!("{:x}", data.key.0)),
+        }
+    }
+
+    /// The ordering key is raw bytes on the wire, so a bytes column is passed
+    /// through as is, without the UTF-8 requirement the partition key has.
+    fn row_ordering_key(&self, data: &FormatterContext) -> Result<Option<Vec<u8>>, WriteError> {
+        match self.ordering_key_field_index {
+            Some(index) => match &data.values[index] {
+                Value::String(string) => Ok(Some(string.as_bytes().to_vec())),
+                Value::Bytes(bytes) => Ok(Some(bytes.to_vec())),
+                other => Err(PulsarError::IncorrectOrderingKeyValue(other.clone()).into()),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// The `event_time` of the messages, in milliseconds since the UNIX
+    /// epoch, as Pulsar stores it.
+    fn row_event_time(&self, data: &FormatterContext) -> Result<Option<u64>, WriteError> {
+        if let Some(index) = self.event_time_field_index {
+            let millis = match &data.values[index] {
+                Value::Int(millis) if *millis >= 0 => {
+                    u64::try_from(*millis).expect("checked to be non-negative")
+                }
+                Value::DateTimeUtc(datetime) if datetime.timestamp_milliseconds() >= 0 => {
+                    u64::try_from(datetime.timestamp_milliseconds())
+                        .expect("checked to be non-negative")
+                }
+                other => {
+                    return Err(PulsarError::IncorrectEventTimeValue(other.clone()).into());
+                }
+            };
+            return Ok(Some(millis));
+        }
+        if self.event_time_from_engine {
+            // The engine time is the UNIX timestamp of the minibatch in
+            // milliseconds — the same value the messages carry in the
+            // `pathway_time` property.
+            return Ok(Some(data.time.0));
+        }
+        Ok(None)
+    }
+}
+
 impl Writer for PulsarWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         let effective_topic = self.topic.get_for_posting(&data.values)?;
         self.ensure_producer(&effective_topic)?;
 
-        let partition_key = match self.key_field_index {
-            Some(index) => match &data.values[index] {
-                Value::String(string) => string.to_string(),
-                Value::Bytes(bytes) => std::str::from_utf8(bytes)?.to_string(),
-                _ => {
-                    return Err(WriteError::IncorrectKeyFieldType(
-                        data.values[index].clone(),
-                    ))
-                }
-            },
-            None => format!("{:x}", data.key.0),
-        };
+        let partition_key = self.row_partition_key(&data)?;
+        let ordering_key = self.row_ordering_key(&data)?;
+        let event_time = self.row_event_time(&data)?;
 
         // User-defined header values are serialized to JSON strings because
         // Pulsar message properties are string-to-string pairs. pathway_time
@@ -1023,6 +1201,8 @@ impl Writer for PulsarWriter {
                     payload: payload.into_raw_bytes()?,
                     properties,
                     partition_key: Some(partition_key.clone()),
+                    ordering_key: ordering_key.clone(),
+                    event_time,
                     ..PulsarProducerMessage::default()
                 };
                 let producer = producers

@@ -14,6 +14,7 @@ from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
+    EngineTimeMarker,
     MessageQueueOutputFormat,
     _get_unique_name,
     check_raw_and_plaintext_only_kwargs_for_message_queues,
@@ -98,14 +99,31 @@ PulsarAuthentication = TokenAuthentication | OAuth2Authentication
 
 
 def _construct_pulsar_settings(
-    auth: PulsarAuthentication | None, subscription_type: str | None = None
+    auth: PulsarAuthentication | None,
+    subscription_type: str | None = None,
+    compression: str | None = None,
+    read_compacted: bool = False,
+    producer_name: str | None = None,
+    event_time_from_engine: bool = False,
 ) -> api.PulsarSettings | None:
-    kwargs = auth._settings_kwargs() if auth is not None else {}
-    if subscription_type is not None:
-        kwargs["subscription_type"] = subscription_type
-    if not kwargs:
+    if (
+        auth is None
+        and subscription_type is None
+        and compression is None
+        and not read_compacted
+        and producer_name is None
+        and not event_time_from_engine
+    ):
         return None
-    return api.PulsarSettings(**kwargs)
+    auth_kwargs = auth._settings_kwargs() if auth is not None else {}
+    return api.PulsarSettings(
+        **auth_kwargs,
+        subscription_type=subscription_type,
+        compression=compression,
+        read_compacted=read_compacted,
+        producer_name=producer_name,
+        event_time_from_engine=event_time_from_engine,
+    )
 
 
 def _check_tls_settings(tls_settings: TLSSettings | None) -> None:
@@ -135,8 +153,11 @@ def read(
     subscription_type: (
         Literal["reader", "shared", "key_shared", "exclusive", "failover"] | None
     ) = None,
+    read_compacted: bool = False,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
+    autogenerate_key: bool = False,
+    with_metadata: bool = False,
     start_from: Literal["beginning", "end", "timestamp"] = "beginning",
     start_from_timestamp_ms: int | None = None,
     auth: PulsarAuthentication | None = None,
@@ -160,13 +181,26 @@ def read(
 
     There are three formats supported: ``"plaintext"``, ``"raw"``, and ``"json"``.
 
-    For the ``"raw"`` format, the payload is read as raw bytes and added directly to
-    the table. In the ``"plaintext"`` format, the payload is decoded from UTF-8 and
-    stored as plain text. In both cases, the table will have a ``"data"`` column
-    representing the payload.
+    For the ``"raw"`` format, the partition key and the payload are read as raw
+    bytes and added to the table as they are. In the ``"plaintext"`` format they
+    are decoded from UTF-8 and stored as plain text. In both cases the table has
+    two columns: ``"key"`` with the partition key of the message (or ``None`` if
+    the message was published without one) and ``"data"`` with the payload. The
+    connector first tries to use the partition key of the message as the primary
+    key of the row, and autogenerates one when the message has no partition key.
+    Note that this makes the row identity follow the partition key rather than
+    the message: several messages sharing a partition key produce several rows
+    with the same primary key, which the operations relying on key uniqueness
+    reject. Set ``autogenerate_key=True`` to give every message its own row
+    instead.
 
     If ``"json"`` is chosen, the connector parses the message payload as JSON and
     creates table columns based on the schema provided in the ``schema`` parameter.
+
+    Compressed messages (``lz4``, ``zlib``, ``zstd``) are decompressed
+    automatically: the codec travels in the message metadata, so no configuration
+    is needed on the reading side. Snappy-compressed topics are not supported:
+    reading such messages fails with a decompression error.
 
     Args:
         uri: The Pulsar service URI, e.g. ``pulsar://localhost:6650`` or
@@ -202,6 +236,15 @@ def read(
             default) selects ``"reader"`` when persistence is enabled and
             ``"shared"`` otherwise. The static mode always uses the
             partition-reader mechanism and ignores this parameter.
+        read_compacted: If ``True``, the subscription reads the compacted view
+            of the topic: for the part of the topic that has been compacted,
+            only the latest message of every partition key is delivered,
+            followed by the messages published after the compaction horizon as
+            usual. Pulsar restricts compacted reads to the single-consumer
+            subscriptions, so this requires the ``"exclusive"`` or
+            ``"failover"`` subscription type and the ``"streaming"`` mode; the
+            partition-reader mechanism (the static mode, persistence,
+            ``subscription_type="reader"``) does not support it.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the
             connector are committed and pushed into Pathway's computation graph.
@@ -210,6 +253,27 @@ def read(
             mapping, it should be given in the format ``<field_name>: <path to be
             mapped>``, where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        autogenerate_key: If ``True``, Pathway autogenerates a unique primary key
+            for every message. Otherwise it first tries to use the partition key
+            of the message, and autogenerates the key only for the messages
+            published without one — so the messages sharing a partition key
+            produce rows with the same primary key. Use ``True`` when the
+            partition keys repeat and every message must stay a separate row.
+            This parameter is only used with the ``"raw"`` and ``"plaintext"``
+            formats.
+        with_metadata: When set to ``True``, the connector adds an additional
+            column named ``_metadata`` to the table, a JSON field describing
+            the Pulsar message the row came from: ``topic`` (the physical
+            topic, including the ``-partition-N`` suffix for partitioned
+            topics), ``partition`` (``-1`` for a non-partitioned topic),
+            ``ledger_id``, ``entry_id`` and ``batch_index`` (the components of
+            the message id; the batch index is ``-1`` for non-batched
+            messages), ``publish_time_millis`` (the broker-assigned publish
+            timestamp, in milliseconds since the UNIX epoch),
+            ``event_time_millis`` (the producer-assigned event timestamp, or
+            ``null`` if the producer didn't set one), ``producer_name``,
+            ``ordering_key`` (base64-encoded, or ``null``) and ``properties``
+            (the user-defined message properties, a string-to-string map).
         start_from: The position to start reading from, if the subscription does not
             exist yet: ``"beginning"`` reads the topic from the earliest available
             message, ``"end"`` reads only the messages published after the
@@ -266,8 +330,9 @@ def read(
     ... )
 
     If the payloads are not JSON, the ``"plaintext"`` format reads each message
-    into a single ``data`` column as a UTF-8 string (and ``"raw"`` does the
-    same without decoding, producing bytes). No schema is needed:
+    into the ``data`` column as a UTF-8 string, with the partition key of the
+    message in the ``key`` column (``"raw"`` does the same without decoding,
+    producing bytes). No schema is needed:
 
     >>> table = pw.io.pulsar.read(
     ...     "pulsar://localhost:6650",
@@ -356,6 +421,15 @@ def read(
     _check_tls_settings(tls_settings)
     if not topic:
         raise ValueError("Topic name must not be empty")
+    if read_compacted and (
+        mode != "streaming" or subscription_type not in ("exclusive", "failover")
+    ):
+        raise ValueError(
+            'read_compacted requires the streaming mode and an "exclusive" or '
+            '"failover" subscription_type: Pulsar serves the compacted view of '
+            "a topic only to single-consumer subscriptions, and the "
+            "partition-reader mechanism does not support it"
+        )
 
     effective_timestamp = resolve_start_from_timestamp_ms(
         start_from, start_from_timestamp_ms
@@ -368,13 +442,19 @@ def read(
         mode=internal_connector_mode(mode),
         durable_consumer_name=subscription_name,
         start_from_timestamp_ms=effective_timestamp,
+        with_metadata=with_metadata,
         tls_settings=tls_settings.settings if tls_settings is not None else None,
-        pulsar_settings=_construct_pulsar_settings(auth, subscription_type),
+        pulsar_settings=_construct_pulsar_settings(
+            auth, subscription_type, read_compacted=read_compacted
+        ),
     )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
         schema=schema,
         json_field_paths=json_field_paths,
+        autogenerate_key=autogenerate_key,
+        with_metadata=with_metadata,
+        with_native_record_key=True,
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
@@ -404,8 +484,12 @@ def write(
     format: Literal["json", "dsv", "raw", "plaintext"] = "json",
     delimiter: str = ",",
     key: ColumnReference | None = None,
+    ordering_key: ColumnReference | None = None,
+    event_time: ColumnReference | EngineTimeMarker | None = None,
     value: ColumnReference | None = None,
     headers: Iterable[ColumnReference] | None = None,
+    compression: Literal["lz4", "zlib", "zstd"] | None = None,
+    producer_name: str | None = None,
     auth: PulsarAuthentication | None = None,
     tls_settings: TLSSettings | None = None,
     name: str | None = None,
@@ -436,12 +520,49 @@ def write(
         key: The column carrying the partition key of the messages. The column must
             be of the string or binary type. If not specified, the key is derived
             from the row's primary key.
+        ordering_key: The column carrying the ordering key of the messages, of the
+            string or binary type. The ordering key is what a ``key_shared``
+            subscription hashes when distributing the messages between its
+            consumers: setting it keeps the messages of one entity in order on one
+            consumer while the partition routing still follows ``key``. If not
+            specified, the ordering key is left unset and ``key_shared``
+            subscriptions fall back to the partition key.
+        event_time: Where the ``event_time`` of the messages comes from. A
+            column reference takes the value from that column of the table:
+            an integer (milliseconds since the UNIX epoch) or a UTC datetime.
+            The ``pw.io.ENGINE_TIME`` marker uses the engine (minibatch) time
+            of the update — the same UNIX timestamp the messages carry in the
+            ``pathway_time`` property, but placed into the native
+            ``event_time`` field, so the consumers read it without parsing
+            the properties. If not set (the default), the ``event_time``
+            field is left unset and the messages only carry the
+            broker-assigned publish time. Note that for the static tables
+            created with ``pw.debug`` utilities the engine time is a small
+            logical counter rather than a wall-clock timestamp; data read
+            through ``pw.io.*`` connectors always carries wall-clock engine
+            times, in both the streaming and the static modes.
         value: The column carrying the payload of the messages in the
             ``"plaintext"`` or ``"raw"`` formats. Can be omitted if the table has
             exactly one column, which then becomes the payload.
         headers: Columns to attach to every message as its properties. The values
             are serialized to JSON strings, because Pulsar message properties are
             string-to-string pairs.
+        compression: The codec the message payloads are compressed with:
+            ``"lz4"``, ``"zlib"``, ``"zstd"``, or ``None`` (the default) to
+            send them uncompressed. Compression is transparent to the
+            consumers: the codec travels in the message metadata, so any
+            Pulsar client — including ``pw.io.pulsar.read`` — decompresses the
+            messages automatically, with no matching setting on the reading
+            side. Snappy is not supported: the underlying client library frames
+            it differently from the other Pulsar clients, so such messages would
+            be unreadable outside Pathway.
+        producer_name: The name the producers register themselves under on the
+            broker, visible in the topic stats and logs — useful to identify
+            the pipeline among the writers of a topic. Pulsar requires
+            producer names to be unique within a topic and every Pathway
+            worker runs its own producer, so the worker index is appended to
+            the name (e.g. ``my-pipeline-0``). If not set, the broker assigns
+            a generated name.
         auth: The authentication mechanism: ``TokenAuthentication``,
             ``OAuth2Authentication``, or ``None`` for clusters without
             authentication.
@@ -520,6 +641,17 @@ def write(
     ...     headers=[t.age, t.pet],
     ... )
 
+    To reduce the network traffic and the storage used by the topic, the
+    payloads can be compressed. The consumers decompress transparently, so no
+    setting is needed on the reading side:
+
+    >>> pw.io.pulsar.write(
+    ...     t,
+    ...     "pulsar://localhost:6650",
+    ...     "clients",
+    ...     compression="zstd",
+    ... )
+
     Finally, for a token-protected cluster pass the authentication object —
     the same way as in ``read``:
 
@@ -535,11 +667,20 @@ def write(
     if isinstance(topic, str) and not topic:
         raise ValueError("Topic name must not be empty")
 
+    event_time_column: ColumnReference | None
+    if isinstance(event_time, EngineTimeMarker):
+        event_time_from_engine = True
+        event_time_column = None
+    else:
+        event_time_from_engine = False
+        event_time_column = event_time
     output_format = MessageQueueOutputFormat.construct(
         table,
         format=format,
         delimiter=delimiter,
         key=key,
+        ordering_key=ordering_key,
+        event_time=event_time_column,
         value=value,
         headers=headers,
         topic_name=topic if isinstance(topic, ColumnReference) else None,
@@ -552,9 +693,16 @@ def write(
         topic=topic if isinstance(topic, str) else None,
         topic_name_index=output_format.topic_name_index,
         key_field_index=output_format.key_field_index,
+        ordering_key_field_index=output_format.ordering_key_field_index,
+        event_time_field_index=output_format.event_time_field_index,
         header_fields=list(output_format.header_fields.items()),
         tls_settings=tls_settings.settings if tls_settings is not None else None,
-        pulsar_settings=_construct_pulsar_settings(auth),
+        pulsar_settings=_construct_pulsar_settings(
+            auth,
+            compression=compression,
+            producer_name=producer_name,
+            event_time_from_engine=event_time_from_engine,
+        ),
     )
 
     table.to(

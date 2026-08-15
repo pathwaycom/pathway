@@ -911,6 +911,10 @@ class PulsarSettings:
         oauth2_audience: str | None = None,
         oauth2_scope: str | None = None,
         subscription_type: str | None = None,
+        compression: str | None = None,
+        read_compacted: bool = False,
+        producer_name: str | None = None,
+        event_time_from_engine: bool = False,
     ) -> None: ...
 
 class TableWriterInitMode(Enum):
@@ -954,6 +958,8 @@ class DataStorage:
         table_name: str | None = None,
         header_fields: list[tuple[str, int]] | None = None,
         key_field_index: int | None = None,
+        ordering_key_field_index: int | None = None,
+        event_time_field_index: int | None = None,
         min_commit_frequency: int | None = None,
         downloader_threads_count: int | None = None,
         database: str | None = None,

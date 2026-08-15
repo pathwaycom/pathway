@@ -55,11 +55,12 @@ from pathway.io._synchronization import (
     SynchronizedColumn,
     register_input_synchronization_group,
 )
-from pathway.io._utils import CsvParserSettings, DurationLike
+from pathway.io._utils import ENGINE_TIME, CsvParserSettings, DurationLike
 
 __all__ = [
     "airbyte",
     "bigquery",
+    "ENGINE_TIME",
     "chroma",
     "clickhouse",
     "csv",

@@ -7,6 +7,7 @@ pub mod mysql;
 pub mod parquet;
 pub mod polling;
 pub mod postgres;
+pub mod pulsar;
 pub mod rabbitmq;
 pub mod sqlite;
 
@@ -38,6 +39,9 @@ pub use mssql::MssqlMetadata;
 pub use mysql::MysqlMetadata;
 
 #[allow(clippy::module_name_repetitions)]
+pub use pulsar::PulsarMetadata;
+
+#[allow(clippy::module_name_repetitions)]
 pub use rabbitmq::RabbitmqMetadata;
 
 #[allow(clippy::module_name_repetitions)]
@@ -56,7 +60,14 @@ pub enum SourceMetadata {
     Iceberg(IcebergMetadata),
     Parquet(ParquetMetadata),
     Postgres(PostgresMetadata),
+    Pulsar(PulsarMetadata),
     Rabbitmq(RabbitmqMetadata),
+}
+
+impl From<PulsarMetadata> for SourceMetadata {
+    fn from(impl_: PulsarMetadata) -> Self {
+        Self::Pulsar(impl_)
+    }
 }
 
 impl From<PollingMetadata> for SourceMetadata {
@@ -138,6 +149,7 @@ impl SourceMetadata {
             Self::Iceberg(meta) => serde_json::to_value(meta),
             Self::Parquet(meta) => serde_json::to_value(meta),
             Self::Postgres(meta) => serde_json::to_value(meta),
+            Self::Pulsar(meta) => serde_json::to_value(meta),
             Self::Rabbitmq(meta) => serde_json::to_value(meta),
         }
         .expect("Internal JSON serialization error")
@@ -154,7 +166,7 @@ impl SourceMetadata {
             | Self::Iceberg(_)
             | Self::Parquet(_)
             | Self::Postgres(_) => false,
-            Self::Kafka(_) | Self::Rabbitmq(_) => true,
+            Self::Kafka(_) | Self::Pulsar(_) | Self::Rabbitmq(_) => true,
         }
     }
 }

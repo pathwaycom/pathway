@@ -36,6 +36,20 @@ SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 METADATA_COLUMN_NAME = "_metadata"
 MESSAGE_QUEUE_KEY_COLUMN_NAME = "key"
 
+
+class EngineTimeMarker:
+    """The type of the ``pw.io.ENGINE_TIME`` marker. Do not instantiate it:
+    pass the ``pw.io.ENGINE_TIME`` singleton where a connector accepts it."""
+
+    def __repr__(self) -> str:
+        return "pathway.io.ENGINE_TIME"
+
+
+#: A marker selecting the engine (minibatch) time of an update — the UNIX
+#: timestamp in milliseconds that the message-queue connectors also attach as
+#: the ``pathway_time`` property — instead of a column of the table.
+ENGINE_TIME = EngineTimeMarker()
+
 STATUS_SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
 STATUS_DOWNLOADED = "downloaded"
 STATUS_SYMLINKS_NOT_SUPPORTED = "skipped_symlinks_not_supported"
@@ -429,6 +443,8 @@ class MessageQueueOutputFormat:
     _: KW_ONLY
     table: Table
     key_field_index: int | None
+    ordering_key_field_index: int | None
+    event_time_field_index: int | None
     header_fields: dict[str, int]
     data_format: api.DataFormat
     topic_name_index: int | None
@@ -441,6 +457,8 @@ class MessageQueueOutputFormat:
         format: str = "json",
         delimiter: str = ",",
         key: ColumnReference | None = None,
+        ordering_key: ColumnReference | None = None,
+        event_time: ColumnReference | None = None,
         value: ColumnReference | None = None,
         headers: Iterable[ColumnReference] | None = None,
         topic_name: ColumnReference | None = None,
@@ -510,6 +528,38 @@ class MessageQueueOutputFormat:
                 )
             key_field_index = cls.add_column_reference_to_extract(
                 key, columns_to_extract, extracted_field_indices
+            )
+        ordering_key_field_index = None
+        if ordering_key is not None:
+            if (
+                allowed_key_types is not None
+                and table[ordering_key._name]._column.dtype not in allowed_key_types
+            ):
+                raise ValueError(
+                    f"The ordering key column must have one of the following "
+                    f"types: {allowed_key_types}"
+                )
+            ordering_key_field_index = cls.add_column_reference_to_extract(
+                ordering_key, columns_to_extract, extracted_field_indices
+            )
+        event_time_field_index = None
+        if event_time is not None:
+            event_time_dtype = table[event_time._name]._column.dtype
+            if event_time_dtype == dt.DATE_TIME_NAIVE:
+                raise ValueError(
+                    "The event time column must not be a timezone-naive "
+                    "datetime: its UTC interpretation would be a silent "
+                    "assumption. Convert it explicitly, e.g. with "
+                    "`.dt.to_utc(...)`."
+                )
+            if event_time_dtype not in (dt.INT, dt.DATE_TIME_UTC, dt.ANY):
+                raise ValueError(
+                    "The event time column must be an integer (milliseconds "
+                    "since the UNIX epoch) or a UTC datetime, however "
+                    f"{event_time_dtype.typehint} is used"
+                )
+            event_time_field_index = cls.add_column_reference_to_extract(
+                event_time, columns_to_extract, extracted_field_indices
             )
         if headers is not None:
             reserved_header_names = {"pathway_time", "pathway_diff"}
@@ -610,6 +660,8 @@ class MessageQueueOutputFormat:
         return cls(
             table=table,
             key_field_index=key_field_index,
+            ordering_key_field_index=ordering_key_field_index,
+            event_time_field_index=event_time_field_index,
             header_fields=header_fields,
             data_format=data_format,
             topic_name_index=topic_name_index,

@@ -52,6 +52,10 @@ use once_cell::sync::Lazy;
 use pulsar::authentication::oauth2::{
     OAuth2Authentication as PulsarOAuth2Authentication, OAuth2Params as PulsarOAuth2Params,
 };
+use pulsar::compression::{
+    Compression as PulsarCompression, CompressionLz4 as PulsarCompressionLz4,
+    CompressionZlib as PulsarCompressionZlib, CompressionZstd as PulsarCompressionZstd,
+};
 use pulsar::consumer::InitialPosition as PulsarInitialPosition;
 use pulsar::{
     Authentication as PulsarAuthentication, ConsumerOptions as PulsarConsumerOptions, Pulsar,
@@ -5099,6 +5103,10 @@ pub struct PulsarSettings {
     oauth2_audience: Option<String>,
     oauth2_scope: Option<String>,
     subscription_type: Option<String>,
+    compression: Option<String>,
+    read_compacted: bool,
+    producer_name: Option<String>,
+    event_time_from_engine: bool,
 }
 
 #[pymethods]
@@ -5111,7 +5119,12 @@ impl PulsarSettings {
         oauth2_audience = None,
         oauth2_scope = None,
         subscription_type = None,
+        compression = None,
+        read_compacted = false,
+        producer_name = None,
+        event_time_from_engine = false,
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         auth_token: Option<String>,
         oauth2_issuer_url: Option<String>,
@@ -5119,6 +5132,10 @@ impl PulsarSettings {
         oauth2_audience: Option<String>,
         oauth2_scope: Option<String>,
         subscription_type: Option<String>,
+        compression: Option<String>,
+        read_compacted: bool,
+        producer_name: Option<String>,
+        event_time_from_engine: bool,
     ) -> Self {
         Self {
             auth_token,
@@ -5127,7 +5144,47 @@ impl PulsarSettings {
             oauth2_audience,
             oauth2_scope,
             subscription_type,
+            compression,
+            read_compacted,
+            producer_name,
+            event_time_from_engine,
         }
+    }
+}
+
+/// Parses the producer-side compression codec from the Pulsar settings.
+/// Consumers need no counterpart: the client library recognizes the codec
+/// from the message metadata and decompresses transparently.
+fn parse_pulsar_compression(
+    settings: Option<&PulsarSettings>,
+) -> PyResult<Option<PulsarCompression>> {
+    let Some(requested) = settings.and_then(|settings| settings.compression.as_deref()) else {
+        return Ok(None);
+    };
+    match requested {
+        "lz4" => Ok(Some(
+            PulsarCompression::Lz4(PulsarCompressionLz4::default()),
+        )),
+        "zlib" => Ok(Some(PulsarCompression::Zlib(
+            PulsarCompressionZlib::default(),
+        ))),
+        "zstd" => Ok(Some(PulsarCompression::Zstd(
+            PulsarCompressionZstd::default(),
+        ))),
+        // Snappy is deliberately unsupported: the client library compresses
+        // it in the snappy *frame* format, while the other Pulsar clients use
+        // the *raw block* format — the messages would be unreadable for every
+        // non-Rust consumer of the topic.
+        "snappy" => Err(PyValueError::new_err(
+            "The \"snappy\" compression codec is not supported by the Pulsar \
+             connector: the underlying client library uses a snappy framing \
+             incompatible with the other Pulsar clients. Use \"lz4\", \"zlib\" \
+             or \"zstd\" instead",
+        )),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown Pulsar compression codec: {other:?}. Only \"lz4\", \"zlib\" \
+             and \"zstd\" are supported"
+        ))),
     }
 }
 
@@ -5145,6 +5202,7 @@ fn construct_pulsar_partition_reader(
     is_static: bool,
     start_from_end: bool,
     min_publish_timestamp_ms: Option<u64>,
+    with_metadata: bool,
     reader_count: usize,
     worker_index: usize,
     connector_index: usize,
@@ -5176,6 +5234,7 @@ fn construct_pulsar_partition_reader(
         worker_index,
         connector_index,
         min_publish_timestamp_ms,
+        with_metadata,
     );
     Ok((Box::new(reader), effective_readers))
 }
@@ -5305,6 +5364,15 @@ fn pulsar_partition_readers_requested(
     let requested = settings.and_then(|settings| settings.subscription_type.as_deref());
     let use_partition_readers =
         is_static || matches!(requested, Some("reader")) || (is_persisted && requested.is_none());
+    if use_partition_readers && settings.is_some_and(|settings| settings.read_compacted) {
+        // Normally rejected in Python before the graph is built; kept as a
+        // defense so the flag is never silently dropped: the partition
+        // readers track explicit per-partition positions, which the compacted
+        // view of a topic does not preserve.
+        return Err(PyValueError::new_err(
+            "read_compacted cannot be used with the partition-reader mode",
+        ));
+    }
     if is_persisted && !use_partition_readers {
         return Err(PyValueError::new_err(format!(
             "Pulsar subscription type {:?} cannot be used with persistence: broker-side \
@@ -5445,6 +5513,8 @@ pub struct DataStorage {
     table_name: Option<String>,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    ordering_key_field_index: Option<usize>,
+    event_time_field_index: Option<usize>,
     min_commit_frequency: Option<u64>,
     downloader_threads_count: Option<usize>,
     database: Option<String>,
@@ -6026,6 +6096,8 @@ impl DataStorage {
         table_name = None,
         header_fields = None,
         key_field_index = None,
+        ordering_key_field_index = None,
+        event_time_field_index = None,
         min_commit_frequency = None,
         downloader_threads_count = None,
         database = None,
@@ -6080,6 +6152,8 @@ impl DataStorage {
         table_name: Option<String>,
         header_fields: Option<Vec<(String, usize)>>,
         key_field_index: Option<usize>,
+        ordering_key_field_index: Option<usize>,
+        event_time_field_index: Option<usize>,
         min_commit_frequency: Option<u64>,
         downloader_threads_count: Option<usize>,
         database: Option<String>,
@@ -6151,6 +6225,8 @@ impl DataStorage {
             table_name,
             header_fields: header_fields.unwrap_or_default(),
             key_field_index,
+            ordering_key_field_index,
+            event_time_field_index,
             min_commit_frequency,
             downloader_threads_count,
             database,
@@ -7327,6 +7403,7 @@ impl DataStorage {
                 is_static,
                 start_from_end,
                 min_publish_timestamp_ms,
+                self.with_metadata,
                 reader_count,
                 worker_index,
                 connector_index,
@@ -7358,40 +7435,74 @@ impl DataStorage {
             return Ok((reader, parallel_readers));
         }
 
-        let tls = self.tls_settings.clone().unwrap_or_default();
-        let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
-
         let subscription_name = self
             .durable_consumer_name
             .clone()
             .unwrap_or_else(|| auto_pulsar_subscription_name(scope, connector_index));
+        let reader = self.construct_pulsar_subscription_reader(
+            runtime,
+            uri,
+            &topic,
+            &subscription_name,
+            streaming_subscription_type,
+            start_from_end,
+            min_publish_timestamp_ms,
+            worker_index,
+            connector_index,
+        )?;
+        Ok((reader, parallel_readers))
+    }
+
+    /// Builds the subscription-mode Pulsar reader: a consumer attached to the
+    /// given subscription, positioned by `start_from_end` when the
+    /// subscription doesn't exist yet.
+    #[allow(clippy::too_many_arguments)]
+    fn construct_pulsar_subscription_reader(
+        &self,
+        runtime: TokioRuntime,
+        uri: &str,
+        topic: &str,
+        subscription_name: &str,
+        subscription_type: PulsarSubType,
+        start_from_end: bool,
+        min_publish_timestamp_ms: Option<u64>,
+        worker_index: usize,
+        connector_index: usize,
+    ) -> PyResult<Box<dyn ReaderBuilder>> {
+        let tls = self.tls_settings.clone().unwrap_or_default();
+        let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
         let subscription_options = PulsarConsumerOptions::default()
             .durable(self.durable_consumer_name.is_some())
             .with_initial_position(if start_from_end {
                 PulsarInitialPosition::Latest
             } else {
                 PulsarInitialPosition::Earliest
-            });
+            })
+            .read_compacted(
+                self.pulsar_settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.read_compacted),
+            );
         let consumer = build_pulsar_subscription_consumer(
             &runtime,
             &client,
-            &topic,
-            &subscription_name,
-            streaming_subscription_type,
+            topic,
+            subscription_name,
+            subscription_type,
             subscription_options,
             worker_index,
         )?;
-
         let reader = PulsarReader::new_with_subscription(
             runtime,
             client,
             consumer,
-            arcstr::ArcStr::from(topic.as_str()),
+            arcstr::ArcStr::from(topic),
             worker_index,
             connector_index,
             min_publish_timestamp_ms,
+            self.with_metadata,
         );
-        Ok((Box::new(reader), parallel_readers))
+        Ok(Box::new(reader))
     }
 
     fn construct_iceberg_reader(
@@ -8147,7 +8258,11 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
-    fn construct_pulsar_writer(&self, license: Option<&License>) -> PyResult<Box<dyn Writer>> {
+    fn construct_pulsar_writer(
+        &self,
+        license: Option<&License>,
+        worker_index: usize,
+    ) -> PyResult<Box<dyn Writer>> {
         if let Some(license) = license {
             license.check_entitlements(["pulsar"])?;
         }
@@ -8156,12 +8271,30 @@ impl DataStorage {
         let runtime = create_async_tokio_runtime()?;
         let tls = self.tls_settings.clone().unwrap_or_default();
         let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+        let compression = parse_pulsar_compression(self.pulsar_settings.as_ref())?;
+        // Pulsar requires producer names to be unique within a topic, and
+        // every worker runs its own producer, so the user-visible name gets a
+        // per-worker suffix instead of colliding in multi-worker runs.
+        let producer_name = self
+            .pulsar_settings
+            .as_ref()
+            .and_then(|settings| settings.producer_name.as_deref())
+            .map(|name| format!("{name}-{worker_index}"));
+        let event_time_from_engine = self
+            .pulsar_settings
+            .as_ref()
+            .is_some_and(|settings| settings.event_time_from_engine);
         let writer = PulsarWriter::new(
             runtime,
             client,
             topic,
             self.header_fields.clone(),
             self.key_field_index,
+            self.ordering_key_field_index,
+            self.event_time_field_index,
+            event_time_from_engine,
+            compression,
+            producer_name,
         );
         Ok(Box::new(writer))
     }
@@ -8465,7 +8598,7 @@ impl DataStorage {
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
-            "pulsar" => self.construct_pulsar_writer(license),
+            "pulsar" => self.construct_pulsar_writer(license, worker_index),
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
