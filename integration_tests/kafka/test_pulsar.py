@@ -679,6 +679,40 @@ def test_pulsar_raw_binary_roundtrip(pulsar_context, tmp_path):
 
 
 @pytest.mark.flaky(reruns=3)
+def test_pulsar_write_publishes_rows_that_fill_a_batch(pulsar_context, tmp_path):
+    """Rows of a few kilobytes are published normally. The producer groups the
+    messages into batches, and a batch is a single Pulsar message on the wire,
+    so the batching must stay within the broker's message size limit no matter
+    how large the individual rows are — otherwise the broker drops the
+    connection and the whole write is lost."""
+    n_messages = 1200  # x 10 KB: far above the broker's 5 MB default per message
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    with open(input_file, "w") as f:
+        for i in range(n_messages):
+            f.write(f"{i:06d}" + "x" * 10_000 + "\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, pulsar_context.topic, format="plaintext"
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    assert len(output_file.read_text().splitlines()) == n_messages
+
+
+@pytest.mark.flaky(reruns=3)
 def test_pulsar_write_large_batch_backpressure(pulsar_context, tmp_path):
     """A minibatch far larger than the writer's in-flight window is delivered
     completely: the backpressure drain frees the window without stalling the
@@ -753,6 +787,67 @@ def test_pulsar_write_rejects_non_string_key(pulsar_context, tmp_path):
         pw.run()
 
 
+def test_pulsar_write_rejects_non_utf8_key(pulsar_context, tmp_path):
+    """Pulsar stores partition keys as strings, so a binary key column whose
+    bytes are not valid UTF-8 cannot be published. Such a key must fail with an
+    error naming the key and its encoding requirement, rather than with a bare
+    decoding failure that gives no hint about which column is at fault."""
+    input_file = tmp_path / "input.txt"
+    input_file.write_text("one\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    table = table.with_columns(
+        binary_key=pw.apply_with_type(lambda _: b"\xff\xfe", bytes, pw.this.data)
+    )
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.data,
+        key=table.binary_key,
+    )
+    with pytest.raises(Exception) as exception_info:
+        pw.run()
+    message = str(exception_info.value)
+    assert "key" in message.lower(), message
+    assert "utf-8" in message.lower(), message
+
+
+def test_pulsar_rejects_empty_names():
+    """A name that is only ever passed on to the broker — the subscription of a
+    read, the producer name of a write — must be rejected when the connector is
+    created if it is empty. An empty subscription name in particular buys a
+    pipeline that subscribes to nothing and delivers nothing forever, which is
+    indistinguishable from an idle topic; both cases usually come from an
+    unset environment variable, and the earlier they surface the better."""
+    G.clear()
+    with pytest.raises(ValueError, match="subscription_name"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            subscription_name="",
+        )
+
+    G.clear()
+    table = pw.debug.table_from_markdown(
+        """
+        data
+        one
+        """
+    )
+    with pytest.raises(ValueError, match="producer_name"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            producer_name="",
+        )
+
+
 def test_pulsar_start_from_validation():
     """Contradictory start_from arguments are rejected at graph-build time."""
     G.clear()
@@ -784,6 +879,73 @@ def test_pulsar_start_from_validation():
 
 
 # --- Message key tests ---
+
+
+@pytest.mark.parametrize(
+    "reader_kwargs",
+    [
+        {"subscription_type": "reader"},
+        {"subscription_type": "shared", "subscription_name": "unload-durable-sub"},
+    ],
+    ids=["reader_mode", "durable_subscription"],
+)
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_survives_topic_unload_without_duplicates(
+    pulsar_context, tmp_path, reader_kwargs
+):
+    """Unloading a topic is a routine broker operation — it happens on
+    rebalancing, on namespace bundle moves and on broker restarts — and it
+    drops the connections of everyone attached to the topic. The reading
+    mechanisms that track their position durably, the partition reader on the
+    client side and a named subscription on the broker side, must come back
+    from it having delivered every message exactly once."""
+    output_file = tmp_path / "output.jsonl"
+    before = [f"before-{i:03d}" for i in range(20)]
+    after = [f"after-{i:03d}" for i in range(15)]
+    for message in before:
+        pulsar_context.send(message)
+
+    def unload_and_publish_more():
+        deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if output_file.exists() and len(
+                output_file.read_text().splitlines()
+            ) >= len(before):
+                break
+            time.sleep(0.5)
+        response = requests.put(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+            f"{pulsar_context.topic}/unload",
+            timeout=60,
+        )
+        response.raise_for_status()
+        time.sleep(3.0)
+        for message in after:
+            pulsar_context.send(message)
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        **reader_kwargs,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    worker = threading.Thread(target=unload_and_publish_more)
+    worker.start()
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, len(before) + len(after)),
+            WAIT_TIMEOUT_SECS * 2,
+        )
+    finally:
+        worker.join()
+
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert sorted(payloads) == sorted(before + after)
 
 
 @pytest.mark.parametrize("input_format", ["plaintext", "raw"])

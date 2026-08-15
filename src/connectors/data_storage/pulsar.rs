@@ -4,6 +4,7 @@ use log::error;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::mem::take;
+use std::str::Utf8Error;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, StreamExt};
@@ -58,6 +59,17 @@ const IN_FLIGHT_DRAIN_TARGET: usize = MAX_IN_FLIGHT_SENDS / 2;
 // forced out explicitly in `flush`, so no message waits for the batch to fill.
 const PRODUCER_BATCH_SIZE: u32 = 1000;
 
+// The payload budget of a single batch. A batch travels to the broker as one
+// message, so it is bounded by the broker's `maxMessageSize` (5 MB by
+// default) — without a byte budget, `PRODUCER_BATCH_SIZE` rows of a few
+// kilobytes each would build a frame far above that limit, and the broker
+// answers an oversized frame by dropping the connection, losing the whole
+// write. The client library does not expose the limit the broker announces on
+// connect, so the budget is a fixed fraction of the default: the same 128 kB
+// the Java client uses, which leaves ample headroom for the message metadata
+// and for the one message that may cross the budget before the batch is cut.
+const PRODUCER_BATCH_MAX_BYTES: usize = 128 * 1024;
+
 // How many messages one runtime entry may take from the subscription
 // consumer. Entering the runtime (`block_on`) costs more than the
 // per-message processing itself, so the reader drains the consumer's locally
@@ -104,6 +116,13 @@ pub enum PulsarError {
          'bytes' nor 'string'"
     )]
     IncorrectOrderingKeyValue(Value),
+
+    #[error(
+        "the partition key of a message must be valid UTF-8 because Pulsar \
+         stores it as a string, but the key column contains bytes that are \
+         not: {0}"
+    )]
+    NonUtf8PartitionKey(Utf8Error),
 }
 
 /// The position of a message within one partition: `(ledger_id, entry_id,
@@ -1057,6 +1076,7 @@ impl PulsarWriter {
                     .with_topic(topic)
                     .with_options(ProducerOptions {
                         batch_size: Some(PRODUCER_BATCH_SIZE),
+                        batch_byte_size: Some(PRODUCER_BATCH_MAX_BYTES),
                         // Await queue space instead of failing with
                         // `SlowDown` when the client's outbound channel
                         // is full.
@@ -1107,7 +1127,9 @@ impl PulsarWriter {
         match self.key_field_index {
             Some(index) => match &data.values[index] {
                 Value::String(string) => Ok(string.to_string()),
-                Value::Bytes(bytes) => Ok(std::str::from_utf8(bytes)?.to_string()),
+                Value::Bytes(bytes) => Ok(std::str::from_utf8(bytes)
+                    .map_err(PulsarError::NonUtf8PartitionKey)?
+                    .to_string()),
                 _ => Err(WriteError::IncorrectKeyFieldType(
                     data.values[index].clone(),
                 )),

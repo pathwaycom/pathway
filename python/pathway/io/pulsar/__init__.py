@@ -220,9 +220,15 @@ def read(
             pins the topic backlog on the broker until the subscription is
             removed, so its lifecycle is the user's responsibility. If not
             set, the connector generates a per-run name and subscribes
-            non-durably, leaving no state behind on the broker; multi-process
-            runs of the ``"shared"`` and ``"key_shared"`` types require an
-            explicit name, because every process must attach to one shared
+            non-durably, leaving no state behind on the broker — but a
+            non-durable cursor only lives as long as the connection, so
+            whenever the broker drops it (a topic unload, a rebalancing, a
+            broker restart) the reading resumes from ``start_from`` and the
+            messages processed so far are delivered again. Provide an explicit
+            name, or use the partition-reader mode, for the pipelines that
+            must not see such repetitions. Multi-process runs of the
+            ``"shared"`` and ``"key_shared"`` types require an explicit name
+            as well, because every process must attach to one shared
             subscription. The partition-reader mode does not create
             broker-side subscriptions and ignores this parameter.
         subscription_type: The reading mechanism. ``"reader"`` is the
@@ -394,9 +400,12 @@ def read(
     ... )
 
     Finally, deduplication. The partition-reader recovery itself introduces no
-    duplicates, but the topic may contain them for other reasons — a producer
-    that retried a send (including ``pw.io.pulsar.write``, whose delivery is
-    at-least-once), or an upstream system that emits the same event twice. If
+    duplicates, and neither does a named (durable) subscription. An
+    auto-generated subscription does: it is non-durable, so a broker-side
+    reconnection restarts it from ``start_from``. The topic may also contain
+    duplicates for reasons of its own — a producer that retried a send
+    (including ``pw.io.pulsar.write``, whose delivery is at-least-once), or an
+    upstream system that emits the same event twice. If
     this matters for the downstream logic — for example, the pipeline counts
     events — and the events carry a unique identifier, the duplicates can be
     removed by grouping on that identifier: every copy of an event has the
@@ -421,6 +430,12 @@ def read(
     _check_tls_settings(tls_settings)
     if not topic:
         raise ValueError("Topic name must not be empty")
+    if subscription_name is not None and not subscription_name:
+        raise ValueError(
+            "subscription_name must not be empty: Pulsar cannot attach a "
+            "subscription under an empty name, and the connector would deliver "
+            "nothing. Drop the parameter to let the connector generate a name."
+        )
     if read_compacted and (
         mode != "streaming" or subscription_type not in ("exclusive", "failover")
     ):
@@ -518,8 +533,9 @@ def write(
         delimiter: The delimiter separating the fields, if the ``"dsv"`` format is
             used.
         key: The column carrying the partition key of the messages. The column must
-            be of the string or binary type. If not specified, the key is derived
-            from the row's primary key.
+            be of the string or binary type; a binary key must be valid UTF-8,
+            because Pulsar stores partition keys as strings. If not specified, the
+            key is derived from the row's primary key.
         ordering_key: The column carrying the ordering key of the messages, of the
             string or binary type. The ordering key is what a ``key_shared``
             subscription hashes when distributing the messages between its
@@ -666,6 +682,11 @@ def write(
     _check_tls_settings(tls_settings)
     if isinstance(topic, str) and not topic:
         raise ValueError("Topic name must not be empty")
+    if producer_name is not None and not producer_name:
+        raise ValueError(
+            "producer_name must not be empty. Drop the parameter to let the "
+            "broker assign a generated name."
+        )
 
     event_time_column: ColumnReference | None
     if isinstance(event_time, EngineTimeMarker):
