@@ -39,6 +39,13 @@ const PATHWAY_TELEMETRY_SERVER: &str = "https://usage.pathway.com";
 const PERIODIC_READER_INTERVAL: Duration = Duration::from_mins(1);
 const OPENTELEMETRY_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 
+// The telemetry runtime drives one periodic reader and its exporters. Tokio
+// would otherwise size its pool by the host's CPU count, which has nothing to
+// do with how many CPUs the process may use - a container limited to a couple
+// of cores on a large machine got a thread per host core, in every worker
+// process.
+const TELEMETRY_RUNTIME_WORKER_THREADS: usize = 2;
+
 const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";
 const PROCESS_CPU_USER_TIME: &str = "process.cpu.utime";
 const PROCESS_CPU_SYSTEM_TIME: &str = "process.cpu.stime";
@@ -567,6 +574,7 @@ fn start_telemetry_thread(
         .name("pathway:telemetry_thread".to_string())
         .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(TELEMETRY_RUNTIME_WORKER_THREADS)
                 .enable_time()
                 .enable_io()
                 .build()

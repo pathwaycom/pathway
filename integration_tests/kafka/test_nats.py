@@ -30,6 +30,11 @@ JETSTREAM_SERVER_URI = "nats://nats-js:4222/"
 NATS_READY_TIMEOUT = 90.0
 NATS_RETRY_INTERVAL = 0.2
 
+# How long to wait for a torn-down reader's pull request to disappear from the
+# server. Exceeds the consumers' `ack_wait` (30 s by default), so that a message
+# already handed to a dead reader is released back to the stream within it.
+CONSUMER_IDLE_TIMEOUT = 60.0
+
 # Transient NATS errors that clear on retry at startup / under load:
 #   * OSError              — TCP connection refused/reset before the server is up;
 #   * nats.errors.Error    — base of NoServersError, TimeoutError,
@@ -168,6 +173,42 @@ class JetStreamManager:
         fut = asyncio.run_coroutine_threadsafe(_inner(), self._loop)
         return fut.result()
 
+    def wait_until_consumers_idle(self, timeout: float = CONSUMER_IDLE_TIMEOUT) -> None:
+        """Wait until no consumer of the stream can swallow the next publish.
+
+        A reader process that has just been torn down leaves its pull request
+        registered on the server until the disconnect is noticed. A message
+        published in that window is handed to the dead reader and, as nobody
+        acknowledges it, stays invisible to every other consumer until the
+        consumer's ``ack_wait`` (30 s by default) elapses.
+        """
+
+        async def _inner() -> None:
+            deadline = time.monotonic() + timeout
+            while True:
+                consumers = await self._jetstream.consumers_info(self.stream_name)
+                busy = [
+                    c
+                    for c in consumers
+                    if (c.num_waiting or 0) > 0 or (c.num_ack_pending or 0) > 0
+                ]
+                if not busy:
+                    return
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        "JetStream consumers did not become idle in "
+                        f"{timeout} seconds: "
+                        + ", ".join(
+                            f"{c.name}(waiting={c.num_waiting}, "
+                            f"ack_pending={c.num_ack_pending})"
+                            for c in busy
+                        )
+                    )
+                await asyncio.sleep(NATS_RETRY_INTERVAL)
+
+        fut = asyncio.run_coroutine_threadsafe(_inner(), self._loop)
+        fut.result()
+
 
 def run_identity_program(
     input_file: pathlib.Path,
@@ -210,7 +251,10 @@ def run_identity_program(
         stream_name = f"stream-{nats_topic}"
         with JetStreamManager(
             JETSTREAM_SERVER_URI, stream=stream_name, subjects=[nats_topic]
-        ):
+        ) as js:
+            # A previous run's reader may still hold a pull request on the
+            # server, which would swallow the messages this run publishes.
+            js.wait_until_consumers_idle()
             inner(JETSTREAM_SERVER_URI, stream_name)
     else:
         inner(NATS_SERVER_URI, None)
@@ -425,6 +469,10 @@ def test_jetstream_reader(with_external_consumer: bool, tmp_path: pathlib.Path):
             for row in f:
                 row_id = int(json.loads(row)["data"])
                 assert interval_start <= row_id <= interval_finish
+        # The reader process is gone, but its pull request may still be
+        # registered on the server: whatever is published next must not be
+        # handed to it.
+        js.wait_until_consumers_idle()
 
     with JetStreamManager(
         JETSTREAM_SERVER_URI,

@@ -128,6 +128,12 @@ xpack-llm-docs = [
     # no cp314 wheels, and paddlex pins pyyaml==6.0.2, which only builds from
     # source there. The parser reports a clear error when paddleocr is absent.
     "paddleocr[doc-parser] >= 3.3.1, < 4.0.0; python_version < '3.14'",
+    # `paddlex` pins `opencv-contrib-python == 4.10.0.84` while `unstructured`
+    # and `rapidocr` pull an unconstrained `opencv-python`. Both distributions
+    # install the same `cv2/*` files, and OpenCV 5 dropped the G-API Python glue
+    # that OpenCV 4 ships, so a mixed 4/5 install makes `import cv2` fail with
+    # `module 'cv2' has no attribute 'gapi_wip_gst_GStreamerPipeline'`.
+    "opencv-python < 5",
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",

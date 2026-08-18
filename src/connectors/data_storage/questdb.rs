@@ -6,6 +6,7 @@ use questdb::ingress::{
     Buffer as QuestDBBuffer, Sender as QuestDBSender, Timestamp as QuestDBTimestamp,
     TimestampMicros as QuestDBTimestampMicros, TimestampNanos as QuestDBTimestampNanos,
 };
+use questdb::ErrorCode as QuestDBErrorCode;
 
 use crate::connectors::data_format::{
     create_bincoded_value, serialize_value_to_json, FormatterContext, FormatterError,
@@ -13,6 +14,7 @@ use crate::connectors::data_format::{
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::time::DateTime;
 use crate::engine::Value;
+use crate::retry::{execute_with_retries_if, RetryConfig};
 
 use super::{WriteError, Writer};
 
@@ -30,6 +32,29 @@ pub enum QuestDBAtColumnPolicy {
 // and overlaps serialization with the network. Overridable via
 // PATHWAY_QUESTDB_FLUSH_BYTES (mainly for benchmarking).
 const QUESTDB_DEFAULT_FLUSH_BYTES: usize = 48 * 1024 * 1024;
+
+// How many times a flush that failed at the network level is resent: a busy
+// server outlives `questdb-rs`'s own budget, and the engine retries only
+// `write`, which for this connector just fills an in-memory buffer.
+const QUESTDB_FLUSH_RETRIES: usize = 5;
+
+// `questdb-rs` reports every network-level failure as `SocketError`; the rest
+// (invalid name, rejected data) fails the same way on every attempt.
+fn is_retriable_flush_error(error: &WriteError) -> bool {
+    matches!(error, WriteError::QuestDB(error)
+        if error.code() == QuestDBErrorCode::SocketError)
+}
+
+// `Sender::flush` clears the buffer only after the request succeeds, so a
+// resend is a plain repeat of the same request.
+fn flush_buffer(sender: &mut QuestDBSender, buffer: &mut QuestDBBuffer) -> Result<(), WriteError> {
+    execute_with_retries_if(
+        || sender.flush(buffer).map_err(WriteError::from),
+        is_retriable_flush_error,
+        RetryConfig::default(),
+        QUESTDB_FLUSH_RETRIES,
+    )
+}
 
 pub struct QuestDBWriter {
     sender: QuestDBSender,
@@ -193,7 +218,7 @@ impl Writer for QuestDBWriter {
         // its `max_buf_size` (which would panic the worker) and so memory
         // stays bounded for arbitrarily large minibatches.
         if self.buffer.len() >= self.max_buffer_bytes {
-            self.sender.flush(&mut self.buffer)?;
+            flush_buffer(&mut self.sender, &mut self.buffer)?;
             self.has_updates = false;
         }
 
@@ -204,7 +229,7 @@ impl Writer for QuestDBWriter {
         if self.has_updates {
             // `Sender::flush` drains (clears) the buffer; the next
             // `write` starts the following row with its own `table()`.
-            self.sender.flush(&mut self.buffer)?;
+            flush_buffer(&mut self.sender, &mut self.buffer)?;
             self.has_updates = false;
         }
         Ok(())
