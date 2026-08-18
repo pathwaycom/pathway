@@ -5447,9 +5447,24 @@ fn build_pulsar_client(
             ));
         }
     }
-    runtime
-        .block_on(builder.build())
-        .map_err(|e| PyIOError::new_err(format!("Failed to connect to Pulsar: {e}")))
+    runtime.block_on(builder.build()).map_err(|e| {
+        let mut message = format!("Failed to connect to Pulsar: {e}");
+        // The client library collapses every non-retryable connection
+        // failure — most commonly a broker rejecting the authentication
+        // credentials — into this one opaque phrase, logging the broker's
+        // actual reply at the error level instead of returning it. Point
+        // the user at the usual causes so the error is actionable.
+        if e.to_string()
+            .contains("fatal error when connecting to the Pulsar server")
+        {
+            message.push_str(
+                ". The broker's exact reply is in the error log above; the usual causes \
+                 are rejected authentication credentials (a missing or invalid token) or \
+                 a TLS/plaintext mismatch between the URI scheme and the broker port",
+            );
+        }
+        PyIOError::new_err(message)
+    })
 }
 
 #[derive(Clone, Debug)]

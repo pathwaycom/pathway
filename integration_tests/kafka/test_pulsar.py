@@ -410,6 +410,26 @@ def test_pulsar_persistence_no_rereading(pulsar_context, tmp_path: pathlib.Path)
 # --- Authentication tests (the `pulsar-auth` broker: JWT token required) ---
 
 
+def test_pulsar_rejected_credentials_error_names_the_likely_cause():
+    """Connecting with credentials the broker rejects must fail with an error
+    that points at authentication as the likely cause. The client library
+    reports such rejections as a generic fatal connection error, which on its
+    own sends the user hunting for network problems instead of checking the
+    token."""
+    G.clear()
+    auth = pw.io.pulsar.TokenAuthentication("not-a-valid-token")
+    table = pw.io.pulsar.read(
+        PULSAR_AUTH_SERVICE_URI,
+        f"pulsar-{uuid4()}",
+        format="plaintext",
+        mode="static",
+        auth=auth,
+    )
+    pw.io.null.write(table)
+    with pytest.raises(Exception, match="authentication"):
+        pw.run()
+
+
 @pytest.mark.flaky(reruns=3)
 def test_pulsar_token_authentication(tmp_path):
     """A token-authenticated broker accepts reads and writes with the token."""
@@ -710,6 +730,27 @@ def test_pulsar_write_publishes_rows_that_fill_a_batch(pulsar_context, tmp_path)
     pw.run()
 
     assert len(output_file.read_text().splitlines()) == n_messages
+
+
+def test_pulsar_write_names_the_size_limit_for_an_oversized_message(pulsar_context):
+    """A single row larger than the broker's per-message size limit cannot be
+    published: the broker drops the connection upon receiving the frame. The
+    write must then fail with an error that names the message size and the
+    ``maxMessageSize`` limit, so the user learns what to fix — not with a
+    bare connection-drop report."""
+
+    class InputSchema(pw.Schema):
+        data: str
+
+    G.clear()
+    table = pw.debug.table_from_rows(
+        InputSchema, [("x" * (6 * 1024 * 1024),)]  # over the 5 MiB default
+    )
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, pulsar_context.topic, format="plaintext"
+    )
+    with pytest.raises(Exception, match="maxMessageSize"):
+        pw.run()
 
 
 @pytest.mark.flaky(reruns=3)

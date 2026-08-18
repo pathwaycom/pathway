@@ -70,6 +70,13 @@ const PRODUCER_BATCH_SIZE: u32 = 1000;
 // and for the one message that may cross the budget before the batch is cut.
 const PRODUCER_BATCH_MAX_BYTES: usize = 128 * 1024;
 
+// Pulsar's default broker-side limit on a single wire message
+// (`maxMessageSize` in broker.conf). The client library performs no size
+// check of its own, and the broker reacts to an oversized frame by closing
+// the connection — so when a send fails while a payload above this limit is
+// in flight, the error is annotated with the likely cause.
+const PULSAR_DEFAULT_MAX_MESSAGE_SIZE: usize = 5 * 1024 * 1024;
+
 // How many messages one runtime entry may take from the subscription
 // consumer. Entering the runtime (`block_on`) costs more than the
 // per-message processing itself, so the reader drains the consumer's locally
@@ -123,6 +130,14 @@ pub enum PulsarError {
          not: {0}"
     )]
     NonUtf8PartitionKey(Utf8Error),
+
+    #[error(
+        "failed to publish a message of {size} bytes: {source}. A message \
+         this large exceeds Pulsar's default per-message limit \
+         (maxMessageSize, 5242880 bytes), and the broker closes the \
+         connection when it receives an oversized frame"
+    )]
+    OversizedMessage { size: usize, source: pulsar::Error },
 }
 
 /// The position of a message within one partition: `(ledger_id, entry_id,
@@ -1005,6 +1020,10 @@ pub struct PulsarWriter {
     // explicitly under `runtime.enter()` (see the `Drop` impl below).
     producers: Option<HashMap<String, Producer<TokioExecutor>>>,
     in_flight: VecDeque<SendFuture>,
+    // The largest payload submitted since the in-flight queue was last
+    // empty. Used to annotate a failed send with the oversized-message
+    // diagnosis (see `PULSAR_DEFAULT_MAX_MESSAGE_SIZE`).
+    max_pending_payload_bytes: usize,
     runtime: TokioRuntime,
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
@@ -1053,6 +1072,7 @@ impl PulsarWriter {
             client,
             producers: Some(HashMap::new()),
             in_flight: VecDeque::new(),
+            max_pending_payload_bytes: 0,
             topic,
             header_fields,
             key_field_index,
@@ -1104,21 +1124,43 @@ impl PulsarWriter {
     async fn drain_in_flight(
         producers: &mut HashMap<String, Producer<TokioExecutor>>,
         in_flight: &mut VecDeque<SendFuture>,
+        max_pending_payload_bytes: &mut usize,
         limit: usize,
     ) -> Result<(), WriteError> {
-        if in_flight.len() <= limit {
-            return Ok(());
+        if in_flight.len() > limit {
+            let annotate =
+                |error: pulsar::Error| Self::annotate_send_error(error, *max_pending_payload_bytes);
+            for producer in producers.values_mut() {
+                producer.send_batch().await.map_err(annotate)?;
+            }
+            while in_flight.len() > limit {
+                let send_future = in_flight
+                    .pop_front()
+                    .expect("in_flight is non-empty while its length exceeds the limit");
+                send_future.await.map_err(annotate)?;
+            }
         }
-        for producer in producers.values_mut() {
-            producer.send_batch().await.map_err(PulsarError::from)?;
-        }
-        while in_flight.len() > limit {
-            let send_future = in_flight
-                .pop_front()
-                .expect("in_flight is non-empty while its length exceeds the limit");
-            send_future.await.map_err(PulsarError::from)?;
+        if in_flight.is_empty() {
+            *max_pending_payload_bytes = 0;
         }
         Ok(())
+    }
+
+    // A send failure while an oversized payload is in flight is almost
+    // certainly the broker dropping the connection over its per-message
+    // limit; the raw client error ("Connection error: Disconnected") does
+    // not say so, hence the annotation. The limit is broker-configurable,
+    // so the check is applied to the diagnosis, not to the send itself: a
+    // broker configured with a higher limit accepts such messages normally.
+    fn annotate_send_error(error: pulsar::Error, max_pending_payload_bytes: usize) -> PulsarError {
+        if max_pending_payload_bytes > PULSAR_DEFAULT_MAX_MESSAGE_SIZE {
+            PulsarError::OversizedMessage {
+                size: max_pending_payload_bytes,
+                source: error,
+            }
+        } else {
+            PulsarError::from(error)
+        }
     }
 }
 
@@ -1201,6 +1243,7 @@ impl Writer for PulsarWriter {
             runtime,
             producers,
             in_flight,
+            max_pending_payload_bytes,
             ..
         } = self;
         let producers = producers.as_mut().expect("producers are set until drop");
@@ -1217,10 +1260,18 @@ impl Writer for PulsarWriter {
                     }
                 };
                 if in_flight.len() >= MAX_IN_FLIGHT_SENDS {
-                    Self::drain_in_flight(producers, in_flight, IN_FLIGHT_DRAIN_TARGET).await?;
+                    Self::drain_in_flight(
+                        producers,
+                        in_flight,
+                        max_pending_payload_bytes,
+                        IN_FLIGHT_DRAIN_TARGET,
+                    )
+                    .await?;
                 }
+                let payload = payload.into_raw_bytes()?;
+                *max_pending_payload_bytes = (*max_pending_payload_bytes).max(payload.len());
                 let message = PulsarProducerMessage {
-                    payload: payload.into_raw_bytes()?,
+                    payload,
                     properties,
                     partition_key: Some(partition_key.clone()),
                     ordering_key: ordering_key.clone(),
@@ -1232,7 +1283,7 @@ impl Writer for PulsarWriter {
                     .expect("the producer is created by ensure_producer above");
                 let send_future = Box::pin(producer.send_non_blocking(message))
                     .await
-                    .map_err(PulsarError::from)?;
+                    .map_err(|e| Self::annotate_send_error(e, *max_pending_payload_bytes))?;
                 in_flight.push_back(send_future);
             }
             Ok(())
@@ -1244,6 +1295,7 @@ impl Writer for PulsarWriter {
             runtime,
             producers,
             in_flight,
+            max_pending_payload_bytes,
             ..
         } = self;
         let producers = producers.as_mut().expect("producers are set until drop");
@@ -1255,7 +1307,9 @@ impl Writer for PulsarWriter {
         // consider already written — a crash would then lose it forever.
         // The send pipelining happens inside `write` instead (see
         // MAX_IN_FLIGHT_SENDS), where no commit point can interleave.
-        runtime.block_on(async { Self::drain_in_flight(producers, in_flight, 0).await })
+        runtime.block_on(async {
+            Self::drain_in_flight(producers, in_flight, max_pending_payload_bytes, 0).await
+        })
     }
 
     fn retriable(&self) -> bool {
