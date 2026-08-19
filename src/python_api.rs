@@ -456,7 +456,26 @@ fn py_type_error(ob: &Bound<PyAny>, type_: &Type) -> PyErr {
     ))
 }
 
+/// Fast paths for the most common scalar types: avoid the `Error`
+/// isinstance check on the hot path. An `Error` instance can never be
+/// extracted as one of these primitives, so the semantics are unchanged.
+fn extract_scalar_fast(ob: &Bound<PyAny>, type_: &Type) -> Option<Value> {
+    match type_ {
+        Type::Int => ob.extract::<i64>().ok().map(Value::Int),
+        Type::Float => ob.extract::<f64>().ok().map(|f| Value::Float(f.into())),
+        Type::Bool => ob.extract::<bool>().ok().map(Value::from),
+        Type::String => ob
+            .cast::<PyString>()
+            .ok()
+            .and_then(|s| s.to_str().ok().map(Value::from)),
+        _ => None,
+    }
+}
+
 pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
+    if let Some(value) = extract_scalar_fast(ob, type_) {
+        return Ok(value);
+    }
     if ob.is_instance_of::<Error>() {
         return Ok(Value::Error);
     }
@@ -1448,6 +1467,48 @@ macro_rules! binary_expr {
     };
 }
 
+/// Calls a Python UDF with the given row of `Value`s.
+///
+/// When the interpreter API allows it, uses `PyObject_Vectorcall`, which
+/// skips the intermediate args tuple allocation and lets CPython use the
+/// fastest calling convention for the callee.
+#[cfg(any(Py_3_12, all(Py_3_11, not(Py_LIMITED_API))))]
+fn call_python_udf<'py>(
+    py: Python<'py>,
+    function: &Py<PyAny>,
+    args: &[Value],
+) -> PyResult<Bound<'py, PyAny>> {
+    use smallvec::SmallVec;
+    let converted: SmallVec<[Bound<'py, PyAny>; 4]> = args
+        .iter()
+        .map(|v| v.into_pyobject(py))
+        .collect::<PyResult<_>>()?;
+    // One extra leading slot for PY_VECTORCALL_ARGUMENTS_OFFSET.
+    let mut ptrs: SmallVec<[*mut pyo3::ffi::PyObject; 5]> =
+        SmallVec::with_capacity(converted.len() + 1);
+    ptrs.push(std::ptr::null_mut());
+    ptrs.extend(converted.iter().map(Bound::as_ptr));
+    unsafe {
+        let result = pyo3::ffi::PyObject_Vectorcall(
+            function.as_ptr(),
+            ptrs.as_ptr().add(1),
+            converted.len() | pyo3::ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+            std::ptr::null_mut(),
+        );
+        Bound::from_owned_ptr_or_err(py, result)
+    }
+}
+
+#[cfg(not(any(Py_3_12, all(Py_3_11, not(Py_LIMITED_API)))))]
+fn call_python_udf<'py>(
+    py: Python<'py>,
+    function: &Py<PyAny>,
+    args: &[Value],
+) -> PyResult<Bound<'py, PyAny>> {
+    let args = PyTuple::new(py, args)?;
+    function.bind(py).call1(args)
+}
+
 fn batch_apply(
     input: &[&[Value]],
     n_args: usize,
@@ -1597,9 +1658,8 @@ impl PyExpression {
                             if propagate_none && input_i.iter().any(|a| matches!(a, Value::None)) {
                                 Ok(Value::None)
                             } else {
-                                let args = PyTuple::new(py, *input_i)?;
-                                let result = function.call1(py, args)?;
-                                Ok(extract_value(result.bind(py), &dtype)?)
+                                let result = call_python_udf(py, &function, input_i)?;
+                                Ok(extract_value(&result, &dtype)?)
                             }
                         })
                         .collect()
@@ -9258,7 +9318,7 @@ fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) ->
     Ok(())
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[pyo3(name = "engine")]
 fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     // Initialize the logging

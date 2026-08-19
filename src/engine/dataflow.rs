@@ -1486,11 +1486,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let result = table
             .values()
             .map_named("extract_columns::extract", move |(key, values)| {
+                // unwrap per element: a `Result` iterator isn't `TrustedLen`,
+                // so `try_collect` would go through an intermediate `Vec`
+                // instead of allocating the `Arc` slice directly
                 let extracted_values: Arc<[Value]> = column_paths
                     .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .try_collect()
-                    .unwrap_with_reporter(&error_reporter);
+                    .map(|path| {
+                        path.extract(&key, &values)
+                            .unwrap_with_reporter(&error_reporter)
+                    })
+                    .collect();
                 (key, extracted_values)
             });
         Ok(TupleCollection::More(result))
@@ -1572,42 +1577,49 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(table.values_consolidated().map_wrapped_batched_named(
             "expression_table::evaluate_expression",
             move |data| {
-                let mut results = Vec::with_capacity(data.len());
-                let mut args = Vec::with_capacity(data.len());
-                let mut keys = Vec::with_capacity(data.len());
+                let n_expressions = expressions.len();
+                let n_rows = data.len();
+                let mut args = Vec::with_capacity(n_rows);
+                let mut keys = Vec::with_capacity(n_rows);
                 for (key, values) in data {
                     let args_i: Vec<Value> = column_paths
                         .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter);
+                        .map(|path| {
+                            path.extract(&key, &values)
+                                .unwrap_with_reporter(&error_reporter)
+                        })
+                        .collect();
                     args.push(args_i);
                     keys.push(key);
-                    results.push(vec![Value::None; expressions.len()]);
                 }
+                // single flat buffer instead of a per-row Vec of results
+                let mut results = vec![Value::None; n_rows * n_expressions];
 
                 let args: Vec<&[Value]> = args.iter().map(|a| -> &[Value] { a }).collect();
                 // if a better behavior for append only is needed (then only output has to be append only, not input):
                 // split this closure here into two - first part (extraction from paths) before consolidation
                 // and second part (evals) after consolidation
                 for (i, expression_data) in expressions.iter().enumerate() {
-                    let result_for_expression: Vec<_> = args
-                        .chunks(max_expression_batch_size)
-                        .flat_map(|args| expression_data.expression.eval(args))
-                        .collect();
-                    for (j, result_i) in result_for_expression.into_iter().enumerate() {
-                        let result_i = result_i.unwrap_or_log_with_trace(
-                            error_logger.as_ref(),
-                            expression_data.properties.trace().as_ref(),
-                            Value::Error,
-                        );
-                        results[j][i] = result_i;
+                    let mut j = 0;
+                    for chunk in args.chunks(max_expression_batch_size) {
+                        for result_i in expression_data.expression.eval(chunk) {
+                            let result_i = result_i.unwrap_or_log_with_trace(
+                                error_logger.as_ref(),
+                                expression_data.properties.trace().as_ref(),
+                                Value::Error,
+                            );
+                            results[j * n_expressions + i] = result_i;
+                            j += 1;
+                        }
                     }
+                    assert_eq!(j, n_rows);
                 }
-                results
-                    .into_iter()
-                    .zip_eq(keys)
-                    .map(|(result_i, key)| (key, Value::Tuple(result_i.into())))
+                let mut results = results.into_iter();
+                keys.into_iter()
+                    .map(|key| {
+                        let row: Arc<[Value]> = results.by_ref().take(n_expressions).collect();
+                        (key, Value::Tuple(row))
+                    })
                     .collect()
             },
         ))
@@ -1683,9 +1695,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                 OldOrNew::New(values) => {
                                     let args: Vec<Value> = column_paths
                                         .iter()
-                                        .map(|path| path.extract(&key, &values))
-                                        .collect::<Result<_>>()
-                                        .unwrap_with_reporter(&error_reporter);
+                                        .map(|path| {
+                                            path.extract(&key, &values)
+                                                .unwrap_with_reporter(&error_reporter)
+                                        })
+                                        .collect();
                                     rows.push(RowData {
                                         key,
                                         args,

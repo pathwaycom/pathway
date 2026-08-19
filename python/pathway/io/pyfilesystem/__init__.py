@@ -63,7 +63,7 @@ class _PyFilesystemSubject(ConnectorSubject):
                     try:
                         with self.source.open(changed_path) as file:
                             data = file.read().encode("utf-8")
-                    except FileNotFoundError:
+                    except (FileNotFoundError, FSResourceNotFound):
                         logging.exception(
                             f"Failed to read file from {changed_path}. "
                             "Most likely it was deleted between the change "
@@ -133,20 +133,44 @@ class _PyFilesystemSubject(ConnectorSubject):
         existing_paths = set()
 
         with optional_imports("pyfilesystem"):
+            from fs.errors import ResourceNotFound as FSResourceNotFound
             from fs.walk import Walker
 
         walker = Walker()
-        for path in walker.files(self.source, path=self.path):
-            existing_paths.add(path)
-            modified_at = self.source.getmodified(path)
-            stored_modified_at = self.stored_modify_times.get(path)
-            if modified_at != stored_modified_at:
-                self.stored_modify_times[path] = modified_at
-                changed_paths.append(path)
+        scan_completed = True
+        try:
+            for path in walker.files(self.source, path=self.path):
+                try:
+                    modified_at = self.source.getmodified(path)
+                except FSResourceNotFound:
+                    # The file was deleted between the directory listing and
+                    # the stat call. Don't mark it as existing: if it was seen
+                    # before, its deletion is reported below.
+                    logging.info(
+                        f"Failed to get modification time for {path}. "
+                        "Most likely it was deleted during the scan"
+                    )
+                    continue
+                existing_paths.add(path)
+                stored_modified_at = self.stored_modify_times.get(path)
+                if modified_at != stored_modified_at:
+                    self.stored_modify_times[path] = modified_at
+                    changed_paths.append(path)
+        except FSResourceNotFound:
+            # A directory was deleted in the middle of the traversal, so the
+            # listing is incomplete. The files that were reached are processed
+            # normally, but deletion detection must be skipped for this scan:
+            # unvisited files would be falsely reported as deleted.
+            logging.info(
+                "The filesystem scan was interrupted by a concurrent deletion, "
+                "postponing deletion detection until the next scan"
+            )
+            scan_completed = False
 
-        for path in self.stored_modify_times:
-            if path not in existing_paths:
-                deleted_paths.append(path)
+        if scan_completed:
+            for path in self.stored_modify_times:
+                if path not in existing_paths:
+                    deleted_paths.append(path)
 
         return _PyFilesystemUpdate(
             changed_paths=changed_paths,

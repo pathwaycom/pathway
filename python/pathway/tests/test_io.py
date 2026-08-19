@@ -2968,6 +2968,84 @@ def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
     t.join()
 
 
+def _make_pyfilesystem_subject(source):
+    from pathway.io.pyfilesystem import _PyFilesystemSubject
+
+    return _PyFilesystemSubject(
+        source,
+        path="",
+        mode="streaming",
+        refresh_interval=0.1,
+        with_metadata=False,
+    )
+
+
+def test_pyfilesystem_scan_survives_deletion_between_listing_and_stat(
+    tmp_path: pathlib.Path,
+):
+    from fs.errors import ResourceNotFound
+
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    write_lines(inputs_path / "input1.jsonlines", json.dumps({"key": 1}))
+    write_lines(inputs_path / "input2.jsonlines", json.dumps({"key": 2}))
+
+    with open_fs(os.fspath(inputs_path)) as source:
+        subject = _make_pyfilesystem_subject(source)
+        update = subject._get_snapshot_update()
+        assert len(update.changed_paths) == 2
+        assert update.deleted_paths == []
+
+        # Simulate a file deleted between the directory listing and the stat
+        # call: it is still returned by the walker, but stat fails. The scan
+        # must survive and report the file as deleted.
+        original_getmodified = source.getmodified
+
+        def racy_getmodified(path):
+            if path.endswith("input1.jsonlines"):
+                raise ResourceNotFound(path)
+            return original_getmodified(path)
+
+        source.getmodified = racy_getmodified
+        update = subject._get_snapshot_update()
+        assert update.changed_paths == []
+        assert len(update.deleted_paths) == 1
+        assert update.deleted_paths[0].endswith("input1.jsonlines")
+
+
+def test_pyfilesystem_scan_interrupted_by_dir_deletion_reports_no_false_deletions(
+    tmp_path: pathlib.Path,
+):
+    from fs.errors import ResourceNotFound
+
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    os.mkdir(inputs_path / "sub")
+    write_lines(inputs_path / "input1.jsonlines", json.dumps({"key": 1}))
+    write_lines(inputs_path / "sub" / "input2.jsonlines", json.dumps({"key": 2}))
+
+    with open_fs(os.fspath(inputs_path)) as source:
+        subject = _make_pyfilesystem_subject(source)
+        update = subject._get_snapshot_update()
+        assert len(update.changed_paths) == 2
+        assert update.deleted_paths == []
+
+        # Simulate a directory deleted in the middle of the traversal: the
+        # walk is interrupted, so the files that were not reached must not be
+        # falsely reported as deleted.
+        original_scandir = source.scandir
+
+        def racy_scandir(path, *args, **kwargs):
+            if path.rstrip("/").endswith("sub"):
+                raise ResourceNotFound(path)
+            return original_scandir(path, *args, **kwargs)
+
+        source.scandir = racy_scandir
+        update = subject._get_snapshot_update()
+        assert update.changed_paths == []
+        assert update.deleted_paths == []
+
+
 def test_airbyte_stream_state():
     # Actual github state used for commits
     # not_commits is a mock to check that one stream won't overwrite another

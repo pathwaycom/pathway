@@ -607,6 +607,23 @@ where
 impl AnyExpression {
     #[allow(clippy::too_many_lines)]
     pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<Value>> {
+        if let Self::Apply(f, Expressions::Arguments(range)) = self {
+            // Fast path for the common case: arguments come directly from the
+            // input columns and contain no error values, so they can be passed
+            // to the function as borrowed slices, without the per-row masks
+            // and intermediate buffers of the generic path below.
+            if !values
+                .iter()
+                .any(|row| row[range.clone()].contains(&Value::Error))
+            {
+                let args: Vec<&[Value]> = values.iter().map(|row| &row[range.clone()]).collect();
+                let res = f(&args);
+                for entry in res.iter().flatten() {
+                    debug_assert!(!matches!(entry, Value::Error));
+                }
+                return res;
+            }
+        }
         let res = match self {
             Self::Argument(i) => values
                 .iter()
