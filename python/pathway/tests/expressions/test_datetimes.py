@@ -828,17 +828,26 @@ def test_date_time_sub_in_timezone() -> None:
         pd.Timedelta(minutes=43),
         pd.Timedelta(seconds=19),
         "D",
-        "2H3T",
+        "2h3min",
         "min",
-        "S",
-        "14L22ms14us",
-        "U",
-        "N",
+        "s",
+        "14ms22ms14us",
+        "us",
+        "ns",
+        # legacy aliases, removed in pandas 3: pathway still accepts them,
+        # so the expected value is computed with the modern equivalent
+        ("2H3T", "2h3min"),
+        ("S", "s"),
+        ("14L22ms14us", "14ms22ms14us"),
+        ("U", "us"),
+        ("N", "ns"),
     ],
 )
 @pytest.mark.parametrize("method_name", ["round", "floor"])
 def test_date_time_round(
-    method_name: str, round_to: pd.Timedelta | str, is_naive: bool
+    method_name: str,
+    round_to: pd.Timedelta | str | tuple[str, str],
+    is_naive: bool,
 ) -> None:
     data = [
         "2020-03-04 11:13:00.345612",
@@ -854,17 +863,23 @@ def test_date_time_round(
     if not is_naive:
         data = [entry + "+00:00" for entry in data]
         fmt += "%z"
+    if isinstance(round_to, tuple):
+        pathway_round_to, pandas_round_to = round_to
+    else:
+        pathway_round_to = pandas_round_to = round_to
     df = pd.DataFrame({"date": data})
     table = table_from_pandas(df)
     table = table.select(date=table.date.dt.strptime(fmt=fmt))
-    res = table.select(rounded=table.date.dt.__getattribute__(method_name)(round_to))
+    res = table.select(
+        rounded=table.date.dt.__getattribute__(method_name)(pathway_round_to)
+    )
 
     expected = table_from_pandas(
         pd.DataFrame(
             {
                 "rounded": pd.to_datetime(df.date, format=fmt).dt.__getattribute__(
                     method_name
-                )(round_to)
+                )(pandas_round_to)
             }
         )
     )

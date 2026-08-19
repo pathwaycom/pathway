@@ -1,6 +1,7 @@
 # Copyright © 2026 Pathway
 
 
+import re
 from warnings import warn
 
 import pandas as pd
@@ -8,9 +9,23 @@ import pandas as pd
 import pathway.internals.expression as expr
 from pathway.internals import api, dtype as dt
 
+# Fixed-duration offset aliases deprecated in pandas 2.2 and removed in
+# pandas 3. Accepted here regardless of the installed pandas version, so
+# that user code does not break when pandas gets upgraded.
+_LEGACY_FREQ_ALIASES = {"H": "h", "T": "min", "S": "s", "L": "ms", "U": "us", "N": "ns"}
+_LEGACY_FREQ_ALIAS_RE = re.compile(r"(?<![A-Za-z])[HTSLUN](?![A-Za-z])")
+
 
 def _str_as_duration(freq: str) -> pd.Timedelta:
-    duration = pd.tseries.frequencies.to_offset(freq)
+    try:
+        duration = pd.tseries.frequencies.to_offset(freq)
+    except ValueError:
+        normalized = _LEGACY_FREQ_ALIAS_RE.sub(
+            lambda m: _LEGACY_FREQ_ALIASES[m.group(0)], freq
+        )
+        if normalized == freq:
+            raise
+        duration = pd.tseries.frequencies.to_offset(normalized)
     if duration is None:
         raise ValueError(f"string {freq} cannot be parsed as a duration")
     return pd.Timedelta(duration.nanos)
