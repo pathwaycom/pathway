@@ -13,7 +13,13 @@ from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import get_aws_s3_settings, write_lines
 
-from .base import create_jsonlines, put_aws_object, read_jsonlines_fields
+from .base import (
+    create_jsonlines,
+    delete_object_from_storage,
+    put_aws_object,
+    put_object_into_storage,
+    read_jsonlines_fields,
+)
 
 
 @pytest.mark.parametrize(
@@ -373,6 +379,13 @@ def test_s3_objects_filter(tmp_path: pathlib.Path, s3_path: str):
     run_csv_reader_with_path_filter(
         f"s3://aws-integrationtest/{s3_path}", output_path, "*.?sv", {1, 2, 4, 5}
     )
+
+
+def test_unsupported_storage_type_raises_valueerror():
+    with pytest.raises(ValueError, match="Storage type 'unsupported' unsupported in tests"):
+        put_object_into_storage("unsupported", "path", "contents")
+    with pytest.raises(ValueError, match="Storage type 'unsupported' unsupported in tests"):
+        delete_object_from_storage("unsupported", "path")
 
 
 def test_s3_objects_filter_complex_path(tmp_path: pathlib.Path, s3_path: str):
