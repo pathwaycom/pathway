@@ -24,8 +24,16 @@ impl RetryConfig {
     }
 
     pub fn sleep_after_error(&mut self) {
-        std::thread::sleep(self.sleep_duration);
+        std::thread::sleep(self.next_delay());
+    }
+
+    /// The delay to apply before the next attempt, advancing the schedule.
+    /// For the callers that drive the sleeping themselves (e.g. in small
+    /// quanta) while reusing the backoff-with-jitter schedule.
+    pub fn next_delay(&mut self) -> Duration {
+        let delay = self.sleep_duration;
         self.advance_backoff();
+        delay
     }
 
     pub async fn sleep_after_error_async(&mut self) {
@@ -34,8 +42,16 @@ impl RetryConfig {
     }
 
     fn advance_backoff(&mut self) {
-        self.sleep_duration = self.sleep_duration.mul_f64(self.backoff_factor)
-            + rng().random_range(Duration::ZERO..self.jitter);
+        // Saturating: a long retry streak must level off, not panic —
+        // `Duration::mul_f64` overflows after a few hundred advances at the
+        // default factor, and the indefinitely-retrying callers (e.g. the
+        // schema-registry lookups) reach that in a couple of hours of
+        // outage.
+        let multiplied =
+            Duration::try_from_secs_f64(self.sleep_duration.as_secs_f64() * self.backoff_factor)
+                .unwrap_or(Duration::MAX);
+        self.sleep_duration =
+            multiplied.saturating_add(rng().random_range(Duration::ZERO..self.jitter));
     }
 }
 
@@ -134,4 +150,20 @@ pub async fn execute_with_retries_async<T, E: std::fmt::Debug>(
     max_retries: usize,
 ) -> Result<T, E> {
     execute_with_retries_if_async(func, |_| true, retry_config, max_retries).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_advancement_saturates_instead_of_panicking() {
+        let mut config = RetryConfig::default();
+        // A couple of hours of an outage at the default schedule used to
+        // overflow `Duration::mul_f64`; the schedule must level off instead.
+        for _ in 0..10_000 {
+            let _ = config.next_delay();
+        }
+        assert!(config.next_delay() >= Duration::from_secs(1));
+    }
 }

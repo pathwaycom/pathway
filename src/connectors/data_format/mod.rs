@@ -28,6 +28,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::data_storage::ConversionError;
 
+pub mod avro;
 pub mod bson;
 pub mod debezium;
 pub mod dsv;
@@ -210,6 +211,9 @@ pub enum ParseError {
 
     #[error(transparent)]
     SchemaRepository(#[from] SchemaRepositoryError),
+
+    #[error(transparent)]
+    Avro(avro::AvroParseError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -278,6 +282,16 @@ pub trait Parser: Send {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult;
     fn on_new_source_started(&mut self, metadata: &SourceMetadata);
     fn column_count(&self) -> usize;
+
+    /// Whether the parser needs the source metadata for the parsing itself,
+    /// as opposed to filling a `_metadata` column: the Avro parser, for
+    /// one, takes the writer schema version of every message from it. A
+    /// reader that only builds the metadata on demand (it costs a
+    /// per-message allocation) turns it on when this is true, whether or
+    /// not the user asked for the column.
+    fn needs_source_metadata(&self) -> bool {
+        false
+    }
 
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()
@@ -491,6 +505,9 @@ pub enum FormatterError {
     #[error(transparent)]
     SchemaRepository(#[from] SchemaRepositoryError),
 
+    #[error(transparent)]
+    Avro(#[from] avro::AvroError),
+
     #[error("incorrect external diff value: {0}")]
     IncorrectDiffColumnValue(Value),
 }
@@ -503,6 +520,15 @@ pub trait Formatter: Send {
         time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError>;
+
+    /// The schema of the payloads this formatter produces, for the sinks
+    /// whose target keeps a schema of its own: the Pulsar producers declare
+    /// it to the broker's registry, which versions it and lets the
+    /// schema-aware consumers decode the topic. `None` means the payloads
+    /// are self-describing or untyped, and nothing is declared.
+    fn wire_schema(&self) -> Option<String> {
+        None
+    }
 
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()

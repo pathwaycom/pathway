@@ -155,6 +155,16 @@ impl SourceMetadata {
         .expect("Internal JSON serialization error")
     }
 
+    /// The transport-attached identifier of the schema the message was
+    /// produced under, for the sources whose messages carry one: what the
+    /// schema-aware parsers resolve the writer schema by.
+    pub fn schema_id(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Pulsar(meta) => meta.schema_id(),
+            _ => None,
+        }
+    }
+
     pub fn commits_allowed_in_between(&self) -> bool {
         match self {
             Self::Polling(_)

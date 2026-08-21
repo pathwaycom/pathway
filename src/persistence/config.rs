@@ -99,6 +99,13 @@ pub struct PersistenceManagerOuterConfig {
 }
 
 impl PersistenceManagerOuterConfig {
+    /// The persistence mode of the run: the restrictions that only concern
+    /// the input snapshots (e.g. the deduced-schema guard) check it to stay
+    /// out of the way of the modes that keep none, such as the UDF caching.
+    pub fn persistence_mode(&self) -> PersistenceMode {
+        self.persistence_mode
+    }
+
     pub fn new(
         snapshot_interval: Duration,
         backend: PersistentStorageConfig,

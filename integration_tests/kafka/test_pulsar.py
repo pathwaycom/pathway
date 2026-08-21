@@ -1,5 +1,9 @@
 # Copyright © 2026 Pathway
 
+import base64
+import datetime
+import decimal
+import io
 import json
 import pathlib
 import threading
@@ -171,6 +175,53 @@ def test_pulsar_headers_and_key(pulsar_context, tmp_path):
         assert json.loads(properties["note"]) == row["note"]
 
 
+def raw_avro_producer_schema(definition):
+    """A pulsar-client Schema that registers the given Avro schema definition
+    and passes preencoded datums through: the official client cannot express
+    the logical types, so the tests craft the datums themselves."""
+    import pulsar
+
+    class RawAvroSchema(pulsar.schema.Schema):
+        def __init__(self, schema_definition):
+            super().__init__(
+                None, pulsar._pulsar.SchemaType.AVRO, schema_definition, "AVRO"
+            )
+
+        def encode(self, data):
+            return data
+
+        def decode(self, data):
+            return data
+
+    return RawAvroSchema(definition)
+
+
+def publish_avro_datums(pulsar_context, definition, rows, *, topic=None):
+    """Registers the given Avro schema on the topic and publishes each row as
+    a bare Avro datum under it — how a foreign producer fills a typed Pulsar
+    topic. An empty ``rows`` registers the schema without publishing
+    anything."""
+    producer = pulsar_context._client.create_producer(
+        topic or pulsar_context.topic,
+        schema=raw_avro_producer_schema(definition),
+    )
+    try:
+        for row in rows:
+            producer.send(avro_datum(definition, row))
+    finally:
+        producer.close()
+
+
+def avro_datum(definition, row):
+    """The bare Avro binary encoding of one row under the given schema."""
+
+    import fastavro
+
+    buffer = io.BytesIO()
+    fastavro.schemaless_writer(buffer, fastavro.parse_schema(definition), row)
+    return buffer.getvalue()
+
+
 @pytest.mark.flaky(reruns=3)
 def test_pulsar_dynamic_topics(pulsar_context, tmp_path):
     input_path = tmp_path / "input.jsonl"
@@ -220,8 +271,15 @@ def test_pulsar_dynamic_topics(pulsar_context, tmp_path):
     lines_2 = [json.loads(line) for line in output_path_2.read_text().splitlines()]
     assert {(line["k"], line["v"]) for line in lines_1} == {("0", "foo"), ("2", "baz")}
     assert {(line["k"], line["v"]) for line in lines_2} == {("1", "bar")}
-    # The topic-name column must not be a part of the payload.
-    assert all("t" not in line for line in lines_1 + lines_2)
+    # In the "json" format the payload carries every column of the table,
+    # including the topic-name column — the long-standing behavior shared
+    # with the other message-queue connectors. Checked on the raw payloads:
+    # a re-read through a narrower schema would not see extra fields anyway.
+    raw_payloads = [
+        json.loads(message.data())
+        for message in pulsar_context.read_messages(2, topic=dynamic_topic_1)
+    ]
+    assert all(payload["t"] == dynamic_topic_1 for payload in raw_payloads)
 
 
 @pytest.mark.flaky(reruns=3)
@@ -1134,6 +1192,1077 @@ def test_pulsar_read_autogenerate_key_with_json_rejected():
         )
 
 
+# --- Avro / schema registry tests ---
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_write_registers_schema_and_interoperates(pulsar_context, tmp_path):
+    """Writing with format="avro" publishes bare Avro datums and registers the
+    derived schema in the broker's registry, so a schema-aware consumer of the
+    official client decodes the topic without any Pathway-specific knowledge.
+    The registered schema must carry the AVRO type and one field per column."""
+    import pulsar as pulsar_client
+
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"name": "alice", "age": 30, "score": 4.5},
+        {"name": "bob", "age": 41, "score": 3.25},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        name: str
+        age: int
+        score: float
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    # The registry holds an AVRO schema with one field per column.
+    response = requests.get(
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        timeout=60,
+    )
+    response.raise_for_status()
+    schema_info = response.json()
+    assert schema_info["type"] == "AVRO"
+    registered = json.loads(schema_info["data"])
+    assert [field["name"] for field in registered["fields"]] == [
+        "name",
+        "age",
+        "score",
+    ]
+
+    # The official client decodes the messages through the registered schema.
+    from pulsar.schema import AvroSchema, Double, Long, Record, String
+
+    class User(Record):
+        _avro_namespace = "pathway"
+        name = String()
+        age = Long()
+        score = Double()
+
+    consumer = pulsar_context._client.subscribe(
+        pulsar_context.topic,
+        subscription_name=f"avro-verifier-{uuid4()}",
+        initial_position=pulsar_client.InitialPosition.Earliest,
+        schema=AvroSchema(User),
+    )
+    received = {}
+    try:
+        for _ in rows:
+            message = consumer.receive(timeout_millis=30000)
+            consumer.acknowledge(message)
+            record = message.value()
+            received[record.name] = (record.age, record.score)
+    finally:
+        consumer.close()
+    assert received == {row["name"]: (row["age"], row["score"]) for row in rows}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_write_read_roundtrip_types(pulsar_context, tmp_path):
+    """Every supported column type survives the Avro write/read roundtrip: the
+    writer registers the derived schema, and the reader resolves the writer
+    schema of each message through the registry and projects it onto the
+    table schema."""
+    output_file = tmp_path / "output.jsonl"
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {
+            "int_field": 42,
+            "float_field": -2.5,
+            "bool_field": True,
+            "str_field": "héllo wörld",
+            "opt_field": None,
+            "list_field": [1, 2, 3],
+        },
+        {
+            "int_field": -7,
+            "float_field": 0.125,
+            "bool_field": False,
+            "str_field": "",
+            "opt_field": "present",
+            "list_field": [],
+        },
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class TypesSchema(pw.Schema):
+        int_field: int
+        float_field: float
+        bool_field: bool
+        str_field: str
+        opt_field: str | None
+        list_field: list[int]
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=TypesSchema, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=TypesSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == len(rows)
+    received = {line["int_field"]: line for line in lines}
+    for row in rows:
+        line = received[row["int_field"]]
+        for field, expected in row.items():
+            assert line[field] == expected, (field, line)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_read_survives_schema_evolution(pulsar_context, tmp_path):
+    """A topic whose schema evolved stays readable end to end: the messages
+    written under the older schema version are decoded with that version and
+    projected onto the table schema, the missing optional column becoming
+    None — while the newer messages carry the value.
+
+    The evolution happens in a dedicated namespace with the permissive
+    compatibility policy: the official Python client emits no Avro field
+    defaults, so the strict default policy would reject the second version
+    before the reading side gets anything to resolve."""
+    from pulsar.schema import AvroSchema, Long, Record, String
+
+    namespace = f"public/avro-evo-{uuid4().hex[:12]}"
+    requests.put(
+        f"{PULSAR_ADMIN_URL}/admin/v2/namespaces/{namespace}", timeout=60
+    ).raise_for_status()
+    requests.put(
+        f"{PULSAR_ADMIN_URL}/admin/v2/namespaces/{namespace}"
+        "/schemaCompatibilityStrategy",
+        json="ALWAYS_COMPATIBLE",
+        timeout=60,
+    ).raise_for_status()
+    topic = f"persistent://{namespace}/evolving-{uuid4()}"
+    output_file = tmp_path / "output.jsonl"
+
+    try:
+
+        class UserV1(Record):
+            _avro_namespace = "evo"
+            _record_name = "User"
+            name = String(required=True)
+            age = Long(required=True)
+
+        producer = pulsar_context._client.create_producer(
+            topic, schema=AvroSchema(UserV1)
+        )
+        producer.send(UserV1(name="old-alice", age=30))
+        producer.close()
+
+        class UserV2(Record):
+            _avro_namespace = "evo"
+            _record_name = "User"
+            name = String(required=True)
+            age = Long(required=True)
+            email = String()
+
+        producer = pulsar_context._client.create_producer(
+            topic, schema=AvroSchema(UserV2)
+        )
+        producer.send(UserV2(name="new-bob", age=41, email="bob@example.com"))
+        producer.close()
+
+        class ReaderSchema(pw.Schema):
+            name: str
+            age: int
+            email: str | None
+
+        G.clear()
+        table = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            topic,
+            schema=ReaderSchema,
+            format="avro",
+            mode="static",
+        )
+        pw.io.jsonlines.write(table, output_file)
+        pw.run()
+    finally:
+        short_topic = topic.rsplit("/", 1)[1]
+        requests.delete(
+            f"{PULSAR_ADMIN_URL}/admin/v2/schemas/{namespace}/{short_topic}/schema",
+            timeout=60,
+        )
+        requests.delete(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/{namespace}/{short_topic}"
+            "?force=true",
+            timeout=60,
+        )
+        requests.delete(
+            f"{PULSAR_ADMIN_URL}/admin/v2/namespaces/{namespace}", timeout=60
+        )
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["name"]: line for line in lines}
+    assert set(received) == {"old-alice", "new-bob"}
+    assert received["old-alice"]["age"] == 30
+    assert received["old-alice"]["email"] is None
+    assert received["new-bob"]["email"] == "bob@example.com"
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_payload_excludes_service_columns(pulsar_context, tmp_path):
+    """The Avro schema registered for the topic is a public, versioned
+    contract, so the service columns — the dynamic topic name, the partition
+    and ordering keys, the headers — must not leak into it or into the
+    payloads: an external consumer must see only the data columns."""
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"k": "a", "v": 1, "hdr": "x", "t": pulsar_context.topic},
+        {"k": "b", "v": 2, "hdr": "y", "t": pulsar_context.topic},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        k: str
+        v: int
+        hdr: str
+        t: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        topic=table.t,
+        format="avro",
+        key=table.k,
+        headers=[table.hdr],
+    )
+    pw.run()
+
+    # The registered schema describes only the payload column.
+    response = requests.get(
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        timeout=60,
+    )
+    response.raise_for_status()
+    registered = json.loads(response.json()["data"])
+    assert [field["name"] for field in registered["fields"]] == ["v"]
+
+    # And the payloads decode into exactly that column, with the key and the
+    # header still delivered through their native channels.
+    messages = pulsar_context.read_messages(len(rows))
+    by_key = {message.partition_key(): message for message in messages}
+    assert set(by_key) == {"a", "b"}
+    assert by_key["a"].properties()["hdr"] == '"x"'
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    assert set(table_reread.schema.column_names()) == {"v"}
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {line["v"] for line in lines} == {1, 2}
+
+
+def test_pulsar_avro_pointer_column_survives_the_roundtrip(pulsar_context, tmp_path):
+    """A Pointer column travels as its string form and must read back into
+    the same pointers: the write side serializes it, so the read side is
+    obliged to parse it."""
+
+    class InputSchema(pw.Schema):
+        label: str
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, [("a",), ("b",)])
+    table = table.select(pw.this.label, ptr=table.id)
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    class ReaderSchema(pw.Schema):
+        label: str
+        ptr: pw.Pointer
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    pointers = {line["label"]: line["ptr"] for line in lines}
+    assert set(pointers) == {"a", "b"}
+    assert all(pointer.startswith("^") for pointer in pointers.values())
+    assert pointers["a"] != pointers["b"]
+
+
+def test_pulsar_avro_read_converts_foreign_logical_types(pulsar_context, tmp_path):
+    """A topic written by a foreign client with the Avro logical types is
+    deduced and read according to the documented conversion table:
+    timestamp-millis becomes a UTC datetime, date a naive datetime, enum and
+    uuid strings, fixed bytes, decimal its exact string form, and a nested
+    record a Json column — end to end, with the exact values preserved."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Reading",
+        "namespace": "foreign",
+        "fields": [
+            {"name": "sensor", "type": "string"},
+            {"name": "ts", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+            {"name": "day", "type": {"type": "int", "logicalType": "date"}},
+            {
+                "name": "kind",
+                "type": {"type": "enum", "name": "Kind", "symbols": ["A", "B"]},
+            },
+            {"name": "token", "type": {"type": "string", "logicalType": "uuid"}},
+            {"name": "blob", "type": {"type": "fixed", "name": "Blob", "size": 4}},
+            {
+                "name": "price",
+                "type": {
+                    "type": "bytes",
+                    "logicalType": "decimal",
+                    "precision": 10,
+                    "scale": 2,
+                },
+            },
+            {
+                "name": "nested",
+                "type": {
+                    "type": "record",
+                    "name": "Inner",
+                    "fields": [{"name": "a", "type": "long"}],
+                },
+            },
+        ],
+    }
+
+    publish_avro_datums(
+        pulsar_context,
+        schema_definition,
+        [
+            {
+                "sensor": "s1",
+                "ts": datetime.datetime(
+                    2024, 3, 1, 12, 0, 0, tzinfo=datetime.timezone.utc
+                ),
+                "day": datetime.date(2024, 3, 1),
+                "kind": "B",
+                "token": "0f2c9f4e-9a1b-4c56-8d1e-1a2b3c4d5e6f",
+                "blob": b"\x01\x02\x03\x04",
+                "price": decimal.Decimal("123.45"),
+                "nested": {"a": 7},
+            }
+        ],
+    )
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    deduced = {name: table.schema[name].dtype for name in table.schema.column_names()}
+    assert str(deduced["ts"]) == "DATE_TIME_UTC"
+    assert str(deduced["day"]) == "DATE_TIME_NAIVE"
+    assert str(deduced["kind"]) == "STR"
+    assert str(deduced["token"]) == "STR"
+    assert str(deduced["blob"]) == "BYTES"
+    assert str(deduced["price"]) == "STR"
+    assert str(deduced["nested"]) == "Json"
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    [line] = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert line["sensor"] == "s1"
+    assert line["ts"].startswith("2024-03-01T12:00:00")
+    assert line["day"].startswith("2024-03-01T00:00:00")
+    assert line["kind"] == "B"
+    assert line["token"] == "0f2c9f4e-9a1b-4c56-8d1e-1a2b3c4d5e6f"
+    assert line["price"] == "123.45"
+    assert line["nested"] == {"a": 7}
+
+
+def test_pulsar_avro_read_skips_schemaless_messages(pulsar_context, tmp_path):
+    """A message produced without a schema cannot be decoded by an Avro
+    reader — its layout is unknowable. Such a message must not take the
+    pipeline down: it is reported as a per-row parse error, and the decodable
+    messages of the topic are still delivered."""
+    from pulsar.schema import AvroSchema, Long, Record, String
+
+    class User(Record):
+        _avro_namespace = "mixed"
+        name = String(required=True)
+        age = Long(required=True)
+
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=AvroSchema(User)
+    )
+    producer.send(User(name="ok", age=1))
+    producer.close()
+    producer = pulsar_context._client.create_producer(pulsar_context.topic)
+    producer.send(b"garbage-without-a-schema")
+    producer.close()
+
+    class ReaderSchema(pw.Schema):
+        name: str
+        age: int
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert [(line["name"], line["age"]) for line in lines] == [("ok", 1)]
+
+
+@pytest.mark.parametrize("registry_format", ["avro", "json"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_deduces_schema_from_registry(
+    pulsar_context, tmp_path, registry_format
+):
+    """With schema=None the columns of the table are deduced from the schema
+    the topic carries in the broker's registry, for both the AVRO and the
+    JSON registry types — and the read then proceeds as if the schema had
+    been written by hand."""
+    from pulsar.schema import AvroSchema, Double, JsonSchema, Long, Record, String
+
+    class Measurement(Record):
+        _avro_namespace = "deduce"
+        sensor = String(required=True)
+        reading = Double(required=True)
+        count = Long(required=True)
+
+    schema_class = AvroSchema if registry_format == "avro" else JsonSchema
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=schema_class(Measurement)
+    )
+    producer.send(Measurement(sensor="front", reading=21.5, count=3))
+    producer.send(Measurement(sensor="back", reading=-1.25, count=8))
+    producer.close()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format=registry_format,
+        mode="static",
+    )
+    assert set(table.schema.column_names()) == {"sensor", "reading", "count"}
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["sensor"]: line for line in lines}
+    assert received["front"]["reading"] == 21.5
+    assert received["front"]["count"] == 3
+    assert received["back"]["reading"] == -1.25
+    assert received["back"]["count"] == 8
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_read_and_deduction_work_on_a_partitioned_topic(
+    pulsar_context, tmp_path
+):
+    """On a partitioned topic the client expands the subscription into
+    per-partition consumers, and the schema lookups must keep working through
+    them: both the deduction of the table columns (schema=None) and the
+    per-version writer schema resolution during the read itself. Partitioned
+    topics are the production norm, so the whole avro flow must deliver every
+    row exactly as on a single-partition topic."""
+    from pulsar.schema import AvroSchema, Long, Record, String
+
+    class Event(Record):
+        _avro_namespace = "partitioned"
+        label = String(required=True)
+        value = Long(required=True)
+
+    topic = pulsar_context.create_partitioned_topic(partitions=3)
+    producer = pulsar_context._client.create_producer(topic, schema=AvroSchema(Event))
+    n_messages = 12
+    for i in range(n_messages):
+        # No partition key: the messages are spread over the partitions.
+        producer.send(Event(label=f"row-{i:02d}", value=i))
+    producer.close()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="avro",
+        mode="static",
+    )
+    assert set(table.schema.column_names()) == {"label", "value"}
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {line["label"] for line in lines} == {
+        f"row-{i:02d}" for i in range(n_messages)
+    }
+    assert {line["value"] for line in lines} == set(range(n_messages))
+
+
+def test_pulsar_read_schema_deduction_requires_a_registered_schema(pulsar_context):
+    """When the topic has no schema in the registry, schema=None has nothing
+    to deduce the columns from and must fail up front with an error that
+    points at passing an explicit schema."""
+    pulsar_context.send("just-bytes")
+
+    G.clear()
+    with pytest.raises(Exception, match="[Ee]xplicit schema"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_read_schema_deduction_rejects_format_mismatch(pulsar_context):
+    """format="json" on an AVRO-typed topic (and the other way around) would
+    fail on every message, and the registry knows the topic's type up front —
+    so the deduction must reject the mismatch at graph construction with an
+    error naming both the registry type and the requested format."""
+    from pulsar.schema import AvroSchema, Record, String
+
+    class Message(Record):
+        _avro_namespace = "mismatch"
+        data = String(required=True)
+
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=AvroSchema(Message)
+    )
+    producer.send(Message(data="x"))
+    producer.close()
+
+    G.clear()
+    with pytest.raises(Exception, match="registry schema has the AVRO type"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="json",
+            mode="static",
+        )
+
+
+def test_pulsar_json_deduction_null_defaults_survive_schema_evolution(
+    pulsar_context, tmp_path
+):
+    """A JSON-typed topic evolves by adding a nullable field with a null
+    default. The deduced schema must carry that default through, so the
+    messages published before the evolution — the ones without the field —
+    read as None instead of failing row by row."""
+    schema_json = json.dumps(
+        {
+            "type": "record",
+            "name": "User",
+            "namespace": "evo",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "email", "type": ["null", "string"], "default": None},
+            ],
+        }
+    )
+    # The old-style message predates the schema: it lacks the added field.
+    pulsar_context.send(json.dumps({"name": "old"}))
+    pulsar_context.send(json.dumps({"name": "new", "email": "new@example.com"}))
+    response = requests.post(
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        json={"type": "JSON", "schema": schema_json, "properties": {}},
+        timeout=60,
+    )
+    response.raise_for_status()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        mode="static",
+    )
+    assert set(table.schema.column_names()) == {"name", "email"}
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["name"]: line["email"] for line in lines}
+    assert received == {"old": None, "new": "new@example.com"}
+
+
+def test_pulsar_json_deduction_keeps_logical_time_numbers_raw(pulsar_context, tmp_path):
+    """A JSON-typed topic whose registry schema uses the Avro logical time
+    types deduces them as plain integer columns: the JSON payloads carry raw
+    numbers, and reading them through the engine time types would misapply
+    the Avro units (milliseconds taken for nanoseconds, or numbers rejected
+    where a formatted datetime string is expected)."""
+    schema_json = json.dumps(
+        {
+            "type": "record",
+            "name": "Event",
+            "namespace": "jsontime",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {
+                    "name": "ts",
+                    "type": {"type": "long", "logicalType": "timestamp-millis"},
+                },
+                {
+                    "name": "elapsed",
+                    "type": {"type": "int", "logicalType": "time-millis"},
+                },
+            ],
+        }
+    )
+    pulsar_context.send(
+        json.dumps({"name": "noon", "ts": 1700000000000, "elapsed": 43200000})
+    )
+    requests.post(
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        json={"type": "JSON", "schema": schema_json, "properties": {}},
+        timeout=60,
+    ).raise_for_status()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        mode="static",
+    )
+    assert str(table.schema["ts"].dtype) == "INT"
+    assert str(table.schema["elapsed"].dtype) == "INT"
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    [line] = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert line["ts"] == 1700000000000
+    assert line["elapsed"] == 43200000
+
+
+def test_pulsar_schema_deduction_requires_explicit_schema_in_multiprocess(
+    monkeypatch,
+):
+    """Every process of a multi-process run constructs its own graph, so each
+    would query the registry independently — and a schema version change
+    between their starts would build diverging graphs, failing later with an
+    obscure cross-worker mismatch. The deduction must refuse up front and ask
+    for an explicit schema."""
+    monkeypatch.setenv("PATHWAY_PROCESSES", "2")
+    G.clear()
+    with pytest.raises(ValueError, match="multi-process"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            f"pulsar-{uuid4()}",
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_avro_duration_column_survives_write_deduce_roundtrip(
+    pulsar_context, tmp_path
+):
+    """A Duration column travels as a plain long of microseconds, so the
+    generated Avro schema must document the unit for the external consumers
+    and mark the field, and the schema deduction must restore the column as
+    a Duration — the write→deduce→read roundtrip preserves both the type and
+    the values."""
+
+    class InputSchema(pw.Schema):
+        label: str
+        d: pw.Duration
+
+    G.clear()
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [
+            ("a", datetime.timedelta(seconds=90)),
+            ("b", datetime.timedelta(milliseconds=-1500)),
+        ],
+    )
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    response = requests.get(
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        timeout=60,
+    )
+    response.raise_for_status()
+    registered = json.loads(response.json()["data"])
+    duration_field = next(
+        field for field in registered["fields"] if field["name"] == "d"
+    )
+    assert duration_field["pathwayType"] == "Duration"
+    assert "microseconds" in duration_field["doc"]
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    assert str(table_reread.schema["d"].dtype) == "DURATION"
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    durations_ns = {line["label"]: line["d"] for line in lines}
+    assert durations_ns == {"a": 90_000_000_000, "b": -1_500_000_000}
+
+
+def test_pulsar_schema_deduction_requires_explicit_schema_with_persistence(
+    tmp_path,
+):
+    """schema=None re-deduces the schema at every start, while the snapshot
+    stores the rows of the schema the previous run deduced: a topic evolution
+    between the runs would corrupt or fail the replay. Persistence must
+    therefore require an explicit schema, up front and clearly."""
+    import pulsar
+    from pulsar.schema import AvroSchema, Record, String
+
+    class Message(Record):
+        _avro_namespace = "pers"
+        data = String(required=True)
+
+    topic = f"pulsar-{uuid4()}"
+    client = pulsar.Client(
+        PULSAR_SERVICE_URI, logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn)
+    )
+    producer = client.create_producer(topic, schema=AvroSchema(Message))
+    producer.send(Message(data="x"))
+    client.close()
+
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+    )
+    G.clear()
+    table = pw.io.pulsar.read(PULSAR_SERVICE_URI, topic, format="avro", mode="static")
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
+    with pytest.raises(Exception, match="cannot be used with persistence"):
+        pw.run(persistence_config=persistence_config)
+
+
+def test_pulsar_avro_explicit_schema_reads_bare_datums(pulsar_context, tmp_path):
+    """A topic filled with bare Avro datums but no registered schema is
+    readable with an explicit table schema: the user vouches for the layout,
+    so the schema doubles as the decoding schema for the messages that carry
+    no schema version."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "pathway",
+        "fields": [
+            {"name": "name", "type": "string"},
+            {"name": "age", "type": "long"},
+        ],
+    }
+
+    # A plain producer: no schema is registered, no version is stamped.
+    producer = pulsar_context._client.create_producer(pulsar_context.topic)
+    try:
+        producer.send(avro_datum(schema_definition, {"name": "alice", "age": 30}))
+        producer.send(avro_datum(schema_definition, {"name": "bob", "age": 41}))
+    finally:
+        producer.close()
+
+    class ReaderSchema(pw.Schema):
+        name: str
+        age: int
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {(line["name"], line["age"]) for line in lines} == {
+        ("alice", 30),
+        ("bob", 41),
+    }
+
+
+def test_pulsar_avro_deduction_preserves_composite_defaults(pulsar_context, tmp_path):
+    """A schema evolution that adds an array field with an empty-list default
+    keeps the pre-evolution messages readable: the deduced schema must carry
+    the composite default through, so the old rows read it instead of
+    failing with a missing field."""
+
+    v1_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "compdef",
+        "fields": [{"name": "name", "type": "string"}],
+    }
+    v2_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "compdef",
+        "fields": [
+            {"name": "name", "type": "string"},
+            {
+                "name": "tags",
+                "type": {"type": "array", "items": "string"},
+                "default": [],
+            },
+        ],
+    }
+
+    publish_avro_datums(pulsar_context, v1_definition, [{"name": "old"}])
+    publish_avro_datums(
+        pulsar_context, v2_definition, [{"name": "new", "tags": ["a", "b"]}]
+    )
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["name"]: line["tags"] for line in lines}
+    assert received == {"old": [], "new": ["a", "b"]}
+
+
+def test_pulsar_avro_promotes_integers_to_float_columns(pulsar_context, tmp_path):
+    """A long-typed field read into a Float column is promoted, the way the
+    Avro schema resolution would promote it: a foreign topic with integer
+    readings must be consumable into a float table."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "promo",
+        "fields": [
+            {"name": "label", "type": "string"},
+            {"name": "ratio", "type": "long"},
+        ],
+    }
+
+    publish_avro_datums(
+        pulsar_context, schema_definition, [{"label": "a", "ratio": 42}]
+    )
+
+    class ReaderSchema(pw.Schema):
+        label: str
+        ratio: float
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    [line] = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert line["ratio"] == 42.0
+
+
+def test_pulsar_avro_deduction_rejects_primitive_schemas(pulsar_context):
+    """An AVRO registry schema that is not a record cannot describe table
+    columns, and the parser reads record datums only — so the deduction must
+    reject it up front instead of building a table no message can enter."""
+
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=raw_avro_producer_schema("string")
+    )
+    producer.send(b"\x06abc")  # an Avro-encoded string datum
+    producer.close()
+
+    G.clear()
+    with pytest.raises(Exception, match="not an Avro record"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_avro_reads_nested_decimals_and_union_strings(pulsar_context, tmp_path):
+    """The decimals nested inside composite fields are rendered into their
+    exact string form just like the top-level ones, and a plain-string
+    variant of a multi-branch union lands in the Json column as a JSON
+    string — neither may fail the row."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "nested",
+        "fields": [
+            {"name": "label", "type": "string"},
+            {
+                "name": "prices",
+                "type": {
+                    "type": "array",
+                    "items": {
+                        "type": "bytes",
+                        "logicalType": "decimal",
+                        "precision": 10,
+                        "scale": 2,
+                    },
+                },
+            },
+            {"name": "mixed", "type": ["string", "long"]},
+        ],
+    }
+
+    publish_avro_datums(
+        pulsar_context,
+        schema_definition,
+        [
+            {
+                "label": "a",
+                "prices": [decimal.Decimal("1.25"), decimal.Decimal("-0.50")],
+                "mixed": "hello",
+            },
+            {"label": "b", "prices": [], "mixed": 7},
+            # A string that happens to be valid JSON text must keep its
+            # string identity: the producer chose the union's string branch.
+            {"label": "c", "prices": [], "mixed": "42"},
+        ],
+    )
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["label"]: line for line in lines}
+    assert received["a"]["prices"] == ["1.25", "-0.50"]
+    assert received["a"]["mixed"] == "hello"
+    assert received["b"]["prices"] == []
+    assert received["b"]["mixed"] == 7
+    assert received["c"]["mixed"] == "42"
+
+
+def test_pulsar_schema_deduction_rejects_reserved_column_names(pulsar_context):
+    """A registry schema whose field is named after a reserved Pathway column
+    (`id` resolves to the row key and would silently shadow the field) must
+    fail the deduction loudly, with advice that is actually actionable —
+    the deduction cannot rename fields."""
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "reserved",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {"name": "value", "type": "long"},
+        ],
+    }
+    publish_avro_datums(pulsar_context, schema_definition, [])
+
+    G.clear()
+    with pytest.raises(ValueError, match="reserved Pathway column name"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_avro_deduction_names_the_unresolved_type_reference(pulsar_context):
+    """A schema that reuses a named type by reference is not supported by the
+    deduction, and the error must name the referenced type instead of
+    pointing at an empty field."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "refs",
+        "fields": [
+            {
+                "name": "first",
+                "type": {
+                    "type": "record",
+                    "name": "Point",
+                    "fields": [{"name": "x", "type": "long"}],
+                },
+            },
+            {"name": "second", "type": "Point"},
+        ],
+    }
+
+    publish_avro_datums(pulsar_context, schema_definition, [])
+
+    G.clear()
+    with pytest.raises(Exception, match="named type .*Point.* by reference"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
 # --- Metadata tests ---
 
 
@@ -1144,7 +2273,6 @@ def test_pulsar_read_with_metadata(pulsar_context, tmp_path, mode):
     topic, the partition, the message id components, the publish and event
     timestamps, the producer name, the ordering key and the properties —
     through both reading mechanisms."""
-    import base64
 
     output_file = tmp_path / "output.jsonl"
     event_ts_ms = 1_700_000_000_000

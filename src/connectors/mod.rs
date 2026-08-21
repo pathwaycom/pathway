@@ -21,6 +21,7 @@ pub mod backlog;
 pub mod data_format;
 pub mod data_storage;
 pub mod data_tokenize;
+pub mod exploration;
 pub mod metadata;
 pub mod monitoring;
 pub mod offset;

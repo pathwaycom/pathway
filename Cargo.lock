@@ -6946,6 +6946,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 name = "pathway"
 version = "0.32.1"
 dependencies = [
+ "apache-avro",
  "arc-swap",
  "arcstr",
  "assert_matches",
@@ -6961,6 +6962,7 @@ dependencies = [
  "azure_storage_blobs",
  "base32",
  "base64 0.23.0",
+ "bigdecimal",
  "bincode",
  "bitflags 2.13.1",
  "bytes",

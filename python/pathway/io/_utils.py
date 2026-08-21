@@ -5,7 +5,11 @@ from __future__ import annotations
 import datetime
 import functools
 import inspect
+import json
+import keyword
+import logging
 import math
+import os
 import warnings
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Iterable
@@ -21,7 +25,7 @@ from pathway.internals._io_helpers import (
 )
 from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
 from pathway.internals.expression import ColumnReference
-from pathway.internals.schema import Schema
+from pathway.internals.schema import Schema, schema_from_dict
 from pathway.internals.table import Table
 
 if TYPE_CHECKING:
@@ -69,6 +73,7 @@ _DATA_FORMAT_MAPPING = {
     "plaintext_by_file": "identity",
     "plaintext_by_object": "identity",
     "only_metadata": "identity",
+    "avro": "avro",
 }
 
 _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
@@ -95,6 +100,7 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "plaintext_by_file",
     "plaintext_by_object",
     "only_metadata",
+    "avro",
 }
 
 
@@ -309,6 +315,15 @@ def construct_schema_and_data_format(
     _stacklevel: int = 1,
 ) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
+    # The key generation only has a meaning for the formats that produce a
+    # single payload column; the record formats derive the columns from the
+    # schema and would silently ignore the flag.
+    if autogenerate_key and data_format_type != "identity":
+        raise ValueError(
+            f"'autogenerate_key' is only meaningful for 'raw' or "
+            f"'plaintext' formats and would have no effect with "
+            f"{format!r}. Drop it or pick a compatible format."
+        )
 
     if data_format_type == "identity":
         kwargs = locals()
@@ -381,12 +396,6 @@ def construct_schema_and_data_format(
     elif data_format_type == "jsonlines":
         if csv_settings is not None:
             raise ValueError("Unexpected argument for json format: csv_settings")
-        if autogenerate_key:
-            raise ValueError(
-                f"'autogenerate_key' is only meaningful for 'raw' or "
-                f"'plaintext' formats and would have no effect with "
-                f"{format!r}. Drop it or pick a compatible format."
-            )
         if json_field_paths is not None:
             schema_columns = set(schema.column_names())
             for field_name, path in json_field_paths.items():
@@ -416,6 +425,22 @@ def construct_schema_and_data_format(
             schema_registry_settings=maybe_schema_registry_settings(
                 schema_registry_settings
             ),
+        )
+    elif data_format_type == "avro":
+        if csv_settings is not None:
+            raise ValueError("Unexpected argument for avro format: csv_settings")
+        if json_field_paths is not None:
+            raise ValueError("Unexpected argument for avro format: json_field_paths")
+        if schema_registry_settings is not None:
+            raise ValueError(
+                "'schema_registry_settings' configures the Confluent schema "
+                "registry and has no effect with the 'avro' format, which "
+                "reads the schemas from the message broker's own registry. "
+                "Drop the argument."
+            )
+        return schema, api.DataFormat(
+            **api_schema,
+            format_type=data_format_type,
         )
     else:
         raise ValueError(f"data format `{format}` not supported")
@@ -582,8 +607,10 @@ class MessageQueueOutputFormat:
                     header, columns_to_extract, extracted_field_indices
                 )
 
-        # Format-dependent parts: handle json and dsv separately
-        if format == "json" or format == "dsv":
+        # Format-dependent parts: the record formats (json, dsv, avro) share
+        # the whole-table extraction; the avro specifics are reduced to the
+        # payload subset.
+        if format in ("json", "dsv", "avro"):
             if value is not None:
                 raise ValueError(
                     f"'value' and format='{format}' cannot be set at the same time"
@@ -605,16 +632,50 @@ class MessageQueueOutputFormat:
                     table[column_name], columns_to_extract, extracted_field_indices
                 )
             table = table.select(*columns_to_extract)
-            data_format = api.DataFormat(
-                format_type="jsonlines" if format == "json" else "dsv",
-                key_field_names=[],
-                value_fields=_format_output_value_fields(table),
-                delimiter=delimiter,
-                schema_registry_settings=maybe_schema_registry_settings(
-                    schema_registry_settings
-                ),
-                subject=subject,
-            )
+            if format == "avro":
+                # The registered Avro schema is a public, versioned contract
+                # of the topic, so the service columns — the dynamic topic,
+                # the keys, the event time and the headers — stay out of the
+                # payload. A column needed both as a service input and in the
+                # payload can be duplicated under another name with
+                # `table.select(...)`.
+                service_field_indices = {
+                    topic_name_index,
+                    key_field_index,
+                    ordering_key_field_index,
+                    event_time_field_index,
+                    *header_fields.values(),
+                }
+                payload_field_indices = [
+                    index
+                    for index in range(len(table._columns))
+                    if index not in service_field_indices
+                ]
+                if not payload_field_indices:
+                    raise ValueError(
+                        "format='avro' needs at least one payload column, but "
+                        "every column of the table is used as a service column "
+                        "(topic/key/ordering_key/event_time/headers). Duplicate "
+                        "a column under another name with `table.select(...)` if "
+                        "it must serve both purposes."
+                    )
+                data_format = api.DataFormat(
+                    format_type="avro",
+                    key_field_names=[],
+                    value_fields=_format_output_value_fields(table),
+                    payload_field_indices=payload_field_indices,
+                )
+            else:
+                data_format = api.DataFormat(
+                    format_type="jsonlines" if format == "json" else "dsv",
+                    key_field_names=[],
+                    value_fields=_format_output_value_fields(table),
+                    delimiter=delimiter,
+                    schema_registry_settings=maybe_schema_registry_settings(
+                        schema_registry_settings
+                    ),
+                    subject=subject,
+                )
         elif format == "raw" or format == "plaintext":
             value_field_index = None
             if key is not None and value is None:
@@ -715,6 +776,79 @@ def maybe_schema_registry_settings(
     if schema_registry_settings is not None:
         return schema_registry_settings.to_engine
     return None
+
+
+def explore_schema(
+    data_storage: api.DataStorage,
+    *,
+    source_description: str,
+    format: str | None = None,
+    schema_name: str | None = None,
+) -> type[Schema]:
+    """Deduces a ``pw.Schema`` from the schema the data source itself
+    declares (e.g. the topic's schema in the Pulsar registry).
+
+    The deduction happens at pipeline construction time, so the resulting
+    table is statically typed as usual. The returned value is an ordinary
+    schema class: a caller unhappy with any deduced column can adjust it with
+    the standard schema utilities, or write a schema by hand instead — an
+    explicit schema always wins over the deduction.
+
+    Internal for now; connectors call it when their ``schema`` parameter is
+    omitted for a format that supports the deduction.
+    """
+    # In a multi-process run every process constructs its own graph, so each
+    # would query the source independently — and a schema change between
+    # their starts would make the processes build diverging graphs, failing
+    # later with an obscure cross-worker mismatch instead of a schema error.
+    if int(os.environ.get("PATHWAY_PROCESSES", "1")) > 1:
+        raise ValueError(
+            f"The schema of {source_description} cannot be deduced in a "
+            "multi-process run: every process would query the source "
+            "independently, and a schema change between their starts would "
+            "make the processes construct diverging computation graphs. Pass "
+            "an explicit schema instead."
+        )
+    fields = api.explore_schema(data_storage, format)
+    # `id` resolves to the row key and would silently shadow the column;
+    # `_metadata` is claimed by the metadata machinery. Neither can be
+    # renamed by the deduction, so such fields must fail loudly.
+    reserved_column_names = {"id", METADATA_COLUMN_NAME}
+    columns: dict[str, Any] = {}
+    for name, type_descriptor_json, has_default, default, doc in fields:
+        if name in reserved_column_names:
+            raise ValueError(
+                f"The deduced schema of {source_description} contains the field "
+                f"{name!r}, which is a reserved Pathway column name. Pass an "
+                f"explicit schema that omits this field (for the 'json' format, "
+                f"json_field_paths can map it onto a different column name)."
+            )
+        if not name.isidentifier() or keyword.iskeyword(name):
+            raise ValueError(
+                f"The deduced schema of {source_description} contains the field "
+                f"{name!r}, which is not usable as a Pathway column name. Pass "
+                f"an explicit schema instead."
+            )
+        entry: dict[str, Any] = {"dtype": json.loads(type_descriptor_json)}
+        # The presence flag distinguishes "no default" from a default that
+        # is legitimately None (e.g. an optional Avro field with
+        # "default": null).
+        if has_default:
+            entry["default_value"] = default
+        if doc:
+            entry["description"] = doc
+        columns[name] = entry
+    if not columns:
+        raise ValueError(
+            f"The deduced schema of {source_description} has no columns. Pass "
+            f"an explicit schema instead."
+        )
+    schema = schema_from_dict(columns, name=schema_name)
+    # The deduced contract is implicit, so make it visible: with an explicit
+    # schema a typo fails loudly, while here the pipeline just runs with
+    # whatever the source declared.
+    logging.info("Deduced the schema of %s: %s", source_description, schema)
+    return schema
 
 
 def resolve_start_from_timestamp_ms(

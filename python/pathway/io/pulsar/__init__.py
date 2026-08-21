@@ -19,6 +19,7 @@ from pathway.io._utils import (
     _get_unique_name,
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
+    explore_schema,
     internal_connector_mode,
     resolve_start_from_timestamp_ms,
 )
@@ -147,7 +148,7 @@ def read(
     topic: str,
     *,
     schema: type[Schema] | None = None,
-    format: Literal["plaintext", "raw", "json"] = "raw",
+    format: Literal["plaintext", "raw", "json", "avro"] = "raw",
     mode: Literal["streaming", "static"] = "streaming",
     subscription_name: str | None = None,
     subscription_type: (
@@ -179,7 +180,8 @@ def read(
     the start of the computation and finishes afterwards, always through the
     partition-reader mechanism; no cursor is left behind on the broker.
 
-    There are three formats supported: ``"plaintext"``, ``"raw"``, and ``"json"``.
+    There are four formats supported: ``"plaintext"``, ``"raw"``, ``"json"``
+    and ``"avro"``.
 
     For the ``"raw"`` format, the partition key and the payload are read as raw
     bytes and added to the table as they are. In the ``"plaintext"`` format they
@@ -206,9 +208,22 @@ def read(
         uri: The Pulsar service URI, e.g. ``pulsar://localhost:6650`` or
             ``pulsar+ssl://my-cluster:6651`` for a TLS-encrypted connection.
         topic: The name of the topic to read from.
-        schema: Schema of the resulting table. Required for the ``"json"`` format.
-        format: Format of the incoming messages: ``"plaintext"``, ``"raw"``, or
-            ``"json"``.
+        schema: Schema of the resulting table. For the ``"json"`` and ``"avro"``
+            formats it may be omitted: the columns are then deduced from the
+            topic's registry schema (see the *Schema registry* section above
+            for the mechanics and the restrictions). An explicit schema always
+            overrides the deduction; a topic with no registered schema, a
+            multi-process run and a persistent pipeline require one.
+        format: Format of the incoming messages: ``"plaintext"``, ``"raw"``,
+            ``"json"`` or ``"avro"``. With ``"avro"``, the payloads are bare
+            Avro binary datums decoded through the broker's schema registry —
+            the *Schema registry* section above describes the mechanics, the
+            schema-evolution behavior and the type conversions. A message
+            produced under a non-AVRO registry version is reported as a
+            per-row error without stopping the pipeline; so is a message
+            produced without a schema — unless the table schema is explicit,
+            in which case it doubles as the decoding schema for such
+            messages.
         mode: Denotes how the engine polls the topic for the new data. If set to
             ``"streaming"``, it waits for new messages indefinitely. Otherwise, in
             the ``"static"`` mode, it reads the messages that are present in the
@@ -294,14 +309,11 @@ def read(
             UNIX epoch, to start reading from. Requires
             ``start_from="timestamp"``.
         auth: The authentication mechanism: ``TokenAuthentication``,
-            ``OAuth2Authentication``, or ``None`` for clusters without
-            authentication.
-        tls_settings: TLS connection settings. Use ``TLSSettings`` to provide the CA
-            certificate used to verify the broker (``root_cert_path``) or, for
-            development setups, to accept any broker certificate
-            (``trust_certificates=True``). The connection is encrypted when the
-            ``uri`` uses the ``pulsar+ssl://`` scheme. Mutual TLS (client
-            certificate) authentication is not supported.
+            ``OAuth2Authentication``, or ``None`` (the default) for clusters
+            without authentication — see the *Authentication* section above.
+        tls_settings: TLS connection settings, described in the
+            *Authentication* section above. ``None`` (the default) leaves the
+            client with its default certificate verification.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled,
             it will be used as the name for the snapshot that stores the connector's
@@ -450,6 +462,7 @@ def read(
         start_from, start_from_timestamp_ms
     )
 
+    deduced_schema = schema is None and format in ("avro", "json")
     data_storage = api.DataStorage(
         storage_type="pulsar",
         path=uri,
@@ -462,7 +475,16 @@ def read(
         pulsar_settings=_construct_pulsar_settings(
             auth, subscription_type, read_compacted=read_compacted
         ),
+        deduced_schema=deduced_schema,
     )
+    if deduced_schema:
+        # The topic's own schema in the broker's registry describes the
+        # columns; an explicit schema always overrides the deduction.
+        schema = explore_schema(
+            data_storage,
+            source_description=f"the Pulsar topic {topic!r}",
+            format=format,
+        )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
         schema=schema,
@@ -496,7 +518,7 @@ def write(
     uri: str,
     topic: str | ColumnReference,
     *,
-    format: Literal["json", "dsv", "raw", "plaintext"] = "json",
+    format: Literal["json", "dsv", "raw", "plaintext", "avro"] = "json",
     delimiter: str = ",",
     key: ColumnReference | None = None,
     ordering_key: ColumnReference | None = None,
@@ -523,13 +545,22 @@ def write(
             ``pulsar+ssl://my-cluster:6651`` for a TLS-encrypted connection.
         topic: The name of the topic to write to. It can also be a reference to
             a string column of the table: then each row is produced into the topic
-            given by the value of this column, and the column itself is excluded
-            from the message payload.
+            given by the value of this column. In the ``"avro"`` format the topic
+            column — like the other service columns — is not a part of the
+            payload; the other formats include every column of the table in the
+            payload.
         format: Format in which the message payload is produced. Can be
-            ``"json"``, ``"dsv"``, ``"plaintext"`` or ``"raw"``. For
+            ``"json"``, ``"dsv"``, ``"plaintext"``, ``"raw"`` or ``"avro"``. For
             ``"plaintext"`` and ``"raw"``, the table must consist of a single
             column of the string or binary type respectively, unless the ``value``
-            parameter points at the payload column explicitly.
+            parameter points at the payload column explicitly. For ``"avro"``,
+            the payload is the Avro binary encoding of the row, and the derived
+            schema is declared to the broker's schema registry — see the
+            *Schema registry* section above for the mechanics and the type
+            conversions. The columns designated as the service inputs —
+            ``topic``, ``key``, ``ordering_key``, ``event_time``, ``headers`` —
+            stay out of the record; duplicate a column under another name with
+            ``table.select(...)`` if it must also be a part of the payload.
         delimiter: The delimiter separating the fields, if the ``"dsv"`` format is
             used.
         key: The column carrying the partition key of the messages. The column must
@@ -580,14 +611,11 @@ def write(
             the name (e.g. ``my-pipeline-0``). If not set, the broker assigns
             a generated name.
         auth: The authentication mechanism: ``TokenAuthentication``,
-            ``OAuth2Authentication``, or ``None`` for clusters without
-            authentication.
-        tls_settings: TLS connection settings. Use ``TLSSettings`` to provide the CA
-            certificate used to verify the broker (``root_cert_path``) or, for
-            development setups, to accept any broker certificate
-            (``trust_certificates=True``). The connection is encrypted when the
-            ``uri`` uses the ``pulsar+ssl://`` scheme. Mutual TLS (client
-            certificate) authentication is not supported.
+            ``OAuth2Authentication``, or ``None`` (the default) for clusters
+            without authentication — see the *Authentication* section above.
+        tls_settings: TLS connection settings, described in the
+            *Authentication* section above. ``None`` (the default) leaves the
+            client with its default certificate verification.
         name: A unique name for the connector. If provided, this name will be used
             in logs and monitoring dashboards.
         sort_by: If specified, the output will be sorted in ascending order based on
@@ -633,8 +661,9 @@ def write(
     ... )
 
     The topic doesn't have to be fixed: if it is given as a column reference,
-    each row is produced into the topic named by that column's value, and the
-    column itself is excluded from the payload. Combined with ``key``, which
+    each row is produced into the topic named by that column's value (see the
+    ``topic`` parameter for whether the column is part of the payload).
+    Combined with ``key``, which
     pins the partition of a partitioned topic (rows with equal keys keep their
     order), one ``write`` call can route a single table into many topics:
 

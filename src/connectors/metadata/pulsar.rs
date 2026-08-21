@@ -32,6 +32,10 @@ pub struct PulsarMetadata {
     /// The ordering key of the message, base64-encoded (it is a byte
     /// sequence, like the Kafka header values).
     pub ordering_key: Option<String>,
+    /// The registry version of the schema the message was produced under, or
+    /// `None` for the messages produced without a schema. The version is the
+    /// big-endian integer the broker stamps into the message metadata.
+    pub schema_version: Option<u64>,
     /// The user-defined message properties.
     pub properties: HashMap<String, String>,
 }
@@ -48,6 +52,7 @@ impl PulsarMetadata {
         event_time_millis: Option<u64>,
         producer_name: String,
         ordering_key: Option<&[u8]>,
+        schema_version: Option<u64>,
         properties: HashMap<String, String>,
     ) -> Self {
         Self {
@@ -60,7 +65,15 @@ impl PulsarMetadata {
             event_time_millis,
             producer_name,
             ordering_key: ordering_key.map(|key| general_purpose::STANDARD.encode(key)),
+            schema_version,
             properties,
         }
+    }
+
+    /// The schema version in the wire form the registry lookups expect: the
+    /// same 8 big-endian bytes the broker stamps into the message metadata.
+    pub fn schema_id(&self) -> Option<Vec<u8>> {
+        self.schema_version
+            .map(|version| version.to_be_bytes().to_vec())
     }
 }

@@ -108,6 +108,7 @@ use self::external_index_wrappers::{
 };
 use self::threads::PythonThreadState;
 
+use crate::connectors::data_format::avro::{AvroFormatter, AvroParser, AvroSchemaProvider};
 use crate::connectors::data_format::bson::BsonFormatter;
 use crate::connectors::data_format::{
     BsonParser, DebeziumDBType, DebeziumMessageParser, DsvSettings, FieldSource, Formatter,
@@ -130,6 +131,9 @@ use crate::connectors::data_storage::mssql::MssqlWriter;
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
 use crate::connectors::data_storage::pinecone::PineconeWriter;
+use crate::connectors::data_storage::pulsar::{
+    PulsarConnectionFactory, PulsarSchemaProvider, SchemaLookupError,
+};
 use crate::connectors::data_storage::qdrant::QdrantWriteError;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
@@ -3061,6 +3065,10 @@ pub struct Scope {
     license: Option<License>,
     graph: SendWrapper<ScopedGraph>,
     is_persisted: bool,
+    // Whether the persistence mode actually snapshots the inputs: the
+    // UDF-caching mode does not, so the restrictions protecting the input
+    // snapshots (e.g. the deduced-schema guard) do not apply under it.
+    is_input_persisted: bool,
     timestamp_at_start: Timestamp,
 
     // empty_universe: Lazy<Py<Universe>>,
@@ -3079,12 +3087,14 @@ impl Scope {
         event_loop: Py<PyAny>,
         license: Option<License>,
         is_persisted: bool,
+        is_input_persisted: bool,
         timestamp_at_start: Timestamp,
     ) -> Self {
         Scope {
             parent,
             license,
             is_persisted,
+            is_input_persisted,
             graph: SendWrapper::new(ScopedGraph::new()),
             universes: Mutex::new(HashMap::new()),
             columns: Mutex::new(HashMap::new()),
@@ -3217,14 +3227,21 @@ impl Scope {
             .total_connectors
             .lock_py_attached(py)
             .unwrap() += 1;
+        // The parser is built first: it is the one that knows whether the
+        // source metadata is a part of its input (see
+        // `Parser::needs_source_metadata`), and its construction is cheap
+        // and connectionless, unlike the reader's.
+        let parser_impl = data_format
+            .borrow()
+            .construct_parser_for_storage(py, &data_source.borrow())?;
+
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
             &self_.borrow(),
             &properties.borrow(),
+            parser_impl.needs_source_metadata(),
         )?;
-
-        let parser_impl = data_format.borrow().construct_parser(py)?;
 
         let column_properties = properties.borrow().column_properties();
         let table_handle = self_.borrow().graph.connector_table(
@@ -3269,6 +3286,7 @@ impl Scope {
                         Some(self_.clone().unbind()),
                         self_.borrow().event_loop.clone_ref(py),
                         None,
+                        false,
                         false,
                         Timestamp::new_from_current_time(),
                     ),
@@ -3926,14 +3944,19 @@ impl Scope {
         // that needs a single worker to honor that order (e.g. MongoDB) reads
         // this when deciding `single_threaded()`; writers that don't care ignore it.
         let sorted_output = sort_by_indices.is_some();
+        // The formatter is built first: it is the one that knows the schema
+        // of the payloads it produces (see `Formatter::wire_schema`), which
+        // the sinks with a schema registry declare to their target.
+        let format_impl = data_format.borrow().construct_formatter(py)?;
+
         let sink_impl = data_sink.borrow().construct_writer(
             py,
             &data_format.borrow(),
             self_.borrow().license.as_ref(),
             worker_index,
             sorted_output,
+            format_impl.wire_schema(),
         )?;
-        let format_impl = data_format.borrow().construct_formatter(py)?;
 
         self_.borrow().graph.output_table(
             sink_impl,
@@ -4104,6 +4127,7 @@ impl Scope {
             &data_format.borrow(),
             &self_.borrow(),
             &properties,
+            false,
         )?;
         assert_eq!(parallel_readers, 1); // python connector that has parallel_readers == 1 has to be used
 
@@ -4355,6 +4379,9 @@ pub fn run_with_new_graph(
         }
     };
     let is_persisted = persistence_config.is_some();
+    let is_input_persisted = persistence_config
+        .as_ref()
+        .is_some_and(|config| !matches!(config.persistence_mode(), PersistenceMode::UdfCaching));
 
     let telemetry_config = EngineTelemetryConfig::create(
         &license,
@@ -4381,6 +4408,7 @@ pub fn run_with_new_graph(
                                 event_loop.clone_ref(py),
                                 Some(scope_license.clone()),
                                 is_persisted,
+                                is_input_persisted,
                                 timestamp_at_start,
                             ),
                         )?;
@@ -5617,6 +5645,11 @@ pub struct DataStorage {
     pinecone_params: Option<Arc<Py<PineconeParams>>>,
     detach_between_batches: bool,
     pulsar_settings: Option<PulsarSettings>,
+    // Whether the table schema of this source was deduced from the source's
+    // own schema (schema=None) rather than written by the user. The deduced
+    // schemas are re-deduced at every start, which restricts what they can
+    // be combined with (e.g. persistence).
+    deduced_schema: bool,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -6142,6 +6175,12 @@ pub struct DataFormat {
     timestamp_unit: Option<String>,
     message_queue_key_field: Option<String>,
     with_special_fields: bool,
+    // The positions (within `value_fields`) of the fields that belong to the
+    // message payload, when they are a proper subset: the record formats
+    // whose output is a public, schema-described contract (avro) exclude the
+    // service columns (the dynamic topic, the keys, the headers) from it.
+    // `None` means every value field is part of the payload.
+    payload_field_indices: Option<Vec<usize>>,
 }
 
 #[pymethods]
@@ -6200,6 +6239,7 @@ impl DataStorage {
         pinecone_params = None,
         detach_between_batches = false,
         pulsar_settings = None,
+        deduced_schema = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -6256,6 +6296,7 @@ impl DataStorage {
         pinecone_params: Option<Py<PineconeParams>>,
         detach_between_batches: bool,
         pulsar_settings: Option<PulsarSettings>,
+        deduced_schema: bool,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -6329,6 +6370,7 @@ impl DataStorage {
             pinecone_params: pinecone_params.map(Into::into),
             detach_between_batches,
             pulsar_settings,
+            deduced_schema,
         })
     }
 
@@ -6426,6 +6468,7 @@ impl DataFormat {
         timestamp_unit = None,
         message_queue_key_field = None,
         with_special_fields = true,
+        payload_field_indices = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -6448,6 +6491,7 @@ impl DataFormat {
         timestamp_unit: Option<String>,
         message_queue_key_field: Option<String>,
         with_special_fields: bool,
+        payload_field_indices: Option<Vec<usize>>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -6469,6 +6513,7 @@ impl DataFormat {
             timestamp_unit,
             message_queue_key_field,
             with_special_fields,
+            payload_field_indices,
         }
     }
 
@@ -6841,6 +6886,60 @@ impl DataStorage {
             Err(PyValueError::new_err(
                 "Either 'topic' or 'topic_name_index' must be defined, but none is",
             ))
+        }
+    }
+
+    /// The connected Pulsar client of this storage.
+    fn pulsar_client(&self, runtime: &TokioRuntime) -> PyResult<Pulsar<TokioExecutor>> {
+        let uri = self.path()?;
+        let tls = self.tls_settings.clone().unwrap_or_default();
+        build_pulsar_client(runtime, uri, &tls, self.pulsar_settings.as_ref())
+    }
+
+    /// The tokio runtime and the connected Pulsar client of this storage:
+    /// the shared prologue of the Pulsar construction sites.
+    fn pulsar_runtime_and_client(&self) -> PyResult<(TokioRuntime, Pulsar<TokioExecutor>)> {
+        let runtime = create_async_tokio_runtime()?;
+        let client = self.pulsar_client(&runtime)?;
+        Ok((runtime, client))
+    }
+
+    /// The writer-schema provider of this storage for the Avro payloads,
+    /// when the storage has a schema registry to resolve them in. The
+    /// storage-type dispatch lives here, next to the storage's other
+    /// construction helpers, so the format layer stays storage-agnostic.
+    fn avro_schema_provider(&self) -> PyResult<Option<Box<dyn AvroSchemaProvider>>> {
+        match self.storage_type.as_ref() {
+            "pulsar" => {
+                let topic = self.message_queue_fixed_topic()?;
+                // The provider connects lazily, on its first registry
+                // lookup: a parser that only meets known schema versions
+                // (or none at all, on an idle worker) never opens a client
+                // of its own.
+                let connection_storage = self.clone();
+                let connection_factory: PulsarConnectionFactory = Box::new(move || {
+                    connection_storage.pulsar_runtime_and_client().map_err(|e| {
+                        // A ValueError marks a broken client configuration
+                        // (an unreadable certificate file and the like):
+                        // retrying cannot heal it. Everything else is a
+                        // connection attempt, transient by nature.
+                        Python::attach(|py| {
+                            if e.is_instance_of::<PyValueError>(py) {
+                                SchemaLookupError::Permanent(format!(
+                                    "failed to configure the Pulsar client: {e}"
+                                ))
+                            } else {
+                                SchemaLookupError::Transient(e.to_string())
+                            }
+                        })
+                    })
+                });
+                Ok(Some(Box::new(PulsarSchemaProvider::new(
+                    connection_factory,
+                    &topic,
+                ))))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -7430,19 +7529,35 @@ impl DataStorage {
         py: pyo3::Python,
         scope: &Scope,
         properties: &ConnectorProperties,
+        parser_needs_source_metadata: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         if let Some(license) = scope.license.as_ref() {
             license.check_entitlements(["pulsar"])?;
         }
 
-        let uri = self.path()?;
         let topic = self.message_queue_fixed_topic()?;
         let runtime = create_async_tokio_runtime()?;
         let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
         let worker_index = scope.worker_index();
         let is_static = self.mode == ConnectorMode::Static;
         let (start_from_end, min_publish_timestamp_ms) = self.pulsar_start_from(&topic, is_static);
+        // Building the metadata costs a per-message allocation, so it
+        // happens when someone consumes it: the user through the
+        // `_metadata` column, or the parser itself.
+        let with_metadata = self.with_metadata || parser_needs_source_metadata;
 
+        if scope.is_input_persisted && self.deduced_schema {
+            // The deduction runs anew at every start, while the snapshot
+            // stores the rows of the previous run's schema: a topic
+            // evolution between the runs would fail the replay or silently
+            // shift the old values into the wrong columns.
+            return Err(PyValueError::new_err(
+                "schema deduction (schema=None) cannot be used with persistence: the schema \
+                 would be deduced anew at every restart, while the snapshot stores the rows \
+                 of the schema the previous run deduced — a topic evolution between the runs \
+                 would corrupt or fail the replay. Pass an explicit schema instead",
+            ));
+        }
         let use_partition_readers = pulsar_partition_readers_requested(
             self.pulsar_settings.as_ref(),
             is_static,
@@ -7469,8 +7584,7 @@ impl DataStorage {
                 let reader = idle_pulsar_reader(runtime, &topic, worker_index, connector_index);
                 return Ok((reader, reader_count));
             }
-            let tls = self.tls_settings.clone().unwrap_or_default();
-            let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+            let client = self.pulsar_client(&runtime)?;
             return construct_pulsar_partition_reader(
                 runtime,
                 client,
@@ -7478,7 +7592,7 @@ impl DataStorage {
                 is_static,
                 start_from_end,
                 min_publish_timestamp_ms,
-                self.with_metadata,
+                with_metadata,
                 reader_count,
                 worker_index,
                 connector_index,
@@ -7516,12 +7630,12 @@ impl DataStorage {
             .unwrap_or_else(|| auto_pulsar_subscription_name(scope, connector_index));
         let reader = self.construct_pulsar_subscription_reader(
             runtime,
-            uri,
             &topic,
             &subscription_name,
             streaming_subscription_type,
             start_from_end,
             min_publish_timestamp_ms,
+            with_metadata,
             worker_index,
             connector_index,
         )?;
@@ -7535,17 +7649,16 @@ impl DataStorage {
     fn construct_pulsar_subscription_reader(
         &self,
         runtime: TokioRuntime,
-        uri: &str,
         topic: &str,
         subscription_name: &str,
         subscription_type: PulsarSubType,
         start_from_end: bool,
         min_publish_timestamp_ms: Option<u64>,
+        with_metadata: bool,
         worker_index: usize,
         connector_index: usize,
     ) -> PyResult<Box<dyn ReaderBuilder>> {
-        let tls = self.tls_settings.clone().unwrap_or_default();
-        let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+        let client = self.pulsar_client(&runtime)?;
         let subscription_options = PulsarConsumerOptions::default()
             .durable(self.durable_consumer_name.is_some())
             .with_initial_position(if start_from_end {
@@ -7575,7 +7688,7 @@ impl DataStorage {
             worker_index,
             connector_index,
             min_publish_timestamp_ms,
-            self.with_metadata,
+            with_metadata,
         );
         Ok(Box::new(reader))
     }
@@ -7859,12 +7972,17 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    /// `parser_needs_source_metadata` is the parser's own requirement (see
+    /// `Parser::needs_source_metadata`): the readers that build the source
+    /// metadata on demand emit it when either the user asked for the
+    /// `_metadata` column or the parser consumes the metadata itself.
     fn construct_reader(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
         scope: &Scope,
         properties: &ConnectorProperties,
+        parser_needs_source_metadata: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(scope, data_format),
@@ -7876,7 +7994,9 @@ impl DataStorage {
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
             "nats" => self.construct_nats_reader(py, scope, properties),
             "rabbitmq" => self.construct_rabbitmq_reader(scope, properties),
-            "pulsar" => self.construct_pulsar_reader(py, scope, properties),
+            "pulsar" => {
+                self.construct_pulsar_reader(py, scope, properties, parser_needs_source_metadata)
+            }
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
             "mqtt" => self.construct_mqtt_reader(scope),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
@@ -8337,15 +8457,13 @@ impl DataStorage {
         &self,
         license: Option<&License>,
         worker_index: usize,
+        wire_schema: Option<String>,
     ) -> PyResult<Box<dyn Writer>> {
         if let Some(license) = license {
             license.check_entitlements(["pulsar"])?;
         }
-        let uri = self.path()?;
         let topic = self.message_queue_topic()?;
-        let runtime = create_async_tokio_runtime()?;
-        let tls = self.tls_settings.clone().unwrap_or_default();
-        let client = build_pulsar_client(&runtime, uri, &tls, self.pulsar_settings.as_ref())?;
+        let (runtime, client) = self.pulsar_runtime_and_client()?;
         let compression = parse_pulsar_compression(self.pulsar_settings.as_ref())?;
         // Pulsar requires producer names to be unique within a topic, and
         // every worker runs its own producer, so the user-visible name gets a
@@ -8359,6 +8477,11 @@ impl DataStorage {
             .pulsar_settings
             .as_ref()
             .is_some_and(|settings| settings.event_time_from_engine);
+        // The formatter's schema, when it has one, is declared to the
+        // broker's registry: the broker validates it against the topic's
+        // compatibility policy and versions it, making the topic readable
+        // for any schema-aware consumer.
+        let declared_avro_schema = wire_schema;
         let writer = PulsarWriter::new(
             runtime,
             client,
@@ -8370,6 +8493,7 @@ impl DataStorage {
             event_time_from_engine,
             compression,
             producer_name,
+            declared_avro_schema,
         );
         Ok(Box::new(writer))
     }
@@ -8652,6 +8776,9 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    /// `wire_schema` is the schema of the payloads the formatter produces
+    /// (see `Formatter::wire_schema`): the sinks whose target keeps a schema
+    /// registry declare it there, the others ignore it.
     fn construct_writer(
         &self,
         py: pyo3::Python,
@@ -8659,6 +8786,7 @@ impl DataStorage {
         license: Option<&License>,
         worker_index: usize,
         sorted_output: bool,
+        wire_schema: Option<String>,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_writer(),
@@ -8673,7 +8801,7 @@ impl DataStorage {
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
-            "pulsar" => self.construct_pulsar_writer(license, worker_index),
+            "pulsar" => self.construct_pulsar_writer(license, worker_index, wire_schema),
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
@@ -8747,6 +8875,21 @@ impl DataFormat {
             .iter()
             .map(|field| field.borrow(py).clone())
             .collect()
+    }
+
+    /// The value fields that belong to the message payload, each paired with
+    /// its position among the row values. Restricted to
+    /// `payload_field_indices` when set — that is how the record formats
+    /// keep the service columns out of the payload — and covering every
+    /// field otherwise.
+    fn payload_fields_with_positions(&self, py: pyo3::Python) -> Vec<(usize, ValueField)> {
+        match &self.payload_field_indices {
+            Some(indices) => indices
+                .iter()
+                .map(|index| (*index, self.value_fields[*index].borrow(py).clone()))
+                .collect(),
+            None => self.value_fields_vec(py).into_iter().enumerate().collect(),
+        }
     }
 
     fn value_field_names(&self, py: pyo3::Python) -> Vec<String> {
@@ -8854,8 +8997,42 @@ impl DataFormat {
                 self.schema(py)?,
                 self.session_type,
             )?)),
+            "avro" => {
+                let parser = AvroParser::new(
+                    self.value_fields_vec(py),
+                    self.key_field_names.as_deref(),
+                    None,
+                    true,
+                )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Box::new(parser))
+            }
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
+    }
+
+    /// Like [`Self::construct_parser`], but wired to the data storage the
+    /// parser will consume: the schema-aware formats obtain their schema
+    /// provider from the storage (e.g. the Avro parser resolves the writer
+    /// schemas in the Pulsar registry of the topic being read).
+    fn construct_parser_for_storage(
+        &self,
+        py: pyo3::Python,
+        data_storage: &DataStorage,
+    ) -> PyResult<Box<dyn Parser>> {
+        if self.format_type == "avro" {
+            if let Some(provider) = data_storage.avro_schema_provider()? {
+                let parser = AvroParser::new(
+                    self.value_fields_vec(py),
+                    self.key_field_names.as_deref(),
+                    Some(provider),
+                    !data_storage.deduced_schema,
+                )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                return Ok(Box::new(parser));
+            }
+        }
+        self.construct_parser(py)
     }
 
     fn construct_formatter(&self, py: pyo3::Python) -> PyResult<Box<dyn Formatter>> {
@@ -8902,6 +9079,11 @@ impl DataFormat {
             "bson" => {
                 let formatter =
                     BsonFormatter::new(self.value_field_names(py), self.with_special_fields);
+                Ok(Box::new(formatter))
+            }
+            "avro" => {
+                let formatter = AvroFormatter::new(self.payload_fields_with_positions(py))
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 Ok(Box::new(formatter))
             }
             _ => Err(PyValueError::new_err("Unknown data format")),
@@ -9307,6 +9489,63 @@ impl From<LicenseError> for PyErr {
     }
 }
 
+/// The generic entry point of schema deduction: dispatches to the
+/// `explore_schema` routine of the storage the `DataStorage` describes and
+/// returns, per column, the name, the portable JSON descriptor of the engine
+/// type, whether the source schema defines a (representable) default, that
+/// default itself, and the documentation string. The default travels with an
+/// explicit presence flag because a defined default may legitimately be
+/// `None` — a bare `Option` could not tell "no default" from "defaults to
+/// None" on the Python side. The Python side assembles a `pw.Schema` out of
+/// these, knowing nothing about the storage's own type system.
+type ExploredColumn = (String, String, bool, Option<Value>, Option<String>);
+
+/// `format` is the payload format of the connector performing the deduction
+/// (e.g. "avro" or "json" for the message queues): a storage whose schema
+/// registry types the topics can reject a mismatch up front, instead of the
+/// pipeline failing on every message at runtime.
+#[pyfunction]
+#[pyo3(signature = (data_storage, format = None))]
+fn explore_schema(
+    data_storage: PyRef<DataStorage>,
+    format: Option<String>,
+) -> PyResult<Vec<ExploredColumn>> {
+    let fields = match data_storage.storage_type.as_ref() {
+        "pulsar" => {
+            let topic = data_storage.message_queue_fixed_topic()?;
+            let (runtime, client) = data_storage.pulsar_runtime_and_client()?;
+            crate::connectors::data_storage::pulsar::explore_schema(
+                &runtime,
+                &client,
+                &topic,
+                format.as_deref(),
+            )
+            .map_err(|e| {
+                PyValueError::new_err(format!(
+                    "Failed to deduce the schema of the Pulsar topic {topic:?}: {e}"
+                ))
+            })?
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "schema deduction is not supported for the {other:?} data storage"
+            )))
+        }
+    };
+    Ok(fields
+        .into_iter()
+        .map(|field| {
+            (
+                field.name,
+                crate::connectors::exploration::type_descriptor(&field.type_).to_string(),
+                field.default.is_some(),
+                field.default,
+                field.doc,
+            )
+        })
+        .collect())
+}
+
 #[pyfunction]
 #[pyo3(signature = (
     *,
@@ -9406,6 +9645,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     #[allow(clippy::unsafe_removed_from_name)] // false positive
     m.add_function(wrap_pyfunction!(unsafe_make_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(check_entitlements, m)?)?;
+    m.add_function(wrap_pyfunction!(explore_schema, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize, m)?)?;
     m.add_function(wrap_pyfunction!(serialize, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_aws_credentials, m)?)?;

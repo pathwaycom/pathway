@@ -1,10 +1,11 @@
 // Copyright © 2026 Pathway
 
-use log::error;
+use log::{error, warn};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::mem::take;
 use std::str::Utf8Error;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{FutureExt, StreamExt};
@@ -22,6 +23,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::connectors::data_format::avro::AvroSchemaProvider;
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_storage::MessageQueueTopic;
 use crate::connectors::metadata::PulsarMetadata;
@@ -33,6 +35,7 @@ use crate::connectors::{
 use crate::engine::time::DateTime;
 use crate::engine::Value;
 use crate::persistence::frontier::OffsetAntichain;
+use crate::retry::RetryConfig;
 
 // The maximum number of published messages whose broker receipts may be
 // outstanding at any given moment. Each publish is enqueued immediately and
@@ -184,6 +187,13 @@ fn build_message_metadata(
         .into_iter()
         .map(|kv| (kv.key, kv.value))
         .collect();
+    // The registry stamps the version as 8 big-endian bytes; anything else
+    // would be a non-standard broker, reported as an absent version rather
+    // than a bogus number.
+    let schema_version = proto_metadata
+        .schema_version
+        .as_deref()
+        .and_then(|bytes| Some(u64::from_be_bytes(bytes.try_into().ok()?)));
     Box::new(PulsarMetadata::new(
         topic.to_string(),
         id.partition.unwrap_or(-1),
@@ -194,6 +204,7 @@ fn build_message_metadata(
         proto_metadata.event_time,
         take(&mut proto_metadata.producer_name),
         proto_metadata.ordering_key.as_deref(),
+        schema_version,
         properties,
     ))
 }
@@ -1051,6 +1062,13 @@ pub struct PulsarWriter {
     // may own several producers (dynamic topics); the name is shared, which
     // is fine because the uniqueness is per topic.
     producer_name: Option<String>,
+    // The JSON of the Avro schema the producers declare to the broker's
+    // schema registry, set when the payloads are Avro-encoded. The broker
+    // checks it against the topic's current schema (per the namespace
+    // compatibility policy) and stamps the resulting schema version into the
+    // metadata of every published message, which is what the schema-aware
+    // consumers decode by.
+    declared_avro_schema: Option<String>,
 }
 
 impl PulsarWriter {
@@ -1066,6 +1084,7 @@ impl PulsarWriter {
         event_time_from_engine: bool,
         compression: Option<PulsarCompression>,
         producer_name: Option<String>,
+        declared_avro_schema: Option<String>,
     ) -> Self {
         PulsarWriter {
             runtime,
@@ -1081,6 +1100,7 @@ impl PulsarWriter {
             event_time_from_engine,
             compression,
             producer_name,
+            declared_avro_schema,
         }
     }
 
@@ -1090,6 +1110,13 @@ impl PulsarWriter {
             .as_mut()
             .expect("producers are set until drop");
         if !producers.contains_key(topic) {
+            let schema = self.declared_avro_schema.as_ref().map(|schema_json| {
+                pulsar::message::proto::Schema {
+                    r#type: pulsar::message::proto::schema::Type::Avro as i32,
+                    schema_data: schema_json.as_bytes().to_vec(),
+                    ..pulsar::message::proto::Schema::default()
+                }
+            });
             let mut builder =
                 self.client
                     .producer()
@@ -1102,6 +1129,7 @@ impl PulsarWriter {
                         // is full.
                         block_queue_if_full: true,
                         compression: self.compression.clone(),
+                        schema,
                         ..ProducerOptions::default()
                     });
             if let Some(producer_name) = &self.producer_name {
@@ -1325,6 +1353,304 @@ impl Writer for PulsarWriter {
     }
 }
 
+/// The human name of a registry schema type, for the error messages: the
+/// protocol enum value alone ("type 1") would send the user to the protocol
+/// definition to learn what their topic is typed with.
+fn registry_schema_type_name(type_: i32) -> String {
+    pulsar::message::proto::schema::Type::try_from(type_).map_or_else(
+        |_| format!("unknown ({type_})"),
+        |schema_type| schema_type.as_str_name().to_string(),
+    )
+}
+
+/// Whether the client error carries the broker's definitive refusal —
+/// rejected credentials, missing permissions, a deleted topic, and the like.
+/// Such failures do not heal on retry and must be classified as permanent;
+/// everything else (timeouts, dropped connections) is worth retrying.
+fn pulsar_error_is_permanent(error: &pulsar::Error) -> bool {
+    use pulsar::error::{ConnectionError, ConsumerError as ClientConsumerError};
+    use pulsar::message::proto::ServerError;
+    fn server_error_is_permanent(server_error: ServerError) -> bool {
+        matches!(
+            server_error,
+            ServerError::AuthenticationError
+                | ServerError::AuthorizationError
+                | ServerError::TopicNotFound
+                | ServerError::NotAllowedError
+                | ServerError::IncompatibleSchema
+                | ServerError::TopicTerminatedError
+        )
+    }
+    fn connection_error_is_permanent(error: &ConnectionError) -> bool {
+        matches!(error, ConnectionError::PulsarError(Some(server_error), _)
+            if server_error_is_permanent(*server_error))
+    }
+    match error {
+        pulsar::Error::Authentication(_) => true,
+        pulsar::Error::Connection(connection_error)
+        | pulsar::Error::Consumer(ClientConsumerError::Connection(connection_error)) => {
+            connection_error_is_permanent(connection_error)
+        }
+        _ => false,
+    }
+}
+
+/// Wraps a client error of a schema lookup into its retry classification.
+fn classify_lookup_error(error: &pulsar::Error, context: &str) -> SchemaLookupError {
+    let message = format!("{context}: {error}");
+    if pulsar_error_is_permanent(error) {
+        SchemaLookupError::Permanent(message)
+    } else {
+        SchemaLookupError::Transient(message)
+    }
+}
+
+/// Fetches a schema from the broker's registry over a short-lived probe
+/// consumer: the lookup is a consumer-scoped command of the binary protocol.
+/// `version: None` requests the latest version. The consumer exists only for
+/// the duration of the call — the lookups are rare (once per schema version,
+/// or once per run for the deduction), and a long-lived probe would sit on an
+/// exclusive subscription and buffer flow-permit messages nobody reads.
+///
+/// For a partitioned topic the consumer expands into per-partition consumers
+/// keyed by the physical `...-partition-K` names, and its `get_schema` looks
+/// the consumer up by that exact key — so the query must use one of the
+/// consumer's own topic names, never the base name the caller subscribed
+/// with. The broker resolves a partition name to its base topic when serving
+/// the schema, so any partition works.
+fn fetch_registry_schema(
+    runtime: &TokioRuntime,
+    client: &Pulsar<TokioExecutor>,
+    topic: &str,
+    version: Option<Vec<u8>>,
+) -> Result<Option<pulsar::message::proto::Schema>, SchemaLookupError> {
+    // The probe subscription is non-durable and uniquely named: it exists
+    // only to scope the schema lookup and never consumes anything.
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time is past the epoch")
+        .as_nanos();
+    let mut consumer: PulsarConsumer<Vec<u8>, TokioExecutor> = runtime
+        .block_on(
+            client
+                .consumer()
+                .with_topic(topic)
+                .with_subscription(format!("pathway-schema-probe-{nonce}"))
+                .with_subscription_type(PulsarSubType::Exclusive)
+                .with_options(PulsarConsumerOptions::default().durable(false))
+                .build(),
+        )
+        .map_err(|e| classify_lookup_error(&e, "failed to connect to the topic"))?;
+    let query_topic = consumer.topics().into_iter().next().ok_or_else(|| {
+        SchemaLookupError::Permanent(
+            "the topic has no partitions to query the schema through".to_string(),
+        )
+    })?;
+    let registry_schema = runtime
+        .block_on(consumer.get_schema(&query_topic, version))
+        .map_err(|e| classify_lookup_error(&e, "failed to fetch the schema of the topic"));
+    // The probe consumer interacts with the async runtime when dropped.
+    {
+        let _guard = runtime.enter();
+        drop(consumer);
+    }
+    registry_schema
+}
+
+/// The failure classification of a schema lookup, private to this storage:
+/// a transient failure (the registry was unreachable) says nothing about the
+/// message, while a permanent one is the registry's own verdict — no such
+/// version, an unusable schema, a refused connection.
+#[derive(Debug)]
+pub enum SchemaLookupError {
+    Transient(String),
+    Permanent(String),
+}
+
+// The retry schedule of the transient schema-lookup failures: the shared
+// `RetryConfig` backoff (with jitter, so the parallel workers do not retry
+// in lockstep), capped per delay. The retries continue indefinitely,
+// because this reader acknowledges a message before its payload is parsed:
+// giving up would lose the row for good, so the reading thread blocks until
+// the registry answers. This is the intended backpressure, and it stalls
+// the pipeline (including its shutdown) for as long as the registry stays
+// unreachable; the operator sees the repeated warnings and decides.
+const SCHEMA_LOOKUP_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Runs `attempt` until it yields a schema or fails permanently, sleeping
+/// with backoff between the transient failures. The returned error message
+/// is what the parser reports for the row.
+fn retry_transient_lookups<T>(
+    mut attempt: impl FnMut() -> Result<T, SchemaLookupError>,
+) -> Result<T, String> {
+    let mut retry_config = RetryConfig::default();
+    loop {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(SchemaLookupError::Permanent(message)) => return Err(message),
+            Err(SchemaLookupError::Transient(message)) => {
+                let delay = retry_config.next_delay().min(SCHEMA_LOOKUP_MAX_BACKOFF);
+                warn!(
+                    "transient failure to obtain a writer schema from the registry, \
+                     retrying in {delay:?}: {message}"
+                );
+                std::thread::sleep(delay);
+            }
+        }
+    }
+}
+
+// How long a registry verdict stays in the negative cache. The verdicts
+// are final for a fixed version as far as the registry's answer goes, but
+// the conditions around them heal: an operator grants the missing
+// permissions, a geo-replicated registry catches up. A bounded cooldown
+// keeps the per-message lookup storm away while letting the recovery
+// through without a pipeline restart.
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_mins(1);
+
+/// The factory of the provider's connection, invoked on the first lookup:
+/// the workers whose parser never meets an unseen schema version (idle ones
+/// included) then never open a client of their own. The factory classifies
+/// its own failures: a broken client configuration (an unreadable
+/// certificate file and the like) is permanent, while a failed connection
+/// attempt is transient — nothing definitive is known before the broker
+/// answers.
+pub type PulsarConnectionFactory =
+    Box<dyn Fn() -> Result<(TokioRuntime, Pulsar<TokioExecutor>), SchemaLookupError> + Send>;
+
+/// The Pulsar-backed source of Avro writer schemas: looks the schemas up in
+/// the broker's registry by the version stamped into the message metadata.
+/// Both the successful lookups and the registry's permanent verdicts are
+/// cached (a permanent verdict is final for a fixed version — without the
+/// negative cache, a stretch of messages under an undecodable version would
+/// open a fresh probe consumer per message). The connection is established
+/// lazily, on the first cache miss, and the probe consumer of a lookup
+/// lives only for the duration of that miss: a topic accumulates a handful
+/// of schema versions over its lifetime, so the lookups are rare.
+pub struct PulsarSchemaProvider {
+    connection: Option<(TokioRuntime, Pulsar<TokioExecutor>)>,
+    connection_factory: PulsarConnectionFactory,
+    topic: String,
+    cache: HashMap<Vec<u8>, Arc<apache_avro::schema::Schema>>,
+    permanent_failures: HashMap<Vec<u8>, (String, std::time::Instant)>,
+}
+
+impl PulsarSchemaProvider {
+    pub fn new(connection_factory: PulsarConnectionFactory, topic: &str) -> PulsarSchemaProvider {
+        PulsarSchemaProvider {
+            connection: None,
+            connection_factory,
+            topic: topic.to_string(),
+            cache: HashMap::new(),
+            permanent_failures: HashMap::new(),
+        }
+    }
+
+    fn connection(&mut self) -> Result<&(TokioRuntime, Pulsar<TokioExecutor>), SchemaLookupError> {
+        if self.connection.is_none() {
+            // The factory classifies its failures itself (see
+            // `PulsarConnectionFactory`).
+            let connection = (self.connection_factory)()?;
+            self.connection = Some(connection);
+        }
+        Ok(self.connection.as_ref().expect("just set"))
+    }
+}
+
+impl AvroSchemaProvider for PulsarSchemaProvider {
+    fn get_schema(&mut self, schema_id: &[u8]) -> Result<Arc<apache_avro::schema::Schema>, String> {
+        retry_transient_lookups(|| self.lookup_once(schema_id))
+    }
+}
+
+impl PulsarSchemaProvider {
+    /// One lookup attempt, answering with the classification the retry
+    /// policy above acts on.
+    fn lookup_once(
+        &mut self,
+        schema_id: &[u8],
+    ) -> Result<Arc<apache_avro::schema::Schema>, SchemaLookupError> {
+        if let Some(schema) = self.cache.get(schema_id) {
+            return Ok(schema.clone());
+        }
+        if let Some((message, expires_at)) = self.permanent_failures.get(schema_id) {
+            if std::time::Instant::now() < *expires_at {
+                return Err(SchemaLookupError::Permanent(message.clone()));
+            }
+            // The cooldown has passed: forget the verdict and ask the
+            // registry anew — the conditions around it may have healed.
+            self.permanent_failures.remove(schema_id);
+        }
+        let topic = self.topic.clone();
+        let (runtime, client) = self.connection()?;
+        // A failed fetch is classified by `fetch_registry_schema`: the
+        // broker's definitive refusals are permanent, the transport-level
+        // failures are transient and the parser retries them. Everything
+        // below is the registry's own verdict about the schema — permanent.
+        let lookup_result =
+            fetch_registry_schema(runtime, client, &topic, Some(schema_id.to_vec()))
+                .and_then(|registry_schema| {
+                    registry_schema.ok_or_else(|| {
+                        // Transient: the version was stamped by a broker, so
+                        // its schema exists somewhere — most likely the
+                        // local registry lags behind a geo-replicated one.
+                        // The parser retries until it catches up.
+                        SchemaLookupError::Transient(
+                            "the registry holds no schema under this version (yet)".to_string(),
+                        )
+                    })
+                })
+                .and_then(|registry_schema| {
+                    let avro_type = pulsar::message::proto::schema::Type::Avro as i32;
+                    if registry_schema.r#type != avro_type {
+                        return Err(SchemaLookupError::Permanent(format!(
+                            "the schema version of the message is of the {} type, not AVRO: \
+                         the topic mixes schema types, and only AVRO payloads can be \
+                         decoded by this reader",
+                            registry_schema_type_name(registry_schema.r#type),
+                        )));
+                    }
+                    Ok(registry_schema)
+                })
+                .and_then(|registry_schema| {
+                    let schema_json =
+                        std::str::from_utf8(&registry_schema.schema_data).map_err(|e| {
+                            SchemaLookupError::Permanent(format!(
+                                "the registry schema is not valid UTF-8: {e}"
+                            ))
+                        })?;
+                    apache_avro::schema::Schema::parse_str(schema_json).map_err(|e| {
+                        SchemaLookupError::Permanent(format!(
+                            "the registry schema does not parse as Avro: {e}"
+                        ))
+                    })
+                });
+        match lookup_result {
+            Ok(schema) => {
+                let schema = Arc::new(schema);
+                self.cache.insert(schema_id.to_vec(), schema.clone());
+                Ok(schema)
+            }
+            Err(SchemaLookupError::Permanent(message)) => {
+                // Remember the verdict for the cooldown, so a stretch of
+                // undecodable messages does not turn into a lookup per
+                // message — while an operator-side fix (granted
+                // permissions, a caught-up registry) still gets through
+                // without a restart.
+                self.permanent_failures.insert(
+                    schema_id.to_vec(),
+                    (
+                        message.clone(),
+                        std::time::Instant::now() + NEGATIVE_CACHE_TTL,
+                    ),
+                );
+                Err(SchemaLookupError::Permanent(message))
+            }
+            Err(transient) => Err(transient),
+        }
+    }
+}
+
 impl Drop for PulsarWriter {
     fn drop(&mut self) {
         if let Err(e) = self.flush(true) {
@@ -1336,11 +1662,111 @@ impl Drop for PulsarWriter {
     }
 }
 
+/// Deduces the columns of a table from the current schema of the topic in the
+/// broker's registry: the Pulsar half of `schema=None`. Both the AVRO and the
+/// JSON registry types are accepted — Pulsar describes JSON-typed topics with
+/// the same Avro record grammar. When the payload `format` of the reading
+/// connector is provided, the registry type must agree with it: the type is
+/// known up front, so a mismatch fails here instead of on every message at
+/// runtime.
+pub fn explore_schema(
+    runtime: &TokioRuntime,
+    client: &Pulsar<TokioExecutor>,
+    topic: &str,
+    format: Option<&str>,
+) -> Result<Vec<crate::connectors::exploration::ExploredField>, String> {
+    let registry_schema =
+        fetch_registry_schema(runtime, client, topic, None).map_err(|e| match e {
+            SchemaLookupError::Transient(message) | SchemaLookupError::Permanent(message) => {
+                message
+            }
+        })?;
+    let Some(registry_schema) = registry_schema else {
+        return Err(
+            "the topic has no schema registered, so there is nothing to deduce the table \
+             columns from. Pass an explicit schema instead. Note: if the topic name is \
+             mistyped, the lookup itself may have just created an empty topic under that \
+             name — the broker's allowAutoTopicCreation is enabled by default"
+                .to_string(),
+        );
+    };
+    let avro_type = pulsar::message::proto::schema::Type::Avro as i32;
+    let json_type = pulsar::message::proto::schema::Type::Json as i32;
+    if registry_schema.r#type != avro_type && registry_schema.r#type != json_type {
+        return Err(format!(
+            "the schema of the topic has the {} type in the registry, while only the AVRO \
+             and JSON schema types describe table columns. Pass an explicit schema instead",
+            registry_schema_type_name(registry_schema.r#type),
+        ));
+    }
+    let format_matches = match format {
+        Some("avro") => registry_schema.r#type == avro_type,
+        Some("json") => registry_schema.r#type == json_type,
+        _ => true,
+    };
+    if !format_matches {
+        let (actual, suggested) = if registry_schema.r#type == avro_type {
+            ("AVRO", "avro")
+        } else {
+            ("JSON", "json")
+        };
+        return Err(format!(
+            "the topic's registry schema has the {actual} type, while format={:?} expects \
+             differently encoded payloads — the read would fail on every message. Use \
+             format={suggested:?} instead, or pass an explicit schema",
+            format.unwrap_or_default(),
+        ));
+    }
+    let schema_json = std::str::from_utf8(&registry_schema.schema_data)
+        .map_err(|e| format!("the registered schema is not valid UTF-8: {e}"))?;
+    // The registry type decides how the payloads are encoded, and with it
+    // the deduction table: the JSON payloads are read by the JSON parser,
+    // whose representations differ from the Avro ones.
+    let encoding = if registry_schema.r#type == json_type {
+        crate::connectors::data_format::avro::PayloadEncoding::Json
+    } else {
+        crate::connectors::data_format::avro::PayloadEncoding::AvroDatum
+    };
+    crate::connectors::data_format::avro::avro_schema_to_explored_fields(schema_json, encoding)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::connectors::Reader;
     use arcstr::ArcStr;
+
+    #[test]
+    fn transient_lookup_failures_are_retried_until_they_pass() {
+        // A registry that is momentarily unreachable must not condemn the
+        // message: this reader acknowledges before parsing, so a failed
+        // lookup would lose the row for good.
+        let mut attempts = 0;
+        let result = retry_transient_lookups(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(SchemaLookupError::Transient("unreachable".to_string()))
+            } else {
+                Ok("schema")
+            }
+        });
+        assert_eq!(result, Ok("schema"));
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn permanent_lookup_failures_are_reported_at_once() {
+        // The registry's own verdict is final: retrying it would only stall
+        // the pipeline, so it travels to the parser after a single attempt.
+        let mut attempts = 0;
+        let result: Result<&str, String> = retry_transient_lookups(|| {
+            attempts += 1;
+            Err(SchemaLookupError::Permanent("no such version".to_string()))
+        });
+        assert_eq!(result, Err("no such version".to_string()));
+        assert_eq!(attempts, 1);
+    }
 
     fn position_frontier(
         topic: &str,
