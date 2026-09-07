@@ -632,14 +632,7 @@ impl Formatter for BsonFormatter {
                 SPECIAL_FIELD_DIFF,
                 Bson::Int64(diff.try_into().expect("diff can only be +1 or -1")),
             );
-            let _ = document.insert(
-                SPECIAL_FIELD_TIME,
-                Bson::Int64(
-                    time.0
-                        .try_into()
-                        .expect("timestamp is not expected to exceed int64 type"),
-                ),
-            );
+            let _ = document.insert(SPECIAL_FIELD_TIME, Bson::Int64(time.as_i64_saturating()));
         }
         Ok(FormatterContext::new_single_payload(
             document,

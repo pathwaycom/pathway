@@ -724,7 +724,7 @@ impl MysqlWriter {
             .iter()
             .map(|data| {
                 let mut params = Self::row_values(data)?;
-                params.push(MysqlValue::Int(data.time.0.try_into().unwrap()));
+                params.push(MysqlValue::Int(data.time.as_i64_saturating()));
                 params.push(MysqlValue::Int(data.diff.try_into().unwrap()));
                 Ok(params)
             })
@@ -895,7 +895,7 @@ impl MysqlWriter {
         );
         let extra: fn(&FormatterContext) -> [Value; 2] = |data| {
             [
-                Value::Int(data.time.0.try_into().unwrap()),
+                Value::Int(data.time.as_i64_saturating()),
                 Value::Int(data.diff.try_into().unwrap()),
             ]
         };

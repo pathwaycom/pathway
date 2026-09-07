@@ -5209,3 +5209,32 @@ def test_streaming_queue_reader_requires_commit_timer(tmp_path):
         )
     # a file source finishes on its own, so it may run without the timer
     pw.io.fs.read(tmp_path, format="plaintext", autocommit_duration_ms=None)
+
+
+def test_rows_released_at_end_of_stream_are_written_with_end_of_stream_time(tmp_path):
+    # A windowby with a delay keeps rows in a buffer and releases the ones it
+    # still holds when the input ends, at the engine's maximal timestamp. That
+    # timestamp does not fit the signed `time` column of the output; the
+    # writer must record it as i64::MAX rather than fail the pipeline.
+    t = pw.debug.table_from_markdown(
+        """
+        k | t | v
+        1 | 1 | 10
+        1 | 2 | 20
+        1 | 9 | 30
+        """
+    )
+    res = t.windowby(
+        t.t,
+        window=pw.temporal.tumbling(duration=4),
+        behavior=pw.temporal.common_behavior(delay=3, cutoff=100, keep_results=True),
+        instance=t.k,
+    ).reduce(k=pw.this._pw_instance, s=pw.reducers.sum(pw.this.v))
+    output_path = tmp_path / "delta"
+    pw.io.deltalake.write(res, output_path)
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    from deltalake import DeltaTable
+
+    times = set(DeltaTable(str(output_path)).to_pandas()["time"])
+    assert 2**63 - 1 in times

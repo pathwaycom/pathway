@@ -2546,7 +2546,7 @@ impl MssqlWriter {
         let mut rows = Vec::with_capacity(buffer.len());
         for data in buffer {
             let mut row = Self::build_token_row(&data.values, &self.value_field_types)?;
-            row.push(ColumnData::I64(Some(data.time.0.cast_signed())));
+            row.push(ColumnData::I64(Some(data.time.as_i64_saturating())));
             #[allow(clippy::cast_possible_truncation)]
             row.push(ColumnData::I16(Some(data.diff as i16)));
             rows.push(row);

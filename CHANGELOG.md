@@ -14,6 +14,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The JetStream pull consumer auto-created by `pw.io.nats.read` is now configured for checkpoint-deferred acknowledgements when persistence is enabled (unlimited `max_ack_pending`, longer `ack_wait`). A consumer that already exists on the server keeps its old settings; recreate it to pick up the new ones.
 
 ### Fixed
+- Output connectors with a `time` column (`pw.io.deltalake`, `pw.io.iceberg`, `pw.io.postgres`, `pw.io.mysql`, `pw.io.mssql`, `pw.io.sqlite`, `pw.io.duckdb`, `pw.io.mongodb`) no longer fail with a `worker panic: … TryFromIntError` (or an `IntOutOfRange` error) when they receive the rows that a `windowby`/`forget` buffer with a `delay` releases once the input ends. Such rows are written with `time` equal to the maximal 64-bit signed integer, marking the end of the stream.
 - `pw.io.mqtt.read` with persistence enabled no longer loses messages on restart. With `qos` 1 or 2, a message is acknowledged to the broker only after a durable checkpoint covers it, and the broker session now survives restarts — so both the messages received shortly before a crash and the messages published while the pipeline was down are redelivered (at-least-once delivery).
 - `pw.io.nats.read` with persistence enabled and a JetStream stream no longer loses the messages read between the last checkpoint and a crash: they are acknowledged only once a checkpoint covers them, so the server redelivers them after the restart (at-least-once delivery).
 

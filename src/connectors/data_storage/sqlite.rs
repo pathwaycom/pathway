@@ -1656,9 +1656,7 @@ impl Writer for SqliteWriter {
                 }
             } else {
                 let mut params = storage;
-                params.push(SqliteOwnedValue::Integer(ctx.time.0.try_into().map_err(
-                    |_| WriteError::IntOutOfRange(ctx.time.0.try_into().unwrap_or(i64::MAX)),
-                )?));
+                params.push(SqliteOwnedValue::Integer(ctx.time.as_i64_saturating()));
                 params.push(SqliteOwnedValue::Integer(ctx.diff.try_into().map_err(
                     |_| WriteError::IntOutOfRange(ctx.diff.try_into().unwrap_or(i64::MAX)),
                 )?));

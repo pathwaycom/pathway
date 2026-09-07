@@ -712,7 +712,7 @@ impl DuckDbWriter {
                 .iter()
                 .map(encode_value)
                 .collect::<Result<_, _>>()?;
-            row.push(DuckValue::BigInt(time_to_i64(ctx.time.0)?));
+            row.push(DuckValue::BigInt(ctx.time.as_i64_saturating()));
             row.push(DuckValue::BigInt(diff_to_i64(ctx.diff)?));
             appender.append_row(appender_params_from_iter(row.iter()))?;
         }
@@ -842,7 +842,7 @@ impl DuckDbWriter {
                         for value in &ctx.values {
                             params.push(encode_value(value)?);
                         }
-                        params.push(DuckValue::BigInt(time_to_i64(ctx.time.0)?));
+                        params.push(DuckValue::BigInt(ctx.time.as_i64_saturating()));
                         params.push(DuckValue::BigInt(diff_to_i64(ctx.diff)?));
                     }
                     tx.execute(&query, params_from_iter(params.iter()))?;
@@ -868,10 +868,6 @@ impl Drop for DuckDbWriter {
             }
         }
     }
-}
-
-fn time_to_i64(time: u64) -> Result<i64, WriteError> {
-    i64::try_from(time).map_err(|_| WriteError::IntOutOfRange(i64::MAX))
 }
 
 fn diff_to_i64(diff: isize) -> Result<i64, WriteError> {

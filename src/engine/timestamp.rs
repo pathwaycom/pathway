@@ -22,6 +22,15 @@ use crate::timestamp::current_unix_timestamp_ms;
 pub struct Timestamp(pub u64);
 
 impl Timestamp {
+    /// The value written into the `time` column of output connectors, which
+    /// is a signed 64-bit integer. A forget()/windowby buffer releases the
+    /// rows it still holds when the input ends at the engine's maximal
+    /// timestamp, which does not fit: such rows carry `i64::MAX` - "end of
+    /// the stream" - instead of failing the writer.
+    pub fn as_i64_saturating(self) -> i64 {
+        i64::try_from(self.0).unwrap_or(i64::MAX)
+    }
+
     pub fn new_from_current_time() -> Self {
         let new_timestamp = u64::try_from(current_unix_timestamp_ms())
             .expect("number of milliseconds should fit in 64 bits");

@@ -1398,7 +1398,7 @@ fn copy_flush_stream(
             // `ToSql` impl as the row payload, adapting to whatever
             // width the destination columns declare.
             let diff = Value::Int(data.diff.try_into().unwrap());
-            let time = Value::Int(data.time.0.try_into().unwrap());
+            let time = Value::Int(data.time.as_i64_saturating());
             let mut row: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(data.values.len() + 2);
             for v in &data.values {
                 row.push(v as &(dyn ToSql + Sync));
@@ -1631,7 +1631,7 @@ impl PsqlWriter {
                 for data in &buffer {
                     // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
                     let diff = Value::Int(data.diff.try_into().unwrap());
-                    let time = Value::Int(data.time.0.try_into().unwrap());
+                    let time = Value::Int(data.time.as_i64_saturating());
                     let mut params: Vec<_> = data
                         .values
                         .iter()
