@@ -7507,6 +7507,7 @@ impl DataStorage {
             consumer,
             environment,
             arcstr::ArcStr::from(stream_name.as_str()),
+            self.mode == ConnectorMode::Static,
             end_offset,
             already_at_end,
             self.with_metadata,

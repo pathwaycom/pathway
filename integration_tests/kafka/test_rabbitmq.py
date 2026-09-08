@@ -15,7 +15,12 @@ from pathway.tests.utils import CsvLinesNumberChecker, wait_result_with_checker
 
 from .utils import RABBITMQ_STREAM_URI
 
-WAIT_TIMEOUT_SECS = 30
+# Not the time a healthy pipeline needs but the bound past which it is declared
+# stuck, so it has to absorb the slowest legitimate cases under CI load:
+# test_rabbitmq_streaming_live sends 10 messages one at a time and each becomes
+# visible only at the next 1.5s autocommit (~17s at zero load), and a static
+# read of an empty stream spends 15s probing the tail before it finishes.
+WAIT_TIMEOUT_SECS = 90
 
 
 # --- Parametrized read/write test ---
@@ -249,6 +254,39 @@ def test_rabbitmq_start_from_end(rabbitmq_context, tmp_path: pathlib.Path):
         CsvLinesNumberChecker(output_file, n_new),
         WAIT_TIMEOUT_SECS,
     )
+
+
+def test_rabbitmq_static_read_of_empty_stream_finishes(
+    rabbitmq_context, tmp_path: pathlib.Path
+):
+    """A static read of a stream that holds no messages produces an empty
+    table and the run terminates on its own instead of waiting for a message
+    that will never be part of the snapshot."""
+    output_file = tmp_path / "output.txt"
+
+    G.clear()
+    table = pw.io.rabbitmq.read(
+        uri=RABBITMQ_STREAM_URI,
+        stream_name=rabbitmq_context.stream_name,
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.csv.write(table, output_file)
+
+    p = multiprocessing.Process(target=pw.run)
+    p.start()
+    p.join(WAIT_TIMEOUT_SECS)
+    try:
+        assert not p.is_alive(), "static read of an empty stream did not finish"
+        assert p.exitcode == 0, f"pipeline exited with code {p.exitcode}"
+    finally:
+        if p.is_alive():
+            p.kill()
+            p.join()
+
+    if output_file.exists() and output_file.stat().st_size > 0:
+        result = pd.read_csv(output_file)
+        assert len(result) == 0, f"Expected empty table, got {len(result)} rows"
 
 
 def test_rabbitmq_start_from_end_static_empty(rabbitmq_context, tmp_path: pathlib.Path):

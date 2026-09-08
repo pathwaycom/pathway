@@ -69,7 +69,11 @@ pub async fn probe_last_offset(environment: &Environment, stream_name: &str) -> 
         .ok()?;
 
     let mut last_seen: Option<u64> = None;
-    let first_timeout = Duration::from_secs(5);
+    // On an empty stream a `Last` subscription never delivers, and on a loaded
+    // broker the last chunk of a non-empty stream can take a while to be read
+    // back; a static read that mistakes the latter for an empty stream returns
+    // nothing, so the wait is generous.
+    let first_timeout = Duration::from_secs(15);
     let drain_timeout = Duration::from_millis(100);
     if let Ok(Some(Ok(delivery))) = tokio::time::timeout(first_timeout, probe.next()).await {
         last_seen = Some(delivery.offset());
@@ -259,6 +263,9 @@ pub struct RabbitmqReader {
     /// Tracks the last offset we returned, so we can detect when we've read
     /// past `end_offset` without waiting for another message.
     last_read_offset: Option<u64>,
+    /// Static mode: the reader delivers the messages that existed when it was
+    /// created (up to `end_offset`) and then finishes.
+    is_static: bool,
     with_metadata: bool,
     deferred_read_result: Option<ReadResult>,
 }
@@ -270,11 +277,16 @@ impl Reader for RabbitmqReader {
             return Ok(deferred);
         }
 
-        // Static mode: if we already read the last expected message, stop
-        // without blocking on the next consumer.next().
-        if let (Some(end), Some(last)) = (self.end_offset, self.last_read_offset) {
-            if last >= end {
-                return Ok(ReadResult::Finished);
+        // Static mode: stop without blocking on the next `consumer.next()` once
+        // the last expected message has been read, or right away when the tail
+        // probe saw nothing (an empty stream). Waiting on the consumer instead
+        // would block the reader forever: a static read has no other way of
+        // ending.
+        if self.is_static {
+            match (self.end_offset, self.last_read_offset) {
+                (None, _) => return Ok(ReadResult::Finished),
+                (Some(end), Some(last)) if last >= end => return Ok(ReadResult::Finished),
+                _ => {}
             }
         }
 
@@ -378,11 +390,13 @@ impl Reader for RabbitmqReader {
 }
 
 impl RabbitmqReader {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         runtime: TokioRuntime,
         consumer: RmqConsumer,
         environment: Environment,
         stream_name: ArcStr,
+        is_static: bool,
         end_offset: Option<u64>,
         already_at_end: bool,
         with_metadata: bool,
@@ -398,6 +412,7 @@ impl RabbitmqReader {
             stream_name,
             end_offset,
             last_read_offset,
+            is_static,
             with_metadata,
             deferred_read_result: None,
         }
