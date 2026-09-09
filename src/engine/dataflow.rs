@@ -1687,8 +1687,17 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     for (j, (expression, state)) in
                                         expressions.iter().zip(states.iter()).enumerate()
                                     {
-                                        if !expression.deterministic {
-                                            caches.insert(j, key, state);
+                                        if !expression.deterministic
+                                            && caches.insert(j, key, state).is_err()
+                                        {
+                                            // `Old` rows come from the operator's own persisted
+                                            // snapshot, not from the input source, so a duplicate
+                                            // here is a corrupted snapshot - never something the
+                                            // user's connector configuration can cause or fix.
+                                            error_reporter.report_and_panic_with_trace(
+                                                DataError::DuplicateKeyInRestoredState(key),
+                                                expression.properties.trace().as_ref(),
+                                            );
                                         }
                                     }
                                 }
@@ -1718,6 +1727,31 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                 let mut should_be_computed = true;
                                 if expression_data.deterministic {
                                     // If the expression is deterministic, compute it normally.
+                                } else if row.diff > DIFF_INSERTION {
+                                    // Insertions of identical rows arriving in one batch are
+                                    // consolidated upstream into a single row with diff > 1,
+                                    // so they never hit the cache twice. It is still the same
+                                    // duplicate-key situation as a second insertion arriving
+                                    // in a later batch - report it identically.
+                                    error_reporter.report_and_panic_with_trace(
+                                        DataError::DuplicateInsertion {
+                                            key: row.key,
+                                            values: row.args.clone(),
+                                        },
+                                        expression_data.properties.trace().as_ref(),
+                                    );
+                                } else if row.diff < DIFF_DELETION {
+                                    // The mirror image: deletions of identical rows consolidated
+                                    // into a single row with diff < -1 remove the row more times
+                                    // than it was inserted. Report it as such instead of as a
+                                    // duplicate insertion.
+                                    error_reporter.report_and_panic_with_trace(
+                                        DataError::DuplicateDeletion {
+                                            key: row.key,
+                                            values: row.args.clone(),
+                                        },
+                                        expression_data.properties.trace().as_ref(),
+                                    );
                                 } else if expression_data.append_only {
                                     // If the expression is append_only but the stream is not, don't remove key from cache.
                                     if let Some(result) = caches.get(i, row.key) {
@@ -1728,7 +1762,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     // If expression is not append_only, remove key from cache as a new result can be different.
                                     if row.diff != DIFF_DELETION {
                                         error_reporter.report_and_panic_with_trace(
-                                            DataError::ExpectedDeletion(row.key),
+                                            DataError::DuplicateInsertion {
+                                                key: row.key,
+                                                values: row.args.clone(),
+                                            },
                                             expression_data.properties.trace().as_ref(),
                                         );
                                     }
@@ -1746,17 +1783,26 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                 .flat_map(|args| expression_data.expression.eval(args))
                                 .collect();
 
-                            for (result_i, (position, key)) in result_for_expression
+                            for (row_index, (result_i, (position, key))) in result_for_expression
                                 .into_iter()
                                 .zip_eq(rows_for_expression)
+                                .enumerate()
                             {
                                 let result_i = result_i.unwrap_or_log_with_trace(
                                     error_logger.as_ref(),
                                     expression_data.properties.trace().as_ref(),
                                     Value::Error,
                                 );
-                                if !expression_data.deterministic {
-                                    caches.insert(i, key, &result_i);
+                                if !expression_data.deterministic
+                                    && caches.insert(i, key, &result_i).is_err()
+                                {
+                                    error_reporter.report_and_panic_with_trace(
+                                        DataError::DuplicateInsertion {
+                                            key,
+                                            values: args_for_expression[row_index].to_vec(),
+                                        },
+                                        expression_data.properties.trace().as_ref(),
+                                    );
                                 }
                                 results[position].as_mut().unwrap()[i] = result_i;
                             }

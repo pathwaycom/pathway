@@ -22,6 +22,7 @@
 //! Every cache file is created from scratch when it is opened and removed on
 //! graph teardown; a file left over by a crashed run is never read.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
@@ -36,6 +37,12 @@ use crate::engine::{Key, Value};
 
 const CACHE_FILE_PREFIX: &str = "run-";
 const CACHE_FILE_SUFFIX: &str = ".sqlite";
+
+/// Marker returned by [`ExpressionCache::insert`] when the key is already
+/// cached. The caller turns it into a `DataError` with whatever row context
+/// it has at hand.
+#[derive(Debug)]
+pub struct DuplicateKey;
 
 /// Memoization storage for the non-deterministic expressions of a single
 /// `expression_table` operator. `expression_index` selects the cache of one
@@ -52,9 +59,16 @@ pub trait ExpressionCache {
     fn get(&mut self, expression_index: usize, key: Key) -> Option<Value>;
     /// Removes and returns the cached value.
     fn remove(&mut self, expression_index: usize, key: Key) -> Option<Value>;
-    /// Inserts a value. Panics if the key is already cached - a cached key can
-    /// only be seen again after its entry was removed by a deletion.
-    fn insert(&mut self, expression_index: usize, key: Key, value: &Value);
+    /// Inserts a value. Returns [`DuplicateKey`] if the key is already
+    /// cached - a cached key can only be seen again after its entry was
+    /// removed by a deletion, so a second insertion means the upstream
+    /// produced two rows with the same key.
+    fn insert(
+        &mut self,
+        expression_index: usize,
+        key: Key,
+        value: &Value,
+    ) -> Result<(), DuplicateKey>;
 }
 
 /// Creates the memoization storage for the non-deterministic expressions of a
@@ -106,12 +120,19 @@ impl ExpressionCache for InMemoryExpressionCache {
         self.caches[expression_index].remove(&key)
     }
 
-    fn insert(&mut self, expression_index: usize, key: Key, value: &Value) {
-        let current = self.caches[expression_index].insert(key, value.clone());
-        assert!(
-            current.is_none(),
-            "expression cache already contains a value for key {key}"
-        );
+    fn insert(
+        &mut self,
+        expression_index: usize,
+        key: Key,
+        value: &Value,
+    ) -> Result<(), DuplicateKey> {
+        match self.caches[expression_index].entry(key) {
+            Entry::Occupied(_) => Err(DuplicateKey),
+            Entry::Vacant(entry) => {
+                entry.insert(value.clone());
+                Ok(())
+            }
+        }
     }
 }
 
@@ -222,7 +243,12 @@ impl ExpressionCache for SqliteExpressionCache {
             })
     }
 
-    fn insert(&mut self, expression_index: usize, key: Key, value: &Value) {
+    fn insert(
+        &mut self,
+        expression_index: usize,
+        key: Key,
+        value: &Value,
+    ) -> Result<(), DuplicateKey> {
         let serialized = serialize(value).expect("cached value should be serializable");
         let mut statement = self
             .connection
@@ -234,12 +260,12 @@ impl ExpressionCache for SqliteExpressionCache {
             serialized,
         ));
         match result {
-            Ok(_) => {}
+            Ok(_) => Ok(()),
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == ErrorCode::ConstraintViolation =>
             {
                 // Keep the same invariant as the in-memory implementation.
-                panic!("expression cache already contains a value for key {key}");
+                Err(DuplicateKey)
             }
             Err(error) => {
                 panic!("writing to the expression cache should succeed: {error}");
@@ -318,4 +344,39 @@ fn process_is_alive(pid: u32) -> bool {
 #[cfg(not(target_os = "linux"))]
 fn process_is_alive(_pid: u32) -> bool {
     true // conservative: never treat files of other runs as stale
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_matches::assert_matches;
+
+    fn assert_duplicate_insert_rejected(mut cache: Box<dyn ExpressionCache>) {
+        let key = Key(42);
+        let other_key = Key(43);
+        cache.begin_batch();
+        cache.insert(0, key, &Value::Int(1)).unwrap();
+        cache.insert(0, other_key, &Value::Int(2)).unwrap();
+        cache.insert(1, key, &Value::Int(3)).unwrap();
+        assert_matches!(cache.insert(0, key, &Value::Int(4)), Err(DuplicateKey));
+        // A removed key can be inserted again.
+        assert_eq!(cache.remove(0, key), Some(Value::Int(1)));
+        cache.insert(0, key, &Value::Int(5)).unwrap();
+        cache.commit_batch();
+    }
+
+    #[test]
+    fn test_in_memory_cache_rejects_duplicate_insert() {
+        assert_duplicate_insert_rejected(
+            create_expression_cache(&[true, true], None, 0, &mut 0).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_sqlite_cache_rejects_duplicate_insert() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_duplicate_insert_rejected(
+            create_expression_cache(&[true, true], Some(directory.path()), 0, &mut 0).unwrap(),
+        );
+    }
 }

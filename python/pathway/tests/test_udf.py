@@ -2038,7 +2038,7 @@ def test_non_deterministic_udf_expected_deletion_error_with_on_disk_cache(
 
     with pytest.raises(
         api.EngineError,
-        match=re.escape("Expected deletion of a row with key"),
+        match=re.escape("Got a second insertion of a row with key"),
     ):
         run_all(**udf_cache_kwargs)
 

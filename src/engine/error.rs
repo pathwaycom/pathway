@@ -387,8 +387,31 @@ pub enum DataError {
     #[error("updating a row that does not exist, key: {0}")]
     UpdatingNonExistingRow(Key),
 
-    #[error("Expected deletion of a row with key: {0}, but got insertion instead.")]
-    ExpectedDeletion(Key),
+    #[error(
+        "Got a second insertion of a row with key: {key}, but expected a deletion of that row first. \
+        This can happen when the input source produces multiple entries with the same primary key. \
+        Duplicated row: {}. \
+        If the entries come from pw.io.python.read, you can make the connector treat them as updates \
+        by overriding the `_session_type` property of your ConnectorSubject to return \
+        `SessionType.UPSERT` (importable from `pathway.internals.api`).",
+        limit_length(format!("{values:?}"), STANDARD_OBJECT_LENGTH_LIMIT)
+    )]
+    DuplicateInsertion { key: Key, values: Vec<Value> },
+
+    #[error(
+        "Got more deletions of a row with key: {key} than insertions of that row. \
+        This can happen when the input source produces multiple deletions for the same primary key. \
+        Deleted row: {}.",
+        limit_length(format!("{values:?}"), STANDARD_OBJECT_LENGTH_LIMIT)
+    )]
+    DuplicateDeletion { key: Key, values: Vec<Value> },
+
+    #[error(
+        "Internal error: the state restored from the persisted snapshot of an operator contains \
+        a second entry for key {0}. The snapshot is inconsistent; please report this issue to \
+        the Pathway team."
+    )]
+    DuplicateKeyInRestoredState(Key),
 
     #[error("Expected table to be append-only, but got deletion for key: {0}.")]
     ExpectedAppendOnly(Key),

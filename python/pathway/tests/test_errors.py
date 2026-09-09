@@ -1755,7 +1755,77 @@ def test_repeated_keys_for_nondeterministic_udf():
     with pytest.raises(
         Exception,
         match=re.escape(
-            "Expected deletion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, but got insertion instead."
+            "Got a second insertion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, "
+            "but expected a deletion of that row first."
+        ),
+    ):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_repeated_keys_in_single_batch_for_nondeterministic_udf():
+    # Identical duplicate insertions arriving in one batch are consolidated
+    # into a single row with diff=+2 before they reach the expression cache,
+    # so they must be reported by the multiplicity of the row, not by a
+    # cache-occupancy conflict. The deletion of another key keeps the table
+    # non-append-only: an append-only input never uses the cache at all.
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |     2    |     1
+        1 | 2 |     2    |     1
+        2 | 3 |     2    |     1
+        2 | 3 |     6    |    -1
+        """,
+        schema=InputSchema,
+    )
+
+    @pw.udf
+    def foo(x: int) -> int:
+        return x + 1
+
+    t.select(b=foo(pw.this.b))
+    with pytest.raises(
+        Exception,
+        match=re.escape(
+            "Got a second insertion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, "
+            "but expected a deletion of that row first."
+        ),
+    ):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_repeated_deletions_in_single_batch_for_nondeterministic_udf():
+    # The mirror image of the test above: two deletions of the same row in one
+    # batch are consolidated into a single row with diff=-2, which removes the
+    # row more times than it was inserted.
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |     2    |     1
+        1 | 2 |     6    |    -1
+        1 | 2 |     6    |    -1
+        """,
+        schema=InputSchema,
+    )
+
+    @pw.udf
+    def foo(x: int) -> int:
+        return x + 1
+
+    t.select(b=foo(pw.this.b))
+    with pytest.raises(
+        Exception,
+        match=re.escape(
+            "Got more deletions of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W "
+            "than insertions of that row."
         ),
     ):
         pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
