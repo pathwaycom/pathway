@@ -319,9 +319,16 @@ class ColumnExpression(OperatorInput, ABC):
         """
         return IsNotNoneExpression(self)
 
-    # Missing `__iter__` would make Python fall back to `__getitem__, which
-    # will not do the right thing.
-    __iter__ = None
+    # Without `__iter__` Python would fall back to `__getitem__` and iterate an
+    # expression forever, so the protocol is implemented by refusing.
+    def __iter__(self):
+        raise TypeError(
+            f"{type(self).__name__} is not iterable: a column expression describes a "
+            "computation, it does not hold a value. Apply a Python function to it with "
+            "pw.apply(f, expression), take an element of a tuple or JSON column with "
+            "expression[i], and pass several expressions as separate arguments instead "
+            "of unpacking one."
+        )
 
     def __getitem__(self, index: ColumnExpression | int | str) -> ColumnExpression:
         """Extracts element at `index` from an object. The object has to be a Tuple or Json.

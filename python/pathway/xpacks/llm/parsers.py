@@ -53,6 +53,21 @@ def default_vision_llm() -> pw.UDF:
     )
 
 
+def _ensure_document_bytes(contents: object, parser: object) -> bytes:
+    # The parsers receive the raw file contents; the most common mistake is
+    # to read the files with format="json" (a Json value) or "plaintext" (a
+    # str) and pass that column, which used to surface as a TypeError from
+    # deep inside BytesIO.
+    if isinstance(contents, bytes):
+        return contents
+    got = "a Json value" if isinstance(contents, pw.Json) else type(contents).__name__
+    raise TypeError(
+        f"{type(parser).__name__} expects the raw file contents as bytes, got {got}. "
+        'Read the files with format="binary" (e.g. pw.io.fs.read(path, format="binary")) '
+        "and pass its `data` column to the parser."
+    )
+
+
 class Utf8Parser(pw.UDF):
     """
     Decode text encoded as UTF-8. If the text is type ``str``, return it without any modification.
@@ -264,6 +279,7 @@ class UnstructuredParser(pw.UDF):
                 Note that when ``chunking_mode`` is set to ``"single"`` or ``"paged"`` some of these fields are
                 removed if they are specific to a single element, e.g. ``"category_depth"``.
         """
+        contents = _ensure_document_bytes(contents, self)
         with optional_imports("xpack-llm-docs"):
             import unstructured.partition.auto
             from unstructured.documents.elements import Text
@@ -609,6 +625,7 @@ class DoclingParser(pw.UDF):
         return image_descriptions
 
     async def parse(self, contents: bytes) -> list[tuple[str, dict]]:
+        contents = _ensure_document_bytes(contents, self)
 
         with optional_imports("xpack-llm-docs"):
             from docling_core.transforms.chunker.hierarchical_chunker import BaseChunk
@@ -791,6 +808,7 @@ class ImageParser(pw.UDF):
 
     async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse image bytes with GPT-v model."""
+        contents = _ensure_document_bytes(contents, self)
 
         from PIL import Image
 
@@ -961,6 +979,7 @@ class SlideParser(pw.UDF):
 
     async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse slides with GPT-v model by converting to images."""
+        contents = _ensure_document_bytes(contents, self)
 
         from pdf2image import convert_from_bytes
         from unstructured.file_utils.filetype import FileType, detect_filetype

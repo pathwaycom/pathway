@@ -299,16 +299,30 @@ pub enum DataError {
     #[error("value missing")]
     ValueMissing,
 
-    #[error("key missing in input table: {0}")]
+    #[error(
+        "key {0} exists in the table but not in the universe it is restricted to: \
+        with_universe_of() requires both tables to have exactly the same ids - use restrict() \
+        or a join when they can differ"
+    )]
     KeyMissingInInputTable(Key),
 
-    #[error("key missing in output table: {0}")]
+    #[error(
+        "key {0} exists in the universe (the table providing the ids) but not in the table \
+        restricted to it: with_universe_of(), restrict(), ix() and update_cells() need every id \
+        of the universe to be present there - use a left join or ix(..., optional=True) when ids \
+        can be absent"
+    )]
     KeyMissingInOutputTable(Key),
 
     #[error("missing key: {0}")]
     MissingKey(Key),
 
-    #[error("duplicate key: {0}")]
+    #[error(
+        "duplicate key {0}: two rows with the same id reached an operation that needs unique ids \
+        (a join with id= taken from one side, update_rows()/update_cells(), or a source repeating \
+        a primary key) - drop the explicit id= from the join, deduplicate the source, or give the \
+        sources distinct primary keys"
+    )]
     DuplicateKey(Key),
 
     #[error("value error: {0}")]

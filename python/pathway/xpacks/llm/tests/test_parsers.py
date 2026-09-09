@@ -113,3 +113,17 @@ def test_parse_pypdf(tmp_path: Path):
 def test_paddle_parser_reports_unavailability_on_python_3_14():
     with pytest.raises(RuntimeError, match="paddlepaddle does not publish packages"):
         PaddleOCRParser()
+
+
+def test_parsers_explain_non_bytes_contents():
+    import asyncio
+
+    from pathway.xpacks.llm.parsers import UnstructuredParser
+
+    parser = UnstructuredParser()
+    with pytest.raises(
+        TypeError, match=r"expects the raw file contents as bytes.*Json"
+    ):
+        asyncio.run(parser.__wrapped__(pw.Json({"text": "hello"})))
+    with pytest.raises(TypeError, match=r"expects the raw file contents as bytes.*str"):
+        asyncio.run(parser.__wrapped__("hello"))

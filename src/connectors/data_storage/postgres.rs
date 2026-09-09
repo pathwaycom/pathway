@@ -36,6 +36,7 @@ use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
     StorageType, WriteError, Writer,
 };
+use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::value::parse_pathway_pointer;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
@@ -83,7 +84,11 @@ pub enum PostgresError {
     #[error(transparent)]
     Io(#[from] io::Error),
 
-    #[error("query {query:?} failed: {}", format_error_chain(.error))]
+    #[error(
+        "{}; the failing query was: {}",
+        format_error_chain(.error),
+        limit_length(.query.clone(), STANDARD_OBJECT_LENGTH_LIMIT)
+    )]
     PsqlQueryFailed {
         query: String,
         error: postgres::Error,
