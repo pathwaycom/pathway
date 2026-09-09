@@ -1187,3 +1187,47 @@ def test_large_volume(tmp_path: pathlib.Path):
     count, total = con.execute("SELECT count(*), sum(value) FROM big").fetchone()
     assert count == n
     assert total == pytest.approx(sum(r[1] for r in rows))
+
+
+def _hold_readonly_lock(db_path: str, seconds: float) -> None:
+    con = duckdb.connect(db_path, read_only=True)
+    time.sleep(seconds)
+    con.close()
+
+
+@only_with_license_key
+@needs_multiprocessing_fork
+def test_detaching_writer_waits_out_a_reader_holding_the_lock(tmp_path: pathlib.Path):
+    """A detaching writer that finds the database file locked by a read-only
+    reader from another process must wait for the reader to finish - such a
+    lock is transient by the very design of ``detach_between_batches`` - and
+    then write, instead of failing the pipeline on the first contact."""
+    db_path = str(tmp_path / "out.duckdb")
+    duckdb.connect(db_path).close()  # a read-only reader needs an existing file
+    holder = mp_fork.Process(target=_hold_readonly_lock, args=(db_path, 3.0))
+    holder.start()
+    try:
+        time.sleep(0.5)  # let the reader take the lock before the first flush
+        table = pw.debug.table_from_markdown(
+            """
+            value
+            1
+            2
+            3
+            """
+        )
+        pw.io.duckdb.write(
+            table,
+            table_name="t",
+            database=db_path,
+            init_mode="create_if_not_exists",
+            detach_between_batches=True,
+        )
+        run()
+    finally:
+        holder.join()
+    con = _connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM t").fetchone()[0] == 3
+    finally:
+        con.close()

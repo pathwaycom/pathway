@@ -213,9 +213,19 @@ fn open_shared_connection(
     let anchor = if let Some(existing) = registry.get(path).and_then(Weak::upgrade) {
         existing
     } else {
-        let connection = DuckConnection::open(path).map_err(|source| DuckDbError::OpenFailed {
-            path: path.to_string(),
-            source,
+        // Lock contention stays a plain driver error: it is transient, the
+        // detaching writer's retry loop recognizes it by that shape, and
+        // DuckDB's own text (holder PID, read-only hint) is the useful part.
+        // Every other open failure gets the path and the version hint.
+        let connection = DuckConnection::open(path).map_err(|source| {
+            if is_lock_contention(&source) {
+                DuckDbError::Driver(source)
+            } else {
+                DuckDbError::OpenFailed {
+                    path: path.to_string(),
+                    source,
+                }
+            }
         })?;
         let anchor = Arc::new(Mutex::new(connection));
         registry.insert(path.to_owned(), Arc::downgrade(&anchor));
