@@ -1759,3 +1759,29 @@ def test_repeated_keys_for_nondeterministic_udf():
         ),
     ):
         pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_reducer_outside_reduce_is_explained():
+    t = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        """
+    )
+    with pytest.raises(ValueError, match=r"only be used in reduce\(\)"):
+        t.select(s=pw.reducers.sum(pw.this.a))
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_output_file_in_missing_directory_names_the_directory(tmp_path):
+    t = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        """
+    )
+    missing = tmp_path / "missing"
+    pw.io.csv.write(t, missing / "out.csv")
+    with pytest.raises(OSError, match=f"{missing} does not exist"):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)

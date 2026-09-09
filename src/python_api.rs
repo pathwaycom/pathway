@@ -7077,9 +7077,14 @@ impl DataStorage {
         // The Kafka-specific machinery (fetching partitions/watermarks, resolving
         // timestamp seeks, sharding partitions and acquiring them) lives in
         // `KafkaReader::build`.
+        let bootstrap_servers = client_config
+            .get("bootstrap.servers")
+            .unwrap_or("<not set>")
+            .to_string();
         let reader = KafkaReader::build(
             consumer,
             topic,
+            &bootstrap_servers,
             self.mode,
             self.start_from_timestamp_ms,
             scope.worker_index(),
@@ -8098,9 +8103,20 @@ impl DataStorage {
                     FileWriter::new(buf_writer, path.to_string())
                 }
                 Err(e) => {
+                    let missing_directory = std::path::Path::new(path)
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty() && !parent.exists())
+                        .map(|parent| {
+                            format!(
+                                " The directory {} does not exist: create it first, the \
+                                 writer does not create missing directories.",
+                                parent.display()
+                            )
+                        })
+                        .unwrap_or_default();
                     return Err(PyIOError::new_err(format!(
-                        "Filesystem operation (create) failed: {e}"
-                    )))
+                        "cannot create the output file {path}: {e}.{missing_directory}"
+                    )));
                 }
             }
         };

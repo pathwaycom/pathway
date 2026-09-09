@@ -33,6 +33,19 @@ pub enum DuckDbError {
     #[error(transparent)]
     Driver(#[from] DuckDbDriverError),
 
+    /// The database file could not be opened at all - most often because it
+    /// was written by a newer `DuckDB` than the one bundled in Pathway, or
+    /// because the path does not point to a `DuckDB` database.
+    #[error(
+        "cannot open the DuckDB database at {path}: {source}. If the file was created by a \
+         newer DuckDB, export it with that version or point the writer at a fresh file; \
+         if it is not a DuckDB database, check the path."
+    )]
+    OpenFailed {
+        path: String,
+        source: DuckDbDriverError,
+    },
+
     /// The destination name resolves to a `VIEW`. `DuckDB` views are read-only,
     /// so the writer cannot `INSERT` into them.
     #[error("destination {table_name:?} is a DuckDB view, which cannot be written to")]
@@ -200,7 +213,10 @@ fn open_shared_connection(
     let anchor = if let Some(existing) = registry.get(path).and_then(Weak::upgrade) {
         existing
     } else {
-        let connection = DuckConnection::open(path)?;
+        let connection = DuckConnection::open(path).map_err(|source| DuckDbError::OpenFailed {
+            path: path.to_string(),
+            source,
+        })?;
         let anchor = Arc::new(Mutex::new(connection));
         registry.insert(path.to_owned(), Arc::downgrade(&anchor));
         anchor

@@ -63,6 +63,19 @@ pub enum KafkaReaderError {
     #[error("Failed to fetch topic metadata: {0}")]
     MetadataFetch(KafkaError),
 
+    #[error(
+        "No Kafka broker could be reached within {timeout_secs}s at \
+        bootstrap.servers={bootstrap_servers}: {source}. Check that the address and port \
+        are correct, that the broker is running, and that it is reachable from this host \
+        (DNS, network, firewall); with a broker behind authentication or TLS, check the \
+        security.protocol and sasl.* settings too."
+    )]
+    BrokerUnreachable {
+        bootstrap_servers: String,
+        timeout_secs: u64,
+        source: KafkaError,
+    },
+
     #[error("Topic '{0}' not found")]
     TopicNotFound(String),
 
@@ -109,10 +122,25 @@ fn is_transient_metadata_error(err: &KafkaError) -> bool {
     )
 }
 
+/// The error codes librdkafka reports when it could not talk to any broker at
+/// all - as opposed to a broker answering with a problem about the topic.
+fn is_broker_unreachable_error(err: &KafkaError) -> bool {
+    matches!(
+        err.rdkafka_error_code(),
+        Some(
+            RDKafkaErrorCode::BrokerTransportFailure
+                | RDKafkaErrorCode::AllBrokersDown
+                | RDKafkaErrorCode::Resolve
+                | RDKafkaErrorCode::OperationTimedOut
+        )
+    )
+}
+
 /// Returns the total number of partitions for a Kafka topic.
 fn total_partitions_for_topic(
     consumer: &BaseConsumer<DefaultConsumerContext>,
     topic: &str,
+    bootstrap_servers: &str,
 ) -> Result<usize, KafkaReaderError> {
     let deadline = Instant::now() + METADATA_PROBE_RETRY_TIMEOUT;
     loop {
@@ -130,6 +158,13 @@ fn total_partitions_for_topic(
                 }
             }
             Err(e) => {
+                if is_broker_unreachable_error(&e) {
+                    return Err(KafkaReaderError::BrokerUnreachable {
+                        bootstrap_servers: bootstrap_servers.to_string(),
+                        timeout_secs: KafkaReader::default_timeout().as_secs(),
+                        source: e,
+                    });
+                }
                 if !is_transient_metadata_error(&e) || Instant::now() >= deadline {
                     return Err(KafkaReaderError::MetadataFetch(e));
                 }
@@ -489,12 +524,13 @@ impl KafkaReader {
     pub fn build(
         consumer: BaseConsumer<DefaultConsumerContext>,
         topic: String,
+        bootstrap_servers: &str,
         mode: ConnectorMode,
         start_from_timestamp_ms: Option<i64>,
         worker_index: usize,
         reader_count: usize,
     ) -> Result<KafkaReader, KafkaReaderError> {
-        let total_partitions = total_partitions_for_topic(&consumer, &topic)?;
+        let total_partitions = total_partitions_for_topic(&consumer, &topic, bootstrap_servers)?;
         let mut watermarks = partition_watermarks(&consumer, &topic, total_partitions)?;
 
         let mut seek_positions = HashMap::new();

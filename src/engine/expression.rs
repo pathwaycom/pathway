@@ -488,7 +488,10 @@ fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering>
 fn unwrap(val: Value) -> DynResult<Value> {
     match val {
         Value::None => Err(DynError::from(DataError::ValueError(
-            "cannot unwrap if there is None value".into(),
+            "cannot unwrap a None value: pw.unwrap() requires a non-None value. Use \
+            pw.coalesce() to supply a default, or filter out the rows with None before \
+            unwrapping."
+                .into(),
         ))),
         _ => Ok(val),
     }

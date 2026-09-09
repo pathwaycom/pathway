@@ -2611,3 +2611,20 @@ def test_kafka_write_subject_empty_string_rejected(
             ),
             subject="",
         )
+
+
+def test_kafka_unreachable_broker_error_names_bootstrap_servers():
+    # A broker that cannot be reached at all must be reported in terms the
+    # user can act on - the bootstrap.servers value and what to check - not
+    # as librdkafka's bare "BrokerTransportFailure".
+    table = pw.io.kafka.read(
+        rdkafka_settings={
+            "bootstrap.servers": "localhost:1",
+            "group.id": "unreachable",
+        },
+        topic="topic",
+        format="raw",
+    )
+    pw.io.null.write(table)
+    with pytest.raises(OSError, match=r"bootstrap\.servers=localhost:1"):
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)

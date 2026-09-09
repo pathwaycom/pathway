@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import errno
 import json
 import logging
 import threading
@@ -639,13 +640,23 @@ class PathwayWebserver(PathwayServer):
         if not self._is_launched:
             self._is_launched = True
             self._app_start_mutex.release()
-            web.run_app(
-                self._app,
-                host=self._host,
-                port=self._port,
-                loop=self._loop,
-                handle_signals=False,
-            )
+            try:
+                web.run_app(
+                    self._app,
+                    host=self._host,
+                    port=self._port,
+                    loop=self._loop,
+                    handle_signals=False,
+                )
+            except OSError as e:
+                if e.errno != errno.EADDRINUSE:
+                    raise
+                raise OSError(
+                    e.errno,
+                    f"cannot start the HTTP server on {self._host}:{self._port}: the port "
+                    "is already in use. Another process - possibly a previous run of this "
+                    "pipeline - is still listening on it; stop it or use a different port.",
+                ) from e
         else:
             self._app_start_mutex.release()
 

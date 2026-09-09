@@ -338,7 +338,13 @@ pub enum DataError {
     #[error("cannot convert date time {value} in timezone {timezone:?}: this local time does not exist in that timezone")]
     DateTimeConversionError { value: String, timezone: String },
 
-    #[error("Error value in column")]
+    #[error(
+        "An error value reached an operator that cannot propagate it. Error values are \
+        produced when an earlier operation on the row failed (a UDF raised an exception, a \
+        type conversion or an arithmetic operation failed); the root cause is in the error \
+        log above. Drop such rows with table.remove_errors() or replace the error with a \
+        default using pw.fill_error() before this operator."
+    )]
     ErrorInValue,
 
     #[error("Error value encountered in filter condition, skipping the row")]

@@ -1079,7 +1079,7 @@ def test_json_unpack_col_null(_type):
         ),
     )
 
-    with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
+    with pytest.raises(ValueError, match="cannot unwrap a None value"):
         run_all()
 
 
@@ -1216,7 +1216,7 @@ def test_json_convert_unwrap_null(
 
     input.select(result=pw.this.data.as_int(unwrap=True))
 
-    with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
+    with pytest.raises(ValueError, match="cannot unwrap a None value"):
         run_all()
 
 
@@ -1282,7 +1282,7 @@ def test_json_convert_default_unwrap_null(value, default, method):
 
     input.select(result=method(pw.this.data, default=pw.this.default, unwrap=True))
 
-    with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
+    with pytest.raises(ValueError, match="cannot unwrap a None value"):
         run_all()
 
 

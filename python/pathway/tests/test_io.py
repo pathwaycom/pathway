@@ -5211,6 +5211,18 @@ def test_streaming_queue_reader_requires_commit_timer(tmp_path):
     pw.io.fs.read(tmp_path, format="plaintext", autocommit_duration_ms=None)
 
 
+def test_rest_connector_reports_port_already_in_use():
+    from pathway.io.http._server import PathwayWebserver
+
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen()
+        port = blocker.getsockname()[1]
+        server = PathwayWebserver("127.0.0.1", port)
+        with pytest.raises(OSError, match=f"127.0.0.1:{port}.*already in use"):
+            server._run()
+
+
 def test_rows_released_at_end_of_stream_are_written_with_end_of_stream_time(tmp_path):
     # A windowby with a delay keeps rows in a buffer and releases the ones it
     # still holds when the input ends, at the engine's maximal timestamp. That
