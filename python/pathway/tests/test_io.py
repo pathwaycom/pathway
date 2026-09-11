@@ -641,6 +641,93 @@ def test_subscribe():
     )
 
 
+def test_python_connector_upsert_replaces_rows():
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def __init__(self):
+            super().__init__(session_type="upsert")
+
+        def run(self):
+            # the polling pattern: the same primary keys are re-sent
+            self.next(key=1, value="one")
+            self.next(key=2, value="two")
+            self.commit()
+            self.next(key=1, value="uno")
+            self.next(key=2, value="two")
+
+    table = pw.io.python.read(TestSubject(), schema=InputSchema)
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+            key | value
+            1   | uno
+            2   | two
+            """
+        ),
+    )
+
+
+def test_python_connector_upsert_delete():
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def __init__(self):
+            super().__init__(session_type="upsert")
+
+        def run(self):
+            self.next(key=1, value="one")
+            self.next(key=2, value="two")
+            self.commit()
+            self.delete(key=1, value="one")
+
+    table = pw.io.python.read(TestSubject(), schema=InputSchema)
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+            key | value
+            2   | two
+            """
+        ),
+    )
+
+
+def test_python_connector_upsert_requires_primary_key():
+    class InputSchema(pw.Schema):
+        key: int
+        value: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def __init__(self):
+            super().__init__(session_type="upsert")
+
+        def run(self):
+            pass
+
+    with pytest.raises(
+        ValueError,
+        match="session_type='upsert' requires a schema with at least one primary_key",
+    ):
+        pw.io.python.read(TestSubject(), schema=InputSchema)
+
+
+def test_python_connector_invalid_session_type():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            pass
+
+    with pytest.raises(ValueError, match="invalid session_type"):
+        TestSubject(session_type="odd")
+
+
 def test_python_write():
     class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
