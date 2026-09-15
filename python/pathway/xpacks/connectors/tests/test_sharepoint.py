@@ -1,5 +1,6 @@
 # Copyright © 2026 Pathway
 
+import importlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -58,14 +59,28 @@ class FakeContext(ClientRuntimeContext):
 
 @pytest.fixture
 def no_retry_delay(monkeypatch):
-    monkeypatch.setattr(
-        "office365.runtime.client_runtime_context.sleep", lambda _: None
-    )
+    # The library sleeps between attempts from `office365.runtime.retry` since
+    # 3.1 and from `client_runtime_context` before that; silence whichever exists.
+    for module_name in (
+        "office365.runtime.retry",
+        "office365.runtime.client_runtime_context",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, "sleep"):
+            monkeypatch.setattr(module, "sleep", lambda _: None)
 
 
 def query_context(n_failures, error):
     context = FakeContext(n_failures, error)
-    context.add_query(MagicMock())
+    # A query executes itself against the pending request since office365 3.1
+    # (`query.execute_query(request)`); before that the request executed the query.
+    # The fake query forwards to the request, so both call shapes reach `FakeContext`.
+    query = MagicMock()
+    query.execute_query.side_effect = lambda request: request.execute_query(query)
+    context.add_query(query)
     return context
 
 
