@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- `pathway.xpacks.llm.rerankers.rerank_topk_filter` no longer trips a bare worker panic (`ValueError: not enough values to unpack`) on a row whose document list is empty. A query that retrieved nothing is a normal outcome, and it now yields empty document and score lists for that row instead of taking down the pipeline.
+
 ## [0.33.0] - 2026-09-18
 
 ### Changed
