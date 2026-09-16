@@ -193,9 +193,24 @@ def test_kinesis_output_custom_topic(kinesis_context):
     ]
 
 
-def test_kinesis_io_much_data(kinesis_context, tmp_path):
-    # The whole round-trip takes ~120 seconds. The main problem is the speed of the
-    # emulator, as the get-records request may take up to 1.5s
+# The bound past which the read-back of the million records is declared stuck.
+# The reader fetches the shards one GetRecords call (10,000 records) at a time,
+# so the read-back is ~100 sequential calls, and their latency is set by the
+# single-threaded kinesalite emulator: 0.5s each on a quiet run, 0.7s and more
+# when the other Kinesis tests of the suite hit the emulator at the same time or
+# its LevelDB compacts the just-written million records. That is 50-70s and
+# more, so the previous 60s bound sat right on the emulator's speed margin and
+# tripped on the slow runs (20,000 lines per ~1.4s observed, timing out at
+# ~850,000). The test checks completeness, not the emulator's throughput.
+MUCH_DATA_READ_TIMEOUT_SECS = 180
+
+
+def test_kinesis_io_much_data(kinesis_bulk_context, tmp_path):
+    # The whole round-trip takes ~150 seconds. The main problem is the speed of the
+    # emulator, as the get-records request may take up to 1.5s. The test runs
+    # against an emulator of its own (`kinesis_bulk_context`), so its minutes of
+    # traffic don't starve the other Kinesis tests of the suite.
+    kinesis_context = kinesis_bulk_context
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
     kinesis_context.recreate(shard_count=32)
@@ -214,7 +229,10 @@ def test_kinesis_io_much_data(kinesis_context, tmp_path):
     G.clear()
     table = pw.io.kinesis.read(kinesis_context.stream_name)
     pw.io.jsonlines.write(table, output_path)
-    wait_result_with_checker(FileLinesNumberChecker(output_path, n_total_entries), 60)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path, n_total_entries),
+        MUCH_DATA_READ_TIMEOUT_SECS,
+    )
 
 
 @pytest.mark.parametrize("shard_count", [1, 4])

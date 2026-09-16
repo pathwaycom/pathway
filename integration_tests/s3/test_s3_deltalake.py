@@ -1,7 +1,7 @@
 # Copyright © 2026 Pathway
 
+import multiprocessing
 import os
-import threading
 import time
 
 import pandas as pd
@@ -73,6 +73,16 @@ def write_deltalake_with_auth(storage_type, s3_path, chunk, **kwargs):
     )
 
 
+def _append_versions(storage_type, lake_path, start_idx, end_idx):
+    """Append one single-row version per second; the target of the writer
+    process of ``test_streaming_from_deltalake`` (must be picklable)."""
+    for idx in range(start_idx, end_idx):
+        data = [{"k": idx, "v": "a" * idx}]
+        df = pd.DataFrame(data).set_index("k")
+        write_deltalake_with_auth(storage_type, lake_path, df, mode="append")
+        time.sleep(1.0)
+
+
 @pytest.mark.parametrize(
     "credentials",
     [
@@ -98,30 +108,47 @@ def test_streaming_from_deltalake(credentials, tmp_path, s3_path):
     df = pd.DataFrame(data).set_index("k")
     write_deltalake_with_auth(storage_type, lake_path, df, mode="append")
 
-    def create_new_versions(start_idx, end_idx):
-        for idx in range(start_idx, end_idx):
-            data = [{"k": idx, "v": "a" * idx}]
-            df = pd.DataFrame(data).set_index("k")
-            write_deltalake_with_auth(storage_type, lake_path, df, mode="append")
-            time.sleep(1.0)
-
-    t = threading.Thread(target=create_new_versions, args=(1, 10))
-    t.start()
-    table = pw.io.deltalake.read(
-        lake_path,
-        schema=InputSchema,
-        autocommit_duration_ms=10,
-        s3_connection_settings=credentials,
+    # The versions are appended from a separate, freshly spawned process, not
+    # from a thread. The pipeline below is forked (wait_result_with_checker),
+    # and a fork taken while another thread is inside a lock-taking libc call
+    # leaves that lock held forever in the child. The writer's write_deltalake
+    # makes such calls all the time: getaddrinfo() for the endpoint's host
+    # (glibc's resolver and nss locks; a micro-test hangs half of the forks
+    # taken during a concurrent lookup) and setenv() for its storage options
+    # (glibc's environment lock; 6% of such forks hang). The forked engine
+    # then blocked forever on its own lookup - the license check's, before it
+    # even opened the table - so the test saw no output file, no log line and
+    # no reaction to SIGTERM (py-spy: the reqwest runtime shutdown joining
+    # the stuck resolver thread). Seen on CI, reproduced locally about once
+    # per hundred runs. A spawned writer keeps the forking process free of
+    # concurrently running native threads.
+    writer = multiprocessing.get_context("spawn").Process(
+        target=_append_versions, args=(storage_type, lake_path, 1, 10)
     )
-    pw.io.csv.write(table, output_path)
-    # 90 seconds, not 60: opening the Delta table against real S3 happens before
-    # the csv sink creates its file, and a single stalled request costs up to
-    # object_store's 30-second request timeout before being retried.
-    wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 90)
-    # The writer thread outlives the checker by up to its final sleep; join it
-    # so its Delta writes (which mutate the process-wide AWS env vars, see
-    # conftest) cannot bleed into the next test scheduled on this worker.
-    t.join()
+    writer.start()
+    try:
+        table = pw.io.deltalake.read(
+            lake_path,
+            schema=InputSchema,
+            autocommit_duration_ms=10,
+            s3_connection_settings=credentials,
+        )
+        pw.io.csv.write(table, output_path)
+        # The bound past which the pipeline is declared stuck, not a healthy
+        # timing (the round trip takes ~13s). A request to S3 that keeps
+        # stalling is retried inside object_store for up to its whole retry
+        # budget (30s per attempt, 10 retries within 180s) before the
+        # connector's own retry reopens the table on fresh connections, so a
+        # bound below that would report a slow-but-recovering open as a
+        # failure.
+        wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 240)
+    finally:
+        # The writer outlives the checker by up to its final sleep.
+        writer.join(timeout=60)
+        if writer.is_alive():
+            writer.kill()
+            writer.join()
+    assert writer.exitcode == 0, f"the version writer exited with {writer.exitcode}"
 
 
 @pytest.mark.parametrize(

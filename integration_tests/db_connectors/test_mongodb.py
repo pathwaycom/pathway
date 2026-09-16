@@ -82,6 +82,16 @@ def _start_streaming_worker(
     )
 
 
+# The bound past which a persistence run is declared stuck. Each run is a
+# fresh interpreter that imports pathway, validates the license, recovers the
+# persisted state, connects to MongoDB and opens a change stream before its
+# first row can appear - a few seconds alone, but on the loaded CI node (every
+# suite at once) the second run of a test was still short of its first output
+# 30s in, while the first run of the same test had needed 6s to write its
+# initial two rows.
+PERSISTENCE_RUN_TIMEOUT_SECS = 90
+
+
 def _wait_and_terminate(
     checker: FileLinesNumberChecker,
     timeout_sec: float,
@@ -609,7 +619,9 @@ def test_mongodb_streaming_persistence(tmp_path, mongodb, plan):
     p1 = _start_streaming_worker(output_path_1, pstorage_path, input_collection)
     try:
         _wait_and_terminate(
-            FileLinesNumberChecker(output_path_1, len(run1_expected)), 30, p1
+            FileLinesNumberChecker(output_path_1, len(run1_expected)),
+            PERSISTENCE_RUN_TIMEOUT_SECS,
+            p1,
         )
     finally:
         if p1.poll() is None:
@@ -636,7 +648,9 @@ def test_mongodb_streaming_persistence(tmp_path, mongodb, plan):
     try:
         if run2_expected:
             _wait_and_terminate(
-                FileLinesNumberChecker(output_path_2, len(run2_expected)), 30, p2
+                FileLinesNumberChecker(output_path_2, len(run2_expected)),
+                PERSISTENCE_RUN_TIMEOUT_SECS,
+                p2,
             )
         else:
             # no_changes: pre-create the output file so the checker can verify it
@@ -645,7 +659,7 @@ def test_mongodb_streaming_persistence(tmp_path, mongodb, plan):
             output_path_2.touch()
             _wait_and_terminate(
                 FileLinesNumberChecker(output_path_2, 0),
-                30,
+                PERSISTENCE_RUN_TIMEOUT_SECS,
                 p2,
                 double_check_interval=3.0,
             )

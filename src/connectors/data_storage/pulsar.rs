@@ -1,6 +1,6 @@
 // Copyright © 2026 Pathway
 
-use log::{error, warn};
+use log::{debug, error, warn};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::mem::take;
@@ -287,6 +287,19 @@ pub type MessagePosition = (u64, u64, i32);
 /// resolution moment.
 const DELIVER_EVERYTHING: MessagePosition = (0, 0, i32::MIN);
 
+/// The tail of a partition as it was when the read started, resolved by the
+/// reader before it spawns the partition's pump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TailAtStart {
+    /// Not resolved: the pump resumes after its watermark or within its
+    /// boundary instead (a respawned pump, a restored position).
+    Unknown,
+    /// The partition held no messages.
+    Empty,
+    /// The position of the partition's last message.
+    Last(MessagePosition),
+}
+
 /// A message taken from a consumer, in the form the reader hands over to the
 /// engine.
 struct PreloadedMessage {
@@ -469,6 +482,19 @@ enum PulsarReaderMode {
         static_mode: bool,
         start_from_latest: bool,
         positions: HashMap<i32, MessagePosition>,
+        // The tail position of every owned partition as it was when the read
+        // started (`Empty` for one without messages), resolved by the reader
+        // itself before the first pump is spawned and kept across the
+        // retries of a failed start. In static mode it is the boundary of
+        // the fixed message set; for `start_from_latest` it is the position
+        // the delivery starts after. Resolving it in the pumps, at whatever
+        // time each of them first managed to connect, tied the message set
+        // to the pumps' luck: a pump that died before resolving its boundary
+        // (a broker outage right after the read started, while its
+        // consumer was still being set up) was respawned without one,
+        // resolved a *later* boundary and let the messages published during
+        // the outage into a "static" snapshot.
+        tails_at_start: HashMap<i32, TailAtStart>,
         pump: Option<PartitionPump>,
     },
 }
@@ -615,6 +641,7 @@ impl PulsarReader {
                 static_mode,
                 start_from_latest,
                 positions: HashMap::new(),
+                tails_at_start: HashMap::new(),
                 pump: None,
             },
         }
@@ -739,45 +766,121 @@ impl PulsarReader {
         }
     }
 
+    /// Resolves the tail position of every owned partition that still lacks
+    /// one (see `PulsarReaderMode::PartitionReaders::tails_at_start`). Only
+    /// the modes whose message set depends on it pay the lookup. A failure
+    /// leaves the tails resolved so far in place, so the retried start
+    /// (paced by the connector's error backoff) does not move them.
+    fn resolve_partition_tails(&mut self) -> Result<(), ReadError> {
+        let PulsarReaderMode::PartitionReaders {
+            partitions,
+            static_mode,
+            start_from_latest,
+            positions,
+            tails_at_start,
+            ..
+        } = &mut self.mode
+        else {
+            unreachable!("the pump is only started in the partition-reader mode");
+        };
+        if !*static_mode && !*start_from_latest {
+            return Ok(());
+        }
+        let client = self
+            .client
+            .as_ref()
+            .expect("the partition-reader mode always owns a client");
+        for partition in partitions.iter().copied() {
+            if tails_at_start.contains_key(&partition) {
+                continue;
+            }
+            if !*static_mode && positions.contains_key(&partition) {
+                // A restored position already says where this partition's
+                // delivery continues; "latest" only applies to a fresh start.
+                tails_at_start.insert(partition, TailAtStart::Unknown);
+                continue;
+            }
+            let physical_topic = Self::physical_topic(&self.base_topic, partition);
+            let subscription_name = format!(
+                "pathway-reader-{}-{}-p{partition}-tail-{}",
+                self.connector_index,
+                self.worker_index,
+                Self::subscription_nonce()
+            );
+            let tail = self.runtime.block_on(resolve_partition_tail(
+                client,
+                &physical_topic,
+                subscription_name,
+                partition,
+            ))?;
+            tails_at_start.insert(partition, tail);
+        }
+        Ok(())
+    }
+
     /// Spawns one pump task per owned partition. Called lazily on the first
     /// `read`, so that `seek` has already restored the per-partition
-    /// positions by the time the consumers are positioned.
-    fn start_partition_pump(&mut self) -> PartitionPump {
+    /// positions by the time the consumers are positioned. The tails of the
+    /// partitions are resolved first; an error here leaves the pump
+    /// unstarted, and the next `read` tries again.
+    fn start_partition_pump(&mut self) -> Result<PartitionPump, ReadError> {
+        self.resolve_partition_tails()?;
         let PulsarReaderMode::PartitionReaders {
             partitions,
             static_mode,
             positions,
+            tails_at_start,
             ..
         } = &self.mode
         else {
             unreachable!("the pump is only started in the partition-reader mode");
         };
         let (partitions, static_mode) = (partitions.clone(), *static_mode);
-        let start_positions: Vec<Option<MessagePosition>> = partitions
+        let starts: Vec<(Option<MessagePosition>, TailAtStart)> = partitions
             .iter()
-            .map(|partition| positions.get(partition).copied())
+            .map(|partition| {
+                (
+                    positions.get(partition).copied(),
+                    tails_at_start
+                        .get(partition)
+                        .copied()
+                        .unwrap_or(TailAtStart::Unknown),
+                )
+            })
             .collect();
         let (sender, receiver) = mpsc::channel(PARTITION_PUMP_CHANNEL_CAPACITY);
         let join_handles = partitions
             .iter()
-            .zip(start_positions)
-            .map(|(partition, start_after)| {
+            .zip(starts)
+            .map(|(partition, (start_after, tail_at_start))| {
                 self.spawn_pump(
                     *partition,
                     start_after,
                     None,
+                    tail_at_start,
                     Duration::ZERO,
                     sender.clone(),
                 )
             })
             .collect();
-        PartitionPump {
+        Ok(PartitionPump {
             receiver,
             sender,
             buffered: VecDeque::new(),
             remaining_static_partitions: static_mode.then_some(partitions.len()),
             join_handles,
-        }
+        })
+    }
+
+    /// The part of a subscription name that makes it unique: the consumers
+    /// are exclusive, and a lingering consumer of a previous (possibly
+    /// killed) run or of this partition's previous pump would fail the
+    /// subscription with `ConsumerBusy`.
+    fn subscription_nonce() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is past the epoch")
+            .as_nanos()
     }
 
     /// Spawns the pump task of one partition.
@@ -786,6 +889,7 @@ impl PulsarReader {
         partition: i32,
         start_after: Option<MessagePosition>,
         known_boundary: Option<MessagePosition>,
+        tail_at_start: TailAtStart,
         initial_delay: Duration,
         sender: mpsc::Sender<PumpEvent>,
     ) -> JoinHandle<()> {
@@ -797,17 +901,11 @@ impl PulsarReader {
         else {
             unreachable!("pumps only exist in the partition-reader mode");
         };
-        // The subscription names must be unique: the consumers are exclusive,
-        // and a lingering consumer of a previous (possibly killed) run or of
-        // this partition's previous pump would fail the subscription with
-        // ConsumerBusy.
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time is past the epoch")
-            .as_nanos();
         let subscription_name = format!(
-            "pathway-reader-{}-{}-p{partition}-{nonce}",
-            self.connector_index, self.worker_index
+            "pathway-reader-{}-{}-p{partition}-{}",
+            self.connector_index,
+            self.worker_index,
+            Self::subscription_nonce()
         );
         let _guard = self.runtime.enter();
         tokio::spawn(pump_partition(
@@ -820,6 +918,7 @@ impl PulsarReader {
             partition,
             start_after,
             known_boundary,
+            tail_at_start,
             *static_mode,
             *start_from_latest,
             self.min_publish_timestamp_ms,
@@ -851,6 +950,7 @@ impl PulsarReader {
             partition,
             resume_after,
             resolved_boundary,
+            TailAtStart::Unknown,
             PUMP_RESPAWN_DELAY,
             sender,
         );
@@ -925,7 +1025,7 @@ impl PulsarReader {
                 return Ok(ReadResult::Finished);
             }
             if pump.is_none() {
-                let started = self.start_partition_pump();
+                let started = self.start_partition_pump()?;
                 if let PulsarReaderMode::PartitionReaders { pump, .. } = &mut self.mode {
                     *pump = Some(started);
                 }
@@ -1242,6 +1342,7 @@ async fn pump_partition(
     partition: i32,
     start_after: Option<MessagePosition>,
     known_boundary: Option<MessagePosition>,
+    tail_at_start: TailAtStart,
     static_mode: bool,
     start_from_latest: bool,
     min_publish_timestamp_ms: Option<u64>,
@@ -1263,6 +1364,7 @@ async fn pump_partition(
         &physical_topic,
         subscription_name,
         partition,
+        tail_at_start,
         static_mode,
         start_from_latest,
         min_publish_timestamp_ms,
@@ -1342,12 +1444,37 @@ async fn partition_tail_position(
         .map(|id| (id.ledger_id, id.entry_id, id.batch_index())))
 }
 
+/// The tail position of a partition, looked up through a short-lived
+/// consumer of its own (the only way the client exposes `getLastMessageId`).
+async fn resolve_partition_tail(
+    client: &Pulsar<TokioExecutor>,
+    physical_topic: &str,
+    subscription_name: String,
+    partition: i32,
+) -> Result<TailAtStart, PulsarError> {
+    let mut consumer = Box::pin(build_pump_consumer(
+        client,
+        physical_topic,
+        subscription_name,
+        partition,
+        true,
+        None,
+    ))
+    .await?;
+    let tail = partition_tail_position(&mut consumer).await;
+    if let Err(error) = Box::pin(consumer.close()).await {
+        debug!("could not close the tail-lookup consumer of '{physical_topic}': {error}");
+    }
+    Ok(tail?.map_or(TailAtStart::Empty, TailAtStart::Last))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn pump_partition_inner(
     client: Pulsar<TokioExecutor>,
     physical_topic: &str,
     subscription_name: String,
     partition: i32,
+    tail_at_start: TailAtStart,
     static_mode: bool,
     start_from_latest: bool,
     min_publish_timestamp_ms: Option<u64>,
@@ -1361,27 +1488,52 @@ async fn pump_partition_inner(
     if static_mode && start_from_latest {
         return Ok(());
     }
+    // The tail the reader resolved when the read started defines the
+    // message set before this pump even connects, so a pump that dies
+    // during its own setup (a broker outage right after the start) is
+    // respawned with the same "end"/boundary instead of a later one.
+    let empty_at_start = tail_at_start == TailAtStart::Empty;
+    if tail_at_start != TailAtStart::Unknown {
+        let tail = match tail_at_start {
+            TailAtStart::Last(position) => Some(position),
+            TailAtStart::Empty | TailAtStart::Unknown => None,
+        };
+        if start_from_latest && watermark.is_none() {
+            *watermark = Some(tail.unwrap_or(DELIVER_EVERYTHING));
+        }
+        if static_mode && boundary_slot.is_none() {
+            let Some(boundary) = tail else {
+                return Ok(()); // the partition was empty when the read started
+            };
+            *boundary_slot = Some(boundary);
+        }
+    }
     let mut consumer = build_pump_consumer(
         &client,
         physical_topic,
         subscription_name,
         partition,
-        start_from_latest,
-        *watermark,
+        // A partition that was empty at the start has nothing to skip: its
+        // whole content is "after the end", so the consumer starts at the
+        // beginning rather than at the latest position of the connection
+        // moment, which could already be past a few messages.
+        start_from_latest && !empty_at_start,
+        if empty_at_start { None } else { *watermark },
     )
     .await?;
 
     if start_from_latest && watermark.is_none() {
-        // Resolve "end" into a concrete position exactly once, at the first
-        // pump start. A respawned pump must continue from where the end
-        // *was*, not from the latest position at the respawn moment —
-        // otherwise everything published between the failure and the
-        // respawn would be silently skipped.
+        // A pump spawned without a resolved tail (the reader resolves them
+        // up front, so only as a fallback): "end" becomes a concrete
+        // position exactly once, at the first pump start. A respawned pump
+        // continues from where the end *was*, not from the latest position
+        // at the respawn moment.
         let tail = partition_tail_position(&mut consumer).await?;
         *watermark = Some(tail.unwrap_or(DELIVER_EVERYTHING));
     }
 
     if static_mode && boundary_slot.is_none() {
+        // The same fallback for the static boundary.
         let Some(boundary) = partition_tail_position(&mut consumer).await? else {
             return Ok(()); // the partition is empty
         };
@@ -2632,6 +2784,55 @@ impl Drop for PulsarWriter {
     }
 }
 
+/// How long the deduction keeps re-checking a topic that appears to have no
+/// schema before believing it (see `fetch_latest_registry_schema`).
+const SCHEMA_DEDUCTION_RECHECK_BUDGET: Duration = Duration::from_secs(10);
+
+/// Fetches the latest registry schema of the topic for the deduction.
+///
+/// An empty lookup answer is not conclusive. The client library drops the
+/// error code of the `GetSchema` response, so a lookup the broker could not
+/// serve — a schema ledger read that timed out under load, a registry
+/// momentarily unavailable — looks exactly like a topic without a schema. The
+/// deduction runs once, at construction time, so it cannot afford to be
+/// misled: an empty answer (and a transient lookup failure) is re-checked
+/// over fresh probe connections with backoff for a bounded time, and only a
+/// consistently empty answer is reported as "no schema". The price of the
+/// caution is paid by a genuinely schema-less topic: its error takes
+/// `SCHEMA_DEDUCTION_RECHECK_BUDGET` longer to surface. Permanent failures
+/// (the registry's own verdict) surface right away.
+fn fetch_latest_registry_schema(
+    runtime: &TokioRuntime,
+    client: &Pulsar<TokioExecutor>,
+    topic: &str,
+) -> Result<Option<pulsar::message::proto::Schema>, String> {
+    let started = Instant::now();
+    let mut backoff = RetryConfig::default();
+    loop {
+        let outcome = match fetch_registry_schema(runtime, client, topic, None) {
+            Ok(Some(schema)) => return Ok(Some(schema)),
+            Ok(None) => Ok(()),
+            Err(SchemaLookupError::Permanent(message)) => return Err(message),
+            Err(SchemaLookupError::Transient(message)) => Err(message),
+        };
+        let delay = backoff.next_delay();
+        if started.elapsed() + delay >= SCHEMA_DEDUCTION_RECHECK_BUDGET {
+            return outcome.map(|()| None);
+        }
+        match &outcome {
+            Ok(()) => warn!(
+                "the schema lookup of the topic {topic:?} answered with no schema, re-checking \
+                 in {delay:?} in case the registry could not serve it"
+            ),
+            Err(message) => warn!(
+                "transient failure to look the schema of the topic {topic:?} up, retrying in \
+                 {delay:?}: {message}"
+            ),
+        }
+        std::thread::sleep(delay);
+    }
+}
+
 /// Deduces the columns of a table from the current schema of the topic in the
 /// broker's registry: the Pulsar half of `schema=None`. Both the AVRO and the
 /// JSON registry types are accepted — Pulsar describes JSON-typed topics with
@@ -2645,13 +2846,7 @@ pub fn explore_schema(
     topic: &str,
     format: Option<&str>,
 ) -> Result<Vec<crate::connectors::exploration::ExploredField>, String> {
-    let registry_schema =
-        fetch_registry_schema(runtime, client, topic, None).map_err(|e| match e {
-            SchemaLookupError::Transient(message) | SchemaLookupError::Permanent(message) => {
-                message
-            }
-        })?;
-    let Some(registry_schema) = registry_schema else {
+    let Some(registry_schema) = fetch_latest_registry_schema(runtime, client, topic)? else {
         return Err(
             "the topic has no schema registered, so there is nothing to deduce the table \
              columns from. Pass an explicit schema instead. Note: if the topic name is \

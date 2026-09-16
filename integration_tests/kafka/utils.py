@@ -49,7 +49,12 @@ SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
 # still coming up (connection refused or a transient 5xx).
 SCHEMA_REGISTRY_READY_TIMEOUT = 60.0
 SCHEMA_REGISTRY_RETRY_INTERVAL = 0.5
-KINESIS_ENDPOINT_URL = "http://kinesis:4567"
+KINESIS_ENDPOINT_URL = os.environ.get("KINESIS_ENDPOINT_URL", "http://kinesis:4567")
+# The emulator reserved for the bulk test, see `kinesis-bulk` in the compose
+# file and the `kinesis_bulk_context` fixture.
+KINESIS_BULK_ENDPOINT_URL = os.environ.get(
+    "KINESIS_BULK_ENDPOINT_URL", "http://kinesis-bulk:4567"
+)
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5552"))
@@ -515,12 +520,17 @@ class KinesisTestContext:
     _READY_TIMEOUT = 90.0
     _RETRY_INTERVAL = 0.5
 
-    def __init__(self, stream_name: str | None = None) -> None:
+    def __init__(
+        self,
+        stream_name: str | None = None,
+        endpoint_url: str = KINESIS_ENDPOINT_URL,
+    ) -> None:
         self.stream_name = stream_name or str(uuid4())
+        self.endpoint_url = endpoint_url
         self.kinesis = boto3.client(
             "kinesis",
             region_name="us-east-1",
-            endpoint_url=KINESIS_ENDPOINT_URL,
+            endpoint_url=endpoint_url,
             aws_access_key_id="placeholder",
             aws_secret_access_key="placeholder",
         )
@@ -941,6 +951,34 @@ class RabbitmqTestContext:
         )
 
 
+# The bound past which the broker's admin API is declared broken. A schema is
+# stored in a BookKeeper ledger that the broker closes right after writing it;
+# on a loaded node a read that follows the registration by milliseconds can hit
+# the ledger before the close is recorded and fail with a 500 ("Error while
+# recovering ledger ... Failed to open ledger"), although the very same request
+# succeeds a moment later. The retries cover that window.
+PULSAR_ADMIN_RETRY_TIMEOUT_SECS = 60.0
+PULSAR_ADMIN_RETRY_INTERVAL_SECS = 0.5
+
+
+def pulsar_admin_request(method: str, url: str, **kwargs) -> requests.Response:
+    """A request to the broker's admin API that outlasts its transient 5xx
+    answers and connection blips; the last response is returned (and raised
+    for status by the caller as usual)."""
+    kwargs.setdefault("timeout", 60)
+    deadline = time.monotonic() + PULSAR_ADMIN_RETRY_TIMEOUT_SECS
+    while True:
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.ConnectionError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            if response.status_code < 500 or time.monotonic() >= deadline:
+                return response
+        time.sleep(PULSAR_ADMIN_RETRY_INTERVAL_SECS)
+
+
 PULSAR_HOST = os.environ.get("PULSAR_HOST", "pulsar")
 PULSAR_PORT = int(os.environ.get("PULSAR_PORT", "6650"))
 PULSAR_SERVICE_URI = f"pulsar://{PULSAR_HOST}:{PULSAR_PORT}"
@@ -948,6 +986,31 @@ PULSAR_SERVICE_URI = f"pulsar://{PULSAR_HOST}:{PULSAR_PORT}"
 # How long a verification consumer waits for a single message before deciding
 # that no further messages arrive.
 PULSAR_RECEIVE_TIMEOUT_MS = 30000
+
+# The bound on a single client operation (a producer or a consumer creation,
+# with the lookup and the reconnections inside it) of the test-side Pulsar
+# client. The client's default is 30s. The CI node runs every suite at once,
+# and a stall of 20-30s of *all* the brokers has been observed there (the
+# RabbitMQ contexts and the Kafka fixtures of the same run took that long to
+# set up as well); a producer created on a fresh topic in such a moment ran
+# straight into the default and failed the test with `Pulsar error: TimeOut`
+# although the broker recovered right after. Like RABBITMQ_READY_TIMEOUT, this
+# is the bound past which the broker is declared gone, not a healthy timing.
+PULSAR_OPERATION_TIMEOUT_SECS = 90
+
+
+def make_pulsar_client(service_uri: str, **kwargs):
+    """The pulsar-client `Client` the tests talk to the brokers with, with
+    the operation timeout of `PULSAR_OPERATION_TIMEOUT_SECS` and a quiet
+    logger. Extra keyword arguments (authentication, ...) are passed on."""
+    import pulsar
+
+    return pulsar.Client(
+        service_uri,
+        operation_timeout_seconds=PULSAR_OPERATION_TIMEOUT_SECS,
+        logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn),
+        **kwargs,
+    )
 
 
 class PulsarTestContext:
@@ -966,9 +1029,7 @@ class PulsarTestContext:
         self._pulsar = pulsar
         self.topic = f"pulsar-{uuid4()}"
         self.service_uri = PULSAR_SERVICE_URI
-        self._client = pulsar.Client(
-            self.service_uri, logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn)
-        )
+        self._client = make_pulsar_client(self.service_uri)
 
     def create_partitioned_topic(self, partitions: int) -> str:
         """Creates a fresh partitioned topic over the admin API and returns
@@ -1073,7 +1134,11 @@ class BrokerTcpProxy:
                 continue
             try:
                 upstream = socket.create_connection(self._upstream, timeout=10)
-            except OSError:
+            except OSError as e:
+                # Visible in the captured output of a failing test: a client
+                # whose connection the proxy could not complete sees a broker
+                # that refuses it, and retries on its own schedule.
+                print(f"[BrokerTcpProxy] upstream connect failed: {e}", file=sys.stderr)
                 downstream.close()
                 continue
             upstream.settimeout(None)

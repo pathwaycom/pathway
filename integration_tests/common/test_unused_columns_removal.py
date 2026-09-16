@@ -6,10 +6,16 @@ import numpy as np
 
 import pathway as pw
 
+# 80 KB per row: kept in an arrangement, the 100k rows of the run would take
+# 8 GB and blow the bound below many times over, while the rows in flight at
+# any moment (see `max_backlog_size` below) stay far from it even on a node
+# where every allocation is retained longer than at home.
+VECTOR_SIZE = 10_000
+
 
 @pw.udf(deterministic=True)
 def embedder(x: str) -> np.ndarray:
-    return np.arange(100_000) + ord(x[0])
+    return np.arange(VECTOR_SIZE) + ord(x[0])
 
 
 @pw.udf(deterministic=True)
@@ -48,8 +54,21 @@ class DocsSubject(pw.io.python.ConnectorSubject):
 
 
 def run(n: int) -> None:
+    # The source produces a query every millisecond no matter how fast the
+    # engine consumes them, so without backpressure the rows that pile up
+    # while the engine is busy land in one mini-batch, and every row of that
+    # batch materializes its `vec` at once: on a loaded CI node the peak RSS
+    # of this pipeline exceeded the bound below with only a few thousand rows
+    # in flight (measured with 800 KB vectors: 7.7 GB at 20k rows with a 2 ms
+    # slowdown per row, 0.5 GB when keeping up). Bounding the rows in flight
+    # bounds that transient; what the test is about - `vec` not being kept in
+    # the arrangements of the downstream operators - is independent of it:
+    # were it stored, the RSS would grow with `n` regardless of the bound.
     query = pw.io.python.read(
-        QuerySubject(n), schema=QuerySchema, autocommit_duration_ms=100
+        QuerySubject(n),
+        schema=QuerySchema,
+        autocommit_duration_ms=100,
+        max_backlog_size=500,
     )
     max_depth_2 = query.with_columns(vec=embedder(pw.this.query))
     max_depth_3 = max_depth_2.with_columns(c=anti_embedder(pw.this.vec))

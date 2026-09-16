@@ -62,7 +62,11 @@ pub enum Error {
 }
 
 const MAX_KINESIS_RECORDS_PER_REQUEST: i32 = 10_000;
+// Kinesis keeps a shard iterator valid for 5 minutes. A cached one is reused
+// only while comfortably inside that window, so a request issued at the edge
+// of it never trips over an expired iterator.
 const SHARD_ITERATOR_TTL_SECONDS: u64 = 300;
+const SHARD_ITERATOR_REUSE_WINDOW: Duration = Duration::from_secs(SHARD_ITERATOR_TTL_SECONDS - 60);
 
 struct Shard {
     shard_id: String,
@@ -84,7 +88,7 @@ impl CachedShardIterator {
 
     fn is_expired(&self, queried_at: &Instant) -> bool {
         let iterator_age = queried_at.duration_since(self.received_at);
-        iterator_age <= Duration::from_secs(SHARD_ITERATOR_TTL_SECONDS)
+        iterator_age >= SHARD_ITERATOR_REUSE_WINDOW
     }
 }
 
@@ -650,5 +654,26 @@ impl Writer for KinesisWriter {
 
     fn single_threaded(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_shard_iterator_is_reused_and_an_old_one_is_not() {
+        // The cache exists to spare a GetShardIterator call per visit of a
+        // shard: a just-received iterator must be handed back, and only one
+        // approaching the 5-minute validity of Kinesis iterators refreshed.
+        let received_at = Instant::now();
+        let cached = CachedShardIterator {
+            iterator: "iterator".to_string(),
+            received_at,
+        };
+        assert!(!cached.is_expired(&received_at));
+        assert!(!cached.is_expired(&(received_at + Duration::from_mins(1))));
+        assert!(cached.is_expired(&(received_at + SHARD_ITERATOR_REUSE_WINDOW)));
+        assert!(cached.is_expired(&(received_at + Duration::from_secs(SHARD_ITERATOR_TTL_SECONDS))));
     }
 }

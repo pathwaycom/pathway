@@ -31,6 +31,8 @@ from .utils import (
     PULSAR_PORT,
     PULSAR_SERVICE_URI,
     BrokerTcpProxy,
+    make_pulsar_client,
+    pulsar_admin_request,
 )
 
 WAIT_TIMEOUT_SECS = 30
@@ -1949,10 +1951,10 @@ def test_pulsar_avro_write_registers_schema_and_interoperates(pulsar_context, tm
     pw.run()
 
     # The registry holds an AVRO schema with one field per column.
-    response = requests.get(
+    response = pulsar_admin_request(
+        "GET",
         f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
         f"{pulsar_context.topic}/schema",
-        timeout=60,
     )
     response.raise_for_status()
     schema_info = response.json()
@@ -2179,10 +2181,10 @@ def test_pulsar_avro_payload_excludes_service_columns(pulsar_context, tmp_path):
     pw.run()
 
     # The registered schema describes only the payload column.
-    response = requests.get(
+    response = pulsar_admin_request(
+        "GET",
         f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
         f"{pulsar_context.topic}/schema",
-        timeout=60,
     )
     response.raise_for_status()
     registered = json.loads(response.json()["data"])
@@ -2530,11 +2532,11 @@ def test_pulsar_json_deduction_null_defaults_survive_schema_evolution(
     # The old-style message predates the schema: it lacks the added field.
     pulsar_context.send(json.dumps({"name": "old"}))
     pulsar_context.send(json.dumps({"name": "new", "email": "new@example.com"}))
-    response = requests.post(
+    response = pulsar_admin_request(
+        "POST",
         f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
         f"{pulsar_context.topic}/schema",
         json={"type": "JSON", "schema": schema_json, "properties": {}},
-        timeout=60,
     )
     response.raise_for_status()
 
@@ -2582,11 +2584,11 @@ def test_pulsar_json_deduction_keeps_logical_time_numbers_raw(pulsar_context, tm
     pulsar_context.send(
         json.dumps({"name": "noon", "ts": 1700000000000, "elapsed": 43200000})
     )
-    requests.post(
+    pulsar_admin_request(
+        "POST",
         f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
         f"{pulsar_context.topic}/schema",
         json={"type": "JSON", "schema": schema_json, "properties": {}},
-        timeout=60,
     ).raise_for_status()
 
     output_file = tmp_path / "output.jsonl"
@@ -2650,10 +2652,10 @@ def test_pulsar_avro_duration_column_survives_write_deduce_roundtrip(
     pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
     pw.run()
 
-    response = requests.get(
+    response = pulsar_admin_request(
+        "GET",
         f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
         f"{pulsar_context.topic}/schema",
-        timeout=60,
     )
     response.raise_for_status()
     registered = json.loads(response.json()["data"])
@@ -2686,7 +2688,6 @@ def test_pulsar_schema_deduction_requires_explicit_schema_with_persistence(
     stores the rows of the schema the previous run deduced: a topic evolution
     between the runs would corrupt or fail the replay. Persistence must
     therefore require an explicit schema, up front and clearly."""
-    import pulsar
     from pulsar.schema import AvroSchema, Record, String
 
     class Message(Record):
@@ -2694,9 +2695,7 @@ def test_pulsar_schema_deduction_requires_explicit_schema_with_persistence(
         data = String(required=True)
 
     topic = f"pulsar-{uuid4()}"
-    client = pulsar.Client(
-        PULSAR_SERVICE_URI, logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn)
-    )
+    client = make_pulsar_client(PULSAR_SERVICE_URI)
     producer = client.create_producer(topic, schema=AvroSchema(Message))
     producer.send(Message(data="x"))
     client.close()
@@ -3648,10 +3647,10 @@ def test_pulsar_avro_payload_excludes_schedule_columns(pulsar_context, tmp_path)
     )
     pw.run()
 
-    response = requests.get(
+    response = pulsar_admin_request(
+        "GET",
         f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
         f"{pulsar_context.topic}/schema",
-        timeout=60,
     )
     response.raise_for_status()
     registered = json.loads(response.json()["data"])

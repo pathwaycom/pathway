@@ -201,17 +201,24 @@ def test_large_one_shot_bulk_load(atlas: AtlasContext) -> None:
     """A large single-minibatch write must not hit MongoDB's per-batch limits.
 
     A static `table_from_pandas` run flushes the whole table in one go. With 120k
-    736-dim vectors this crosses both the 48 MB max-message size (~8k vectors)
-    and the 100,000-operations-per-batch limit, so it verifies the connector lets
-    the driver split the load into valid sub-batches instead of erroring.
+    64-dim vectors (~61 MB of doubles) this crosses both the 48 MB max-message
+    size and the 100,000-operations-per-batch limit, so it verifies the connector
+    lets the driver split the load into valid sub-batches instead of erroring.
+
+    The vectors are deliberately small: the limits are crossed by the count and
+    the total size, not by the dimension, and the 736-dim variant of this load
+    (~700 MB of doubles, held by the test, the engine and then mongod at once)
+    ran the loaded Jenkins node out of memory - the Atlas container died
+    mid-suite and every Atlas test running at that moment failed with it.
     """
     collection = atlas.collection_name()
     n = 120_000
+    dim = 64
     rng = np.random.default_rng(0)
     df = pd.DataFrame(
         {
             "doc_id": np.arange(n),
-            "embedding": list(rng.standard_normal((n, VECTOR_DIM))),
+            "embedding": list(rng.standard_normal((n, dim))),
         }
     )
 

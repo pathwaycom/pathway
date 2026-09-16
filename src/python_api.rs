@@ -188,15 +188,17 @@ mod external_index_wrappers;
 mod logging;
 pub mod threads;
 
-/// Parse a `RabbitMQ` Streams URI and build an Environment.
-/// URI format: `rabbitmq-stream://user:pass@host:port/vhost`
-async fn build_rabbitmq_environment(
+/// Parses a `RabbitMQ` Streams URI (`rabbitmq-stream://user:pass@host:port/vhost`)
+/// and assembles the (cheap, connection-less) builder of an Environment from
+/// it and the TLS settings.
+fn rabbitmq_environment_builder(
     uri: &str,
     tls: &TlsSettings,
-) -> PyResult<rabbitmq_stream_client::Environment> {
+) -> PyResult<rabbitmq_stream_client::EnvironmentBuilder> {
     // Parse URI: rabbitmq-stream://user:pass@host:port/vhost
     let uri_str = uri.strip_prefix("rabbitmq-stream://").unwrap_or(uri);
-    let mut builder = rabbitmq_stream_client::Environment::builder();
+    let mut builder = rabbitmq_stream_client::Environment::builder()
+        .heartbeat(crate::connectors::data_storage::rabbitmq::heartbeat_secs());
 
     // Split userinfo from host
     if let Some((userinfo, rest)) = uri_str.split_once('@') {
@@ -252,13 +254,40 @@ async fn build_rabbitmq_environment(
         builder = builder.tls(tls_config);
     }
 
-    builder
-        .build()
-        .await
-        .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
+    Ok(builder)
 }
 
-use crate::connectors::data_storage::rabbitmq::probe_last_offset;
+/// Connects to `RabbitMQ`: the connection attempts are bounded in time and
+/// the transient failures are retried, see `connect_with_retries`.
+async fn build_rabbitmq_environment(
+    uri: &str,
+    tls: &TlsSettings,
+) -> PyResult<rabbitmq_stream_client::Environment> {
+    // Surfaces the configuration errors (a bad TLS setup) before any attempt.
+    rabbitmq_environment_builder(uri, tls)?;
+    // The credentials of the URI are not for the logs.
+    let uri_for_display = uri
+        .split_once('@')
+        .map_or(uri, |(_, rest)| rest)
+        .to_string();
+    connect_with_retries(
+        &format!("connecting to RabbitMQ at {uri_for_display}"),
+        || async {
+            // The builder is consumed by `build`, so every attempt assembles a
+            // new one; the assembly was validated above and cannot fail here.
+            let builder = rabbitmq_environment_builder(uri, tls).map_err(|e| {
+                rabbitmq_stream_client::error::ClientError::GenericError(e.to_string().into())
+            })?;
+            builder.build().await
+        },
+    )
+    .await
+    .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
+}
+
+use crate::connectors::data_storage::rabbitmq::{
+    build_consumer, connect_with_retries, probe_last_offset,
+};
 use crate::external_integration::qdrant_integration::build_qdrant_client;
 
 static CONVERT: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
@@ -7466,7 +7495,7 @@ impl DataStorage {
         };
 
         let tls = self.tls_settings.clone().unwrap_or_default();
-        let (environment, consumer, end_offset) = runtime.block_on(async {
+        let (environment, consumer, end_offset, initial_offset) = runtime.block_on(async {
             let environment = build_rabbitmq_environment(uri, &tls).await?;
 
             // Probe the tail of the stream. Used for:
@@ -7474,7 +7503,13 @@ impl DataStorage {
             // - start_from="end": to position the consumer past all existing messages
             let needs_probe = self.mode == ConnectorMode::Static || start_from_end;
             let last_offset = if needs_probe {
-                probe_last_offset(&environment, &stream_name).await
+                probe_last_offset(&environment, &stream_name)
+                    .await
+                    .map_err(|e| {
+                        PyIOError::new_err(format!(
+                            "Failed to probe the end of the RabbitMQ stream: {e}"
+                        ))
+                    })?
             } else {
                 None
             };
@@ -7488,10 +7523,7 @@ impl DataStorage {
                 offset_spec
             };
 
-            let consumer = environment
-                .consumer()
-                .offset(effective_offset)
-                .build(&stream_name)
+            let consumer = build_consumer(&environment, &stream_name, effective_offset.clone())
                 .await
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to create RabbitMQ consumer: {e}"))
@@ -7503,7 +7535,7 @@ impl DataStorage {
                 None
             };
 
-            Ok::<_, PyErr>((environment, consumer, end_offset))
+            Ok::<_, PyErr>((environment, consumer, end_offset, effective_offset))
         })?;
 
         let already_at_end = start_from_end && self.mode == ConnectorMode::Static;
@@ -7513,6 +7545,7 @@ impl DataStorage {
             environment,
             arcstr::ArcStr::from(stream_name.as_str()),
             self.mode == ConnectorMode::Static,
+            initial_offset,
             end_offset,
             already_at_end,
             self.with_metadata,

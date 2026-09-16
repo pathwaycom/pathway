@@ -40,6 +40,7 @@ from .utils import (  # noqa: E402
     SIGKILL_SUBSCRIPTION_TIMEOUT_SEC,
     IdentityPipelineRun,
     assert_messages_survive_sigkill_restart,
+    make_pulsar_client,
 )
 
 IDENTITY_PROGRAM_PATH = os.path.join(
@@ -49,9 +50,7 @@ IDENTITY_PROGRAM_PATH = os.path.join(
 
 class PulsarPublisher:
     def __init__(self, uri, topic):
-        self._client = pulsar.Client(
-            uri, logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn)
-        )
+        self._client = make_pulsar_client(uri)
         self._topic = topic
         self._producer = self._client.create_producer(topic)
 
@@ -185,9 +184,7 @@ def test_pulsar_written_messages_survive_sigkill_restart(tmp_path):
         for i in range(n_rows):
             f.write(f"row-{i:06d}-" + "p" * 200 + "\n")
 
-    client = pulsar.Client(
-        PULSAR_SERVICE_URI, logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn)
-    )
+    client = make_pulsar_client(PULSAR_SERVICE_URI)
     # The subscription is created before the pipeline starts, so nothing that
     # is published can escape the verification.
     consumer = client.subscribe(

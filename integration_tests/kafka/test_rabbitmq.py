@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import pathlib
+import socket
 import threading
 import time
 from uuid import uuid4
@@ -13,7 +14,13 @@ import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import CsvLinesNumberChecker, wait_result_with_checker
 
-from .utils import RABBITMQ_STREAM_URI
+from .utils import (
+    RABBITMQ_HOST,
+    RABBITMQ_PASSWORD,
+    RABBITMQ_PORT,
+    RABBITMQ_STREAM_URI,
+    RABBITMQ_USER,
+)
 
 # Not the time a healthy pipeline needs but the bound past which it is declared
 # stuck, so it has to absorb the slowest legitimate cases under CI load:
@@ -822,3 +829,183 @@ def test_rabbitmq_streaming_live(rabbitmq_context, tmp_path: pathlib.Path):
         CsvLinesNumberChecker(output_file, n_messages),
         WAIT_TIMEOUT_SECS,
     )
+
+
+# --- Connection robustness ---
+
+
+class StallingBrokerProxy:
+    """A stand-in for a RabbitMQ broker that is accepting TCP connections but
+    not yet servicing the stream protocol — what the broker does while it
+    starts up or when it is overloaded. The first `stalled_connections`
+    connections are accepted and then left without a single reply; the
+    later ones are proxied to the real broker byte for byte."""
+
+    def __init__(self, stalled_connections: int):
+        self._stalled_connections = stalled_connections
+        self._accepted = 0
+        self._lock = threading.Lock()
+        self._live: list[socket.socket] = []
+        self._server = socket.socket()
+        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server.bind(("127.0.0.1", 0))
+        self._server.listen(16)
+        self.port = self._server.getsockname()[1]
+        self.stalled = 0
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self._server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn):
+        with self._lock:
+            self._accepted += 1
+            stall = self._accepted <= self._stalled_connections
+            if stall:
+                self.stalled += 1
+        if stall:
+            # Read and ignore everything the client sends, never answer.
+            try:
+                while conn.recv(65536):
+                    pass
+            except OSError:
+                pass
+            finally:
+                conn.close()
+            return
+        with socket.create_connection((RABBITMQ_HOST, RABBITMQ_PORT)) as upstream:
+            with self._lock:
+                self._live += [conn, upstream]
+            threading.Thread(
+                target=self._pump, args=(conn, upstream), daemon=True
+            ).start()
+            self._pump(upstream, conn)
+
+    @property
+    def accepted(self) -> int:
+        with self._lock:
+            return self._accepted
+
+    def cut_live_connections(self) -> None:
+        """Closes every tunnel that is currently open, the way a broker
+        restart or a dead network path ends a connection; the connections
+        made afterwards are proxied normally."""
+        with self._lock:
+            live, self._live = self._live, []
+        for endpoint in live:
+            try:
+                endpoint.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _pump(src, dst):
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def close(self):
+        self._server.close()
+
+
+def test_rabbitmq_static_read_survives_a_stalled_handshake(rabbitmq_context, tmp_path):
+    """A broker that accepts the connection but never completes the
+    stream-protocol handshake must not stall the pipeline forever: the
+    connector gives the attempt a bounded time, reconnects, and the static
+    read still delivers every message of the stream."""
+    n_messages = 3
+    for i in range(n_messages):
+        rabbitmq_context.send(f"message-{i}")
+    time.sleep(1)
+
+    proxy = StallingBrokerProxy(stalled_connections=1)
+    try:
+        output_file = tmp_path / "output.txt"
+        G.clear()
+        table = pw.io.rabbitmq.read(
+            uri=(
+                f"rabbitmq-stream://{RABBITMQ_USER}:{RABBITMQ_PASSWORD}"
+                f"@127.0.0.1:{proxy.port}/"
+            ),
+            stream_name=rabbitmq_context.stream_name,
+            format="plaintext",
+            mode="static",
+        )
+        pw.io.csv.write(table, output_file)
+        wait_result_with_checker(
+            CsvLinesNumberChecker(output_file, n_messages),
+            WAIT_TIMEOUT_SECS,
+        )
+        assert proxy.stalled == 1
+    finally:
+        proxy.close()
+
+
+def test_rabbitmq_streaming_read_resumes_after_a_dropped_connection(
+    rabbitmq_context, tmp_path
+):
+    """A streaming read whose connection to the broker is closed under it — a
+    broker restart, or the heartbeat guard declaring a dead flow — must not
+    finish: the reader reconnects where it left off and keeps delivering."""
+    for i in range(3):
+        rabbitmq_context.send(f"before-{i}")
+
+    proxy = StallingBrokerProxy(stalled_connections=0)
+    try:
+        output_file = tmp_path / "output.txt"
+        G.clear()
+        table = pw.io.rabbitmq.read(
+            uri=(
+                f"rabbitmq-stream://{RABBITMQ_USER}:{RABBITMQ_PASSWORD}"
+                f"@127.0.0.1:{proxy.port}/"
+            ),
+            stream_name=rabbitmq_context.stream_name,
+            format="plaintext",
+            mode="streaming",
+            autocommit_duration_ms=100,
+        )
+        pw.io.csv.write(table, output_file)
+
+        def lines() -> int:
+            if not output_file.exists():
+                return 0
+            return len(output_file.read_text().splitlines()) - 1
+
+        process = multiprocessing.get_context("fork").Process(target=pw.run)
+        process.start()
+        try:
+            deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+            while time.monotonic() < deadline and lines() < 3:
+                time.sleep(0.2)
+            assert lines() == 3, "the read never delivered the initial messages"
+            connections_before = proxy.accepted
+
+            proxy.cut_live_connections()
+            for i in range(3):
+                rabbitmq_context.send(f"after-{i}")
+
+            deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+            while time.monotonic() < deadline and lines() < 6:
+                time.sleep(0.2)
+            assert lines() == 6, "the read did not resume after its connection was cut"
+            assert proxy.accepted > connections_before, "the reader never reconnected"
+        finally:
+            process.terminate()
+            process.join(timeout=15)
+    finally:
+        proxy.close()

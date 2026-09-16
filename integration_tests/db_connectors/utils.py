@@ -1381,7 +1381,7 @@ class QdrantContext:
 
         distance = distance or Distance.EUCLID
         if unnamed_dimension is not None:
-            self.client.create_collection(
+            self._create_collection_outlasting_a_stalled_server(
                 collection_name,
                 vectors_config=VectorParams(size=unnamed_dimension, distance=distance),
             )
@@ -1405,11 +1405,47 @@ class QdrantContext:
             slot: SparseVectorParams(modifier=Modifier.IDF) for slot in sparse
         } or None
 
-        self.client.create_collection(
+        self._create_collection_outlasting_a_stalled_server(
             collection_name,
             vectors_config=named_config,
             sparse_vectors_config=sparse_config,
         )
+
+    # The bound past which the server is declared broken. Qdrant's REST server
+    # answers 408 (Request Timeout, empty body) when it cannot read a request
+    # within its own few-second budget - seen for a tiny PUT on the loaded CI
+    # node, where every suite hammers the host at once - and the client does
+    # not retry that. The request was not processed, so retrying it is safe;
+    # a collection that did get created by an attempt whose answer was lost
+    # is accepted as done.
+    _CREATE_RETRY_TIMEOUT_SECS = 60.0
+    _CREATE_RETRY_INTERVAL_SECS = 1.0
+
+    def _create_collection_outlasting_a_stalled_server(
+        self, collection_name: str, **kwargs
+    ) -> None:
+        import httpx
+        from qdrant_client.http.exceptions import (
+            ResponseHandlingException,
+            UnexpectedResponse,
+        )
+
+        deadline = time.monotonic() + self._CREATE_RETRY_TIMEOUT_SECS
+        while True:
+            try:
+                self.client.create_collection(collection_name, **kwargs)
+                return
+            except UnexpectedResponse as e:
+                status = e.status_code or 0
+                transient = status == 408 or status >= 500
+                if not transient or time.monotonic() >= deadline:
+                    raise
+            except (httpx.TransportError, ResponseHandlingException):
+                if time.monotonic() >= deadline:
+                    raise
+            if self.client.collection_exists(collection_name):
+                return
+            time.sleep(self._CREATE_RETRY_INTERVAL_SECS)
 
     def query_all(
         self, collection_name: str, *, with_vectors: bool = True
