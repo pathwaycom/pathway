@@ -1,0 +1,53 @@
+#!/usr/bin/env sh
+# Native git hook fallback when pre-commit framework is not installed.
+# Enable with: git config core.hooksPath .githooks
+# This runs the fast tier only (black/isort/flake8/cargo fmt) - mirrors pull.yml.
+# For full checks use: pre-commit run --all-files  (see .pre-commit-config.yaml)
+set -eu
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+failed=0
+
+if has_cmd black; then
+  echo "[githooks] black --check (staged)"
+  if ! black --check $(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true); then
+    echo "  -> run: black ."; failed=1
+  fi
+else
+  echo "[githooks] skip black (not installed)"
+fi
+
+if has_cmd isort; then
+  echo "[githooks] isort --check"
+  if ! isort --check $(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true) 2>/dev/null; then
+    echo "  -> run: isort ."; failed=1
+  fi
+else
+  echo "[githooks] skip isort (not installed)"
+fi
+
+if has_cmd flake8; then
+  echo "[githooks] flake8"
+  if ! flake8 $(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true); then
+    failed=1
+  fi
+else
+  echo "[githooks] skip flake8 (not installed)"
+fi
+
+if has_cmd cargo; then
+  echo "[githooks] cargo fmt -- --check"
+  if ! cargo fmt -- --check; then
+    echo "  -> run: cargo fmt"; failed=1
+  fi
+else
+  echo "[githooks] skip cargo fmt (not installed)"
+fi
+
+if [ "$failed" -ne 0 ]; then
+  echo "[githooks] commit blocked - fix formatting (or git commit --no-verify to skip, but CI will fail per pull.yml)"
+  exit 1
+fi
+
+echo "[githooks] fast checks passed. Slow checks (mypy/clippy) run in CI or via: pre-commit run --hook-stage manual --all-files"

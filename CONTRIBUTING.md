@@ -114,3 +114,27 @@ We ask that developers sign our [contributor license
 agreement](https://cla-assistant.io/pathwaycom/pathway). The
 process of signing the CLA is automated, and you'll be prompted with instructions
 the first time you submit a pull request to the project.
+
+## Local checks (optional git hooks)
+
+CI runs `black`, `isort`, `flake8`, `mypy`, `cargo fmt` and `cargo clippy` on every
+PR (see `.github/workflows/pull.yml`). To catch the fast ones before pushing, this
+repo ships an opt-in pre-commit config:
+
+```bash
+pip install pre-commit
+pre-commit install          # fast tier: black/isort/flake8/cargo fmt on staged files
+pre-commit run --all-files  # full fast tier on repo
+# slow tier (manual, same as CI):
+pre-commit run --hook-stage manual --all-files   # mypy + clippy
+```
+
+No hooks are enforced on clone — forks work without any setup. A lightweight
+fallback without the `pre-commit` framework is also provided:
+
+```bash
+git config core.hooksPath .githooks   # uses .githooks/pre-commit (fast) + pre-push (clippy)
+```
+
+If a hook is not installed or its tool is missing it is skipped, and
+`git commit --no-verify` always bypasses them — CI remains the source of truth.

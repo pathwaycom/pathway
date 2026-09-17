@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Opt-in local git hooks mirroring CI (`black`, `isort`, `flake8`, `cargo fmt` fast tier on commit, `mypy`/`clippy` manual) via `.pre-commit-config.yaml` and fallback `.githooks/` (see `CONTRIBUTING.md`).
+
 ### Changed
 - The message-queue input connectors (`pw.io.kafka`, `pw.io.redpanda`, `pw.io.nats`, `pw.io.mqtt`, `pw.io.rabbitmq`, `pw.io.pulsar`, `pw.io.kinesis`) now reject `autocommit_duration_ms=None` in the streaming mode at construction. Such a source never signals completion, so without the commit timer nothing was ever committed: the pipeline started and ran, but silently never emitted a single row.
 - A source producing two insertions with the same primary key (or more deletions of a row than insertions of it) into a table with a non-deterministic UDF now reports a keyed error with the offending key, the row values and the operator's trace, regardless of whether the duplicates arrive in one minibatch or in separate ones. Previously the co-batched case tripped a bare worker panic (`assertion failed: current.is_none()`). The message of the cross-batch case changed from `Expected deletion of a row with key ...` to `Got a second insertion of a row with key ...` and now suggests switching a custom `pw.io.python.read` connector to the upsert session type.

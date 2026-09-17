@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Optional pre-push: runs clippy (slow). Enable with core.hooksPath.
+# To enable push-time clippy: chmod +x .githooks/pre-push  (already) and git config core.hooksPath .githooks
+set -eu
+if command -v cargo >/dev/null 2>&1; then
+  echo "[githooks] pre-push: cargo clippy --locked --all-targets -- --deny warnings"
+  cargo clippy --locked --all-targets -- --deny warnings
+else
+  echo "[githooks] skip clippy (cargo not found)"
+fi

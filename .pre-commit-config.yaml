@@ -1,0 +1,58 @@
+# Pre-commit hooks mirroring CI in .github/workflows/pull.yml
+# Install: pip install pre-commit && pre-commit install
+# Run on all files: pre-commit run --all-files
+# Run slow checks manually: pre-commit run --hook-stage manual mypy --all-files
+# See CONTRIBUTING.md for opt-in policy - not enforced on forks without install
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        name: "black (pyproject.toml: [tool.black] line-length 88, target py310)"
+        language_version: python3
+        exclude: ^(target/|docs/)
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: "isort (pyproject.toml: [tool.isort] profile black)"
+        args: [--profile=black, --filter-files]
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        name: "flake8 (setup.cfg max-line-length 119)"
+        additional_dependencies: [flake8]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: "cargo fmt --check"
+        entry: cargo fmt -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        # mirrors pull.yml: cargo-fmt job (rust-toolchain 1.97)
+
+      - id: cargo-clippy
+        name: "cargo clippy --deny warnings"
+        entry: cargo clippy --locked --all-targets -- --deny warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [manual]
+        # slow (~1-3m) - run via `pre-commit run --hook-stage manual cargo-clippy --all-files`
+        # or pre-push hook. Mirrors pull.yml: cargo-clippy job
+
+      - id: mypy
+        name: "mypy (tool.mypy python 3.11, strict)"
+        entry: mypy .
+        language: system
+        pass_filenames: false
+        stages: [manual]
+        # slow + needs deps: `python .github/ci/get-dependencies.py && pip install -r requirements.txt`
+        # + `pip install types-pytz types-PyYAML types-requests types-simplejson types-protobuf types-python-dateutil pandas-stubs`
+        # Run via `pre-commit run --hook-stage manual mypy --all-files`
+        # mirrors pull.yml: python-mypy job
