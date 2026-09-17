@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# chore/add-githooks: opt-in slow tier on push (cargo clippy --deny warnings) - see .pre-commit-config.yaml manual stage + CONTRIBUTING.md
 # Optional pre-push: runs clippy (slow). Enable with core.hooksPath.
 # To enable push-time clippy: chmod +x .githooks/pre-push  (already) and git config core.hooksPath .githooks
 set -eu

@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# chore/add-githooks: opt-in fast tier mirroring CI (black/isort/flake8/cargo fmt on staged files) - see .pre-commit-config.yaml + CONTRIBUTING.md
 # Native git hook fallback when pre-commit framework is not installed.
 # Enable with: git config core.hooksPath .githooks
 # This runs the fast tier only (black/isort/flake8/cargo fmt) - mirrors pull.yml.
