@@ -161,11 +161,7 @@ enum QdrantOp {
 /// point id across restarts and workers — so deletions reliably target the
 /// point a prior insertion created, without keeping an in-memory key→id table.
 fn key_to_point_id(key: Key) -> PointId {
-    // `KeyImpl` is u128 by default but may be narrower under a build feature, so
-    // widen explicitly; the conversion is a no-op (and lint-flagged) only in the
-    // default configuration.
-    #[allow(clippy::useless_conversion)]
-    let key_u128 = u128::from(key.0);
+    let key_u128 = key.as_u128();
     Uuid::from_u128(key_u128).to_string().into()
 }
 

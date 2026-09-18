@@ -2247,7 +2247,7 @@ impl PulsarWriter {
                     data.values[index].clone(),
                 )),
             },
-            None => Ok(format!("{:x}", data.key.0)),
+            None => Ok(format!("{:x}", data.key.as_u128())),
         }
     }
 

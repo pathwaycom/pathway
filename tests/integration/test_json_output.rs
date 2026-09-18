@@ -112,7 +112,7 @@ fn test_json_null_serialization() -> eyre::Result<()> {
 fn test_json_pointer_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()], None);
 
-    let key = pathway_engine::engine::Key(1);
+    let key = pathway_engine::engine::Key::from_u128(1);
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
         &[Value::Pointer(key)],

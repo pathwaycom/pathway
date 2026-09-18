@@ -550,7 +550,7 @@ impl SemigroupState for AnyState {
 
     fn empty() -> Self {
         Self {
-            key: Key(SALT), // any key is valid
+            key: Key::from_impl(SALT), // any key is valid
             value: Value::None,
         }
     }

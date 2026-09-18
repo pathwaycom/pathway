@@ -616,7 +616,7 @@ impl Writer for KinesisWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         let partition_key = match self.key_field_index {
             Some(index) => data.values[index].to_string(),
-            None => data.key.0.to_string(),
+            None => data.key.as_u128().to_string(),
         };
 
         for payload in data.payloads {

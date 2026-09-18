@@ -15,7 +15,7 @@ pub trait Shard {
 impl Shard for Key {
     #[allow(clippy::cast_possible_truncation)]
     fn shard(&self) -> u64 {
-        (self.0 & SHARD_MASK) as u64
+        self.lo() & SHARD_MASK
     }
 }
 

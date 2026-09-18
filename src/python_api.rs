@@ -1030,11 +1030,11 @@ impl Pointer {
     }
 
     pub fn __hash__(&self) -> usize {
-        self.0 .0 as usize
+        self.0.as_impl() as usize
     }
 
     pub fn __int__(&self) -> KeyImpl {
-        self.0 .0
+        self.0.as_impl()
     }
 
     pub fn __richcmp__(&self, other: &Bound<PyAny>, op: CompareOp) -> Py<PyAny> {
@@ -4511,7 +4511,7 @@ pub fn ref_scalar_with_instance(
 
 #[pyfunction]
 pub fn unsafe_make_pointer(value: KeyImpl) -> Key {
-    Key(value)
+    Key::from_impl(value)
 }
 
 #[pyfunction]

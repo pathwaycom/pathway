@@ -771,7 +771,7 @@ impl Writer for KafkaWriter {
                     ))
                 }
             },
-            None => data.key.0.to_le_bytes().to_vec(),
+            None => data.key.to_le_bytes().to_vec(),
         };
 
         let headers = data.construct_kafka_headers(&self.header_fields);

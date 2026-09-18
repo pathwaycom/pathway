@@ -24,7 +24,6 @@ use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::trace::{BatchReader, Cursor};
 use differential_dataflow::{AsCollection, Collection, ExchangeData};
 
-use crate::engine::value::KeyImpl;
 use differential_dataflow::trace::TraceReader;
 use timely::progress::frontier::Antichain;
 use timely::progress::Timestamp;
@@ -105,7 +104,7 @@ pub trait HasMaxValue {
 
 impl HasMaxValue for Key {
     fn max_value() -> Key {
-        Key(KeyImpl::MAX)
+        Key::from_u128(u128::MAX)
     }
 }
 
@@ -121,7 +120,7 @@ impl Scale<Key> for OrderedFloat<f64> {
             clippy::cast_possible_truncation,
             clippy::cast_precision_loss
         )]
-        Key((factor.0 * number.0 as f64) as KeyImpl)
+        Key::from_u128((factor.0 * number.as_u128() as f64) as u128)
     }
 }
 

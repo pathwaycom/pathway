@@ -63,9 +63,9 @@ fn test_threshold_update_arriving_after_newer_input_rows_keeps_stream_consistent
     // dataflow paths, so a threshold update with time T may reach the operator
     // after input rows with times greater than T were already processed. The
     // output stream must stay temporally consistent in that case.
-    let key_1 = Key(KeyImpl::from(1u32));
-    let key_2 = Key(KeyImpl::from(2u32));
-    let threshold_key = Key(KeyImpl::from(42u32));
+    let key_1 = Key::from_impl(KeyImpl::from(1u32));
+    let key_2 = Key::from_impl(KeyImpl::from(2u32));
+    let threshold_key = Key::from_impl(KeyImpl::from(42u32));
 
     let captured: CapturedStream = Arc::new(Mutex::new(Vec::new()));
     let captured_in_worker = captured.clone();

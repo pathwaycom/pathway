@@ -210,7 +210,7 @@ impl ExpressionCache for SqliteExpressionCache {
             .query_row(
                 (
                     Self::expression_index_param(expression_index),
-                    &key.0.to_le_bytes()[..],
+                    &key.to_le_bytes()[..],
                 ),
                 |row| row.get::<_, Vec<u8>>(0),
             )
@@ -232,7 +232,7 @@ impl ExpressionCache for SqliteExpressionCache {
             .query_row(
                 (
                     Self::expression_index_param(expression_index),
-                    &key.0.to_le_bytes()[..],
+                    &key.to_le_bytes()[..],
                 ),
                 |row| row.get::<_, Vec<u8>>(0),
             )
@@ -256,7 +256,7 @@ impl ExpressionCache for SqliteExpressionCache {
             .expect("preparing a query for the expression cache should succeed");
         let result = statement.execute((
             Self::expression_index_param(expression_index),
-            &key.0.to_le_bytes()[..],
+            &key.to_le_bytes()[..],
             serialized,
         ));
         match result {
@@ -352,8 +352,8 @@ mod tests {
     use assert_matches::assert_matches;
 
     fn assert_duplicate_insert_rejected(mut cache: Box<dyn ExpressionCache>) {
-        let key = Key(42);
-        let other_key = Key(43);
+        let key = Key::from_u128(42);
+        let other_key = Key::from_u128(43);
         cache.begin_batch();
         cache.insert(0, key, &Value::Int(1)).unwrap();
         cache.insert(0, other_key, &Value::Int(2)).unwrap();

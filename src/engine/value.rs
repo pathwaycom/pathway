@@ -35,16 +35,79 @@ cfg_if! {
     }
 }
 
-pub const SHARD_MASK: KeyImpl = (1 << 16) - 1;
+pub const SHARD_MASK: u64 = (1 << 16) - 1;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Key(pub KeyImpl);
+/// 128-bit row identifier stored as two `u64` halves so that `Value` keeps an
+/// 8-byte alignment (a `u128` field would force 16 and pad `Value` to 32 bytes).
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Key {
+    hi: u64,
+    lo: u64,
+}
+
+// Hashed as the `u128` it replaces, so std-`Hash` consumers (hash maps, exchange
+// routing, HyperLogLog sketches) observe exactly the same hash values as before.
+impl std::hash::Hash for Key {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u128(self.as_u128());
+    }
+}
+
+// Compared as a `u128`: a single wide comparison stays branchless, which a
+// field-by-field derive would not, and it keeps the ordering of the old `u128` key.
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_u128().cmp(&other.as_u128())
+    }
+}
 
 impl Key {
-    const FOR_EMPTY_TUPLE: Self = Self(0x40_10_8D_33_B7); // PWSRT42
+    const FOR_EMPTY_TUPLE: Self = Self::from_u128(0x40_10_8D_33_B7); // PWSRT42
+
+    #[allow(clippy::cast_possible_truncation)]
+    pub const fn from_u128(value: u128) -> Self {
+        Self {
+            hi: (value >> 64) as u64,
+            lo: value as u64,
+        }
+    }
+
+    pub const fn as_u128(self) -> u128 {
+        ((self.hi as u128) << 64) | (self.lo as u128)
+    }
+
+    // The cast is a no-op only in the default build; `yolo-id*` features narrow `KeyImpl`.
+    #[allow(clippy::cast_lossless, clippy::unnecessary_cast)]
+    pub fn from_impl(value: KeyImpl) -> Self {
+        Self::from_u128(value as u128)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn as_impl(self) -> KeyImpl {
+        self.as_u128() as KeyImpl
+    }
+
+    pub fn to_le_bytes(self) -> [u8; 16] {
+        self.as_u128().to_le_bytes()
+    }
+
+    pub fn from_le_bytes(bytes: [u8; 16]) -> Self {
+        Self::from_u128(u128::from_le_bytes(bytes))
+    }
+
+    pub(crate) fn lo(self) -> u64 {
+        self.lo
+    }
 
     pub(crate) fn from_hasher(hasher: &Hasher) -> Self {
-        Self(hasher.digest128() as KeyImpl)
+        Self::from_impl(hasher.digest128() as KeyImpl)
     }
 
     pub fn for_value(value: &Value) -> Self {
@@ -65,23 +128,39 @@ impl Key {
     }
 
     pub fn random() -> Self {
-        Self(rand::rng().random())
+        Self::from_u128(rand::rng().random())
     }
 
     #[must_use]
     pub fn salted_with(self, seed: KeyImpl) -> Self {
-        Self(self.0 ^ seed)
+        Self::from_u128(self.as_u128() ^ Self::from_impl(seed).as_u128())
     }
 
     #[must_use]
     pub fn with_shard_of(self, other: Key) -> Self {
-        Self((self.0 & (!SHARD_MASK)) | (other.0 & SHARD_MASK))
+        Self {
+            hi: self.hi,
+            lo: (self.lo & !SHARD_MASK) | (other.lo & SHARD_MASK),
+        }
+    }
+}
+
+// Serialized as a `u128` so that persisted snapshots keep their byte layout.
+impl Serialize for Key {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u128(self.as_u128())
+    }
+}
+
+impl<'de> Deserialize<'de> for Key {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        u128::deserialize(deserializer).map(Self::from_u128)
     }
 }
 
 impl Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let encoded = base32::encode(BASE32_ALPHABET, &self.0.to_le_bytes());
+        let encoded = base32::encode(BASE32_ALPHABET, &self.to_le_bytes());
         write!(f, "^{encoded}")
     }
 }
@@ -230,8 +309,8 @@ pub enum Value {
     Pending,
 }
 
-const _: () = assert!(align_of::<Value>() <= 16);
-const _: () = assert!(size_of::<Value>() <= 32);
+const _: () = assert!(align_of::<Value>() == 8);
+const _: () = assert!(size_of::<Value>() == 24);
 
 impl Value {
     pub fn from_isize(i: isize) -> Self {
@@ -666,7 +745,7 @@ impl<T> HashInto for HandleInner<T> {
 
 impl HashInto for Key {
     fn hash_into(&self, hasher: &mut Hasher) {
-        self.0.hash_into(hasher);
+        hasher.update(&self.to_le_bytes());
     }
 }
 
@@ -777,8 +856,7 @@ pub fn parse_pathway_pointer(serialized: &str) -> Result<Value, PointerParseErro
         .ok_or(PointerParseError::MalformedBase32String)?;
     if decoded.len() == 16 {
         let decoded: [u8; 16] = decoded.try_into().unwrap();
-        let key = KeyImpl::from_le_bytes(decoded);
-        Ok(Value::Pointer(Key(key)))
+        Ok(Value::Pointer(Key::from_le_bytes(decoded)))
     } else {
         Err(PointerParseError::IncorrectLength)
     }
