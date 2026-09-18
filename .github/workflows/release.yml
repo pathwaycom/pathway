@@ -430,7 +430,6 @@ jobs:
           artifacts: "./wheels/*.whl"
           artifactContentType: "raw"
           allowUpdates: true
-          bodyFile: "CHANGELOG.md"
 
       - name: Publish package distributions to PyPI
         if: startsWith(github.ref, 'refs/tags/v')
