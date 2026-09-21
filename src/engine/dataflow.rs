@@ -1574,28 +1574,36 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_logger = self.create_error_logger()?;
         let max_expression_batch_size = self.max_expression_batch_size;
 
+        // Extracted arguments of all rows live in one flat buffer that the operator
+        // keeps between batches: no per-row allocation and no allocation at all
+        // once its capacity has settled.
+        let mut flat_args: Vec<Value> = Vec::new();
         Ok(table.values_consolidated().map_wrapped_batched_named(
             "expression_table::evaluate_expression",
             move |data| {
                 let n_expressions = expressions.len();
+                let n_paths = column_paths.len();
                 let n_rows = data.len();
-                let mut args = Vec::with_capacity(n_rows);
+                flat_args.clear();
+                flat_args.reserve(n_rows * n_paths);
                 let mut keys = Vec::with_capacity(n_rows);
                 for (key, values) in data {
-                    let args_i: Vec<Value> = column_paths
-                        .iter()
-                        .map(|path| {
+                    for path in &column_paths {
+                        flat_args.push(
                             path.extract(&key, &values)
-                                .unwrap_with_reporter(&error_reporter)
-                        })
-                        .collect();
-                    args.push(args_i);
+                                .unwrap_with_reporter(&error_reporter),
+                        );
+                    }
                     keys.push(key);
                 }
                 // single flat buffer instead of a per-row Vec of results
                 let mut results = vec![Value::None; n_rows * n_expressions];
 
-                let args: Vec<&[Value]> = args.iter().map(|a| -> &[Value] { a }).collect();
+                let args: Vec<&[Value]> = if n_paths == 0 {
+                    vec![&[][..]; n_rows]
+                } else {
+                    flat_args.chunks_exact(n_paths).collect()
+                };
                 // if a better behavior for append only is needed (then only output has to be append only, not input):
                 // split this closure here into two - first part (extraction from paths) before consolidation
                 // and second part (evals) after consolidation
