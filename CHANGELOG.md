@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- Input connectors now hand the rows they ingest to the dataflow in runs during a minibatch instead of all at once when the minibatch commits, so that the engine processes a large minibatch (a long `autocommit_duration_ms` at a high input rate) spread over its window rather than in one burst at the commit. This lowers latency and raises the sustainable input rate on a single core; the commit times and the produced results are unchanged.
+
 ## [0.33.0] - 2026-09-18
 
 ### Changed
