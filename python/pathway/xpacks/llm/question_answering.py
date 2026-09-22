@@ -129,6 +129,22 @@ def _get_RAG_prompt_udf(prompt_template: str | Callable[[str, str], str] | pw.UD
     return verified_template.as_udf()
 
 
+def _get_query_transformer_prompt_udf(
+    query_transformer_prompt: Callable[[str], str] | pw.UDF | None,
+) -> pw.UDF | None:
+    if query_transformer_prompt is None:
+        return None
+    elif isinstance(query_transformer_prompt, pw.UDF):
+        return query_transformer_prompt
+    elif callable(query_transformer_prompt):
+        return pw.udf(query_transformer_prompt)
+    else:
+        raise ValueError(
+            "Query transformer prompt must be type of one of the following: "
+            "Callable[[str], str] | ~pw.UDF | None"
+        )
+
+
 def _get_context_processor_udf(
     context_processor: (
         BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
@@ -463,6 +479,13 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
         rerank_topk: Number of top-scoring documents to retain after reranking, when a reranker is provided.
             If ``None``, reranking is disabled. Defaults to ``None``.
+        query_transformer_prompt: Prompt for transforming the user query before retrieval.
+            Must be a callable or ``pw.UDF`` that accepts the user query and returns a prompt
+            to send to ``llm`` for query rewriting. The transformed query is only used for
+            document retrieval; the answer is still generated from the original user query.
+            See ``pathway.xpacks.llm.prompts.prompt_query_rewrite`` and
+            ``pathway.xpacks.llm.prompts.prompt_query_rewrite_hyde`` for ready-to-use options.
+            Defaults to ``None``, which skips query transformation.
 
 
     Example:
@@ -524,6 +547,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         search_topk: int = 6,
         reranker: pw.UDF | None = None,
         rerank_topk: int | None = None,
+        query_transformer_prompt: Callable[[str], str] | pw.UDF | None = None,
     ) -> None:
 
         self.llm = llm
@@ -536,6 +560,9 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self._init_schemas(default_llm_name)
 
         self.prompt_udf = _get_RAG_prompt_udf(prompt_template)
+        self.query_transformer_prompt_udf = _get_query_transformer_prompt_udf(
+            query_transformer_prompt
+        )
 
         if isinstance(context_processor, BaseContextProcessor):
             self.docs_to_context_transformer = context_processor.as_udf()
@@ -639,11 +666,27 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
 
+        if self.query_transformer_prompt_udf is not None:
+            pw_ai_queries += pw_ai_queries.select(
+                query_transformer_prompt=self.query_transformer_prompt_udf(
+                    pw.this.prompt
+                )
+            )
+            pw_ai_queries += pw_ai_queries.select(
+                search_query=self.llm(
+                    llms.prompt_chat_single_qa(pw.this.query_transformer_prompt),
+                    model=pw.this.model,
+                )
+            )
+            pw_ai_queries = pw_ai_queries.await_futures()
+        else:
+            pw_ai_queries += pw_ai_queries.select(search_query=pw.this.prompt)
+
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
                 metadata_filter=pw.this.filters,
                 filepath_globpattern=pw.cast(str | None, None),
-                query=pw.this.prompt,
+                query=pw.this.search_query,
                 k=self.search_topk,
             )
         ).select(
