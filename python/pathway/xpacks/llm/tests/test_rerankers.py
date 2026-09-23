@@ -61,6 +61,27 @@ def test_llm_reranker():
     _test_llm_reranker(LLM4(), 5.0)
 
 
+@pytest.mark.parametrize(
+    "call_kwargs,expected_kwargs",
+    [(None, {"temperature": 0}), ({}, {})],
+)
+def test_llm_reranker_call_kwargs(call_kwargs, expected_kwargs):
+    received = []
+
+    class LLM(llms.OpenAIChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            received.append(kwargs)
+            return '{"score": 5}'
+
+    schema = pw.schema_from_types(query=str, doc=str)
+    input = pw.debug.table_from_rows(schema=schema, rows=[("foo", "bar")])
+    reranker = LLMReranker(LLM(), call_kwargs=call_kwargs)
+    ranking = input.select(rank=reranker(input.doc, input.query))
+    pw.debug._compute_tables(ranking)
+
+    assert received == [expected_kwargs]
+
+
 def test_rerank_topk_filter():
     input_schema = pw.schema_from_types(docs=list[dict], scores=list[float])
 

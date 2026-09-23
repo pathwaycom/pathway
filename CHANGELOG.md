@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - Input connectors now hand the rows they ingest to the dataflow in runs during a minibatch instead of all at once when the minibatch commits, so that the engine processes a large minibatch (a long `autocommit_duration_ms` at a high input rate) spread over its window rather than in one burst at the commit. This lowers latency and raises the sustainable input rate on a single core; the commit times and the produced results are unchanged.
 
+### Added
+- `pw.xpacks.llm.rerankers.LLMReranker` now accepts `call_kwargs`, the kwargs passed to each call of the LLM. The default is still `{"temperature": 0}`; pass `call_kwargs={}` to use the reranker with models that accept only the default `temperature`, such as Claude Opus 4.7 and newer (including Claude Opus 5.5) on Bedrock.
+
 ## [0.33.0] - 2026-09-18
 
 ### Changed
