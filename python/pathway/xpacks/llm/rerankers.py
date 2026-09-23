@@ -70,6 +70,9 @@ class LLMReranker:
             should ask the LLM to return jsonl with an attribute 'score'.
         response_parser: pw.UDF or Callable[[str], float]. Function to parse the response from the LLM.
             Must take a string as input and return a float. Defaults to ``prompts.parse_score_json``.
+        call_kwargs: kwargs passed to each call of ``llm``. Defaults to ``{"temperature": 0}``.
+            Pass ``{}`` for models that accept only the default ``temperature``, such as
+            Claude Opus 4.7 and newer.
     Example:
 
     >>> import pathway as pw
@@ -95,8 +98,10 @@ class LLMReranker:
             str | Callable[[str, str], str] | pw.UDF
         ) = prompts.prompt_rerank,
         response_parser: pw.UDF | Callable[[str], float] = prompts.parse_score_json,
+        call_kwargs: dict | None = None,
     ) -> None:
         self.llm = llm
+        self.call_kwargs = {"temperature": 0} if call_kwargs is None else call_kwargs
 
         self.prompt_udf = self._get_prompt_udf(prompt_template)
         self.parse_response_udf = self._get_parse_response_udf(response_parser)
@@ -116,15 +121,11 @@ class LLMReranker:
         """
         doc, query = pw.udf(_extract_value)(doc), pw.udf(_extract_value)(query)
 
-        call_kwargs = dict(
-            temperature=0,
-        )
-
         prompt = self.prompt_udf(doc, query)
 
         response = self.llm(
             prompt_chat_single_qa(prompt),
-            **call_kwargs,
+            **self.call_kwargs,
         )
 
         if isinstance(self.llm.executor, FullyAsyncExecutor):

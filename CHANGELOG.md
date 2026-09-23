@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.xpacks.llm.rerankers.LLMReranker` now accepts `call_kwargs`, the kwargs passed to each call of the LLM. The default is still `{"temperature": 0}`; pass `call_kwargs={}` to use the reranker with models that accept only the default `temperature`, such as Claude Opus 4.7 and newer (including Claude Opus 5.5) on Bedrock.
+
 ## [0.33.0] - 2026-09-18
 
 ### Changed
