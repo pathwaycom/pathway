@@ -59,6 +59,12 @@ pub use offset::{Offset, OffsetKey, OffsetValue};
 const SPECIAL_FIELD_TIME: &str = "time";
 const SPECIAL_FIELD_DIFF: &str = "diff";
 const MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS: usize = 100_000;
+/// How many rows the connector lets accumulate in the input session before
+/// handing them to the dataflow ahead of the commit (see
+/// `flush_between_steps`). Small enough to split a large batch into several
+/// sorted runs, large enough not to flood the arrangements with tiny batches
+/// at high rates and short autocommits.
+const FLUSH_MIN_ROWS: usize = 32_768;
 
 /*
     Below is the custom reader stuff.
@@ -800,6 +806,7 @@ impl Connector {
 
             self.backlog_tracker.advance_with_probe(&output_probe);
             let mut n_entries_in_batch = 0;
+            let mut rows_since_flush = 0;
             loop {
                 if let Some(max_backlog_size) = max_backlog_size {
                     if self.backlog_tracker.backlog_size() >= max_backlog_size && commit_allowed {
@@ -827,6 +834,7 @@ impl Connector {
                 // yield to timely to perform the work. That may or may not lead to time advancement.
                 n_entries_in_batch += 1;
                 if n_entries_in_batch == MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS {
+                    Self::flush_between_steps(&mut parse_context, &mut rows_since_flush);
                     return ControlFlow::Continue(next_commit_at);
                 }
                 match receiver.try_recv() {
@@ -891,7 +899,7 @@ impl Connector {
                         }
                         deferred_events.push(entry);
                         for entry in take(&mut deferred_events) {
-                            self.handle_input_entry(
+                            rows_since_flush += self.handle_input_entry(
                                 entry,
                                 &mut backfilling_finished,
                                 &mut commit_allowed,
@@ -920,6 +928,7 @@ impl Connector {
                                 }
                             }
                         }
+                        Self::flush_between_steps(&mut parse_context, &mut rows_since_flush);
                         return ControlFlow::Continue(next_commit_at);
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -936,15 +945,36 @@ impl Connector {
         ))
     }
 
+    /// Hands the rows ingested since the last dataflow step to the dataflow
+    /// now, at the current (unchanged) time, instead of holding them until
+    /// the batch commits. The operators then sort and merge them in small
+    /// runs spread over the batch's window, rather than in one burst at the
+    /// commit: with large batches (a long `autocommit_duration_ms` at a high
+    /// rate) that burst is what let the worker fall behind. Upsert sessions
+    /// keep their buffer whole, since they consolidate a batch's updates
+    /// per key before sending them.
+    fn flush_between_steps<F>(ctx: &mut ParseContext<'_, F>, rows_since_flush: &mut usize)
+    where
+        F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+    {
+        if *rows_since_flush >= FLUSH_MIN_ROWS && matches!(ctx.session_type, SessionType::Native) {
+            ctx.input_session.flush();
+            *rows_since_flush = 0;
+        }
+    }
+
+    /// Returns how many rows the entry put into the input session.
     fn handle_input_entry<F>(
         &mut self,
         entry: Entry,
         backfilling_finished: &mut bool,
         commit_allowed: &mut bool,
         ctx: &mut ParseContext<'_, F>,
-    ) where
+    ) -> usize
+    where
         F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
     {
+        let mut rows = 0;
         match entry {
             Entry::RealtimeEvent(read_result) => match read_result {
                 ReadResult::Finished => {}
@@ -979,6 +1009,7 @@ impl Connector {
                 if !*backfilling_finished {
                     parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
                 }
+                rows = parsed_entries.len();
 
                 if let Some(group) = &self.group {
                     if group.forced_time_advancement().is_some() {
@@ -1048,6 +1079,7 @@ impl Connector {
                 }
             }
         }
+        rows
     }
 
     fn on_insert(key: Key, values: Vec<Value>, input_session: &mut dyn InputAdaptor<Timestamp>) {
