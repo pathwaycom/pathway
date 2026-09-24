@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::{self as channel, Receiver};
@@ -91,7 +90,7 @@ pub fn full_cycle_read(
         }
     }
 
-    let main_thread = thread::current();
+    let wakeup = pathway_engine::connectors::wakeup::for_current_thread();
     let (sender, receiver) = channel::unbounded();
     let mut snapshot_writer = Connector::snapshot_writer(
         reader.as_ref(),
@@ -119,7 +118,7 @@ pub fn full_cycle_read(
         &mut *reader,
         &mut *parser,
         &sender,
-        &main_thread,
+        &wakeup,
         &reporter,
         None,
     );

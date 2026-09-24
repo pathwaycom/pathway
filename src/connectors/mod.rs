@@ -6,13 +6,11 @@ use itertools::Itertools;
 use log::{debug, error, info};
 use scopeguard::guard;
 use std::cell::RefCell;
-use std::env;
 use std::mem::take;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::Thread;
 use std::time::{Duration, Instant, SystemTime};
 use timely::dataflow::operators::probe::Handle;
 
@@ -28,6 +26,7 @@ pub mod offset;
 pub mod posix_like;
 pub mod socket_guard;
 pub mod synchronization;
+pub mod wakeup;
 
 use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::error::{DynError, Trace};
@@ -37,6 +36,7 @@ use crate::engine::report_error::{
 use crate::engine::{DataError, Key, Value};
 
 use crate::connectors::synchronization::{ConnectorGroupAccessor, EntrySendApproval};
+use crate::connectors::wakeup::WorkerWakeup;
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
@@ -423,12 +423,10 @@ impl Connector {
         reader: &mut dyn Reader,
         parser: &mut dyn Parser,
         sender: &Sender<Entry>,
-        main_thread: &Thread,
+        wakeup: &WorkerWakeup,
         error_reporter: &(impl ReportError + 'static),
         mut group: Option<ConnectorGroupAccessor>,
     ) {
-        let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
-        let mut amt_send = 0;
         let mut consecutive_errors = 0;
         // Backoff applied between failed `reader.read()` calls. This loop
         // otherwise re-invokes `read()` immediately, so a reader stuck on a
@@ -558,14 +556,7 @@ impl Connector {
                 break;
             }
 
-            if use_rare_wakeup {
-                amt_send += 1;
-                if amt_send % 50 == 0 {
-                    main_thread.unpark();
-                }
-            } else {
-                main_thread.unpark();
-            }
+            wakeup.notify();
         }
     }
 
@@ -683,7 +674,7 @@ impl Connector {
         assert_eq!(self.num_columns, parser.column_count());
         self.timestamp_at_start = timestamp_at_start;
 
-        let main_thread = thread::current();
+        let wakeup = wakeup::for_current_thread();
         let (sender, receiver) = match max_backlog_size {
             Some(size) => channel::bounded(size),
             None => channel::unbounded(),
@@ -720,7 +711,7 @@ impl Connector {
                     // ensure that we always unpark the main thread after dropping the sender, so it
                     // notices we are done sending
                     drop(sender);
-                    main_thread.unpark();
+                    wakeup.wake();
                 });
 
                 let mut reader = reader.build()?;
@@ -752,7 +743,7 @@ impl Connector {
                         &mut *reader,
                         &mut *parser,
                         &sender,
-                        &main_thread,
+                        &wakeup,
                         reporter,
                         realtime_reader_group,
                     );

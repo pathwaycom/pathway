@@ -24,6 +24,7 @@ use crate::connectors::monitoring::{ConnectorMonitor, OutputConnectorStats};
 use crate::connectors::synchronization::{
     ConnectorGroupDescriptor, ConnectorSynchronizer, SharedConnectorSynchronizer,
 };
+use crate::connectors::wakeup::{self, ACTIVE_POLL_INTERVAL};
 use crate::connectors::{Connector, PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::monitoring::{OperatorProbe, Prober, ProberStats};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
@@ -7444,6 +7445,7 @@ where
 
     let guards = execute(config.to_timely_config(), move |worker| {
         catch_unwind(AssertUnwindSafe(|| {
+            let wakeup = wakeup::install_for_current_thread();
             if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
                 if let Ok(stream) = std::net::TcpStream::connect(&addr) {
                     differential_dataflow::logging::enable(worker, stream);
@@ -7513,6 +7515,7 @@ where
             });
 
             let mut workload_tracker = WorkloadTracker::new(workload_tracking_window);
+            let mut seen_entries = 0;
             loop {
                 if failed.load(Ordering::SeqCst) {
                     resume_unwind(Box::new("other worker panicked"));
@@ -7564,7 +7567,22 @@ where
                 }
 
                 let started_at = Instant::now();
-                let step_stats = worker.step_or_park(next_step_duration);
+                // While entries keep arriving, poll them on a short timer instead of
+                // being woken per entry; readers only unpark a worker that announced
+                // a long park (see `connectors::wakeup`).
+                let sent_entries = wakeup.sent();
+                let park_for = if sent_entries != seen_entries {
+                    seen_entries = sent_entries;
+                    Some(next_step_duration.map_or(ACTIVE_POLL_INTERVAL, |duration| {
+                        min(duration, ACTIVE_POLL_INTERVAL)
+                    }))
+                } else if wakeup.enter_parked(seen_entries) {
+                    next_step_duration
+                } else {
+                    Some(Duration::ZERO)
+                };
+                let step_stats = worker.step_or_park(park_for);
+                wakeup.leave_parked();
                 if !step_stats.has_more_work {
                     break;
                 }
