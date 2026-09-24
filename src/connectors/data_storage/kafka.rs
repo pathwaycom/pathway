@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use arcstr::ArcStr;
 use log::{error, info, warn};
 
-use crate::connectors::data_format::FormatterContext;
+use crate::connectors::data_format::{FormatterContext, PathwayHeadersCache};
 use crate::connectors::metadata::KafkaMetadata;
 use crate::connectors::{OffsetKey, OffsetValue};
 use crate::engine::Value;
@@ -735,6 +735,7 @@ pub struct KafkaWriter {
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    headers_cache: PathwayHeadersCache,
 }
 
 impl KafkaWriter {
@@ -749,6 +750,7 @@ impl KafkaWriter {
             topic,
             header_fields,
             key_field_index,
+            headers_cache: PathwayHeadersCache::default(),
         }
     }
 }
@@ -761,27 +763,38 @@ impl Drop for KafkaWriter {
 
 impl Writer for KafkaWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let key_as_bytes = match self.key_field_index {
+        let row_key_bytes = data.key.to_le_bytes();
+        let key: &[u8] = match self.key_field_index {
             Some(index) => match &data.values[index] {
-                Value::Bytes(bytes) => bytes.to_vec(),
-                Value::String(string) => string.as_bytes().to_vec(),
+                Value::Bytes(bytes) => bytes,
+                Value::String(string) => string.as_bytes(),
                 _ => {
                     return Err(WriteError::IncorrectKeyFieldType(
                         data.values[index].clone(),
                     ))
                 }
             },
-            None => data.key.to_le_bytes().to_vec(),
+            None => &row_key_bytes,
         };
 
-        let headers = data.construct_kafka_headers(&self.header_fields);
-        for payload in data.payloads {
+        let mut headers =
+            Some(data.construct_kafka_headers(&self.header_fields, &mut self.headers_cache));
+        let last_payload_index = data.payloads.len() - 1;
+        for (index, payload) in data.payloads.into_iter().enumerate() {
             let payload = payload.into_raw_bytes()?;
             let effective_topic = self.topic.get_for_posting(&data.values)?;
-            let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&effective_topic)
+            // The headers are handed over to librdkafka with the message, so
+            // every payload but the last one gets a copy and the last one
+            // takes the original.
+            let payload_headers = if index == last_payload_index {
+                headers.take().expect("headers are consumed once")
+            } else {
+                headers.as_ref().expect("headers are consumed once").clone()
+            };
+            let mut entry = BaseRecord::<[u8], [u8]>::to(&effective_topic)
                 .payload(&payload)
-                .headers(headers.clone())
-                .key(&key_as_bytes);
+                .headers(payload_headers)
+                .key(key);
             loop {
                 match self.producer.send(entry) {
                     Ok(()) => break,

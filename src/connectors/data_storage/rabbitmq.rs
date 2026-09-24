@@ -19,7 +19,7 @@ use rabbitmq_stream_client::types::{Message, OffsetSpecification, ResponseCode, 
 use rabbitmq_stream_client::{Consumer as RmqConsumer, Environment, Producer as RmqProducer};
 use tokio::runtime::Runtime as TokioRuntime;
 
-use crate::connectors::data_format::FormatterContext;
+use crate::connectors::data_format::{FormatterContext, PathwayHeadersCache};
 use crate::connectors::data_storage::MessageQueueTopic;
 use crate::connectors::metadata::RabbitmqMetadata;
 use crate::connectors::offset::RabbitmqStreamType;
@@ -254,6 +254,7 @@ pub struct RabbitmqWriter {
     producers: HashMap<String, RmqProducer<rabbitmq_stream_client::NoDedup>>,
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
+    headers_cache: PathwayHeadersCache,
     pending_confirms: Arc<AtomicUsize>,
     send_errors: Arc<Mutex<Vec<RabbitmqError>>>,
 }
@@ -268,7 +269,8 @@ impl Writer for RabbitmqWriter {
         // User-defined header values are serialized as AMQP strings using JSON
         // encoding because RabbitMQ Streams does not reliably confirm messages
         // with non-string application property values.
-        let mut header_props = data.construct_string_properties(&self.header_fields);
+        let mut header_props =
+            data.construct_string_properties(&self.header_fields, &mut self.headers_cache);
         let pending = self.pending_confirms.clone();
         let errs = self.send_errors.clone();
 
@@ -378,6 +380,7 @@ impl RabbitmqWriter {
             producers: HashMap::new(),
             topic,
             header_fields,
+            headers_cache: PathwayHeadersCache::default(),
             pending_confirms: Arc::new(AtomicUsize::new(0)),
             send_errors: Arc::new(Mutex::new(Vec::new())),
         }

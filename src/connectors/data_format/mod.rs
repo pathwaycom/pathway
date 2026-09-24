@@ -4,6 +4,7 @@ use std::any::type_name;
 use std::borrow::Cow;
 use std::clone::Clone;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
@@ -302,19 +303,51 @@ pub trait Parser: Send {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PreparedMessageHeader {
-    key: String,
-    value: Option<Vec<u8>>,
+pub const PATHWAY_TIME_HEADER: &str = "pathway_time";
+pub const PATHWAY_DIFF_HEADER: &str = "pathway_diff";
+
+/// Formatted values of the `pathway_time` and `pathway_diff` message headers,
+/// kept between rows.
+///
+/// All rows of one output minibatch share the same time, and their diffs are
+/// grouped by sign, so the values only change a couple of times per minibatch.
+/// Formatting them once per change instead of once per row removes the
+/// per-row allocations from the output thread of every message-queue writer.
+/// Each writer owns one instance.
+#[derive(Debug, Default)]
+pub struct PathwayHeadersCache {
+    time: Option<Timestamp>,
+    time_formatted: String,
+    diff: Option<isize>,
+    diff_formatted: String,
 }
 
-impl PreparedMessageHeader {
-    pub fn new(key: impl Into<String>, value: Option<Vec<u8>>) -> Self {
-        Self {
-            key: key.into(),
-            value,
+impl PathwayHeadersCache {
+    /// The `pathway_time` and `pathway_diff` values for a row with the given
+    /// time and diff, as strings.
+    pub fn formatted(&mut self, time: Timestamp, diff: isize) -> (&str, &str) {
+        if self.time != Some(time) {
+            self.time_formatted.clear();
+            write!(self.time_formatted, "{time}").expect("writing to a String never fails");
+            self.time = Some(time);
         }
+        if self.diff != Some(diff) {
+            self.diff_formatted.clear();
+            write!(self.diff_formatted, "{diff}").expect("writing to a String never fails");
+            self.diff = Some(diff);
+        }
+        (&self.time_formatted, &self.diff_formatted)
     }
+}
+
+/// One message header. Both the key and the value borrow from the row
+/// (or from the [`PathwayHeadersCache`]) wherever the value needs no
+/// conversion, so building the headers of a row allocates only for the
+/// values that must be re-encoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageHeader<'a> {
+    pub key: &'a str,
+    pub value: Option<Cow<'a, [u8]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -399,43 +432,55 @@ impl FormatterContext {
         }
     }
 
-    fn construct_message_headers(
-        &self,
-        header_fields: &[(String, usize)],
+    /// The headers of a message carrying this row: `pathway_time` and
+    /// `pathway_diff` first, then the user header fields in their declared
+    /// order. Bytes values are passed through as they are, or base64-encoded
+    /// when `encode_bytes` is set (for the brokers whose headers are strings);
+    /// `None` becomes a header without a value.
+    pub fn message_headers<'a>(
+        &'a self,
+        header_fields: &'a [(String, usize)],
         encode_bytes: bool,
-    ) -> Vec<PreparedMessageHeader> {
-        let mut headers = Vec::with_capacity(header_fields.len() + 2);
-        headers.push(PreparedMessageHeader::new(
-            "pathway_time",
-            Some(self.time.to_string().as_bytes().to_vec()),
-        ));
-        headers.push(PreparedMessageHeader::new(
-            "pathway_diff",
-            Some(self.diff.to_string().as_bytes().to_vec()),
-        ));
-        for (name, position) in header_fields {
-            let value: Option<Vec<u8>> = match (&self.values[*position], encode_bytes) {
-                (Value::Bytes(b), false) => Some((*b).to_vec()),
-                (Value::Bytes(b), true) => Some(base64encoder.encode(b).into()),
-                (Value::String(s), _) => Some(s.as_bytes().to_vec()),
+        cache: &'a mut PathwayHeadersCache,
+    ) -> impl Iterator<Item = MessageHeader<'a>> {
+        let (time, diff) = cache.formatted(self.time, self.diff);
+        let pathway_headers = [
+            MessageHeader {
+                key: PATHWAY_TIME_HEADER,
+                value: Some(Cow::Borrowed(time.as_bytes())),
+            },
+            MessageHeader {
+                key: PATHWAY_DIFF_HEADER,
+                value: Some(Cow::Borrowed(diff.as_bytes())),
+            },
+        ];
+        let user_headers = header_fields.iter().map(move |(name, position)| {
+            let value = match (&self.values[*position], encode_bytes) {
+                (Value::Bytes(b), false) => Some(Cow::Borrowed(b.as_ref())),
+                (Value::Bytes(b), true) => Some(Cow::Owned(base64encoder.encode(b).into_bytes())),
+                (Value::String(s), _) => Some(Cow::Borrowed(s.as_bytes())),
                 (Value::None, _) => None,
-                (other, _) => Some((*other.to_string().as_bytes()).to_vec()),
+                (other, _) => Some(Cow::Owned(other.to_string().into_bytes())),
             };
-            headers.push(PreparedMessageHeader::new(name, value));
-        }
-        headers
+            MessageHeader { key: name, value }
+        });
+        pathway_headers.into_iter().chain(user_headers)
     }
 
-    pub fn construct_kafka_headers(&self, header_fields: &[(String, usize)]) -> KafkaHeaders {
-        let raw_headers = self.construct_message_headers(header_fields, false);
-        let mut kafka_headers = KafkaHeaders::new_with_capacity(raw_headers.len());
-        for header in raw_headers {
-            kafka_headers = kafka_headers.insert(KafkaHeader {
-                key: &header.key,
-                value: header.value.as_ref(),
-            });
-        }
-        kafka_headers
+    pub fn construct_kafka_headers(
+        &self,
+        header_fields: &[(String, usize)],
+        cache: &mut PathwayHeadersCache,
+    ) -> KafkaHeaders {
+        self.message_headers(header_fields, false, cache).fold(
+            KafkaHeaders::new_with_capacity(header_fields.len() + 2),
+            |headers, header| {
+                headers.insert(KafkaHeader {
+                    key: header.key,
+                    value: header.value.as_deref(),
+                })
+            },
+        )
     }
 
     /// String-to-string message properties: `pathway_time` and `pathway_diff`
@@ -446,10 +491,12 @@ impl FormatterContext {
     pub fn construct_string_properties(
         &self,
         header_fields: &[(String, usize)],
+        cache: &mut PathwayHeadersCache,
     ) -> Vec<(String, String)> {
+        let (time, diff) = cache.formatted(self.time, self.diff);
         let mut properties = Vec::with_capacity(header_fields.len() + 2);
-        properties.push(("pathway_time".to_string(), self.time.to_string()));
-        properties.push(("pathway_diff".to_string(), self.diff.to_string()));
+        properties.push((PATHWAY_TIME_HEADER.to_string(), time.to_string()));
+        properties.push((PATHWAY_DIFF_HEADER.to_string(), diff.to_string()));
         for (name, index) in header_fields {
             let value = serialize_value_to_json(&self.values[*index])
                 .map(|v| v.to_string())
@@ -459,15 +506,17 @@ impl FormatterContext {
         properties
     }
 
-    pub fn construct_nats_headers(&self, header_fields: &[(String, usize)]) -> NatsHeaders {
-        let raw_headers = self.construct_message_headers(header_fields, true);
+    pub fn construct_nats_headers(
+        &self,
+        header_fields: &[(String, usize)],
+        cache: &mut PathwayHeadersCache,
+    ) -> NatsHeaders {
         let mut nats_headers = NatsHeaders::new();
-        for header in raw_headers {
-            let header_value = if let Some(header_value) = header.value {
-                String::from_utf8(header_value)
-                    .expect("all prepared headers must be UTF-8 serializable")
-            } else {
-                Value::None.to_string()
+        for header in self.message_headers(header_fields, true, cache) {
+            let header_value = match header.value {
+                Some(value) => String::from_utf8(value.into_owned())
+                    .expect("all prepared headers must be UTF-8 serializable"),
+                None => Value::None.to_string(),
             };
             nats_headers.insert(header.key, header_value);
         }

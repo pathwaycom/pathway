@@ -20,7 +20,7 @@ use futures::StreamExt;
 use tokio::runtime::Handle as TokioHandle;
 use tokio::runtime::Runtime as TokioRuntime;
 
-use crate::connectors::data_format::FormatterContext;
+use crate::connectors::data_format::{FormatterContext, PathwayHeadersCache};
 use crate::connectors::data_storage::{DeferredAckWorker, MessageQueueTopic};
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
@@ -411,16 +411,17 @@ pub struct NatsWriter {
     runtime: TokioRuntime,
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
+    headers_cache: PathwayHeadersCache,
 }
 
 impl Writer for NatsWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         let accessor = self.accessor.as_mut().expect("accessor is set until drop");
         let topic = &self.topic;
-        let header_fields = &self.header_fields;
+        let mut common_headers =
+            data.construct_nats_headers(&self.header_fields, &mut self.headers_cache);
         self.runtime.block_on(async {
             let last_payload_index = data.payloads.len() - 1;
-            let mut common_headers = data.construct_nats_headers(header_fields);
             for (index, payload) in data.payloads.into_iter().enumerate() {
                 // Avoid copying data on the last iteration, reuse the existing headers
                 let headers = {
@@ -479,6 +480,7 @@ impl NatsWriter {
             accessor: Some(accessor),
             topic,
             header_fields,
+            headers_cache: PathwayHeadersCache::default(),
         }
     }
 }

@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::connectors::data_format::avro::AvroSchemaProvider;
-use crate::connectors::data_format::FormatterContext;
+use crate::connectors::data_format::{FormatterContext, PathwayHeadersCache};
 use crate::connectors::data_storage::MessageQueueTopic;
 use crate::connectors::metadata::PulsarMetadata;
 use crate::connectors::offset::{PulsarOffsetKey, PulsarOffsetValue};
@@ -1842,6 +1842,7 @@ pub struct PulsarWriter {
     runtime: TokioRuntime,
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
+    headers_cache: PathwayHeadersCache,
     key_field_index: Option<usize>,
     // The column whose value becomes the ordering key of the messages: the
     // key the broker hashes when distributing a key_shared subscription, used
@@ -1903,6 +1904,7 @@ impl PulsarWriter {
             max_pending_payload_bytes: 0,
             topic,
             header_fields,
+            headers_cache: PathwayHeadersCache::default(),
             key_field_index,
             ordering_key_field_index,
             event_time_field_index,
@@ -2356,7 +2358,7 @@ impl Writer for PulsarWriter {
         // and pathway_diff are always added, consistent with the Kafka, NATS
         // and RabbitMQ writers.
         let mut properties: HashMap<String, String> = data
-            .construct_string_properties(&self.header_fields)
+            .construct_string_properties(&self.header_fields, &mut self.headers_cache)
             .into_iter()
             .collect();
 
