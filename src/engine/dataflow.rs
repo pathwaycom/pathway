@@ -1483,9 +1483,27 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
+        // The common case: the paths pick the row's columns as they are, in
+        // order (`[0], [1], ..., [n-1]`). Such a row is passed on as is, sharing
+        // its column slice, instead of being copied column by column into a
+        // fresh allocation. Rows that aren't a tuple of that width (errors,
+        // pending values, ...) take the general path, which reports them.
+        let paths_select_whole_row = column_paths
+            .iter()
+            .enumerate()
+            .all(|(index, path)| matches!(path, ColumnPath::ValuePath(steps) if steps.as_slice() == [index]));
+        let column_count = column_paths.len();
+
         let result = table
             .values()
             .map_named("extract_columns::extract", move |(key, values)| {
+                if paths_select_whole_row {
+                    if let Value::Tuple(row) = &values {
+                        if row.len() == column_count {
+                            return (key, row.clone());
+                        }
+                    }
+                }
                 // unwrap per element: a `Result` iterator isn't `TrustedLen`,
                 // so `try_collect` would go through an intermediate `Vec`
                 // instead of allocating the `Arc` slice directly
