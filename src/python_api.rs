@@ -5663,6 +5663,7 @@ pub struct DataStorage {
     psql_replication: Option<PsqlReplicationSettings>,
     schema_name: Option<String>,
     with_metadata: bool,
+    with_pathway_headers: bool,
     mysql_server_id: Option<i64>,
     qdrant_params: Option<Arc<Py<QdrantParams>>>,
     pinecone_params: Option<Arc<Py<PineconeParams>>>,
@@ -6259,6 +6260,7 @@ impl DataStorage {
         psql_replication = None,
         schema_name = None,
         with_metadata = false,
+        with_pathway_headers = true,
         mysql_server_id = None,
         qdrant_params = None,
         pinecone_params = None,
@@ -6318,6 +6320,7 @@ impl DataStorage {
         psql_replication: Option<PsqlReplicationSettings>,
         schema_name: Option<String>,
         with_metadata: bool,
+        with_pathway_headers: bool,
         mysql_server_id: Option<i64>,
         qdrant_params: Option<Py<QdrantParams>>,
         pinecone_params: Option<Py<PineconeParams>>,
@@ -6394,6 +6397,7 @@ impl DataStorage {
             psql_replication,
             schema_name,
             with_metadata,
+            with_pathway_headers,
             mysql_server_id,
             qdrant_params: qdrant_params.map(Into::into),
             pinecone_params: pinecone_params.map(Into::into),
@@ -7081,6 +7085,7 @@ impl DataStorage {
         &self,
         scope: &Scope,
         properties: &ConnectorProperties,
+        parser_needs_source_metadata: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let client_config = self.kafka_client_config()?;
         let consumer: BaseConsumer = client_config
@@ -7110,6 +7115,10 @@ impl DataStorage {
             .get("bootstrap.servers")
             .unwrap_or("<not set>")
             .to_string();
+        // Building the per-message metadata costs an allocation, a JSON
+        // serialization and a hash, so it happens only when someone consumes
+        // it: the user through the `_metadata` column, or the parser itself.
+        let with_metadata = self.with_metadata || parser_needs_source_metadata;
         let reader = KafkaReader::build(
             consumer,
             topic,
@@ -7118,6 +7127,7 @@ impl DataStorage {
             self.start_from_timestamp_ms,
             scope.worker_index(),
             reader_count,
+            with_metadata,
         )
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
@@ -8068,7 +8078,7 @@ impl DataStorage {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(scope, data_format),
             "s3" => self.construct_s3_reader(scope, data_format),
-            "kafka" => self.construct_kafka_reader(scope, properties),
+            "kafka" => self.construct_kafka_reader(scope, properties, parser_needs_source_metadata),
             "python" => self.construct_python_reader(py, data_format),
             "mssql" => self.construct_mssql_reader(py, data_format, scope),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
@@ -8170,6 +8180,7 @@ impl DataStorage {
             topic,
             self.header_fields.clone(),
             self.key_field_index,
+            self.with_pathway_headers,
         );
 
         Ok(Box::new(writer))

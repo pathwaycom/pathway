@@ -260,6 +260,13 @@ pub struct KafkaReader {
     positions_for_seek: HashMap<i32, KafkaOffset>,
     watermarks: Vec<RdkafkaWatermark>,
     deferred_read_result: Option<ReadResult>,
+    // Whether the per-message `KafkaMetadata` is built and announced through a
+    // `NewSource` event before every `Data`. Nobody reads it unless the user
+    // asked for the `_metadata` column or the parser needs the metadata itself
+    // (see `Parser::needs_source_metadata`), so it is skipped otherwise: the
+    // metadata costs an allocation, a headers extraction and a JSON
+    // serialization + hash per message, plus a second channel round trip.
+    emit_metadata: bool,
     // Streaming mode: partitions are paused while backpressure blocks the
     // delivery of an already-read message (see `keep_alive`); `read` resumes
     // them, since it is only called once the blocked message got through.
@@ -313,6 +320,7 @@ impl Reader for KafkaReader {
                         &self.topic,
                         &mut self.positions_for_seek,
                         &mut self.deferred_read_result,
+                        self.emit_metadata,
                         &kafka_message,
                     ) {
                         return Ok(read_result);
@@ -430,10 +438,12 @@ impl KafkaReader {
         watermarks: Vec<RdkafkaWatermark>,
         mode: ConnectorMode,
         has_assigned_partitions: bool,
+        emit_metadata: bool,
     ) -> KafkaReader {
         KafkaReader {
             consumer,
             topic: topic.into(),
+            emit_metadata,
             positions_for_seek,
             watermarks,
             mode,
@@ -456,6 +466,7 @@ impl KafkaReader {
             &self.topic,
             &mut self.positions_for_seek,
             &mut self.deferred_read_result,
+            self.emit_metadata,
             kafka_message,
         )
     }
@@ -471,6 +482,7 @@ impl KafkaReader {
         topic: &ArcStr,
         positions_for_seek: &mut HashMap<i32, KafkaOffset>,
         deferred_read_result: &mut Option<ReadResult>,
+        emit_metadata: bool,
         kafka_message: &M,
     ) -> Option<ReadResult> {
         let message_key = kafka_message.key().map(<[u8]>::to_vec);
@@ -507,8 +519,14 @@ impl KafkaReader {
             let offset_value = OffsetValue::KafkaOffset(kafka_message.offset());
             (offset_key, offset_value)
         };
-        let metadata = KafkaMetadata::from_rdkafka_message(kafka_message);
         let message = ReaderContext::from_key_value(message_key, message_payload);
+        if !emit_metadata {
+            // No consumer for the metadata: hand the data over directly. For
+            // Kafka the `NewSource` announcement carries nothing else (commits
+            // are always allowed in between messages), so skipping it is safe.
+            return Some(ReadResult::Data(message, offset));
+        }
+        let metadata = KafkaMetadata::from_rdkafka_message(kafka_message);
         *deferred_read_result = Some(ReadResult::Data(message, offset));
 
         Some(ReadResult::NewSource(metadata.into()))
@@ -521,6 +539,7 @@ impl KafkaReader {
     /// readers: `worker_index` is this worker's index and `reader_count` is how
     /// many workers actually run a reader (the caller computes it — see
     /// `construct_kafka_reader`).
+    #[allow(clippy::too_many_arguments)] // one flag over the connector's own settings
     pub fn build(
         consumer: BaseConsumer<DefaultConsumerContext>,
         topic: String,
@@ -529,6 +548,7 @@ impl KafkaReader {
         start_from_timestamp_ms: Option<i64>,
         worker_index: usize,
         reader_count: usize,
+        emit_metadata: bool,
     ) -> Result<KafkaReader, KafkaReaderError> {
         let total_partitions = total_partitions_for_topic(&consumer, &topic, bootstrap_servers)?;
         let mut watermarks = partition_watermarks(&consumer, &topic, total_partitions)?;
@@ -624,6 +644,7 @@ impl KafkaReader {
             watermarks,
             mode,
             has_assigned_partitions,
+            emit_metadata,
         ))
     }
 
@@ -735,6 +756,11 @@ pub struct KafkaWriter {
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    // Whether the `pathway_time`/`pathway_diff` headers are attached to every
+    // message. They are part of the documented message layout, but the header
+    // set costs a copy per message and a longer wire format, so consumers that
+    // never read them can opt out (`with_pathway_headers=False`).
+    with_pathway_headers: bool,
     headers_cache: PathwayHeadersCache,
 }
 
@@ -744,12 +770,14 @@ impl KafkaWriter {
         topic: MessageQueueTopic,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
+        with_pathway_headers: bool,
     ) -> KafkaWriter {
         KafkaWriter {
             producer,
             topic,
             header_fields,
             key_field_index,
+            with_pathway_headers,
             headers_cache: PathwayHeadersCache::default(),
         }
     }
@@ -778,23 +806,31 @@ impl Writer for KafkaWriter {
         };
 
         let mut headers =
-            Some(data.construct_kafka_headers(&self.header_fields, &mut self.headers_cache));
+            (self.with_pathway_headers || !self.header_fields.is_empty()).then(|| {
+                data.construct_kafka_headers(
+                    &self.header_fields,
+                    self.with_pathway_headers,
+                    &mut self.headers_cache,
+                )
+            });
+        let effective_topic = self.topic.topic_for_posting(&data.values)?;
         let last_payload_index = data.payloads.len() - 1;
         for (index, payload) in data.payloads.into_iter().enumerate() {
             let payload = payload.into_raw_bytes()?;
-            let effective_topic = self.topic.get_for_posting(&data.values)?;
             // The headers are handed over to librdkafka with the message, so
             // every payload but the last one gets a copy and the last one
             // takes the original.
             let payload_headers = if index == last_payload_index {
-                headers.take().expect("headers are consumed once")
+                headers.take()
             } else {
-                headers.as_ref().expect("headers are consumed once").clone()
+                headers.clone()
             };
             let mut entry = BaseRecord::<[u8], [u8]>::to(&effective_topic)
                 .payload(&payload)
-                .headers(payload_headers)
                 .key(key);
+            if let Some(payload_headers) = payload_headers {
+                entry = entry.headers(payload_headers);
+            }
             loop {
                 match self.producer.send(entry) {
                     Ok(()) => break,

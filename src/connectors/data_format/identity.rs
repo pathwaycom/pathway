@@ -139,8 +139,10 @@ impl Parser for IdentityParser {
     }
 
     fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
-        let metadata_serialized: JsonValue = metadata.serialize();
-        self.metadata_column_value = metadata_serialized.into();
+        if self.metadata_field_index.is_some() {
+            let metadata_serialized: JsonValue = metadata.serialize();
+            self.metadata_column_value = metadata_serialized.into();
+        }
     }
 
     fn column_count(&self) -> usize {

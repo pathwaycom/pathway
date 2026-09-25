@@ -205,6 +205,14 @@ pub enum MessageQueueTopic {
 }
 
 impl MessageQueueTopic {
+    /// Like `get_for_posting`, but a fixed topic is borrowed rather than cloned.
+    pub fn topic_for_posting(&self, values: &[Value]) -> Result<Cow<'_, str>, WriteError> {
+        match self {
+            Self::Fixed(t) => Ok(Cow::Borrowed(t.as_str())),
+            Self::Dynamic(_) => self.get_for_posting(values).map(Cow::Owned),
+        }
+    }
+
     pub fn get_for_posting(&self, values: &[Value]) -> Result<String, WriteError> {
         match self {
             Self::Fixed(t) => Ok(t.clone()),

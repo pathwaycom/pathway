@@ -380,6 +380,7 @@ def read(
         parallel_readers=parallel_readers,
         start_from_timestamp_ms=start_from_timestamp_ms,
         mode=internal_connector_mode(mode),
+        with_metadata=with_metadata,
     )
 
     # TODO: support case when the key is scalar and the value is json
@@ -560,6 +561,7 @@ def write(
     headers: Iterable[ColumnReference] | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    with_pathway_headers: bool = True,
 ) -> None:
     """Write a table to a given topic on a Kafka instance.
 
@@ -617,6 +619,10 @@ def write(
         sort_by: If specified, the output will be sorted in ascending order based on the
             values of the given columns within each minibatch. When multiple columns are provided,
             the corresponding value tuples will be compared lexicographically.
+        with_pathway_headers: If ``True`` (the default), every message carries the
+            ``pathway_time`` and ``pathway_diff`` headers described above. Set it to
+            ``False`` to produce messages without them, which makes the writer cheaper
+            when nothing downstream reads these headers.
 
     Returns:
         None
@@ -748,6 +754,7 @@ def write(
         topic_name_index=output_format.topic_name_index,
         key_field_index=output_format.key_field_index,
         header_fields=[item for item in output_format.header_fields.items()],
+        with_pathway_headers=with_pathway_headers,
     )
 
     output_table.to(

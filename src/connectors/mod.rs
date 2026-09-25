@@ -122,6 +122,9 @@ pub struct Connector {
     current_frontier: OffsetAntichain,
     skip_all_errors: bool,
     error_logger: Rc<dyn LogError>,
+    // Built once on first use: `on_parsed_data` runs per message, and boxing
+    // the closure there would cost an allocation per message.
+    error_removal_logic: std::cell::OnceCell<Rc<data_format::ErrorRemovalLogic>>,
     group: Option<ConnectorGroupAccessor>,
     n_parse_attempts: usize,
     n_parse_errors_in_log: usize,
@@ -259,6 +262,7 @@ impl Connector {
             current_frontier: OffsetAntichain::new(),
             skip_all_errors,
             error_logger,
+            error_removal_logic: std::cell::OnceCell::new(),
             group,
             n_parse_attempts: 0,
             n_parse_errors_in_log: 0,
@@ -1089,17 +1093,23 @@ impl Connector {
     ) where
         F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
     {
-        let error_logger = self.error_logger.clone();
-        let error_handling_logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
-            Box::new(move |values| values.into_iter().try_collect())
-        } else {
-            Box::new(move |values| {
-                Ok(values
-                    .into_iter()
-                    .map(|value| value.unwrap_or_log(error_logger.as_ref(), Value::Error))
-                    .collect())
+        let error_handling_logic = self
+            .error_removal_logic
+            .get_or_init(|| {
+                let error_logger = self.error_logger.clone();
+                let logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
+                    Box::new(move |values| values.into_iter().try_collect())
+                } else {
+                    Box::new(move |values| {
+                        Ok(values
+                            .into_iter()
+                            .map(|value| value.unwrap_or_log(error_logger.as_ref(), Value::Error))
+                            .collect())
+                    })
+                };
+                Rc::new(logic)
             })
-        }; // logic to handle errors in values
+            .clone(); // logic to handle errors in values
         for entry in parsed_entries {
             let entry = match entry.remove_errors(&error_handling_logic) {
                 Ok(entry) => {

@@ -72,17 +72,21 @@ pub struct JsonLinesParser {
     field_absence_is_error: bool,
     schema: HashMap<String, InnerSchemaField>,
     metadata_column_value: Value,
+    // Whether any output column is the `_metadata` one. Without it the
+    // metadata is never read, so `on_new_source_started` skips serializing it.
+    has_metadata_column: bool,
     session_type: SessionType,
     schema_registry_decoder: Option<RegistryJsonDecoder>,
 
-    // Fast-path state: when all value fields come from the payload as top-level
-    // keys (no JSON-pointer paths, no key fields, no schema-registry decoder),
-    // the payload is extracted with a single streaming pass that never
-    // materializes the full `serde_json::Value` DOM. `payload_field_index` maps
-    // each payload field name to its position within
-    // `value_field_source_lists.to_parse_from_payload`.
+    // Fast-path state: when every field is a top-level key of the key or
+    // payload JSON object (no JSON-pointer paths, no schema-registry decoder),
+    // the objects are extracted with a single streaming pass that never
+    // materializes the full `serde_json::Value` DOM. The specs hold, per
+    // source, the field names in slot order with their types and defaults
+    // resolved once, instead of once per message.
     can_use_fast_json: bool,
-    payload_field_index: HashMap<String, usize>,
+    fast_value_specs: FastSourceSpecs,
+    fast_key_specs: Option<FastSourceSpecs>,
 }
 
 impl JsonLinesParser {
@@ -121,21 +125,24 @@ impl JsonLinesParser {
 
         ensure_all_fields_in_schema(key_field_names, value_field_names.as_ref(), &schema)?;
 
-        // The fast path applies only when every needed field is a top-level key
-        // of the payload JSON. It is disabled when any field is read from the
-        // key, when JSON-pointer column paths are configured, or when a
-        // schema-registry decoder is used (the payload is then not a plain
-        // JSON string).
-        let needs_key_fields =
-            key_source_lists.is_some() || !value_source_lists.to_parse_from_key.is_empty();
-        let can_use_fast_json =
-            schema_registry_decoder.is_none() && column_paths.is_empty() && !needs_key_fields;
-        let payload_field_index = value_source_lists
-            .to_parse_from_payload
+        // The fast path applies when every needed field is a top-level key of
+        // the key or payload JSON object. It is disabled when JSON-pointer
+        // column paths are configured (nested access) or when a schema-registry
+        // decoder is used (the payload is then not a plain JSON string).
+        let can_use_fast_json = schema_registry_decoder.is_none() && column_paths.is_empty();
+        let fast_value_specs = FastSourceSpecs::new(&value_source_lists, &schema);
+        let fast_key_specs = key_source_lists
+            .as_ref()
+            .map(|lists| FastSourceSpecs::new(lists, &schema));
+        let has_metadata_column = value_source_lists
+            .sources_order
             .iter()
-            .enumerate()
-            .map(|(index, name)| (name.clone(), index))
-            .collect();
+            .chain(
+                key_source_lists
+                    .iter()
+                    .flat_map(|lists| lists.sources_order.iter()),
+            )
+            .any(|source| matches!(source, FieldSource::Metadata));
 
         Ok(JsonLinesParser {
             key_field_source_lists: key_source_lists,
@@ -144,50 +151,128 @@ impl JsonLinesParser {
             field_absence_is_error,
             schema,
             metadata_column_value: Value::None,
+            has_metadata_column,
             session_type,
             schema_registry_decoder,
             can_use_fast_json,
-            payload_field_index,
+            fast_value_specs,
+            fast_key_specs,
         })
     }
 
-    /// Streaming extraction of the payload fields, used when
-    /// [`Self::can_use_fast_json`] holds. Returns the value-field results
-    /// aligned to `value_field_source_lists.sources_order`, or `None` to
-    /// request a fallback to the DOM-based slow path (for inputs whose exact
-    /// behavior — e.g. error payloads or non-object JSON — is preserved there).
-    fn try_fast_parse_payload(&self, line: &str) -> DynResult<Option<ValueFieldsWithErrors>> {
-        if line.is_empty() {
-            // Slow path maps an empty payload to `JsonValue::Null`, then to the
-            // field-absence handling. Defer to it.
+    /// Runs the streaming extractor over one JSON object (the key or the
+    /// payload). Returns the field results in slot order, or `None` to request
+    /// the DOM-based slow path, which reproduces the exact semantics of the
+    /// inputs the fast path does not handle (non-object documents, empty
+    /// input, field-absence errors that embed the whole payload).
+    fn fast_extract(
+        spec: &FastFieldSpec,
+        object: Option<&str>,
+        field_absence_is_error: bool,
+    ) -> DynResult<Option<Vec<DynResult<Value>>>> {
+        if spec.names.is_empty() {
+            // Nothing is read from this source: don't even look at the bytes.
+            return Ok(Some(Vec::new()));
+        }
+        let Some(object) = object else {
+            return Ok(None);
+        };
+        if object.is_empty() {
             return Ok(None);
         }
         let extractor = FastFieldExtractor {
-            field_names: &self.value_field_source_lists.to_parse_from_payload,
-            field_index: &self.payload_field_index,
-            schema: &self.schema,
-            field_absence_is_error: self.field_absence_is_error,
+            spec,
+            field_absence_is_error,
         };
-        let mut deserializer = serde_json::Deserializer::from_str(line);
+        let mut deserializer = serde_json::Deserializer::from_str(object);
         let outcome = (&mut deserializer).deserialize_any(extractor)?;
         deserializer.end()?;
+        match outcome {
+            FastExtractOutcome::Extracted(values) => Ok(Some(values)),
+            FastExtractOutcome::Fallback => Ok(None),
+        }
+    }
 
-        let FastExtractOutcome::Extracted(payload_values) = outcome else {
+    /// Fast-path counterpart of `values_from_parsed_object`: extracts the
+    /// fields of one source list from the key and payload objects and lays
+    /// them out in `sources_order`.
+    fn fast_values(
+        &self,
+        specs: &FastSourceSpecs,
+        source_lists: &FieldSourceLists,
+        key: Option<&str>,
+        payload: Option<&str>,
+    ) -> DynResult<Option<ValueFieldsWithErrors>> {
+        let Some(from_key) = Self::fast_extract(&specs.from_key, key, self.field_absence_is_error)?
+        else {
             return Ok(None);
         };
-
-        let source_lists = &self.value_field_source_lists;
-        let mut payload_values = payload_values.into_iter();
+        let Some(from_payload) =
+            Self::fast_extract(&specs.from_payload, payload, self.field_absence_is_error)?
+        else {
+            return Ok(None);
+        };
+        let mut from_key = from_key.into_iter();
+        let mut from_payload = from_payload.into_iter();
         let mut result = Vec::with_capacity(source_lists.sources_order.len());
         for source in &source_lists.sources_order {
             match source {
-                FieldSource::Payload => result.push(payload_values.next().unwrap()),
+                FieldSource::Key => result.push(from_key.next().unwrap()),
+                FieldSource::Payload => result.push(from_payload.next().unwrap()),
                 FieldSource::Metadata => result.push(Ok(self.metadata_column_value.clone())),
-                // Excluded by `can_use_fast_json`.
-                FieldSource::Key => unreachable!("key fields disable the fast JSON path"),
             }
         }
         Ok(Some(result))
+    }
+
+    /// Fast path of `parse`: the key and the payload objects are streamed
+    /// field by field, without building the `serde_json::Value` DOM. `None`
+    /// requests the slow path.
+    fn try_fast_parse(
+        &self,
+        data_event: DataEventType,
+        raw_bytes_key: &[u8],
+        raw_bytes_payload: &[u8],
+    ) -> DynResult<Option<Vec<ParsedEventWithErrors>>> {
+        let payload = if self.has_fields_from_payload() {
+            let line = prepare_plaintext_str(raw_bytes_payload)?;
+            if line == COMMIT_LITERAL {
+                return Ok(Some(vec![ParsedEventWithErrors::AdvanceTime]));
+            }
+            Some(line)
+        } else {
+            None
+        };
+        let key = if self.has_fields_from_key() {
+            Some(prepare_plaintext_str(raw_bytes_key)?)
+        } else {
+            None
+        };
+
+        let event_key = match (&self.fast_key_specs, &self.key_field_source_lists) {
+            (Some(specs), Some(source_lists)) => {
+                let Some(values) = self.fast_values(specs, source_lists, key, payload)? else {
+                    return Ok(None);
+                };
+                Some(values.into_iter().collect())
+            }
+            _ => None,
+        };
+        let Some(event_values) = self.fast_values(
+            &self.fast_value_specs,
+            &self.value_field_source_lists,
+            key,
+            payload,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(vec![ParsedEventWithErrors::new(
+            self.session_type,
+            data_event,
+            event_key,
+            event_values,
+        )]))
     }
 
     fn values_from_parsed_object(
@@ -288,6 +373,177 @@ enum FastExtractOutcome {
     Fallback,
 }
 
+/// The fields the fast path extracts from one source (key or payload): names
+/// in slot order, with the schema type and default of each slot resolved once
+/// at construction, and a name→slot index for wide field lists.
+struct FastFieldSpec {
+    names: Vec<String>,
+    index: HashMap<String, usize>,
+    types: Vec<Type>,
+    defaults: Vec<Option<Value>>,
+}
+
+impl FastFieldSpec {
+    const LINEAR_SCAN_LIMIT: usize = 8;
+
+    fn new(names: &[String], schema: &HashMap<String, InnerSchemaField>) -> Self {
+        let types = names
+            .iter()
+            .map(|name| {
+                schema
+                    .get(name)
+                    .map_or(Type::Any, |field| field.type_.clone())
+            })
+            .collect();
+        let defaults = names
+            .iter()
+            .map(|name| schema.get(name).and_then(|field| field.default.clone()))
+            .collect();
+        let index = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+        Self {
+            names: names.to_vec(),
+            index,
+            types,
+            defaults,
+        }
+    }
+
+    /// Slot of a field name. A handful of names is scanned linearly: that is
+    /// cheaper than SipHash-ing the key for every message.
+    fn slot(&self, key: &str) -> Option<usize> {
+        if self.names.len() <= Self::LINEAR_SCAN_LIMIT {
+            self.names.iter().position(|name| name == key)
+        } else {
+            self.index.get(key).copied()
+        }
+    }
+}
+
+struct FastSourceSpecs {
+    from_key: FastFieldSpec,
+    from_payload: FastFieldSpec,
+}
+
+impl FastSourceSpecs {
+    fn new(source_lists: &FieldSourceLists, schema: &HashMap<String, InnerSchemaField>) -> Self {
+        Self {
+            from_key: FastFieldSpec::new(&source_lists.to_parse_from_key, schema),
+            from_payload: FastFieldSpec::new(&source_lists.to_parse_from_payload, schema),
+        }
+    }
+}
+
+/// A JSON value deserialized without building a `serde_json::Value` for the
+/// scalar cases: a string is borrowed from the input when it has no escapes,
+/// numbers and booleans are kept as such. Objects and arrays are materialized
+/// as the DOM, as before.
+enum JsonScalar<'de> {
+    Str(Cow<'de, str>),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    Bool(bool),
+    Null,
+    Other(JsonValue),
+}
+
+impl<'de> serde::Deserialize<'de> for JsonScalar<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct JsonScalarVisitor;
+
+        impl<'de> Visitor<'de> for JsonScalarVisitor {
+            type Value = JsonScalar<'de>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a JSON value")
+            }
+            fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Str(Cow::Borrowed(v)))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Str(Cow::Owned(v.to_owned())))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Str(Cow::Owned(v)))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Int(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(JsonScalar::UInt(v))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Float(v))
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Bool(v))
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Null)
+            }
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(JsonScalar::Null)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                <JsonValue as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(JsonScalar::Other)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                <JsonValue as serde::Deserialize>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(seq),
+                )
+                .map(JsonScalar::Other)
+            }
+        }
+
+        deserializer.deserialize_any(JsonScalarVisitor)
+    }
+}
+
+impl JsonScalar<'_> {
+    /// Direct conversions for the common scalar cases. Anything else is handed
+    /// back as a `serde_json::Value` for `parse_value_from_json`, which keeps
+    /// the exact semantics (and error payloads) of the slow path.
+    // Integers wider than f64's mantissa lose precision here exactly as they
+    // do in the general path, which goes through `serde_json::Number::as_f64`.
+    #[allow(clippy::cast_precision_loss)]
+    fn into_value(self, dtype: &Type) -> Result<Value, JsonValue> {
+        match (dtype.unoptionalize(), self) {
+            (Type::String | Type::Any, Self::Str(s)) => Ok(Value::from(&*s)),
+            (Type::Int | Type::Any, Self::Int(i)) => Ok(Value::from(i)),
+            (Type::Int | Type::Any, Self::UInt(u)) => match i64::try_from(u) {
+                Ok(i) => Ok(Value::from(i)),
+                Err(_) => Err(Self::UInt(u).into_json()),
+            },
+            (Type::Float, Self::Int(i)) => Ok(Value::from(i as f64)),
+            (Type::Float, Self::UInt(u)) => Ok(Value::from(u as f64)),
+            (Type::Float | Type::Any, Self::Float(f)) => Ok(Value::from(f)),
+            (Type::Bool | Type::Any, Self::Bool(b)) => Ok(Value::Bool(b)),
+            (_, scalar) => Err(scalar.into_json()),
+        }
+    }
+
+    fn into_json(self) -> JsonValue {
+        match self {
+            Self::Str(s) => JsonValue::String(s.into_owned()),
+            Self::Int(i) => JsonValue::from(i),
+            Self::UInt(u) => JsonValue::from(u),
+            Self::Float(f) => {
+                serde_json::Number::from_f64(f).map_or(JsonValue::Null, JsonValue::Number)
+            }
+            Self::Bool(b) => JsonValue::Bool(b),
+            Self::Null => JsonValue::Null,
+            Self::Other(v) => v,
+        }
+    }
+}
+
 /// A `serde` visitor that extracts a fixed set of top-level fields from a JSON
 /// object in a single streaming pass, without building the full
 /// `serde_json::Value` DOM (and, crucially, without the `IndexMap`/`SipHash`
@@ -295,9 +551,7 @@ enum FastExtractOutcome {
 /// documents and field-absence errors are deferred to the slow path by
 /// returning [`FastExtractOutcome::Fallback`].
 struct FastFieldExtractor<'a> {
-    field_names: &'a [String],
-    field_index: &'a HashMap<String, usize>,
-    schema: &'a HashMap<String, InnerSchemaField>,
+    spec: &'a FastFieldSpec,
     field_absence_is_error: bool,
 }
 
@@ -312,26 +566,26 @@ impl<'de> Visitor<'de> for FastFieldExtractor<'_> {
     where
         A: MapAccess<'de>,
     {
+        let spec = self.spec;
         let mut slots: Vec<Option<DynResult<Value>>> =
-            (0..self.field_names.len()).map(|_| None).collect();
+            (0..spec.names.len()).map(|_| None).collect();
         while let Some(key) = map.next_key::<Cow<str>>()? {
-            if let Some(&index) = self.field_index.get(key.as_ref()) {
+            if let Some(index) = spec.slot(key.as_ref()) {
                 // A needed field: materialize only this value. Last write wins,
                 // matching `serde_json::Map` behavior on duplicate keys.
-                let value: JsonValue = map.next_value()?;
-                let name = &self.field_names[index];
-                let dtype = self
-                    .schema
-                    .get(name)
-                    .map_or(&Type::Any, |field| &field.type_);
-                let parsed = parse_value_from_json(&value, dtype).ok_or_else(|| {
-                    ParseError::FailedToParseFromJson {
-                        field_name: name.clone(),
-                        payload: value,
-                        type_: dtype.clone(),
-                    }
-                    .into()
-                });
+                let dtype = &spec.types[index];
+                let scalar: JsonScalar = map.next_value()?;
+                let parsed = match scalar.into_value(dtype) {
+                    Ok(value) => Ok(value),
+                    Err(value) => parse_value_from_json(&value, dtype).ok_or_else(|| {
+                        ParseError::FailedToParseFromJson {
+                            field_name: spec.names[index].clone(),
+                            payload: value,
+                            type_: dtype.clone(),
+                        }
+                        .into()
+                    }),
+                };
                 slots[index] = Some(parsed);
             } else {
                 map.next_value::<IgnoredAny>()?;
@@ -342,21 +596,14 @@ impl<'de> Visitor<'de> for FastFieldExtractor<'_> {
         for (index, slot) in slots.into_iter().enumerate() {
             if let Some(value) = slot {
                 result.push(value);
+            } else if let Some(default) = &spec.defaults[index] {
+                result.push(Ok(default.clone()));
+            } else if self.field_absence_is_error {
+                // The absence error embeds the full payload, which the
+                // fast path never builds. Defer to the slow path.
+                return Ok(FastExtractOutcome::Fallback);
             } else {
-                let name = &self.field_names[index];
-                let default = self
-                    .schema
-                    .get(name)
-                    .and_then(|field| field.default.as_ref());
-                if let Some(default) = default {
-                    result.push(Ok(default.clone()));
-                } else if self.field_absence_is_error {
-                    // The absence error embeds the full payload, which the
-                    // fast path never builds. Defer to the slow path.
-                    return Ok(FastExtractOutcome::Fallback);
-                } else {
-                    result.push(Ok(Value::None));
-                }
+                result.push(Ok(Value::None));
             }
         }
         Ok(FastExtractOutcome::Extracted(result))
@@ -415,21 +662,14 @@ impl Parser for JsonLinesParser {
             return Ok(vec![]);
         }
 
-        // Fast path: stream the payload fields directly without building the
-        // whole `serde_json::Value` DOM. Falls back to the slow path below for
-        // inputs it does not handle (signaled by `Ok(None)`).
-        if self.can_use_fast_json && self.has_fields_from_payload() {
-            let line = prepare_plaintext_str(raw_bytes_payload)?;
-            if line == COMMIT_LITERAL {
-                return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
-            }
-            if let Some(values) = self.try_fast_parse_payload(line)? {
-                return Ok(vec![ParsedEventWithErrors::new(
-                    self.session_type,
-                    data_event,
-                    None,
-                    values,
-                )]);
+        // Fast path: stream the key/payload fields directly without building
+        // the whole `serde_json::Value` DOM. Falls back to the slow path below
+        // for inputs it does not handle (signaled by `Ok(None)`).
+        if self.can_use_fast_json {
+            if let Some(events) =
+                self.try_fast_parse(data_event, raw_bytes_key, raw_bytes_payload)?
+            {
+                return Ok(events);
             }
         }
 
@@ -452,8 +692,10 @@ impl Parser for JsonLinesParser {
     }
 
     fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
-        let metadata_serialized: JsonValue = metadata.serialize();
-        self.metadata_column_value = metadata_serialized.into();
+        if self.has_metadata_column {
+            let metadata_serialized: JsonValue = metadata.serialize();
+            self.metadata_column_value = metadata_serialized.into();
+        }
     }
 
     fn column_count(&self) -> usize {

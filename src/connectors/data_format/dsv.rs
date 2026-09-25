@@ -2,6 +2,7 @@
 
 use std::clone::Clone;
 use std::collections::HashMap;
+use std::io::Write as _;
 
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::ReaderContext::{
@@ -276,8 +277,18 @@ impl Parser for DsvParser {
             // TODO: find a better solution
             self.dsv_header_read = false;
         }
-        let metadata_serialized: JsonValue = metadata.serialize();
-        self.metadata_column_value = metadata_serialized.into();
+        // The column indices are resolved only once the header line has been
+        // read, i.e. after this call, so the request is checked by name.
+        let has_metadata_column = self
+            .settings
+            .value_column_names
+            .iter()
+            .chain(self.settings.key_column_names.iter().flatten())
+            .any(|name| name == METADATA_FIELD_NAME);
+        if has_metadata_column {
+            let metadata_serialized: JsonValue = metadata.serialize();
+            self.metadata_column_value = metadata_serialized.into();
+        }
     }
 
     fn column_count(&self) -> usize {
@@ -298,6 +309,50 @@ impl DsvFormatter {
 
             dsv_header_written: false,
         }
+    }
+
+    /// Appends `token` with every embedded double quote doubled.
+    fn write_escaped(out: &mut Vec<u8>, token: &str) {
+        let bytes = token.as_bytes();
+        let mut copied_until = 0;
+        for (quote_pos, _) in token.match_indices('"') {
+            out.extend_from_slice(&bytes[copied_until..quote_pos]);
+            out.extend_from_slice(b"\"\"");
+            copied_until = quote_pos + 1;
+        }
+        out.extend_from_slice(&bytes[copied_until..]);
+    }
+
+    /// Appends one quoted, escaped field for `v`. Scalars whose textual form
+    /// cannot contain a double quote are written directly; the other types go
+    /// through their string form as before.
+    fn write_quoted_value(out: &mut Vec<u8>, v: &Value) -> Result<(), FormatterError> {
+        out.push(b'"');
+        match v {
+            Value::String(s) => Self::write_escaped(out, s),
+            Value::Int(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::None
+            | Value::Pointer(_)
+            | Value::DateTimeNaive(_)
+            | Value::DateTimeUtc(_) => {
+                write!(out, "{v}").expect("writing to a vector cannot fail");
+            }
+            Value::Duration(d) => {
+                write!(out, "{}", d.nanoseconds()).expect("writing to a vector cannot fail");
+            }
+            Value::Bytes(b) => {
+                Self::write_escaped(out, &base64::engine::general_purpose::STANDARD.encode(b));
+            }
+            Value::PyObjectWrapper(_) => Self::write_escaped(out, &create_bincoded_value(v)?),
+            Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
+                Self::write_escaped(out, &serialize_value_to_json(v)?.to_string());
+            }
+            _ => Self::write_escaped(out, &v.to_string()),
+        }
+        out.push(b'"');
+        Ok(())
     }
 
     fn format_csv_row(tokens: &[String], separator: u8) -> Vec<u8> {
@@ -363,26 +418,22 @@ impl Formatter for DsvFormatter {
             self.dsv_header_written = true;
         }
 
-        let mut prepared_values = Vec::with_capacity(values.len());
-        for v in values {
-            let prepared = match v {
-                Value::String(v) => v.to_string(),
-                Value::PyObjectWrapper(_) => create_bincoded_value(v)?,
-                Value::Bytes(b) => base64::engine::general_purpose::STANDARD.encode(b),
-                Value::Duration(d) => format!("{}", d.nanoseconds()),
-                Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
-                    let json_value = serialize_value_to_json(v)?;
-                    json_value.to_string()
-                }
-                _ => format!("{v}"),
-            };
-            prepared_values.push(prepared);
+        // The row is written straight into one buffer: every field quoted, an
+        // embedded double quote doubled (the same bytes `format_csv_row`
+        // produces), without materializing an intermediate `String` per field.
+        let mut line = Vec::with_capacity(32 + 16 * values.len());
+        for (column, v) in values.iter().enumerate() {
+            if column > 0 {
+                line.push(separator);
+            }
+            Self::write_quoted_value(&mut line, v)?;
         }
-        let line: Vec<_> = prepared_values
-            .into_iter()
-            .chain([format!("{time}").to_string(), format!("{diff}").to_string()])
-            .collect();
-        payloads.push(Self::format_csv_row(&line, separator));
+        if !values.is_empty() {
+            line.push(separator);
+        }
+        write!(line, "\"{time}\"{}\"{diff}\"", separator as char)
+            .expect("writing to a vector cannot fail");
+        payloads.push(line);
 
         Ok(FormatterContext::new(
             payloads,

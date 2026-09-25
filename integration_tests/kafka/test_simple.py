@@ -2628,3 +2628,29 @@ def test_kafka_unreachable_broker_error_names_bootstrap_servers():
     pw.io.null.write(table)
     with pytest.raises(OSError, match=r"bootstrap\.servers=localhost:1"):
         pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_kafka_output_without_pathway_headers(
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    """With ``with_pathway_headers=False`` the written messages carry no
+    ``pathway_time``/``pathway_diff`` headers, and every row still arrives."""
+    input_path = tmp_path / "input"
+    with open(input_path, "w") as f:
+        f.write("\n".join(f"line_{i}" for i in range(1500)) + "\n")
+
+    table = pw.io.plaintext.read(str(input_path), mode="static")
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.output_topic,
+        with_pathway_headers=False,
+    )
+    pw.run()
+
+    messages = kafka_context.read_output_topic(expected_headers=())
+    assert len(messages) == 1500
+    for message in messages:
+        assert message.headers == []
+    payloads = {json.loads(message.value)["data"] for message in messages}
+    assert payloads == {f"line_{i}" for i in range(1500)}

@@ -53,7 +53,7 @@ fn test_message_headers_follow_the_row_time_and_diff() {
         row(Timestamp(5), -2),
     ];
     for r in &rows {
-        let headers = owned(r.message_headers(&fields, false, &mut cache));
+        let headers = owned(r.message_headers(&fields, false, true, &mut cache));
         assert_eq!(
             headers,
             vec![
@@ -82,7 +82,7 @@ fn test_message_headers_encode_bytes_on_request() {
     let fields = user_fields();
     let mut cache = PathwayHeadersCache::default();
     let r = row(Timestamp(7), 1);
-    let headers = owned(r.message_headers(&fields, true, &mut cache));
+    let headers = owned(r.message_headers(&fields, true, true, &mut cache));
     assert_eq!(headers[3], ("h_bytes".to_string(), Some(b"AP8=".to_vec())));
     assert_eq!(headers[2], ("h_str".to_string(), Some(b"text".to_vec())));
 }
@@ -96,8 +96,8 @@ fn test_kafka_headers_match_message_headers() {
         row(Timestamp(3), -1),
         row(Timestamp(4), 1),
     ] {
-        let kafka_headers = r.construct_kafka_headers(&fields, &mut cache);
-        let expected = owned(r.message_headers(&fields, false, &mut cache));
+        let kafka_headers = r.construct_kafka_headers(&fields, true, &mut cache);
+        let expected = owned(r.message_headers(&fields, false, true, &mut cache));
         assert_eq!(kafka_headers.count(), expected.len());
         for (index, (key, value)) in expected.iter().enumerate() {
             let header = kafka_headers.get(index);

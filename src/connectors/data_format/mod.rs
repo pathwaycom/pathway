@@ -441,19 +441,24 @@ impl FormatterContext {
         &'a self,
         header_fields: &'a [(String, usize)],
         encode_bytes: bool,
+        include_pathway_headers: bool,
         cache: &'a mut PathwayHeadersCache,
     ) -> impl Iterator<Item = MessageHeader<'a>> {
-        let (time, diff) = cache.formatted(self.time, self.diff);
-        let pathway_headers = [
-            MessageHeader {
-                key: PATHWAY_TIME_HEADER,
-                value: Some(Cow::Borrowed(time.as_bytes())),
-            },
-            MessageHeader {
-                key: PATHWAY_DIFF_HEADER,
-                value: Some(Cow::Borrowed(diff.as_bytes())),
-            },
-        ];
+        let pathway_headers = if include_pathway_headers {
+            let (time, diff) = cache.formatted(self.time, self.diff);
+            Some([
+                MessageHeader {
+                    key: PATHWAY_TIME_HEADER,
+                    value: Some(Cow::Borrowed(time.as_bytes())),
+                },
+                MessageHeader {
+                    key: PATHWAY_DIFF_HEADER,
+                    value: Some(Cow::Borrowed(diff.as_bytes())),
+                },
+            ])
+        } else {
+            None
+        };
         let user_headers = header_fields.iter().map(move |(name, position)| {
             let value = match (&self.values[*position], encode_bytes) {
                 (Value::Bytes(b), false) => Some(Cow::Borrowed(b.as_ref())),
@@ -464,23 +469,25 @@ impl FormatterContext {
             };
             MessageHeader { key: name, value }
         });
-        pathway_headers.into_iter().chain(user_headers)
+        pathway_headers.into_iter().flatten().chain(user_headers)
     }
 
     pub fn construct_kafka_headers(
         &self,
         header_fields: &[(String, usize)],
+        include_pathway_headers: bool,
         cache: &mut PathwayHeadersCache,
     ) -> KafkaHeaders {
-        self.message_headers(header_fields, false, cache).fold(
-            KafkaHeaders::new_with_capacity(header_fields.len() + 2),
-            |headers, header| {
-                headers.insert(KafkaHeader {
-                    key: header.key,
-                    value: header.value.as_deref(),
-                })
-            },
-        )
+        self.message_headers(header_fields, false, include_pathway_headers, cache)
+            .fold(
+                KafkaHeaders::new_with_capacity(header_fields.len() + 2),
+                |headers, header| {
+                    headers.insert(KafkaHeader {
+                        key: header.key,
+                        value: header.value.as_deref(),
+                    })
+                },
+            )
     }
 
     /// String-to-string message properties: `pathway_time` and `pathway_diff`
@@ -512,7 +519,7 @@ impl FormatterContext {
         cache: &mut PathwayHeadersCache,
     ) -> NatsHeaders {
         let mut nats_headers = NatsHeaders::new();
-        for header in self.message_headers(header_fields, true, cache) {
+        for header in self.message_headers(header_fields, true, true, cache) {
             let header_value = match header.value {
                 Some(value) => String::from_utf8(value.into_owned())
                     .expect("all prepared headers must be UTF-8 serializable"),

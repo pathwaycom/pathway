@@ -986,6 +986,7 @@ class DataStorage:
         psql_replication: PsqlReplicationSettings | None = None,
         schema_name: str | None = None,
         with_metadata: bool = False,
+        with_pathway_headers: bool = True,
         mysql_server_id: int | None = None,
         qdrant_params: QdrantParams | None = None,
         pinecone_params: PineconeParams | None = None,
