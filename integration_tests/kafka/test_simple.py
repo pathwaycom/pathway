@@ -2630,6 +2630,87 @@ def test_kafka_unreachable_broker_error_names_bootstrap_servers():
         pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
 
+@pytest.mark.flaky(reruns=3)
+def test_kafka_streaming_read_delivers_every_message_in_partition_order(
+    tmp_path, kafka_context
+):
+    """The reader takes the fetched messages off its queue in batches. Every
+    message must still arrive exactly once, and within a partition no message
+    may be committed before the one preceding it."""
+    kafka_context.set_input_topic_partitions(3)
+    n_messages = 3000
+    kafka_context.fill([f"message_{i}" for i in range(n_messages)])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=20,
+        with_metadata=True,
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, n_messages), 60)
+
+    expected = {
+        message.value.decode("utf-8") for message in kafka_context.read_input_topic()
+    }
+    rows = []
+    with open(output_path) as f:
+        for line in f:
+            row = json.loads(line)
+            rows.append(
+                (
+                    row["_metadata"]["partition"],
+                    row["_metadata"]["offset"],
+                    row["time"],
+                    row["data"],
+                )
+            )
+    assert len(rows) == len(expected)
+    assert {data for *_, data in rows} == expected
+
+    by_partition: dict[int, list[tuple[int, int]]] = {}
+    for partition, offset, time_, _ in rows:
+        by_partition.setdefault(partition, []).append((offset, time_))
+    assert len(by_partition) == 3
+    for offsets_and_times in by_partition.values():
+        offsets_and_times.sort()
+        offsets = [offset for offset, _ in offsets_and_times]
+        assert offsets == list(range(len(offsets)))
+        times = [time_ for _, time_ in offsets_and_times]
+        assert times == sorted(times)
+
+
+def test_kafka_static_read_delivers_every_message_across_partitions(
+    tmp_path, kafka_context
+):
+    """A static read of a topic holding more messages than one fetch batch must
+    deliver all of them, from every partition."""
+    kafka_context.set_input_topic_partitions(4)
+    kafka_context.fill([f"message_{i}" for i in range(2000)])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        mode="static",
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    expected = {
+        message.value.decode("utf-8") for message in kafka_context.read_input_topic()
+    }
+    assert len(expected) > 1900, "most produced messages should be in the topic"
+    seen = set()
+    with open(output_path) as f:
+        for row in f:
+            seen.add(json.loads(row)["data"])
+    assert seen == expected
+
+
 def test_kafka_output_without_pathway_headers(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):

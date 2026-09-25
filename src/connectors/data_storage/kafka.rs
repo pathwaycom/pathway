@@ -2,7 +2,11 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::{c_int, c_void, CStr, CString};
 use std::mem::take;
+use std::ptr;
+use std::slice;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,11 +24,13 @@ use super::{
     ConnectorMode, MessageQueueTopic, ReadError, ReadResult, Reader, ReaderContext, StorageType,
     WriteError, Writer,
 };
-use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
+use rdkafka::bindings as rdsys;
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
-use rdkafka::message::{BorrowedMessage, OwnedMessage};
+use rdkafka::message::{Header, Headers, OwnedMessage, Timestamp as KafkaTimestamp};
 use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedProducer};
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
+use rdkafka::ClientContext;
 use rdkafka::Message;
 use rdkafka::TopicPartitionList;
 
@@ -99,6 +105,345 @@ pub enum KafkaReaderError {
     Subscribe(KafkaError),
 }
 
+/// The consumer context of Pathway's Kafka readers. Its one job: before a
+/// partition gets assigned, route the partition's fetch queue to the reader's
+/// [`FetchQueue`], so that fetched messages never enter the consumer queue.
+///
+/// Reading the messages off a queue of their own lets the reader take them in
+/// batches (`rd_kafka_consume_batch_queue`), which costs far less per message
+/// than rust-rdkafka's event-based `poll`, while the consumer queue keeps
+/// carrying only the group events (rebalances, offset commits, errors, logs)
+/// that rust-rdkafka's `poll` knows how to dispatch. Batch-consuming the
+/// consumer queue itself would not do: librdkafka serves the non-message ops
+/// it meets there with its own defaults, and its default for a rebalance
+/// event without a rebalance callback is to unassign everything.
+#[derive(Default)]
+pub struct PathwayConsumerContext {
+    fetch_queue: Mutex<Option<Arc<FetchQueue>>>,
+}
+
+impl PathwayConsumerContext {
+    fn set_fetch_queue(&self, fetch_queue: Option<Arc<FetchQueue>>) {
+        *self
+            .fetch_queue
+            .lock()
+            .expect("the fetch queue lock is never poisoned") = fetch_queue;
+    }
+}
+
+impl ClientContext for PathwayConsumerContext {}
+
+impl ConsumerContext for PathwayConsumerContext {
+    fn pre_rebalance(&self, base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+        if let Rebalance::Assign(partitions) = rebalance {
+            let fetch_queue = self
+                .fetch_queue
+                .lock()
+                .expect("the fetch queue lock is never poisoned")
+                .clone();
+            if let Some(fetch_queue) = fetch_queue {
+                fetch_queue.forward_partitions(base_consumer, partitions);
+            }
+        }
+    }
+}
+
+pub type KafkaConsumer = BaseConsumer<PathwayConsumerContext>;
+
+/// How many already-fetched messages one `rd_kafka_consume_batch_queue` call
+/// takes off the fetch queue at most.
+const CONSUME_BATCH_SIZE: usize = 256;
+
+/// How long a streaming read waits for a message before serving the consumer
+/// queue again (the same cadence rust-rdkafka's `poll` uses internally).
+const STREAMING_WAIT: Duration = Duration::from_millis(100);
+
+/// An application-owned librdkafka queue that the fetch queues of the
+/// partitions read by a consumer are forwarded to (see
+/// [`PathwayConsumerContext`]).
+struct FetchQueue {
+    ptr: *mut rdsys::rd_kafka_queue_t,
+}
+
+// librdkafka queues are thread-safe; the pointer is only ever handed back to
+// librdkafka.
+unsafe impl Send for FetchQueue {}
+unsafe impl Sync for FetchQueue {}
+
+impl FetchQueue {
+    fn new(consumer: &KafkaConsumer) -> Self {
+        let ptr = unsafe { rdsys::rd_kafka_queue_new(consumer.client().native_ptr()) };
+        assert!(!ptr.is_null(), "rd_kafka_queue_new never fails");
+        Self { ptr }
+    }
+
+    /// Routes the fetch queues of `partitions` here. Must run before the
+    /// partitions are assigned: at fetch start librdkafka forwards a fetch
+    /// queue to the consumer queue only if the application hasn't forwarded
+    /// it elsewhere yet, so forwarding first guarantees that no message of
+    /// these partitions ever reaches the consumer queue.
+    fn forward_partitions(&self, consumer: &KafkaConsumer, partitions: &TopicPartitionList) {
+        let client = consumer.client().native_ptr();
+        for element in partitions.elements() {
+            let Ok(topic) = CString::new(element.topic()) else {
+                error!("Kafka topic name with a NUL byte: {:?}", element.topic());
+                continue;
+            };
+            unsafe {
+                let partition_queue = rdsys::rd_kafka_queue_get_partition(
+                    client,
+                    topic.as_ptr(),
+                    element.partition(),
+                );
+                // Not expected: librdkafka creates the partition object on
+                // a miss and returns NULL only for a producer handle. Kept as
+                // a loud failure rather than an `expect`, since a partition
+                // silently left on the consumer queue would still be read,
+                // just without batching.
+                if partition_queue.is_null() {
+                    error!(
+                        "Kafka partition ({}, {}) has no fetch queue, its messages will not be read",
+                        element.topic(),
+                        element.partition()
+                    );
+                    continue;
+                }
+                rdsys::rd_kafka_queue_forward(partition_queue, self.ptr);
+                rdsys::rd_kafka_queue_destroy(partition_queue);
+            }
+        }
+    }
+
+    /// Takes the messages already waiting in the queue, up to
+    /// `CONSUME_BATCH_SIZE` of them, without waiting for more.
+    ///
+    /// Caveat: librdkafka advances the partition's application position past
+    /// every message it hands out here, at the time of the call, so with
+    /// `enable.auto.commit` the offsets of a whole batch may get committed
+    /// before its messages are processed. The per-message `poll` did the same
+    /// per message; this widens the "committed but unprocessed" window by up
+    /// to `CONSUME_BATCH_SIZE` messages. Persistence keeps its own offsets and
+    /// is unaffected; a restart from the group's committed offsets alone can
+    /// skip that many more messages after a crash.
+    fn consume_batch(&self, messages: &mut VecDeque<FetchedMessage>) -> Result<(), KafkaError> {
+        let mut raw: Vec<*mut rdsys::rd_kafka_message_t> = Vec::with_capacity(CONSUME_BATCH_SIZE);
+        let count = unsafe {
+            rdsys::rd_kafka_consume_batch_queue(self.ptr, 0, raw.as_mut_ptr(), CONSUME_BATCH_SIZE)
+        };
+        let Ok(count) = usize::try_from(count) else {
+            let error = unsafe { rdsys::rd_kafka_last_error() };
+            return Err(KafkaError::MessageConsumption(error.into()));
+        };
+        // SAFETY: librdkafka wrote `count` valid message pointers into `raw`.
+        unsafe { raw.set_len(count) };
+        messages.extend(raw.into_iter().map(|message| FetchedMessage {
+            message,
+            event: ptr::null_mut(),
+        }));
+        Ok(())
+    }
+
+    /// Waits up to `timeout` for a single message (or error) to arrive.
+    fn wait_for_message(&self, timeout: Duration) -> Option<Result<FetchedMessage, KafkaError>> {
+        let timeout_ms = c_int::try_from(timeout.as_millis()).unwrap_or(c_int::MAX);
+        let event = unsafe { rdsys::rd_kafka_queue_poll(self.ptr, timeout_ms) };
+        if event.is_null() {
+            return None;
+        }
+        match unsafe { rdsys::rd_kafka_event_type(event) } {
+            rdsys::RD_KAFKA_EVENT_FETCH => {
+                let message = unsafe { rdsys::rd_kafka_event_message_next(event) };
+                if message.is_null() {
+                    unsafe { rdsys::rd_kafka_event_destroy(event) };
+                    return None;
+                }
+                Some(Ok(FetchedMessage {
+                    message: message.cast_mut(),
+                    event,
+                }))
+            }
+            rdsys::RD_KAFKA_EVENT_ERROR => {
+                let code = unsafe { rdsys::rd_kafka_event_error(event) };
+                let reason = unsafe { CStr::from_ptr(rdsys::rd_kafka_event_error_string(event)) }
+                    .to_string_lossy()
+                    .into_owned();
+                let is_fatal = unsafe { rdsys::rd_kafka_event_error_is_fatal(event) } != 0;
+                unsafe { rdsys::rd_kafka_event_destroy(event) };
+                error!("Kafka consumer error: {reason}");
+                let code: RDKafkaErrorCode = code.into();
+                Some(Err(if is_fatal {
+                    KafkaError::MessageConsumptionFatal(code)
+                } else {
+                    KafkaError::MessageConsumption(code)
+                }))
+            }
+            other => {
+                warn!("Unexpected event of type {other} on a Kafka fetch queue, ignoring it");
+                unsafe { rdsys::rd_kafka_event_destroy(event) };
+                None
+            }
+        }
+    }
+}
+
+impl Drop for FetchQueue {
+    fn drop(&mut self) {
+        unsafe { rdsys::rd_kafka_queue_destroy(self.ptr) };
+    }
+}
+
+/// A message taken off a [`FetchQueue`]. Owned by the reader until dropped,
+/// which hands it back to librdkafka.
+struct FetchedMessage {
+    message: *mut rdsys::rd_kafka_message_t,
+    /// The event a message polled one at a time belongs to (the event owns
+    /// the message); null for messages taken by `consume_batch`, which are
+    /// destroyed on their own.
+    event: *mut rdsys::rd_kafka_event_t,
+}
+
+// The message is owned by this struct alone and only read from.
+unsafe impl Send for FetchedMessage {}
+
+impl FetchedMessage {
+    fn raw(&self) -> &rdsys::rd_kafka_message_t {
+        unsafe { &*self.message }
+    }
+
+    /// Separates the consumer errors librdkafka delivers as messages from the
+    /// real messages.
+    fn into_result(self) -> Result<Self, KafkaError> {
+        match self.raw().err {
+            rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR => Ok(self),
+            rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__PARTITION_EOF => {
+                Err(KafkaError::PartitionEOF(self.raw().partition))
+            }
+            err => Err(KafkaError::MessageConsumption(err.into())),
+        }
+    }
+}
+
+impl Drop for FetchedMessage {
+    fn drop(&mut self) {
+        unsafe {
+            if self.event.is_null() {
+                rdsys::rd_kafka_message_destroy(self.message);
+            } else {
+                rdsys::rd_kafka_event_destroy(self.event);
+            }
+        }
+    }
+}
+
+/// The headers of a [`FetchedMessage`]: a view over librdkafka's header list,
+/// valid as long as the message is. Like rust-rdkafka's `BorrowedHeaders`, a
+/// zero-sized type referenced through the native pointer.
+struct FetchedHeaders;
+
+impl FetchedHeaders {
+    fn as_native_ptr(&self) -> *const rdsys::rd_kafka_headers_t {
+        ptr::from_ref(self).cast()
+    }
+}
+
+impl Headers for FetchedHeaders {
+    fn count(&self) -> usize {
+        unsafe { rdsys::rd_kafka_header_cnt(self.as_native_ptr()) }
+    }
+
+    fn try_get(&self, idx: usize) -> Option<Header<'_, &[u8]>> {
+        let mut name = ptr::null();
+        let mut value: *const c_void = ptr::null();
+        let mut size = 0usize;
+        let err = unsafe {
+            rdsys::rd_kafka_header_get_all(
+                self.as_native_ptr(),
+                idx,
+                &raw mut name,
+                &raw mut value,
+                &raw mut size,
+            )
+        };
+        if err != rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            return None;
+        }
+        unsafe {
+            Some(Header {
+                key: CStr::from_ptr(name)
+                    .to_str()
+                    .expect("Kafka header names are UTF-8"),
+                value: (!value.is_null()).then(|| slice::from_raw_parts(value.cast::<u8>(), size)),
+            })
+        }
+    }
+}
+
+impl Message for FetchedMessage {
+    type Headers = FetchedHeaders;
+
+    fn key(&self) -> Option<&[u8]> {
+        let message = self.raw();
+        (!message.key.is_null())
+            .then(|| unsafe { slice::from_raw_parts(message.key.cast::<u8>(), message.key_len) })
+    }
+
+    fn payload(&self) -> Option<&[u8]> {
+        let message = self.raw();
+        (!message.payload.is_null())
+            .then(|| unsafe { slice::from_raw_parts(message.payload.cast::<u8>(), message.len) })
+    }
+
+    unsafe fn payload_mut(&mut self) -> Option<&mut [u8]> {
+        let message = self.raw();
+        (!message.payload.is_null())
+            .then(|| slice::from_raw_parts_mut(message.payload.cast::<u8>(), message.len))
+    }
+
+    fn topic(&self) -> &str {
+        unsafe { CStr::from_ptr(rdsys::rd_kafka_topic_name(self.raw().rkt)) }
+            .to_str()
+            .expect("Kafka topic names are UTF-8")
+    }
+
+    fn partition(&self) -> i32 {
+        self.raw().partition
+    }
+
+    fn offset(&self) -> i64 {
+        self.raw().offset
+    }
+
+    fn timestamp(&self) -> KafkaTimestamp {
+        let mut timestamp_type = rdsys::rd_kafka_timestamp_type_t::RD_KAFKA_TIMESTAMP_NOT_AVAILABLE;
+        let timestamp =
+            unsafe { rdsys::rd_kafka_message_timestamp(self.message, &raw mut timestamp_type) };
+        if timestamp == -1 {
+            return KafkaTimestamp::NotAvailable;
+        }
+        match timestamp_type {
+            rdsys::rd_kafka_timestamp_type_t::RD_KAFKA_TIMESTAMP_NOT_AVAILABLE => {
+                KafkaTimestamp::NotAvailable
+            }
+            rdsys::rd_kafka_timestamp_type_t::RD_KAFKA_TIMESTAMP_CREATE_TIME => {
+                KafkaTimestamp::CreateTime(timestamp)
+            }
+            rdsys::rd_kafka_timestamp_type_t::RD_KAFKA_TIMESTAMP_LOG_APPEND_TIME => {
+                KafkaTimestamp::LogAppendTime(timestamp)
+            }
+        }
+    }
+
+    fn headers(&self) -> Option<&FetchedHeaders> {
+        let mut headers = ptr::null_mut();
+        let err = unsafe { rdsys::rd_kafka_message_headers(self.message, &raw mut headers) };
+        if err == rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR && !headers.is_null() {
+            Some(unsafe { &*headers.cast::<FetchedHeaders>() })
+        } else {
+            None
+        }
+    }
+}
+
 /// How long the start-up metadata probes keep retrying transient errors before
 /// giving up.
 const METADATA_PROBE_RETRY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -138,7 +483,7 @@ fn is_broker_unreachable_error(err: &KafkaError) -> bool {
 
 /// Returns the total number of partitions for a Kafka topic.
 fn total_partitions_for_topic(
-    consumer: &BaseConsumer<DefaultConsumerContext>,
+    consumer: &KafkaConsumer,
     topic: &str,
     bootstrap_servers: &str,
 ) -> Result<usize, KafkaReaderError> {
@@ -179,7 +524,7 @@ fn total_partitions_for_topic(
 /// might return `KafkaOffset::End` for some partitions, allowing for graceful handling.
 /// Also used in static mode to identify the boundaries of the data chunk that needs to be read.
 fn partition_watermarks(
-    consumer: &BaseConsumer<DefaultConsumerContext>,
+    consumer: &KafkaConsumer,
     topic: &str,
     total_partitions: usize,
 ) -> Result<Vec<RdkafkaWatermark>, KafkaReaderError> {
@@ -208,7 +553,7 @@ fn partition_watermarks(
 }
 
 fn seek_positions_for_timestamp(
-    consumer: &BaseConsumer<DefaultConsumerContext>,
+    consumer: &KafkaConsumer,
     topic: &str,
     total_partitions: usize,
     start_from_timestamp_ms: i64,
@@ -255,7 +600,11 @@ fn seek_positions_for_timestamp(
 }
 
 pub struct KafkaReader {
-    consumer: BaseConsumer<DefaultConsumerContext>,
+    // The field order matters for `Drop`: the fetched messages go back to
+    // librdkafka first, then the fetch queue, and the consumer last.
+    fetched_messages: VecDeque<FetchedMessage>,
+    fetch_queue: Arc<FetchQueue>,
+    consumer: KafkaConsumer,
     topic: ArcStr,
     positions_for_seek: HashMap<i32, KafkaOffset>,
     watermarks: Vec<RdkafkaWatermark>,
@@ -311,18 +660,12 @@ impl Reader for KafkaReader {
             }
             match self.mode {
                 ConnectorMode::Streaming => {
-                    let kafka_message = self
-                        .consumer
-                        .poll(None)
-                        .expect("poll in streaming mode should never timeout")?;
-                    if let Some(read_result) = Self::prepare_read_result(
-                        &self.consumer,
-                        &self.topic,
-                        &mut self.positions_for_seek,
-                        &mut self.deferred_read_result,
-                        self.emit_metadata,
-                        &kafka_message,
-                    ) {
+                    let Some(kafka_message) = self.next_fetched_message(STREAMING_WAIT)? else {
+                        // Nothing arrived within the wait: go round again (the
+                        // consumer queue gets served on every round).
+                        continue;
+                    };
+                    if let Some(read_result) = self.prepare_read_result_split(&kafka_message) {
                         return Ok(read_result);
                     }
                 }
@@ -330,9 +673,6 @@ impl Reader for KafkaReader {
                     let Some(kafka_message) = self.next_message_in_static_mode()? else {
                         return Ok(ReadResult::Finished);
                     };
-                    // detach() copies the message to end the borrow of self;
-                    // fine off the hot path (static mode is a one-shot read).
-                    let kafka_message = kafka_message.detach();
                     if let Some(read_result) = self.prepare_read_result_split(&kafka_message) {
                         return Ok(read_result);
                     }
@@ -430,9 +770,18 @@ impl Reader for KafkaReader {
     }
 }
 
+impl Drop for KafkaReader {
+    fn drop(&mut self) {
+        // Drop the context's reference too, so that the fetch queue goes away
+        // with this reader, before the consumer, which must outlive it.
+        self.consumer.context().set_fetch_queue(None);
+    }
+}
+
 impl KafkaReader {
     fn new(
-        consumer: BaseConsumer<DefaultConsumerContext>,
+        consumer: KafkaConsumer,
+        fetch_queue: Arc<FetchQueue>,
         topic: String,
         positions_for_seek: HashMap<i32, KafkaOffset>,
         watermarks: Vec<RdkafkaWatermark>,
@@ -441,6 +790,8 @@ impl KafkaReader {
         emit_metadata: bool,
     ) -> KafkaReader {
         KafkaReader {
+            fetched_messages: VecDeque::with_capacity(CONSUME_BATCH_SIZE),
+            fetch_queue,
             consumer,
             topic: topic.into(),
             emit_metadata,
@@ -459,16 +810,71 @@ impl KafkaReader {
         self.consumer.pause(&assignment)
     }
 
+    /// The next fetched message: from the batch in hand, else from a fresh
+    /// batch, else (nothing fetched yet) one polled with `timeout`, `None` if
+    /// none arrived in time. The consumer queue is served before every batch
+    /// and every wait, which keeps the group events flowing and the
+    /// `max.poll.interval.ms` timer reset.
+    fn next_fetched_message(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<FetchedMessage>, KafkaError> {
+        loop {
+            if let Some(message) = self.fetched_messages.pop_front() {
+                return message.into_result().map(Some);
+            }
+            self.serve_consumer_queue()?;
+            self.fetch_queue.consume_batch(&mut self.fetched_messages)?;
+            if !self.fetched_messages.is_empty() {
+                continue;
+            }
+            return match self.fetch_queue.wait_for_message(timeout) {
+                Some(message) => message?.into_result().map(Some),
+                None => Ok(None),
+            };
+        }
+    }
+
+    /// One non-blocking poll of the consumer queue: dispatches the group
+    /// events (rebalances, offset commits, errors, logs). Messages can't show
+    /// up there, as every assigned partition's fetch queue is forwarded to
+    /// the reader's own queue, but any that did are kept, not lost.
+    ///
+    /// This poll is also what keeps the consumer a group member: it resets
+    /// the `max.poll.interval.ms` timer. It runs before every batch and every
+    /// wait (at most `STREAMING_WAIT` apart), and `keep_alive` covers the
+    /// stretches when the reader is blocked on the channel.
+    fn serve_consumer_queue(&mut self) -> Result<(), KafkaError> {
+        match self.consumer.poll(Duration::ZERO) {
+            None => Ok(()),
+            Some(Ok(message)) => {
+                self.pending_messages.push_back(message.detach());
+                Ok(())
+            }
+            Some(Err(error)) => Err(error),
+        }
+    }
+
     /// `prepare_read_result` for a message that does not borrow `self`.
     fn prepare_read_result_split<M: Message>(&mut self, kafka_message: &M) -> Option<ReadResult> {
-        Self::prepare_read_result(
+        let read_result = Self::prepare_read_result(
             &self.consumer,
             &self.topic,
             &mut self.positions_for_seek,
             &mut self.deferred_read_result,
             self.emit_metadata,
             kafka_message,
-        )
+        );
+        if read_result.is_none() {
+            // The message triggered the lazy seek of its partition. librdkafka
+            // discards what it had fetched before the seek, and so must we:
+            // the batch in hand may hold more messages of that partition, all
+            // fetched from the pre-seek position.
+            let partition = kafka_message.partition();
+            self.fetched_messages
+                .retain(|message| message.partition() != partition);
+        }
+        read_result
     }
 
     /// Shared tail of `read` for freshly-polled and pending messages alike.
@@ -478,7 +884,7 @@ impl KafkaReader {
     /// An associated fn over split field borrows, because a freshly-polled
     /// message already borrows `self.consumer`.
     fn prepare_read_result<M: Message>(
-        consumer: &BaseConsumer<DefaultConsumerContext>,
+        consumer: &KafkaConsumer,
         topic: &ArcStr,
         positions_for_seek: &mut HashMap<i32, KafkaOffset>,
         deferred_read_result: &mut Option<ReadResult>,
@@ -541,7 +947,7 @@ impl KafkaReader {
     /// `construct_kafka_reader`).
     #[allow(clippy::too_many_arguments)] // one flag over the connector's own settings
     pub fn build(
-        consumer: BaseConsumer<DefaultConsumerContext>,
+        consumer: KafkaConsumer,
         topic: String,
         bootstrap_servers: &str,
         mode: ConnectorMode,
@@ -552,6 +958,15 @@ impl KafkaReader {
     ) -> Result<KafkaReader, KafkaReaderError> {
         let total_partitions = total_partitions_for_topic(&consumer, &topic, bootstrap_servers)?;
         let mut watermarks = partition_watermarks(&consumer, &topic, total_partitions)?;
+
+        // The reader's own queue for the fetched messages. The consumer context
+        // forwards each partition's fetch queue to it right before the partition
+        // is assigned by a rebalance; the explicit assignment of the static mode
+        // below does the same by hand.
+        let fetch_queue = Arc::new(FetchQueue::new(&consumer));
+        consumer
+            .context()
+            .set_fetch_queue(Some(fetch_queue.clone()));
 
         let mut seek_positions = HashMap::new();
         if let Some(start_from_timestamp_ms) = start_from_timestamp_ms {
@@ -622,6 +1037,7 @@ impl KafkaReader {
                     tpl.add_partition_offset(topic.as_str(), partition, start_offset)
                         .expect("adding a partition to the assignment list must not fail");
                 }
+                fetch_queue.forward_partitions(&consumer, &tpl);
                 consumer.assign(&tpl).map_err(KafkaReaderError::Assign)?;
                 // The explicit assignment above already starts each partition at
                 // the right offset, so the lazy per-message seek used in
@@ -639,6 +1055,7 @@ impl KafkaReader {
 
         Ok(KafkaReader::new(
             consumer,
+            fetch_queue,
             topic,
             seek_positions,
             watermarks,
@@ -661,7 +1078,7 @@ impl KafkaReader {
         60
     }
 
-    fn message_matches_static_read_constraints(&self, message: &BorrowedMessage<'_>) -> bool {
+    fn message_matches_static_read_constraints<M: Message>(&self, message: &M) -> bool {
         let partition: usize = message
             .partition()
             .try_into()
@@ -717,17 +1134,14 @@ impl KafkaReader {
         Ok(true)
     }
 
-    fn next_message_in_static_mode(&self) -> Result<Option<BorrowedMessage<'_>>, ReadError> {
-        let mut result_message = None;
-        let mut is_finished = false;
+    fn next_message_in_static_mode(&mut self) -> Result<Option<FetchedMessage>, ReadError> {
         let n_attempts = Self::polling_attempts_count_for_static_mode();
         for _ in 0..n_attempts {
-            let maybe_kafka_message = self.consumer.poll(Self::poll_duration_for_static_mode());
-            if let Some(maybe_matching_message) = maybe_kafka_message {
-                let maybe_matching_message = maybe_matching_message?;
-                if self.message_matches_static_read_constraints(&maybe_matching_message) {
-                    result_message = Some(maybe_matching_message);
-                    break;
+            if let Some(kafka_message) =
+                self.next_fetched_message(Self::poll_duration_for_static_mode())?
+            {
+                if self.message_matches_static_read_constraints(&kafka_message) {
+                    return Ok(Some(kafka_message));
                 }
 
                 // The message goes beyond the specified border within the partition or belongs
@@ -735,23 +1149,53 @@ impl KafkaReader {
                 // Stop reading the further messages from this partition, since they will
                 // have greater offsets.
                 let mut tpl = TopicPartitionList::with_capacity(1);
-                tpl.add_partition(self.topic.as_str(), maybe_matching_message.partition());
+                tpl.add_partition(self.topic.as_str(), kafka_message.partition());
                 self.consumer.pause(&tpl)?;
             }
 
             if self.static_read_has_finished()? {
-                is_finished = true;
-                break;
+                return Ok(None);
             }
         }
-        if !is_finished && result_message.is_none() {
-            warn!("There was no explicit finish detected from Kafka topic '{}', but no matching events were read after {n_attempts} attempts, with {:?} duration each.", self.topic, Self::poll_duration_for_static_mode());
-        }
-        Ok(result_message)
+        warn!("There was no explicit finish detected from Kafka topic '{}', but no matching events were read after {n_attempts} attempts, with {:?} duration each.", self.topic, Self::poll_duration_for_static_mode());
+        Ok(None)
+    }
+}
+
+/// How many messages the writer holds back before handing them to librdkafka
+/// in one `rd_kafka_produce_batch` call. The sink's flush between output
+/// batches hands over whatever is pending, so this only bounds the memory of
+/// a large batch.
+const PRODUCE_BATCH_SIZE: usize = 512;
+
+/// librdkafka's `RD_KAFKA_PARTITION_UA` (a C macro, absent from the bindings):
+/// let the partitioner pick the partition.
+const PARTITION_UNASSIGNED: i32 = -1;
+
+/// A message waiting for the next `rd_kafka_produce_batch` call.
+struct PendingMessage {
+    topic: String,
+    key: Vec<u8>,
+    payload: Vec<u8>,
+}
+
+/// A librdkafka topic handle, the entry point of `rd_kafka_produce_batch`.
+struct ProducerTopic(*mut rdsys::rd_kafka_topic_t);
+
+// The handle is only ever handed back to librdkafka, which is thread-safe.
+unsafe impl Send for ProducerTopic {}
+
+impl Drop for ProducerTopic {
+    fn drop(&mut self) {
+        unsafe { rdsys::rd_kafka_topic_destroy(self.0) };
     }
 }
 
 pub struct KafkaWriter {
+    // The field order matters for `Drop`: the topic handles must be destroyed
+    // before the producer.
+    topics: HashMap<String, ProducerTopic>,
+    pending: Vec<PendingMessage>,
     producer: ThreadedProducer<DefaultProducerContext>,
     topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
@@ -773,6 +1217,8 @@ impl KafkaWriter {
         with_pathway_headers: bool,
     ) -> KafkaWriter {
         KafkaWriter {
+            topics: HashMap::new(),
+            pending: Vec::new(),
             producer,
             topic,
             header_fields,
@@ -781,10 +1227,113 @@ impl KafkaWriter {
             headers_cache: PathwayHeadersCache::default(),
         }
     }
+
+    fn topic_handle(&mut self, name: &str) -> Result<*mut rdsys::rd_kafka_topic_t, WriteError> {
+        if let Some(topic) = self.topics.get(name) {
+            return Ok(topic.0);
+        }
+        let c_name = CString::new(name).expect("Kafka topic names have no NUL bytes");
+        let handle = unsafe {
+            rdsys::rd_kafka_topic_new(
+                self.producer.client().native_ptr(),
+                c_name.as_ptr(),
+                ptr::null_mut(),
+            )
+        };
+        if handle.is_null() {
+            let error = unsafe { rdsys::rd_kafka_last_error() };
+            return Err(KafkaError::MessageProduction(error.into()).into());
+        }
+        self.topics.insert(name.to_string(), ProducerTopic(handle));
+        Ok(handle)
+    }
+
+    /// Hands the pending messages to librdkafka, one `rd_kafka_produce_batch`
+    /// call per run of consecutive messages to the same topic.
+    fn flush_pending(&mut self) -> Result<(), WriteError> {
+        let pending = take(&mut self.pending);
+        let mut start = 0;
+        while start < pending.len() {
+            let topic = &pending[start].topic;
+            let run_length = pending[start..]
+                .iter()
+                .take_while(|message| message.topic == *topic)
+                .count();
+            let handle = self.topic_handle(topic)?;
+            self.produce_batch(handle, &pending[start..start + run_length])?;
+            start += run_length;
+        }
+        Ok(())
+    }
+
+    /// Enqueues `messages` for `topic` with a single `rd_kafka_produce_batch`
+    /// call, waiting out a full producer queue the way the single-message
+    /// path does.
+    fn produce_batch(
+        &self,
+        topic: *mut rdsys::rd_kafka_topic_t,
+        messages: &[PendingMessage],
+    ) -> Result<(), WriteError> {
+        let mut batch: Vec<rdsys::rd_kafka_message_t> = messages
+            .iter()
+            .map(|message| rdsys::rd_kafka_message_t {
+                err: rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR,
+                rkt: ptr::null_mut(),
+                partition: PARTITION_UNASSIGNED,
+                payload: message.payload.as_ptr().cast_mut().cast::<c_void>(),
+                len: message.payload.len(),
+                key: message.key.as_ptr().cast_mut().cast::<c_void>(),
+                key_len: message.key.len(),
+                offset: 0,
+                _private: ptr::null_mut(),
+            })
+            .collect();
+        loop {
+            let batch_size = c_int::try_from(batch.len()).expect("the batch size fits in c_int");
+            // RD_KAFKA_MSG_F_COPY: librdkafka copies the payloads and keys, so
+            // the pending messages can be dropped right after the call.
+            let enqueued = unsafe {
+                rdsys::rd_kafka_produce_batch(
+                    topic,
+                    PARTITION_UNASSIGNED,
+                    rdsys::RD_KAFKA_MSG_F_COPY,
+                    batch.as_mut_ptr(),
+                    batch_size,
+                )
+            };
+            if enqueued == batch_size {
+                return Ok(());
+            }
+            // Retry the messages a full producer queue rejected once it drained
+            // a bit; anything else is an error, as in the single-message path.
+            // Caveat: on such an error the messages of this batch that were
+            // only rejected as `QUEUE_FULL` are not enqueued either, whereas
+            // the single-message path failed exactly at the offending message.
+            // Either way the error fails the write; if that ever becomes
+            // retriable, the rejected remainder must be re-enqueued first.
+            let mut retry = Vec::new();
+            for message in &batch {
+                match message.err {
+                    rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR => {}
+                    rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__QUEUE_FULL => {
+                        let mut message = *message;
+                        message.err = rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR;
+                        retry.push(message);
+                    }
+                    error => return Err(KafkaError::MessageProduction(error.into()).into()),
+                }
+            }
+            self.producer.poll(Duration::from_millis(10));
+            batch = retry;
+        }
+    }
 }
 
 impl Drop for KafkaWriter {
     fn drop(&mut self) {
+        if let Err(error) = self.flush_pending() {
+            error!("Failed to hand the pending messages to the Kafka producer: {error}");
+        }
         self.producer.flush(None).expect("kafka commit should work");
     }
 }
@@ -814,6 +1363,28 @@ impl Writer for KafkaWriter {
                 )
             });
         let effective_topic = self.topic.topic_for_posting(&data.values)?;
+        if headers.is_none() {
+            // Without headers the message can take the batch entry point,
+            // `rd_kafka_produce_batch`, which pays the topic lock and the clock
+            // read once per batch instead of once per message (and is the
+            // only entry point that does not take headers).
+            // Ordering relies on the header set being fixed per writer (by its
+            // configuration): headerless messages wait in `pending` while
+            // headered ones go to `producev` at once, so a writer that mixed
+            // the two could reorder messages of one partition.
+            for payload in data.payloads {
+                let payload = payload.into_raw_bytes()?;
+                self.pending.push(PendingMessage {
+                    topic: effective_topic.to_string(),
+                    key: key.to_vec(),
+                    payload,
+                });
+            }
+            if self.pending.len() >= PRODUCE_BATCH_SIZE {
+                self.flush_pending()?;
+            }
+            return Ok(());
+        }
         let last_payload_index = data.payloads.len() - 1;
         for (index, payload) in data.payloads.into_iter().enumerate() {
             let payload = payload.into_raw_bytes()?;
@@ -846,6 +1417,10 @@ impl Writer for KafkaWriter {
             }
         }
         Ok(())
+    }
+
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
+        self.flush_pending()
     }
 
     fn name(&self) -> String {

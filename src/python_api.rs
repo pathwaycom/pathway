@@ -73,7 +73,6 @@ use pyo3::{intern, PyTypeInfo};
 use pyo3::{prelude::*, IntoPyObjectExt};
 use pyo3_log::ResetHandle;
 use questdb::ingress::Sender as QuestDBSender;
-use rdkafka::consumer::BaseConsumer;
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
 use rdkafka::ClientConfig;
 use rumqttc::{
@@ -140,13 +139,13 @@ use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
     ChromaWriter, ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
-    ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader, KafkaWriter, LakeWriter,
-    MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader,
-    NatsWriter, NullWriter, ObjectDownloader, PsqlReader, PsqlWriter, PulsarDeliverySchedule,
-    PulsarReader, PulsarWriter, PythonConnectorEventType, PythonReaderBuilder, QdrantWriter,
-    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WeaviateWriter,
-    WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ElasticSearchWriter, FileWriter, IcebergReader, KafkaConsumer, KafkaReader, KafkaWriter,
+    LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader,
+    NatsReader, NatsWriter, NullWriter, ObjectDownloader, PathwayConsumerContext, PsqlReader,
+    PsqlWriter, PulsarDeliverySchedule, PulsarReader, PulsarWriter, PythonConnectorEventType,
+    PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader,
+    RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
+    TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -7088,8 +7087,8 @@ impl DataStorage {
         parser_needs_source_metadata: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let client_config = self.kafka_client_config()?;
-        let consumer: BaseConsumer = client_config
-            .create()
+        let consumer: KafkaConsumer = client_config
+            .create_with_context(PathwayConsumerContext::default())
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
         let topic = self.message_queue_fixed_topic()?;
 
