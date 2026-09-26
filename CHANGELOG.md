@@ -9,6 +9,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.xpacks.llm.rerankers.LLMReranker` now accepts `call_kwargs`, the kwargs passed to each call of the LLM. The default is still `{"temperature": 0}`; pass `call_kwargs={}` to use the reranker with models that accept only the default `temperature`, such as Claude Opus 4.7 and newer (including Claude Opus 5.5) on Bedrock.
 - `pw.io.kafka.write` accepts `with_pathway_headers` (default `True`): with `False`, the messages are produced without the `pathway_time` and `pathway_diff` headers, which makes the writer cheaper when nothing downstream reads them.
 
+### Fixed
+- `pathway.xpacks.llm.rerankers.rerank_topk_filter` no longer trips a bare worker panic (`ValueError: not enough values to unpack`) on a row whose document list is empty. A query that retrieved nothing is a normal outcome, and it now yields empty document and score lists for that row instead of taking down the pipeline.
+
 ## [0.33.0] - 2026-09-18
 
 ### Changed
