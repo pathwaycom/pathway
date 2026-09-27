@@ -15,6 +15,19 @@ from .mocks import IdentityMockChat
 from .utils import build_vector_store, create_rag_app
 
 
+class _QueryRewriteMockChat(llms.BaseChat):
+    """Rewrites the rewrite-prompt to a fixed search query; passes other prompts through."""
+
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        return False
+
+    async def __wrapped__(self, messages: list[dict] | pw.Json, model: str) -> str:
+        content = messages[0]["content"].as_str()
+        if content.startswith("rewrite:"):
+            return content.removeprefix("rewrite:")
+        return model + "," + content
+
+
 @pw.udf
 def fake_embeddings_model(x: str) -> list[float]:
     return [
@@ -94,6 +107,118 @@ def test_base_rag():
             """
             result
             gpt2,summarize,foo,bar
+            """
+        ),
+    )
+
+
+def test_rag_app_set_query_transformer_prompt():
+    def query_transformer_prompt(query: str) -> str:
+        return f"rewrite:{query}"
+
+    rag_app = create_rag_app(query_transformer_prompt=query_transformer_prompt)
+
+    assert isinstance(rag_app.query_transformer_prompt_udf, pw.UDF)
+
+    assert _unwrap_udf(rag_app.query_transformer_prompt_udf)("foo") == "rewrite:foo"
+
+
+def test_rag_app_no_query_transformer_by_default():
+    rag_app = create_rag_app()
+
+    assert rag_app.query_transformer_prompt_udf is None
+
+
+def test_base_rag_uses_original_prompt_for_answer_without_transformer():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQuestionAnswerer(
+        IdentityMockChat(),
+        vector_server,
+        prompt_template=_prompt_template,
+        summarize_template=_summarize_template,
+        search_topk=1,
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", False),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+
+    casted_table = answer_output.select(
+        result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"])
+    )
+
+    assert_table_equality(
+        casted_table,
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt3.5,foo
+            """
+        ),
+    )
+
+
+def test_base_rag_query_transformer_used_only_for_retrieval():
+    @pw.udf
+    def query_transformer_prompt(query: str) -> str:
+        return "rewrite:bar"
+
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQuestionAnswerer(
+        _QueryRewriteMockChat(),
+        vector_server,
+        prompt_template=_prompt_template,
+        query_transformer_prompt=query_transformer_prompt,
+        summarize_template=_summarize_template,
+        search_topk=1,
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", False),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+
+    casted_table = answer_output.select(
+        search_query=pw.this.search_query,
+        result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"]),
+    )
+
+    # `search_query` shows retrieval used the rewritten query ("bar", not the
+    # original prompt "foo"), while `result` shows the final LLM call still
+    # ran on the original, untransformed prompt.
+    assert_table_equality(
+        casted_table,
+        pw.debug.table_from_markdown(
+            """
+            search_query | result
+            bar          | gpt3.5,foo
             """
         ),
     )
