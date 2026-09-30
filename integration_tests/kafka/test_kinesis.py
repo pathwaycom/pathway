@@ -35,7 +35,6 @@ from .utils import KinesisRecord, KinesisTestContext
     ],
 )
 def test_persistence(scenario, kinesis_context, tmp_path):
-    output_path = tmp_path / "output.jsonl"
     persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(tmp_path / "PStorage")
     )
@@ -44,16 +43,28 @@ def test_persistence(scenario, kinesis_context, tmp_path):
     # to be sure that at least some have landed into every active shard
     n_records_per_run = 30
     next_counter_value = 0
+    n_runs = 0
 
     class InputSchema(pw.Schema):
         key: int = pw.column_definition(primary_key=True)
         value: str
 
     def run():
+        nonlocal n_runs, next_counter_value
         G.clear()
+        # Every run writes into an output file of its own. With a shared file
+        # the checker's first poll (0.1s in, before the restarted pipeline has
+        # even opened its sink) finds the previous run's output there, still
+        # holding exactly `n_records_per_run` lines, and reports success at
+        # once. The run is then bounded not by the checker's timeout but by
+        # the few seconds `wait_result_with_checker` leaves for the state to
+        # be persisted, and on a loaded node the pipeline is stopped before
+        # it has delivered anything: the file, truncated at the start, is
+        # then read back empty.
+        output_path = tmp_path / f"output-{n_runs}.jsonl"
+        n_runs += 1
         expected_keys = set()
         for _ in range(n_records_per_run):
-            nonlocal next_counter_value
             message = json.dumps(
                 {
                     "key": next_counter_value,
