@@ -779,32 +779,6 @@ impl Drop for KafkaReader {
 }
 
 impl KafkaReader {
-    fn new(
-        consumer: KafkaConsumer,
-        fetch_queue: Arc<FetchQueue>,
-        topic: String,
-        positions_for_seek: HashMap<i32, KafkaOffset>,
-        watermarks: Vec<RdkafkaWatermark>,
-        mode: ConnectorMode,
-        has_assigned_partitions: bool,
-        emit_metadata: bool,
-    ) -> KafkaReader {
-        KafkaReader {
-            fetched_messages: VecDeque::with_capacity(CONSUME_BATCH_SIZE),
-            fetch_queue,
-            consumer,
-            topic: topic.into(),
-            emit_metadata,
-            positions_for_seek,
-            watermarks,
-            mode,
-            has_assigned_partitions,
-            deferred_read_result: None,
-            paused_for_backpressure: false,
-            pending_messages: VecDeque::new(),
-        }
-    }
-
     fn pause_assigned_partitions(&self) -> Result<(), KafkaError> {
         let assignment = self.consumer.assignment()?;
         self.consumer.pause(&assignment)
@@ -1053,16 +1027,20 @@ impl KafkaReader {
             }
         };
 
-        Ok(KafkaReader::new(
-            consumer,
+        Ok(KafkaReader {
+            fetched_messages: VecDeque::with_capacity(CONSUME_BATCH_SIZE),
             fetch_queue,
-            topic,
-            seek_positions,
+            consumer,
+            topic: topic.into(),
+            emit_metadata,
+            positions_for_seek: seek_positions,
             watermarks,
             mode,
             has_assigned_partitions,
-            emit_metadata,
-        ))
+            deferred_read_result: None,
+            paused_for_backpressure: false,
+            pending_messages: VecDeque::new(),
+        })
     }
 
     fn poll_duration_for_static_mode() -> Duration {
