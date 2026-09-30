@@ -554,6 +554,18 @@ pub trait DeferredAckWorker: Send {
 pub trait Reader {
     fn read(&mut self) -> Result<ReadResult, ReadError>;
 
+    /// Whether the next `read()` returns `Data` at once, from a message the
+    /// reader already holds. While it does, the connector gathers the parsed
+    /// rows into batches before handing them to the engine's thread; once it
+    /// doesn't, whatever is gathered is handed over before `read()` may wait,
+    /// so batching never delays a row. The answer must not be a guess: a
+    /// `true` followed by a `read()` that waits would hold the batch back for
+    /// as long as the wait. Readers that can't tell answer `false` and keep
+    /// sending row by row.
+    fn has_buffered_data(&mut self) -> bool {
+        false
+    }
+
     #[allow(clippy::missing_errors_doc)]
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError>;
 

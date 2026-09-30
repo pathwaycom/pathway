@@ -681,6 +681,25 @@ impl Reader for KafkaReader {
         }
     }
 
+    fn has_buffered_data(&mut self) -> bool {
+        if self.deferred_read_result.is_some() || !self.pending_messages.is_empty() {
+            return true;
+        }
+        if !matches!(self.mode, ConnectorMode::Streaming) || self.paused_for_backpressure {
+            return false;
+        }
+        // Peek: a message librdkafka already holds is taken now and read next.
+        // A non-blocking poll returns `None` for anything but a message, so a
+        // queue holding only group events never counts as buffered data.
+        match self.consumer.poll(Duration::ZERO) {
+            Some(Ok(message)) => {
+                self.pending_messages.push_back(message.detach());
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
         // "Lazy" seek implementation
         for (offset_key, offset_value) in frontier {
