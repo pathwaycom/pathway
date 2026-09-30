@@ -1044,8 +1044,8 @@ impl MysqlWriter {
 }
 
 impl Writer for MysqlWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.push(data);
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        self.buffer.push(data.clone());
         if let Some(max_batch_size) = self.max_batch_size {
             if self.buffer.len() == max_batch_size {
                 self.flush(true)?;

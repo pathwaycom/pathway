@@ -260,7 +260,7 @@ pub struct RabbitmqWriter {
 }
 
 impl Writer for RabbitmqWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         self.check_send_errors()?;
 
         let effective_topic = self.topic.get_for_posting(&data.values)?;
@@ -281,8 +281,8 @@ impl Writer for RabbitmqWriter {
 
         runtime.block_on(async {
             let last_idx = data.payloads.len() - 1;
-            for (idx, payload) in data.payloads.into_iter().enumerate() {
-                let payload_bytes = payload.into_raw_bytes()?;
+            for (idx, payload) in data.payloads.iter().enumerate() {
+                let payload_bytes = payload.as_raw_bytes()?.to_vec();
                 let message = {
                     let mut app_props = Message::builder().application_properties();
                     if idx == last_idx {

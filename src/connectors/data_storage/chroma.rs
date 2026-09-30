@@ -454,7 +454,7 @@ impl ChromaWriter {
 }
 
 impl Writer for ChromaWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let values = &data.values;
         if data.diff == 1 {
             self.upsert_ids.push(self.build_id(data.key, values)?);

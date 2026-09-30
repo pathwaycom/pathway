@@ -234,8 +234,8 @@ impl MongoWriter {
 }
 
 impl Writer for MongoWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        for payload in &data.payloads {
             match &mut self.buffer {
                 WriteBuffer::Snapshot(map) => {
                     // Last-event-wins per key within a minibatch. Overriding on
@@ -250,7 +250,7 @@ impl Writer for MongoWriter {
                     let event = if data.diff == 1 {
                         BufferedMongoEvent::Upsert {
                             key,
-                            value: payload.into_bson_document()?,
+                            value: payload.as_bson_document()?.clone(),
                         }
                     } else {
                         BufferedMongoEvent::Delete { key }
@@ -258,7 +258,7 @@ impl Writer for MongoWriter {
                     map.insert(data.key, event);
                 }
                 WriteBuffer::StreamOfChanges(docs) => {
-                    docs.push(payload.into_bson_document()?);
+                    docs.push(payload.as_bson_document()?.clone());
                 }
             }
         }

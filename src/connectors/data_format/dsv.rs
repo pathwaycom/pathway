@@ -10,7 +10,7 @@ use crate::connectors::ReaderContext::{
 };
 use crate::connectors::{DataEventType, ReaderContext};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
-use crate::engine::{Key, Result, Timestamp, Value};
+use crate::engine::{Result, Value};
 
 use base64::Engine;
 use serde_json::Value as JsonValue;
@@ -385,14 +385,8 @@ impl DsvFormatter {
 }
 
 impl Formatter for DsvFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        if values.len() != self.settings.value_column_names.len() {
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
+        if context.values.len() != self.settings.value_column_names.len() {
             return Err(FormatterError::ColumnsValuesCountMismatch);
         }
 
@@ -401,7 +395,6 @@ impl Formatter for DsvFormatter {
                 self.settings.separator,
             ));
         };
-        let mut payloads = Vec::with_capacity(2);
 
         if !self.dsv_header_written {
             let header: Vec<_> = self
@@ -414,33 +407,31 @@ impl Formatter for DsvFormatter {
                     SPECIAL_FIELD_DIFF.to_string(),
                 ])
                 .collect();
-            payloads.push(Self::format_csv_row(&header, separator));
+            context.push_payload(Self::format_csv_row(&header, separator));
             self.dsv_header_written = true;
         }
 
-        // The row is written straight into one buffer: every field quoted, an
-        // embedded double quote doubled (the same bytes `format_csv_row`
-        // produces), without materializing an intermediate `String` per field.
-        let mut line = Vec::with_capacity(32 + 16 * values.len());
-        for (column, v) in values.iter().enumerate() {
+        // The row is written straight into one buffer (reused from row to
+        // row): every field quoted, an embedded double quote doubled (the
+        // same bytes `format_csv_row` produces), without materializing an
+        // intermediate `String` per field.
+        let mut line = context.take_payload_buffer();
+        for (column, v) in context.values.iter().enumerate() {
             if column > 0 {
                 line.push(separator);
             }
             Self::write_quoted_value(&mut line, v)?;
         }
-        if !values.is_empty() {
+        if !context.values.is_empty() {
             line.push(separator);
         }
-        write!(line, "\"{time}\"{}\"{diff}\"", separator as char)
-            .expect("writing to a vector cannot fail");
-        payloads.push(line);
-
-        Ok(FormatterContext::new(
-            payloads,
-            *key,
-            values.to_vec(),
-            time,
-            diff,
-        ))
+        write!(
+            line,
+            "\"{}\"{}\"{}\"",
+            context.time, separator as char, context.diff
+        )
+        .expect("writing to a vector cannot fail");
+        context.push_payload(line);
+        Ok(())
     }
 }

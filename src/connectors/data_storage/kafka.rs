@@ -1317,7 +1317,7 @@ impl Drop for KafkaWriter {
 }
 
 impl Writer for KafkaWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let row_key_bytes = data.key.to_le_bytes();
         let key: &[u8] = match self.key_field_index {
             Some(index) => match &data.values[index] {
@@ -1364,8 +1364,8 @@ impl Writer for KafkaWriter {
             return Ok(());
         }
         let last_payload_index = data.payloads.len() - 1;
-        for (index, payload) in data.payloads.into_iter().enumerate() {
-            let payload = payload.into_raw_bytes()?;
+        for (index, payload) in data.payloads.iter().enumerate() {
+            let payload = payload.as_raw_bytes()?;
             // The headers are handed over to librdkafka with the message, so
             // every payload but the last one gets a copy and the last one
             // takes the original.
@@ -1375,7 +1375,7 @@ impl Writer for KafkaWriter {
                 headers.clone()
             };
             let mut entry = BaseRecord::<[u8], [u8]>::to(&effective_topic)
-                .payload(&payload)
+                .payload(payload)
                 .key(key);
             if let Some(payload_headers) = payload_headers {
                 entry = entry.headers(payload_headers);

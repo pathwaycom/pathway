@@ -357,6 +357,24 @@ pub enum FormattedDocument {
 }
 
 impl FormattedDocument {
+    /// The payload bytes, borrowed: the writers that hand them to their
+    /// client at once (or copy them into a batch of their own) read them here.
+    pub fn as_raw_bytes(&self) -> Result<&[u8], FormatterError> {
+        if let Self::RawBytes(b) = self {
+            Ok(b)
+        } else {
+            Err(FormatterError::UnexpectedContextType)
+        }
+    }
+
+    pub fn as_bson_document(&self) -> Result<&BsonDocument, FormatterError> {
+        if let Self::Bson(b) = self {
+            Ok(b)
+        } else {
+            Err(FormatterError::UnexpectedContextType)
+        }
+    }
+
     pub fn into_raw_bytes(self) -> Result<Vec<u8>, FormatterError> {
         if let Self::RawBytes(b) = self {
             Ok(b)
@@ -386,6 +404,14 @@ impl From<BsonDocument> for FormattedDocument {
     }
 }
 
+/// One formatted row on its way to a writer.
+///
+/// The output loop keeps a single context per sink and reuses it for every
+/// row (`start_row` + `Formatter::format_into`): the values vector and the
+/// payload buffers keep their capacity across rows, so formatting a row
+/// allocates only what its content forces (a BSON document, a value that
+/// must be re-encoded). Writers get the context by reference and copy what
+/// they keep beyond the call.
 #[derive(Debug)]
 pub struct FormatterContext {
     pub payloads: Vec<FormattedDocument>,
@@ -393,9 +419,79 @@ pub struct FormatterContext {
     pub values: Vec<Value>,
     pub time: Timestamp,
     pub diff: isize,
+    /// Payload buffers of previous rows, kept for reuse by `payload_buffer`.
+    spare_buffers: Vec<Vec<u8>>,
+}
+
+// A copy carries the row, not the spare buffers: the writers that keep rows
+// for a batch clone the context, and must not drag the scratch space along.
+impl Clone for FormatterContext {
+    fn clone(&self) -> Self {
+        Self {
+            payloads: self.payloads.clone(),
+            key: self.key,
+            values: self.values.clone(),
+            time: self.time,
+            diff: self.diff,
+            spare_buffers: Vec::new(),
+        }
+    }
+}
+
+impl Default for FormatterContext {
+    fn default() -> Self {
+        Self {
+            payloads: Vec::new(),
+            key: Key::from_u128(0),
+            values: Vec::new(),
+            time: Timestamp(0),
+            diff: 0,
+            spare_buffers: Vec::new(),
+        }
+    }
 }
 
 impl FormatterContext {
+    /// Prepares the context for the next row: the previous payloads are
+    /// dropped (their buffers kept for reuse), the row's key, values, time
+    /// and diff are set. The values are copied into the context's own
+    /// vector, which keeps its capacity across rows.
+    pub fn start_row(&mut self, key: Key, values: &[Value], time: Timestamp, diff: isize) {
+        for payload in self.payloads.drain(..) {
+            if let FormattedDocument::RawBytes(mut buffer) = payload {
+                buffer.clear();
+                self.spare_buffers.push(buffer);
+            }
+        }
+        self.key = key;
+        self.values.clear();
+        self.values.extend_from_slice(values);
+        self.time = time;
+        self.diff = diff;
+    }
+
+    /// Appends an empty bytes payload and returns its buffer to write into.
+    /// The buffer of a previous row is reused when there is one.
+    pub fn payload_buffer(&mut self) -> &mut Vec<u8> {
+        let buffer = self.spare_buffers.pop().unwrap_or_default();
+        self.payloads.push(FormattedDocument::RawBytes(buffer));
+        match self.payloads.last_mut() {
+            Some(FormattedDocument::RawBytes(buffer)) => buffer,
+            _ => unreachable!("the payload was pushed just above"),
+        }
+    }
+
+    /// Appends a payload of any kind (a BSON document, ready bytes).
+    pub fn push_payload(&mut self, payload: impl Into<FormattedDocument>) {
+        self.payloads.push(payload.into());
+    }
+
+    /// A spare (empty) buffer to fill while `values` is still borrowed;
+    /// hand it back with `push_payload` once written.
+    pub fn take_payload_buffer(&mut self) -> Vec<u8> {
+        self.spare_buffers.pop().unwrap_or_default()
+    }
+
     pub fn new(
         payloads: Vec<impl Into<FormattedDocument>>,
         key: Key,
@@ -413,6 +509,7 @@ impl FormatterContext {
             values,
             time,
             diff,
+            spare_buffers: Vec::new(),
         }
     }
 
@@ -429,6 +526,7 @@ impl FormatterContext {
             values,
             time,
             diff,
+            spare_buffers: Vec::new(),
         }
     }
 
@@ -569,13 +667,26 @@ pub enum FormatterError {
 }
 
 pub trait Formatter: Send {
+    /// Formats the row that `context.start_row` was called with, appending
+    /// the payloads to `context` (through `payload_buffer` / `push_payload`)
+    /// and adjusting `context.diff` when the format derives it from a column.
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError>;
+
+    /// Formats one row into a fresh context. The output loop reuses one
+    /// context through `format_into` instead; this is for the callers that
+    /// format a row now and then (tests, one-off conversions).
     fn format(
         &mut self,
         key: &Key,
         values: &[Value],
         time: Timestamp,
         diff: isize,
-    ) -> Result<FormatterContext, FormatterError>;
+    ) -> Result<FormatterContext, FormatterError> {
+        let mut context = FormatterContext::default();
+        context.start_row(*key, values, time, diff);
+        self.format_into(&mut context)?;
+        Ok(context)
+    }
 
     /// The schema of the payloads this formatter produces, for the sinks
     /// whose target keeps a schema of its own: the Pulsar producers declare

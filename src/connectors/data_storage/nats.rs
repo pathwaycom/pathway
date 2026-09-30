@@ -415,14 +415,14 @@ pub struct NatsWriter {
 }
 
 impl Writer for NatsWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let accessor = self.accessor.as_mut().expect("accessor is set until drop");
         let topic = &self.topic;
         let mut common_headers =
             data.construct_nats_headers(&self.header_fields, &mut self.headers_cache);
         self.runtime.block_on(async {
             let last_payload_index = data.payloads.len() - 1;
-            for (index, payload) in data.payloads.into_iter().enumerate() {
+            for (index, payload) in data.payloads.iter().enumerate() {
                 // Avoid copying data on the last iteration, reuse the existing headers
                 let headers = {
                     if index == last_payload_index {
@@ -431,7 +431,7 @@ impl Writer for NatsWriter {
                         common_headers.clone()
                     }
                 };
-                let payload = payload.into_raw_bytes()?;
+                let payload = payload.as_raw_bytes()?.to_vec();
                 let effective_topic = topic.get_for_posting(&data.values)?;
                 accessor
                     .publish_with_headers(effective_topic, headers, payload)

@@ -20,6 +20,7 @@ mod test_dsv;
 mod test_dsv_dir;
 mod test_dsv_output;
 mod test_file_kv;
+mod test_formatter_context_reuse;
 mod test_gradual_broadcast;
 mod test_json_output;
 mod test_jsonlines;

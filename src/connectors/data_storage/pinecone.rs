@@ -502,7 +502,7 @@ impl PineconeWriter {
 }
 
 impl Writer for PineconeWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let id = self.record_id(&data.values, &data.key)?;
         match data.diff {
             1 => {

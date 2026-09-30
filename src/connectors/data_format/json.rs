@@ -13,7 +13,7 @@ use crate::connectors::ReaderContext::{
 use crate::connectors::{DataEventType, ReaderContext, SessionType};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::error::DynResult;
-use crate::engine::{Key, Result, Timestamp, Type, Value};
+use crate::engine::{Result, Timestamp, Type, Value};
 use crate::python_api::ValueField;
 
 use schema_registry_converter::blocking::json::JsonDecoder as RegistryJsonDecoder;
@@ -743,13 +743,16 @@ impl JsonLinesFormatter {
         }
     }
 
+    /// Serializes the row into `buffer` (a spare buffer of the context, so
+    /// the JSON is written without allocating).
     fn construct_json_as_raw_bytes(
         &mut self,
+        buffer: Vec<u8>,
         values: &[Value],
         time: Timestamp,
         diff: isize,
     ) -> Result<Vec<u8>, FormatterError> {
-        let mut serializer = serde_json::Serializer::new(Vec::<u8>::new());
+        let mut serializer = serde_json::Serializer::new(buffer);
         let mut map = serializer
             .serialize_map(Some(self.value_field_names.len() + 2))
             .unwrap();
@@ -783,30 +786,20 @@ impl JsonLinesFormatter {
 }
 
 impl Formatter for JsonLinesFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        let raw_bytes = match self.schema_registry_encoder.as_mut() {
-            Some(encoder) => Self::construct_json_with_encoder(
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
+        let raw_bytes = if let Some(encoder) = self.schema_registry_encoder.as_mut() {
+            Self::construct_json_with_encoder(
                 encoder,
                 &self.value_field_names,
-                values,
-                time,
-                diff,
-            ),
-            None => self.construct_json_as_raw_bytes(values, time, diff),
+                &context.values,
+                context.time,
+                context.diff,
+            )
+        } else {
+            let buffer = context.take_payload_buffer();
+            self.construct_json_as_raw_bytes(buffer, &context.values, context.time, context.diff)
         }?;
-
-        Ok(FormatterContext::new_single_payload(
-            raw_bytes,
-            *key,
-            values.to_vec(),
-            time,
-            diff,
-        ))
+        context.push_payload(raw_bytes);
+        Ok(())
     }
 }

@@ -1041,7 +1041,10 @@ impl From<SslError> for WriteError {
 }
 
 pub trait Writer: Send {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError>;
+    /// Writes one formatted row. The context is borrowed: it is reused for
+    /// the next row as soon as this returns, so a writer that keeps anything
+    /// beyond the call (a batch of rows, a payload sent later) copies it.
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError>;
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         Ok(())

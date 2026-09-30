@@ -369,10 +369,10 @@ impl MqttWriter {
 }
 
 impl Writer for MqttWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        for payload in &data.payloads {
             self.packets_in_queue += 1;
-            let payload = payload.into_raw_bytes()?;
+            let payload = payload.as_raw_bytes()?.to_vec();
             let effective_topic = self.topic.get_for_posting(&data.values)?;
             self.client
                 .publish(effective_topic, self.qos, self.retain, payload)

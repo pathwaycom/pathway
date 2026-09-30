@@ -1,6 +1,6 @@
 // Copyright © 2026 Pathway
 
-use crate::engine::{Key, Result, Timestamp, Value};
+use crate::engine::{Result, Value};
 
 use super::{Formatter, FormatterContext, FormatterError};
 
@@ -15,27 +15,18 @@ impl SingleColumnFormatter {
 }
 
 impl Formatter for SingleColumnFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        let payload = match &values
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
+        let mut buffer = context.take_payload_buffer();
+        match context
+            .values
             .get(self.value_field_index)
             .ok_or(FormatterError::IncorrectColumnIndex)?
         {
-            Value::Bytes(bytes) => bytes.to_vec(),
-            Value::String(string) => string.as_bytes().to_vec(),
+            Value::Bytes(bytes) => buffer.extend_from_slice(bytes),
+            Value::String(string) => buffer.extend_from_slice(string.as_bytes()),
             _ => return Err(FormatterError::UnsupportedValueType),
-        };
-        Ok(FormatterContext::new_single_payload(
-            payload,
-            *key,
-            values.to_vec(),
-            time,
-            diff,
-        ))
+        }
+        context.push_payload(buffer);
+        Ok(())
     }
 }

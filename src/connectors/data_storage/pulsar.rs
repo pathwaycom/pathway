@@ -2336,7 +2336,7 @@ impl PulsarWriter {
 }
 
 impl Writer for PulsarWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let effective_topic = self.topic.get_for_posting(&data.values)?;
         if !matches!(self.delivery_schedule, DeliverySchedule::Immediate)
             && effective_topic.starts_with(NON_PERSISTENT_TOPIC_PREFIX)
@@ -2348,10 +2348,10 @@ impl Writer for PulsarWriter {
         }
         self.ensure_producer(&effective_topic)?;
 
-        let partition_key = self.row_partition_key(&data)?;
-        let ordering_key = self.row_ordering_key(&data)?;
-        let event_time = self.row_event_time(&data)?;
-        let deliver_at_time = self.row_deliver_at_time(&data)?;
+        let partition_key = self.row_partition_key(data)?;
+        let ordering_key = self.row_ordering_key(data)?;
+        let event_time = self.row_event_time(data)?;
+        let deliver_at_time = self.row_deliver_at_time(data)?;
 
         // User-defined header values are serialized to JSON strings because
         // Pulsar message properties are string-to-string pairs. pathway_time
@@ -2377,7 +2377,7 @@ impl Writer for PulsarWriter {
         runtime.block_on(async {
             let deadline = Instant::now() + SEND_RECOVERY_TOTAL_BUDGET;
             let last_payload_index = data.payloads.len() - 1;
-            for (index, payload) in data.payloads.into_iter().enumerate() {
+            for (index, payload) in data.payloads.iter().enumerate() {
                 // Avoid copying data on the last iteration, reuse the existing properties
                 let properties = {
                     if index == last_payload_index {
@@ -2401,7 +2401,7 @@ impl Writer for PulsarWriter {
                     )
                     .await?;
                 }
-                let payload = payload.into_raw_bytes()?;
+                let payload = payload.as_raw_bytes()?.to_vec();
                 *max_pending_payload_bytes = (*max_pending_payload_bytes).max(payload.len());
                 let message = PendingMessage {
                     topic: effective_topic.clone(),

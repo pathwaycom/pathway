@@ -2834,8 +2834,8 @@ fn value_to_column_data(value: &Value, dtype: &Type) -> Result<ColumnData<'stati
 }
 
 impl Writer for MssqlWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.push(data);
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        self.buffer.push(data.clone());
         if let Some(max_batch_size) = self.max_batch_size {
             if self.buffer.len() == max_batch_size {
                 self.flush(true)?;

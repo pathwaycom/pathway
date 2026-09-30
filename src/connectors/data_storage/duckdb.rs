@@ -748,8 +748,8 @@ impl DuckDbWriter {
 }
 
 impl Writer for DuckDbWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.push(data);
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        self.buffer.push(data.clone());
         if let Some(max) = self.max_batch_size {
             if self.buffer.len() >= max {
                 self.flush(true)?;

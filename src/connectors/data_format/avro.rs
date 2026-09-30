@@ -28,7 +28,7 @@ use crate::connectors::data_format::{Formatter, FormatterContext, FormatterError
 use crate::connectors::exploration::ExploredField;
 use crate::engine::error::{DynError, DynResult};
 use crate::engine::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
-use crate::engine::{Key, Timestamp, Type, Value};
+use crate::engine::{Type, Value};
 use crate::python_api::ValueField;
 
 /// The name under which the generated record schema is registered. The
@@ -266,16 +266,11 @@ impl AvroFormatter {
 }
 
 impl Formatter for AvroFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
         let mut record = Vec::with_capacity(self.value_fields.len());
         for (position, value_field) in &self.value_fields {
-            let value = values
+            let value = context
+                .values
                 .get(*position)
                 .ok_or(FormatterError::ColumnsValuesCountMismatch)?;
             let avro_value = engine_value_to_avro(value, &value_field.type_, &value_field.name)
@@ -284,13 +279,8 @@ impl Formatter for AvroFormatter {
         }
         let raw_bytes = to_avro_datum(&self.schema, AvroValue::Record(record))
             .map_err(|e| FormatterError::Avro(AvroError::Encoding(e)))?;
-        Ok(FormatterContext::new_single_payload(
-            raw_bytes,
-            *key,
-            values.to_vec(),
-            time,
-            diff,
-        ))
+        context.push_payload(raw_bytes);
+        Ok(())
     }
 
     fn wire_schema(&self) -> Option<String> {

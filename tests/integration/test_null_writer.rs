@@ -30,6 +30,6 @@ fn test_null_writer_ok() -> eyre::Result<()> {
         Timestamp(1),
         0,
     );
-    writer.write(context).unwrap();
+    writer.write(&context).unwrap();
     Ok(())
 }

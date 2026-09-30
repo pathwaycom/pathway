@@ -22,9 +22,9 @@ impl FileWriter {
 }
 
 impl Writer for FileWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
-            self.writer.write_all(&payload.into_raw_bytes()?)?;
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        for payload in &data.payloads {
+            self.writer.write_all(payload.as_raw_bytes()?)?;
             self.writer.write_all(b"\n")?;
         }
         Ok(())

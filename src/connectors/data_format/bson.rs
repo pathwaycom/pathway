@@ -18,9 +18,7 @@ use crate::connectors::{ReaderContext, SessionType};
 use crate::connectors::{SPECIAL_FIELD_DIFF, SPECIAL_FIELD_TIME};
 use crate::engine::time::DateTime as DateTimeTrait;
 use crate::engine::value::parse_pathway_pointer;
-use crate::engine::{
-    DateTimeNaive, DateTimeUtc, Duration, Key, Result as EngineResult, Timestamp, Type, Value,
-};
+use crate::engine::{DateTimeNaive, DateTimeUtc, Duration, Result as EngineResult, Type, Value};
 
 pub struct BsonParser {
     value_field_names: Vec<String>,
@@ -616,30 +614,24 @@ impl BsonFormatter {
 }
 
 impl Formatter for BsonFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
         let mut document = Document::new();
-        for (key, value) in zip(self.value_field_names.iter(), values) {
+        for (key, value) in zip(self.value_field_names.iter(), &context.values) {
             let _ = document.insert(key, serialize_value_to_bson(value)?);
         }
         if self.with_special_fields {
             let _ = document.insert(
                 SPECIAL_FIELD_DIFF,
-                Bson::Int64(diff.try_into().expect("diff can only be +1 or -1")),
+                Bson::Int64(context.diff.try_into().expect("diff can only be +1 or -1")),
             );
-            let _ = document.insert(SPECIAL_FIELD_TIME, Bson::Int64(time.as_i64_saturating()));
+            let _ = document.insert(
+                SPECIAL_FIELD_TIME,
+                Bson::Int64(context.time.as_i64_saturating()),
+            );
         }
-        Ok(FormatterContext::new_single_payload(
-            document,
-            *key,
-            Vec::new(),
-            time,
-            diff,
-        ))
+        // The BSON writer works from the document; the values are not kept.
+        context.values.clear();
+        context.push_payload(document);
+        Ok(())
     }
 }

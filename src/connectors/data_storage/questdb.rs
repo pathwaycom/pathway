@@ -141,7 +141,7 @@ impl QuestDBWriter {
 }
 
 impl Writer for QuestDBWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         // Begin a fresh ILP row. This MUST be called once per row,
         // before any `column_*` call: `table()` opens a row and the
         // trailing `at()`/`at_now()` closes it. Previously the buffer
@@ -174,7 +174,8 @@ impl Writer for QuestDBWriter {
 
         for (column_id, (value, column_name)) in data
             .values
-            .into_iter()
+            .iter()
+            .cloned()
             .zip(self.field_names.iter())
             .enumerate()
         {

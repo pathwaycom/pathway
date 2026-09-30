@@ -18,7 +18,7 @@ mod variable;
 mod windows;
 
 use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
-use crate::connectors::data_format::{Formatter, Parser};
+use crate::connectors::data_format::{Formatter, FormatterContext, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, OutputConnectorStats};
 use crate::connectors::synchronization::{
@@ -4456,6 +4456,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         if let Some(sort_by_indices) = sort_by_indices {
             Self::prepare_batch_for_output(&mut batch.data, sort_by_indices);
         }
+        // One context for the whole batch: its buffers are reused row after row.
+        let mut context = FormatterContext::default();
         for ((key, values), diff) in batch.data {
             if time.is_from_persistence() && worker_persistent_storage.is_some() {
                 // Ignore entries, which had been written before
@@ -4471,10 +4473,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
             execute_with_retries(
                 || {
-                    let formatted = data_formatter
-                        .format(&key, &values, time, diff)
+                    context.start_row(key, &values, time, diff);
+                    data_formatter
+                        .format_into(&mut context)
                         .map_err(DynError::from)?;
-                    data_sink.write(formatted).map_err(DynError::from)
+                    data_sink.write(&context).map_err(DynError::from)
                 },
                 RetryConfig::default(),
                 retries,

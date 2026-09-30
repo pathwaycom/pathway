@@ -326,7 +326,7 @@ async fn delete_chunk(
 }
 
 impl Writer for WeaviateWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let uuid = match self.pk_index {
             Some(pk_index) => value_to_uuid(&data.values[pk_index])?,
             None => key_to_uuid(data.key),
