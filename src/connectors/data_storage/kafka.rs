@@ -1350,8 +1350,8 @@ impl Writer for KafkaWriter {
             // configuration): headerless messages wait in `pending` while
             // headered ones go to `producev` at once, so a writer that mixed
             // the two could reorder messages of one partition.
-            for payload in data.payloads {
-                let payload = payload.into_raw_bytes()?;
+            for payload in &data.payloads {
+                let payload = payload.as_raw_bytes()?.to_vec();
                 self.pending.push(PendingMessage {
                     topic: effective_topic.to_string(),
                     key: key.to_vec(),
