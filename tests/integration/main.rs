@@ -33,6 +33,7 @@ mod test_operator_persistence;
 mod test_parser;
 mod test_parser_errors;
 mod test_polling;
+mod test_posix_consistent_read;
 mod test_prev_next;
 mod test_seek;
 mod test_sqlite;

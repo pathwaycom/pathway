@@ -66,6 +66,12 @@ impl PosixLikeScanner for FilesystemScanner {
     fn short_description(&self) -> String {
         format!("FileSystem({})", self.path)
     }
+
+    fn can_object_change_during_read(&self) -> bool {
+        // A file is created empty and written afterwards, and the two steps
+        // may straddle a scan.
+        true
+    }
 }
 
 impl FilesystemScanner {
