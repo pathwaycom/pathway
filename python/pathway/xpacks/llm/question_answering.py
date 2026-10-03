@@ -2,8 +2,9 @@
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 from warnings import warn
 
 import requests
@@ -45,9 +46,9 @@ class BaseContextProcessor(ABC):
     def maybe_unwrap_docs(self, docs: pw.Json | list[pw.Json] | list[Doc]):
         if isinstance(docs, pw.Json):
             doc_ls: list[Doc] = docs.as_list()
-        elif isinstance(docs, list) and all([isinstance(dc, dict) for dc in docs]):
+        elif isinstance(docs, list) and all(isinstance(dc, dict) for dc in docs):
             doc_ls = docs  # type: ignore
-        elif all([isinstance(doc, pw.Json) for doc in docs]):
+        elif all(isinstance(doc, pw.Json) for doc in docs):
             doc_ls = [doc.as_dict() for doc in docs]  # type: ignore
         else:
             raise ValueError(
@@ -463,6 +464,11 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
         rerank_topk: Number of top-scoring documents to retain after reranking, when a reranker is provided.
             If ``None``, reranking is disabled. Defaults to ``None``.
+        query_transform: Query transformation behavior to apply before retrieval.
+            Can be ``"rewrite"`` for query rewriting (using :py:func:`~pathway.xpacks.llm.prompts.prompt_query_rewrite`),
+            ``"hyde"`` for Hypothetical Document Embeddings (using :py:func:`~pathway.xpacks.llm.prompts.prompt_query_rewrite_hyde`),
+            a custom prompt callable/pw.UDF, or ``None`` to skip transformation and search with the raw query.
+            Defaults to ``None``.
 
 
     Example:
@@ -508,7 +514,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     ... )
     >>> app = QASummaryRestServer(app_host, app_port, rag)  # doctest: +SKIP
     >>> app.run()  # doctest: +SKIP
-    """  # noqa: E501
+    """
 
     def __init__(
         self,
@@ -524,11 +530,36 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         search_topk: int = 6,
         reranker: pw.UDF | None = None,
         rerank_topk: int | None = None,
+        query_transform: str | Callable | pw.UDF | None = None,
     ) -> None:
 
         self.llm = llm
         self.indexer = indexer
         self.reranker = reranker
+        self.query_transform = query_transform
+
+        if query_transform is None:
+            self.query_transform_udf = None
+        elif isinstance(query_transform, str):
+            qt_normalized = query_transform.strip().lower()
+            if qt_normalized == "rewrite":
+                self.query_transform_udf = prompts.prompt_query_rewrite
+            elif qt_normalized == "hyde":
+                self.query_transform_udf = prompts.prompt_query_rewrite_hyde
+            else:
+                raise ValueError(
+                    f"Unknown query_transform: '{query_transform}'. "
+                    "Expected 'rewrite', 'hyde', a callable/pw.UDF, or None."
+                )
+        elif isinstance(query_transform, pw.UDF):
+            self.query_transform_udf = query_transform
+        elif callable(query_transform):
+            self.query_transform_udf = pw.udf(query_transform)
+        else:
+            raise ValueError(
+                f"Unknown query_transform: '{query_transform}'. "
+                "Expected 'rewrite', 'hyde', a callable/pw.UDF, or None."
+            )
 
         if default_llm_name is None:
             default_llm_name = llm.model
@@ -639,16 +670,38 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Answer a question based on the available information."""
 
-        pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
-            pw_ai_queries.select(
-                metadata_filter=pw.this.filters,
-                filepath_globpattern=pw.cast(str | None, None),
-                query=pw.this.prompt,
-                k=self.search_topk,
+        if self.query_transform_udf is not None:
+            transformed_queries = pw_ai_queries.select(
+                pw.this.filters,
+                search_query=self.llm(
+                    llms.prompt_chat_single_qa(
+                        self.query_transform_udf(pw.this.prompt)
+                    ),
+                    model=pw.this.model,
+                ),
+            ).await_futures()
+
+            pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
+                transformed_queries.select(
+                    metadata_filter=pw.this.filters,
+                    filepath_globpattern=pw.cast(str | None, None),
+                    query=pw.this.search_query,
+                    k=self.search_topk,
+                )
+            ).select(
+                docs=pw.this.result,
             )
-        ).select(
-            docs=pw.this.result,
-        )
+        else:
+            pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
+                pw_ai_queries.select(
+                    metadata_filter=pw.this.filters,
+                    filepath_globpattern=pw.cast(str | None, None),
+                    query=pw.this.prompt,
+                    k=self.search_topk,
+                )
+            ).select(
+                docs=pw.this.result,
+            )
 
         if self.reranker is not None:
             pw_ai_results = self._apply_reranking(pw_ai_results)
@@ -886,7 +939,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
     ... )
     >>> app.build_server(host=app_host, port=app_port)  # doctest: +SKIP
     >>> app.run_server()  # doctest: +SKIP
-    """  # noqa: E501
+    """
 
     def __init__(
         self,
@@ -905,6 +958,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         n_starting_documents: int = 2,
         factor: int = 2,
         max_iterations: int = 4,
+        query_transform: str | Callable | pw.UDF | None = None,
     ) -> None:
         super().__init__(
             llm,
@@ -912,6 +966,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             default_llm_name=default_llm_name,
             summarize_template=summarize_template,
             context_processor=context_processor,
+            query_transform=query_transform,
         )
         self.prompt_template = prompt_template
         self.n_starting_documents = n_starting_documents
@@ -1251,3 +1306,6 @@ class RAGClient:
             DeprecationWarning,
         )
         return self.list_documents(*args, **kwargs)
+
+
+BaseRAGQA = BaseRAGQuestionAnswerer
