@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - `pathway.xpacks.llm.rerankers.rerank_topk_filter` no longer trips a bare worker panic (`ValueError: not enough values to unpack`) on a row whose document list is empty. A query that retrieved nothing is a normal outcome, and it now yields empty document and score lists for that row instead of taking down the pipeline.
+- The filesystem input connectors (`pw.io.fs`, `pw.io.csv`, `pw.io.jsonlines`, `pw.io.plaintext`) no longer retract and re-insert the rows of a file that was still being written when a scan first found it: the scan recorded the file's metadata (for instance, an empty file), the read that followed already saw the complete contents, and the next scan took the size change for a modification of a file that had not changed since it was read.
 
 ## [0.33.0] - 2026-09-18
 

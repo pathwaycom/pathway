@@ -1616,11 +1616,11 @@ impl SqliteWriter {
 }
 
 impl Writer for SqliteWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         // Stream mode records every event, including deletions, with
         // their time/diff metadata. Snapshot mode handles +1 as an UPSERT
         // and -1 as a DELETE; other diffs are not emitted by the engine.
-        self.buffer.push(data);
+        self.buffer.push(data.clone());
         if let Some(max) = self.max_batch_size {
             if self.buffer.len() >= max {
                 self.flush(true)?;

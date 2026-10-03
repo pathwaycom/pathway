@@ -122,7 +122,17 @@ pub fn full_cycle_read(
         &reporter,
         None,
     );
-    let result = get_entries_in_receiver(receiver);
+    // Batched rows are looked at message by message, like the plain ones.
+    let result: Vec<Entry> = get_entries_in_receiver(receiver)
+        .into_iter()
+        .flat_map(|entry| match entry {
+            Entry::RealtimeEntriesBatch(gathered) => gathered
+                .into_iter()
+                .map(|(events, offset)| Entry::RealtimeEntries(events, offset, None))
+                .collect(),
+            entry => vec![entry],
+        })
+        .collect();
 
     let has_persistent_storage = persistent_storage.is_some();
     let mut frontier = OffsetAntichain::new();
@@ -186,6 +196,7 @@ pub fn full_cycle_read(
                 rewind_finish_sentinel_seen = true;
             }
             Entry::RealtimeParsingError(e) => panic!("{e}"),
+            Entry::RealtimeEntriesBatch(_) => unreachable!("batches are flattened above"),
         }
     }
 

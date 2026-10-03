@@ -449,7 +449,7 @@ impl QdrantWriter {
 }
 
 impl Writer for QdrantWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         match data.diff {
             1 => {
                 let vectors = self.build_vectors(&data.values)?;

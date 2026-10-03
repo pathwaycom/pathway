@@ -33,6 +33,7 @@ from .utils import (
     BrokerTcpProxy,
     make_pulsar_client,
     pulsar_admin_request,
+    pulsar_subscribe,
 )
 
 WAIT_TIMEOUT_SECS = 30
@@ -786,7 +787,8 @@ def test_pulsar_write_survives_a_broker_disconnection(pulsar_context, tmp_path):
             (input_dir / f"{payload}.txt").write_text(payload + "\n")
 
     def received() -> set[str]:
-        consumer = pulsar_context._client.subscribe(
+        consumer = pulsar_subscribe(
+            pulsar_context._client,
             pulsar_context.topic,
             subscription_name=f"peek-{uuid4()}",
             initial_position=pulsar_context._pulsar.InitialPosition.Earliest,
@@ -1975,7 +1977,8 @@ def test_pulsar_avro_write_registers_schema_and_interoperates(pulsar_context, tm
         age = Long()
         score = Double()
 
-    consumer = pulsar_context._client.subscribe(
+    consumer = pulsar_subscribe(
+        pulsar_context._client,
         pulsar_context.topic,
         subscription_name=f"avro-verifier-{uuid4()}",
         initial_position=pulsar_client.InitialPosition.Earliest,
@@ -3321,7 +3324,8 @@ class SharedSubscriber:
 
     def __init__(self, pulsar_context, topic: str | None = None):
         self._pulsar = pulsar_context._pulsar
-        self._consumer = pulsar_context._client.subscribe(
+        self._consumer = pulsar_subscribe(
+            pulsar_context._client,
             topic or pulsar_context.topic,
             subscription_name=f"delayed-{uuid4()}",
             consumer_type=self._pulsar.ConsumerType.Shared,
@@ -4019,7 +4023,8 @@ def test_pulsar_write_producer_name_visible_to_broker(pulsar_context, tmp_path):
     input_file.write_text("one\n")
     # A durable subscription to peek through, created before the write so it
     # covers the written message.
-    consumer = pulsar_context._client.subscribe(
+    consumer = pulsar_subscribe(
+        pulsar_context._client,
         pulsar_context.topic,
         subscription_name="peek-sub",
         initial_position=pulsar_context._pulsar.InitialPosition.Earliest,

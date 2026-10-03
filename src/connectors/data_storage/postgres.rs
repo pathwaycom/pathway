@@ -1538,8 +1538,8 @@ fn copy_flush_snapshot(
 }
 
 impl Writer for PsqlWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.push(data);
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        self.buffer.push(data.clone());
         if let Some(max_batch_size) = self.max_batch_size {
             // Defensive ``>=`` rather than ``==``: an upstream caller
             // that passes ``max_batch_size = 0`` (or any value smaller

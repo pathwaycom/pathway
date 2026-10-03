@@ -312,8 +312,8 @@ impl DynamoDBWriter {
 }
 
 impl Writer for DynamoDBWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let primary_key = self.primary_key(&data);
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        let primary_key = self.primary_key(data);
         match data.diff {
             1 => {
                 // An insertion always wins over a deletion of the same key within
@@ -321,7 +321,7 @@ impl Writer for DynamoDBWriter {
                 // same key with both a put and a delete, and snapshot semantics
                 // keep the freshly-inserted row, so we overwrite any pending
                 // deletion for this key.
-                let request = self.create_upsert_request(&data)?;
+                let request = self.create_upsert_request(data)?;
                 self.write_requests.insert(primary_key, request);
             }
             -1 => {
@@ -329,7 +329,7 @@ impl Writer for DynamoDBWriter {
                 // pending in the current batch (the insertion takes precedence,
                 // regardless of the order the two events arrive in).
                 if !self.write_requests.contains_key(&primary_key) {
-                    let request = self.create_delete_request(&data)?;
+                    let request = self.create_delete_request(data)?;
                     self.write_requests.insert(primary_key, request);
                 }
             }

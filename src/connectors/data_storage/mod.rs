@@ -554,6 +554,18 @@ pub trait DeferredAckWorker: Send {
 pub trait Reader {
     fn read(&mut self) -> Result<ReadResult, ReadError>;
 
+    /// Whether the next `read()` returns `Data` at once, from a message the
+    /// reader already holds. While it does, the connector gathers the parsed
+    /// rows into batches before handing them to the engine's thread; once it
+    /// doesn't, whatever is gathered is handed over before `read()` may wait,
+    /// so batching never delays a row. The answer must not be a guess: a
+    /// `true` followed by a `read()` that waits would hold the batch back for
+    /// as long as the wait. Readers that can't tell answer `false` and keep
+    /// sending row by row.
+    fn has_buffered_data(&mut self) -> bool {
+        false
+    }
+
     #[allow(clippy::missing_errors_doc)]
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError>;
 
@@ -1041,7 +1053,10 @@ impl From<SslError> for WriteError {
 }
 
 pub trait Writer: Send {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError>;
+    /// Writes one formatted row. The context is borrowed: it is reused for
+    /// the next row as soon as this returns, so a writer that keeps anything
+    /// beyond the call (a batch of rows, a payload sent later) copies it.
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError>;
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         Ok(())

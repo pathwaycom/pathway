@@ -41,6 +41,7 @@ from .utils import (  # noqa: E402
     IdentityPipelineRun,
     assert_messages_survive_sigkill_restart,
     make_pulsar_client,
+    pulsar_subscribe,
 )
 
 IDENTITY_PROGRAM_PATH = os.path.join(
@@ -187,7 +188,8 @@ def test_pulsar_written_messages_survive_sigkill_restart(tmp_path):
     client = make_pulsar_client(PULSAR_SERVICE_URI)
     # The subscription is created before the pipeline starts, so nothing that
     # is published can escape the verification.
-    consumer = client.subscribe(
+    consumer = pulsar_subscribe(
+        client,
         topic,
         subscription_name="writer-persistence-verifier",
         initial_position=pulsar.InitialPosition.Earliest,

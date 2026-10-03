@@ -681,6 +681,25 @@ impl Reader for KafkaReader {
         }
     }
 
+    fn has_buffered_data(&mut self) -> bool {
+        if self.deferred_read_result.is_some() || !self.pending_messages.is_empty() {
+            return true;
+        }
+        if !matches!(self.mode, ConnectorMode::Streaming) || self.paused_for_backpressure {
+            return false;
+        }
+        // Peek: a message librdkafka already holds is taken now and read next.
+        // A non-blocking poll returns `None` for anything but a message, so a
+        // queue holding only group events never counts as buffered data.
+        match self.consumer.poll(Duration::ZERO) {
+            Some(Ok(message)) => {
+                self.pending_messages.push_back(message.detach());
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
         // "Lazy" seek implementation
         for (offset_key, offset_value) in frontier {
@@ -779,32 +798,6 @@ impl Drop for KafkaReader {
 }
 
 impl KafkaReader {
-    fn new(
-        consumer: KafkaConsumer,
-        fetch_queue: Arc<FetchQueue>,
-        topic: String,
-        positions_for_seek: HashMap<i32, KafkaOffset>,
-        watermarks: Vec<RdkafkaWatermark>,
-        mode: ConnectorMode,
-        has_assigned_partitions: bool,
-        emit_metadata: bool,
-    ) -> KafkaReader {
-        KafkaReader {
-            fetched_messages: VecDeque::with_capacity(CONSUME_BATCH_SIZE),
-            fetch_queue,
-            consumer,
-            topic: topic.into(),
-            emit_metadata,
-            positions_for_seek,
-            watermarks,
-            mode,
-            has_assigned_partitions,
-            deferred_read_result: None,
-            paused_for_backpressure: false,
-            pending_messages: VecDeque::new(),
-        }
-    }
-
     fn pause_assigned_partitions(&self) -> Result<(), KafkaError> {
         let assignment = self.consumer.assignment()?;
         self.consumer.pause(&assignment)
@@ -1053,16 +1046,20 @@ impl KafkaReader {
             }
         };
 
-        Ok(KafkaReader::new(
-            consumer,
+        Ok(KafkaReader {
+            fetched_messages: VecDeque::with_capacity(CONSUME_BATCH_SIZE),
             fetch_queue,
-            topic,
-            seek_positions,
+            consumer,
+            topic: topic.into(),
+            emit_metadata,
+            positions_for_seek: seek_positions,
             watermarks,
             mode,
             has_assigned_partitions,
-            emit_metadata,
-        ))
+            deferred_read_result: None,
+            paused_for_backpressure: false,
+            pending_messages: VecDeque::new(),
+        })
     }
 
     fn poll_duration_for_static_mode() -> Duration {
@@ -1339,7 +1336,7 @@ impl Drop for KafkaWriter {
 }
 
 impl Writer for KafkaWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let row_key_bytes = data.key.to_le_bytes();
         let key: &[u8] = match self.key_field_index {
             Some(index) => match &data.values[index] {
@@ -1372,8 +1369,8 @@ impl Writer for KafkaWriter {
             // configuration): headerless messages wait in `pending` while
             // headered ones go to `producev` at once, so a writer that mixed
             // the two could reorder messages of one partition.
-            for payload in data.payloads {
-                let payload = payload.into_raw_bytes()?;
+            for payload in &data.payloads {
+                let payload = payload.as_raw_bytes()?.to_vec();
                 self.pending.push(PendingMessage {
                     topic: effective_topic.to_string(),
                     key: key.to_vec(),
@@ -1386,8 +1383,8 @@ impl Writer for KafkaWriter {
             return Ok(());
         }
         let last_payload_index = data.payloads.len() - 1;
-        for (index, payload) in data.payloads.into_iter().enumerate() {
-            let payload = payload.into_raw_bytes()?;
+        for (index, payload) in data.payloads.iter().enumerate() {
+            let payload = payload.as_raw_bytes()?;
             // The headers are handed over to librdkafka with the message, so
             // every payload but the last one gets a copy and the last one
             // takes the original.
@@ -1397,7 +1394,7 @@ impl Writer for KafkaWriter {
                 headers.clone()
             };
             let mut entry = BaseRecord::<[u8], [u8]>::to(&effective_topic)
-                .payload(&payload)
+                .payload(payload)
                 .key(key);
             if let Some(payload_headers) = payload_headers {
                 entry = entry.headers(payload_headers);

@@ -613,14 +613,14 @@ impl KinesisWriter {
 }
 
 impl Writer for KinesisWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let partition_key = match self.key_field_index {
             Some(index) => data.values[index].to_string(),
             None => data.key.as_u128().to_string(),
         };
 
-        for payload in data.payloads {
-            let payload = payload.into_raw_bytes()?;
+        for payload in &data.payloads {
+            let payload = payload.as_raw_bytes()?.to_vec();
             let effective_stream = self.stream_name.get_for_posting(&data.values)?;
             let entry = PutRecordsRequestEntry::builder()
                 .partition_key(partition_key.clone())

@@ -439,17 +439,22 @@ def test_kafka_simple_wrapper_bytes_io(
     pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
-    # check that reread will have all these messages again
+    # check that reread will have all these messages again. The second run
+    # writes into a file of its own: the first run's output already holds the
+    # two expected lines, so a checker pointed at it would report success
+    # before the second pipeline has read anything.
     G.clear()
     table = pw.io.kafka.simple_read(
         kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
     )
-    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
-    wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
+    pw.io.jsonlines.write(table, tmp_path / "output_reread.jsonl")
+    wait_result_with_checker(
+        FileLinesNumberChecker(tmp_path / "output_reread.jsonl", 2), 10
+    )
 
     # Check output type, bytes should be rendered as an array
-    with open(tmp_path / "output.jsonl", "r") as f:
+    with open(tmp_path / "output_reread.jsonl", "r") as f:
         for row in f:
             row_parsed = json.loads(row)
             assert isinstance(row_parsed["data"], str)
@@ -471,18 +476,23 @@ def test_kafka_simple_wrapper_plaintext_io(
     pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
-    # check that reread will have all these messages again
+    # check that reread will have all these messages again. The second run
+    # writes into a file of its own: the first run's output already holds the
+    # two expected lines, so a checker pointed at it would report success
+    # before the second pipeline has read anything.
     G.clear()
     table = pw.io.kafka.simple_read(
         kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
         format="plaintext",
     )
-    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
-    wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
+    pw.io.jsonlines.write(table, tmp_path / "output_reread.jsonl")
+    wait_result_with_checker(
+        FileLinesNumberChecker(tmp_path / "output_reread.jsonl", 2), 10
+    )
 
     # Check output type, parsed plaintext should be a string
-    with open(tmp_path / "output.jsonl", "r") as f:
+    with open(tmp_path / "output_reread.jsonl", "r") as f:
         for row in f:
             row_parsed = json.loads(row)
             assert isinstance(row_parsed["data"], str)

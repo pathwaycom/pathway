@@ -59,6 +59,10 @@ pub use offset::{Offset, OffsetKey, OffsetValue};
 const SPECIAL_FIELD_TIME: &str = "time";
 const SPECIAL_FIELD_DIFF: &str = "diff";
 const MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS: usize = 100_000;
+/// How many messages' rows the connector gathers into one channel message at
+/// most while the reader has more data already fetched.
+const CHANNEL_BATCH_SIZE: usize = 64;
+
 /// How many rows the connector lets accumulate in the input session before
 /// handing them to the dataflow ahead of the commit (see
 /// `flush_between_steps`). Small enough to split a large batch into several
@@ -143,6 +147,9 @@ pub enum Entry {
         Offset,
         Option<Vec<EntrySendApproval>>,
     ),
+    /// Several consecutive `RealtimeEntries` (without approvals) in one
+    /// channel message, in reading order: see `Reader::has_buffered_data`.
+    RealtimeEntriesBatch(Vec<(Vec<ParsedEventWithErrors>, Offset)>),
     RealtimeEvent(ReadResult),
     RealtimeParsingError(DynError),
 }
@@ -422,6 +429,24 @@ impl Connector {
         }
     }
 
+    /// Hands the gathered rows over (a lone message goes as a plain
+    /// `RealtimeEntries`); true unless the receiver is gone.
+    fn send_batch(
+        sender: &Sender<Entry>,
+        reader: &mut dyn Reader,
+        batch: &mut Vec<(Vec<ParsedEventWithErrors>, Offset)>,
+    ) -> bool {
+        let entry = match batch.len() {
+            0 => return true,
+            1 => {
+                let (entries, offset) = batch.pop().expect("one gathered message");
+                Entry::RealtimeEntries(entries, offset, None)
+            }
+            _ => Entry::RealtimeEntriesBatch(take(batch)),
+        };
+        Self::send_entry_with_keep_alive(sender, reader, entry)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn read_realtime_updates(
         reader: &mut dyn Reader,
@@ -442,7 +467,21 @@ impl Connector {
         // reset after any successful read so an isolated error doesn't slow
         // down steady reading.
         let mut error_backoff = RetryConfig::default();
+        // Rows gathered for one channel message; handed over before anything
+        // else is sent, when full, and before a `read()` that may wait.
+        let mut batch: Vec<(Vec<ParsedEventWithErrors>, Offset)> = Vec::new();
         loop {
+            if !batch.is_empty() && !reader.has_buffered_data() {
+                if !Self::send_batch(sender, reader, &mut batch) {
+                    break;
+                }
+                // The engine's thread was notified when these rows were
+                // gathered, before they were in the channel; a thread that
+                // looked then and parked again would find them only at its
+                // next timer, so notify it once more now that the rows are
+                // there.
+                wakeup.notify();
+            }
             let row_read_result = reader.read();
             let finished = matches!(row_read_result, Ok(ReadResult::Finished));
             let is_read_error = row_read_result.is_err();
@@ -451,7 +490,14 @@ impl Connector {
                 Ok(ReadResult::Data(reader_context, offset)) => {
                     match parser.parse(&reader_context) {
                         Ok(entries) => {
-                            if let Some(group) = group.as_mut() {
+                            if group.is_none() {
+                                batch.push((entries, offset));
+                                if batch.len() >= CHANNEL_BATCH_SIZE
+                                    && !Self::send_batch(sender, reader, &mut batch)
+                                {
+                                    break;
+                                }
+                            } else if let Some(group) = group.as_mut() {
                                 let mut entries_for_sending = Vec::new();
                                 let mut approvals = Vec::new();
                                 let mut disconnected = false;
@@ -497,23 +543,15 @@ impl Connector {
                                 if disconnected || !sent {
                                     break;
                                 }
-                            } else {
-                                let sent = Self::send_entry_with_keep_alive(
-                                    sender,
-                                    reader,
-                                    Entry::RealtimeEntries(entries, offset, None),
-                                );
-                                if !sent {
-                                    break;
-                                }
                             }
                         }
                         Err(e) => {
-                            let sent = Self::send_entry_with_keep_alive(
-                                sender,
-                                reader,
-                                Entry::RealtimeParsingError(e),
-                            );
+                            let sent = Self::send_batch(sender, reader, &mut batch)
+                                && Self::send_entry_with_keep_alive(
+                                    sender,
+                                    reader,
+                                    Entry::RealtimeParsingError(e),
+                                );
                             if !sent {
                                 break;
                             }
@@ -524,17 +562,22 @@ impl Connector {
                     if let ReadResult::NewSource(ref metadata) = other_read_result {
                         parser.on_new_source_started(metadata);
                     }
-                    let sent = Self::send_entry_with_keep_alive(
-                        sender,
-                        reader,
-                        Entry::RealtimeEvent(other_read_result),
-                    );
+                    let sent = Self::send_batch(sender, reader, &mut batch)
+                        && Self::send_entry_with_keep_alive(
+                            sender,
+                            reader,
+                            Entry::RealtimeEvent(other_read_result),
+                        );
                     if !sent {
                         break;
                     }
                     consecutive_errors = 0;
                 }
                 Err(error) => {
+                    // The gathered rows must not wait out the backoff below.
+                    if !Self::send_batch(sender, reader, &mut batch) {
+                        break;
+                    }
                     error!("There had been an error processing the row read result: {error}");
                     consecutive_errors += 1;
                     if consecutive_errors > reader.max_allowed_consecutive_errors() {
@@ -828,7 +871,7 @@ impl Connector {
                 // So once the number of events within a single batch reaches the limit, we
                 // yield to timely to perform the work. That may or may not lead to time advancement.
                 n_entries_in_batch += 1;
-                if n_entries_in_batch == MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS {
+                if n_entries_in_batch >= MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS {
                     Self::flush_between_steps(&mut parse_context, &mut rows_since_flush);
                     return ControlFlow::Continue(next_commit_at);
                 }
@@ -859,6 +902,10 @@ impl Connector {
                         return ControlFlow::Continue(Some(iteration_start));
                     }
                     Ok(mut entry) => {
+                        if let Entry::RealtimeEntriesBatch(ref gathered) = entry {
+                            // A batch counts as its messages towards the step limit.
+                            n_entries_in_batch += gathered.len().saturating_sub(1);
+                        }
                         let need_to_defer_processing = match entry {
                             Entry::RealtimeEvent(ReadResult::NewSource(ref metadata)) => {
                                 // Deferring events is only necessary when the data source
@@ -940,6 +987,46 @@ impl Connector {
         ))
     }
 
+    /// Returns how many rows the message put into the input session.
+    fn handle_realtime_entries<F>(
+        &mut self,
+        mut parsed_entries: Vec<ParsedEventWithErrors>,
+        offset: Offset,
+        approvals: Option<Vec<EntrySendApproval>>,
+        backfilling_finished: bool,
+        ctx: &mut ParseContext<'_, F>,
+    ) -> usize
+    where
+        F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+    {
+        if !backfilling_finished {
+            parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
+        }
+        let rows = parsed_entries.len();
+
+        if let Some(group) = &self.group {
+            if group.forced_time_advancement().is_some() {
+                parsed_entries.insert(0, ParsedEventWithErrors::AdvanceTime);
+            }
+        }
+
+        self.on_parsed_data(parsed_entries, Some(&offset.clone()), ctx);
+        let (offset_key, offset_value) = offset;
+        if ctx.snapshot_writer.is_some() {
+            assert!(backfilling_finished);
+            self.current_frontier
+                .advance_offset(offset_key, offset_value);
+        }
+
+        if let Some(approvals) = approvals {
+            self.group
+                .as_mut()
+                .expect("if approvals are dispatched there must be a synchronization group")
+                .report_entries_sent(approvals);
+        }
+        rows
+    }
+
     /// Hands the rows ingested since the last dataflow step to the dataflow
     /// now, at the current (unchanged) time, instead of holding them until
     /// the batch commits. The operators then sort and merge them in small
@@ -1000,31 +1087,24 @@ impl Connector {
             Entry::RealtimeParsingError(e) => {
                 self.log_parse_error(e);
             }
-            Entry::RealtimeEntries(mut parsed_entries, offset, approvals) => {
-                if !*backfilling_finished {
-                    parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
-                }
-                rows = parsed_entries.len();
-
-                if let Some(group) = &self.group {
-                    if group.forced_time_advancement().is_some() {
-                        parsed_entries.insert(0, ParsedEventWithErrors::AdvanceTime);
-                    }
-                }
-
-                self.on_parsed_data(parsed_entries, Some(&offset.clone()), ctx);
-                let (offset_key, offset_value) = offset;
-                if ctx.snapshot_writer.is_some() {
-                    assert!(*backfilling_finished);
-                    self.current_frontier
-                        .advance_offset(offset_key, offset_value);
-                }
-
-                if let Some(approvals) = approvals {
-                    self.group
-                        .as_mut()
-                        .expect("if approvals are dispatched there must be a synchronization group")
-                        .report_entries_sent(approvals);
+            Entry::RealtimeEntries(parsed_entries, offset, approvals) => {
+                rows = self.handle_realtime_entries(
+                    parsed_entries,
+                    offset,
+                    approvals,
+                    *backfilling_finished,
+                    ctx,
+                );
+            }
+            Entry::RealtimeEntriesBatch(gathered) => {
+                for (parsed_entries, offset) in gathered {
+                    rows += self.handle_realtime_entries(
+                        parsed_entries,
+                        offset,
+                        None,
+                        *backfilling_finished,
+                        ctx,
+                    );
                 }
             }
             Entry::RewindFinishSentinel {

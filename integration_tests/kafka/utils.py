@@ -1013,6 +1013,34 @@ def make_pulsar_client(service_uri: str, **kwargs):
     )
 
 
+def pulsar_subscribe(client, topic, **kwargs):
+    """`client.subscribe(topic, **kwargs)` that outlasts a transient failure
+    of the broker.
+
+    The client library does not: its C++ core (4.2.0, shipped by pulsar-client
+    3.13.0) attaches a new consumer to the connection before the SUBSCRIBE
+    request is answered and keeps it attached when the broker answers with a
+    retryable error (`BrokerPersistenceError` while the topic's or the
+    cursor's ledger is being created, `ServiceNotReady`, ...). The
+    reconnection it then schedules finds the consumer "already connected" and
+    is skipped, so the request is never repeated: `subscribe` sits out the
+    whole operation timeout and fails with `Pulsar error: TimeOut`, although
+    the broker would have served the very next attempt. Producers are not
+    affected (they are attached only once created), hence no such wrapper for
+    `create_producer`.
+
+    A failed attempt leaves nothing behind on the broker, so the subscription
+    is simply requested once more; a broker that is really gone fails the
+    second attempt the same way.
+    """
+    import pulsar
+
+    try:
+        return client.subscribe(topic, **kwargs)
+    except pulsar.Timeout:
+        return client.subscribe(topic, **kwargs)
+
+
 class PulsarTestContext:
     """Provides a unique topic and pulsar-client helpers for the tests.
 
@@ -1075,7 +1103,8 @@ class PulsarTestContext:
         payloads, properties and partition keys. Fails if the expected number
         of messages doesn't arrive in time.
         """
-        consumer = self._client.subscribe(
+        consumer = pulsar_subscribe(
+            self._client,
             topic or self.topic,
             subscription_name=f"verifier-{uuid4()}",
             initial_position=self._pulsar.InitialPosition.Earliest,
