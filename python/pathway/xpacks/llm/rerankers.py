@@ -52,6 +52,12 @@ def rerank_topk_filter(
     doc_list                                                            | score_list
     (pw.Json({'text': 'Something else'}), pw.Json({'text': 'Pathway'})) | (3.0, 2.0)
     """  # noqa: E501
+    if not docs:
+        # zip(*[]) yields nothing to unpack, which would raise ValueError and panic the
+        # worker. A query that matched no documents is a normal outcome, not an error.
+        logging.info("Number of docs after rerank: 0")
+        return ((), ())
+
     docs, scores = zip(*sorted(zip(docs, scores), key=lambda tup: tup[1], reverse=True))
     logging.info(f"Number of docs after rerank: {len(docs[:k])}\nScores: {scores[:k]}")
     return (docs[:k], scores[:k])
