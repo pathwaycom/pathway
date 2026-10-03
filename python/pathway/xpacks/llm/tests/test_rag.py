@@ -6,9 +6,9 @@ import pytest
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm import llms
+from pathway.xpacks.llm import llms, prompts
 from pathway.xpacks.llm._utils import _unwrap_udf
-from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
+from pathway.xpacks.llm.question_answering import BaseRAGQA, BaseRAGQuestionAnswerer
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 from .mocks import IdentityMockChat
@@ -182,3 +182,80 @@ def test_rag_client_accepts_all_timeout_forms():
 
     with pytest.raises(ValueError, match="'timeout' must be positive"):
         RAGClient(url="http://localhost:8080", timeout=-1)
+
+
+def test_base_rag_qa_alias():
+    assert BaseRAGQA is BaseRAGQuestionAnswerer
+
+
+def test_rag_query_transform_initialization():
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    class FakeChatModel(llms.BaseChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "Text"
+
+        def _accepts_call_arg(self, arg_name: str) -> bool:
+            return True
+
+    chat = FakeChatModel()
+    vector_server = build_vector_store(fake_embeddings_model)
+
+    # 1. Default is None
+    rag_default = BaseRAGQA(llm=chat, indexer=vector_server)
+    assert rag_default.query_transform is None
+    assert rag_default.query_transform_udf is None
+
+    # 2. Rewrite
+    rag_rewrite = BaseRAGQA(llm=chat, indexer=vector_server, query_transform="rewrite")
+    assert rag_rewrite.query_transform == "rewrite"
+    assert rag_rewrite.query_transform_udf == prompts.prompt_query_rewrite
+
+    # 3. HyDE
+    rag_hyde = BaseRAGQA(llm=chat, indexer=vector_server, query_transform="hyde")
+    assert rag_hyde.query_transform == "hyde"
+    assert rag_hyde.query_transform_udf == prompts.prompt_query_rewrite_hyde
+
+    # 4. Custom callable / UDF
+    def custom_transform(query: str) -> str:
+        return f"custom: {query}"
+
+    rag_custom = BaseRAGQA(llm=chat, indexer=vector_server, query_transform=custom_transform)
+    assert isinstance(rag_custom.query_transform_udf, pw.UDF)
+
+    # 5. Invalid string raises ValueError
+    with pytest.raises(ValueError, match="Unknown query_transform"):
+        BaseRAGQA(llm=chat, indexer=vector_server, query_transform="unknown_mode")
+
+
+def test_rag_execution_with_query_transform():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input_data = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input_data,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQA(
+        IdentityMockChat(),
+        vector_server,
+        prompt_template=_prompt_template,
+        summarize_template=_summarize_template,
+        search_topk=1,
+        query_transform="rewrite",
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", False),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+    assert answer_output is not None
