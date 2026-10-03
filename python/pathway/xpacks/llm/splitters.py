@@ -259,6 +259,7 @@ class TokenCountSplitter(BaseSplitter):
         while i < len(tokens):
             chunk_tokens = tokens[i : i + max_tokens]
             chunk = tokenizer.decode(chunk_tokens)
+            consumed = len(chunk_tokens)
             last_punctuation = max(
                 [chunk.rfind(p) for p in self.PUNCTUATION], default=-1
             )
@@ -266,8 +267,24 @@ class TokenCountSplitter(BaseSplitter):
                 last_punctuation != -1
                 and last_punctuation > self.CHARS_PER_TOKEN * min_tokens
             ):
-                chunk = chunk[: last_punctuation + 1]
-            i += len(tokenizer.encode_ordinary(chunk))
+                kept = chunk[: last_punctuation + 1]
+                # Keep only whole source tokens whose decoded text stays within the
+                # punctuation cut, and advance the cursor by exactly that many
+                # tokens. The token straddling the cut (and everything after it) is
+                # then re-emitted in the next chunk instead of being skipped, which
+                # is what previously dropped characters. Token boundaries need not
+                # line up with the character cut, so we take the longest token prefix
+                # that is still a prefix of ``kept``.
+                consumed = 0
+                for n in range(1, len(chunk_tokens) + 1):
+                    if kept.startswith(tokenizer.decode(chunk_tokens[:n])):
+                        consumed = n
+                    else:
+                        break
+                chunk = tokenizer.decode(chunk_tokens[:consumed]) if consumed else kept
+            # Guard against a chunk that would not advance the cursor, which would
+            # otherwise stall the loop forever.
+            i += max(consumed, 1)
             output.append((chunk, metadata))
 
         return output

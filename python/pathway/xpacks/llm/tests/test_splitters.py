@@ -31,6 +31,20 @@ def test_tokencount():
     assert_table_equality(result, input_table)
 
 
+def test_tokencount_does_not_drop_characters():
+    # Regression: when a chunk was cut at a punctuation mark, the cursor advanced
+    # by the re-encoded kept text, which could skip the tokens straddling the cut
+    # and silently drop characters. Concatenating the chunks must reconstruct the
+    # (unicode-normalized) input exactly.
+    import unicodedata
+
+    splitter = TokenCountSplitter(min_tokens=1, max_tokens=3)
+    txt = "a.b.c.d.e.f.g.h.i.j.k.l."
+    chunks = [chunk for chunk, _ in splitter.chunk(txt)]
+
+    assert "".join(chunks) == unicodedata.normalize("NFKC", txt)
+
+
 def test_recursive_from_encoding():
     splitter = RecursiveSplitter(
         encoding_name="cl100k_base", chunk_size=30, chunk_overlap=0
