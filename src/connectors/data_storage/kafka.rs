@@ -453,8 +453,12 @@ const METADATA_PROBE_RETRY_BACKOFF: Duration = Duration::from_millis(200);
 /// while the cluster is still electing partition leaders / propagating
 /// metadata — most often `NotLeaderForPartition` or `LeaderNotAvailable`, and
 /// `UnknownTopicOrPartition` if the create hasn't fully propagated to the
-/// queried broker yet. These clear on their own within moments, so callers
-/// retry them rather than failing the whole pipeline at start-up.
+/// queried broker yet. A watermark query can also fail with librdkafka's
+/// local `UnknownPartition` when the topic is already listed but the
+/// client's own metadata does not hold the partition yet (a topic created
+/// by the broker's start-up script moments before the reader probes it).
+/// These clear on their own within moments, so callers retry them rather
+/// than failing the whole pipeline at start-up.
 fn is_transient_metadata_error(err: &KafkaError) -> bool {
     matches!(
         err.rdkafka_error_code(),
@@ -462,6 +466,7 @@ fn is_transient_metadata_error(err: &KafkaError) -> bool {
             RDKafkaErrorCode::NotLeaderForPartition
                 | RDKafkaErrorCode::LeaderNotAvailable
                 | RDKafkaErrorCode::UnknownTopicOrPartition
+                | RDKafkaErrorCode::UnknownPartition
                 | RDKafkaErrorCode::RequestTimedOut
         )
     )
