@@ -267,21 +267,21 @@ class TokenCountSplitter(BaseSplitter):
                 last_punctuation != -1
                 and last_punctuation > self.CHARS_PER_TOKEN * min_tokens
             ):
-                kept = chunk[: last_punctuation + 1]
-                # Keep only whole source tokens whose decoded text stays within the
-                # punctuation cut, and advance the cursor by exactly that many
-                # tokens. The token straddling the cut (and everything after it) is
-                # then re-emitted in the next chunk instead of being skipped, which
-                # is what previously dropped characters. Token boundaries need not
-                # line up with the character cut, so we take the longest token prefix
-                # that is still a prefix of ``kept``.
-                consumed = 0
-                for n in range(1, len(chunk_tokens) + 1):
-                    if kept.startswith(tokenizer.decode(chunk_tokens[:n])):
-                        consumed = n
-                    else:
+                cut_bytes = len(chunk[: last_punctuation + 1].encode("utf-8"))
+                token_bytes = 0
+                cut_tokens = 0
+                # Token boundaries can split a UTF-8 character. Count bytes rather
+                # than decoding every growing prefix to locate the punctuation cut.
+                for token in chunk_tokens:
+                    token_bytes += len(tokenizer.decode_single_token_bytes(token))
+                    if token_bytes > cut_bytes:
                         break
-                chunk = tokenizer.decode(chunk_tokens[:consumed]) if consumed else kept
+                    cut_tokens += 1
+                # If the first token straddles the cut, keep the full window so
+                # that the emitted text still matches the tokens we consume.
+                if cut_tokens:
+                    consumed = cut_tokens
+                    chunk = tokenizer.decode(chunk_tokens[:consumed])
             # Guard against a chunk that would not advance the cursor, which would
             # otherwise stall the loop forever.
             i += max(consumed, 1)

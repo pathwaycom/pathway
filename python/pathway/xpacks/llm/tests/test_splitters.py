@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
@@ -43,6 +44,35 @@ def test_tokencount_does_not_drop_characters():
     chunks = [chunk for chunk, _ in splitter.chunk(txt)]
 
     assert "".join(chunks) == unicodedata.normalize("NFKC", txt)
+
+
+@pytest.mark.parametrize(
+    "txt",
+    [
+        "Привет, мир. Это проверка разбиения текста! Работает ли оно? Да. " * 5,
+        "你好,世界。这是一个测试!它有效吗?是的. " * 10,
+    ],
+    ids=["russian", "chinese"],
+)
+def test_tokencount_does_not_duplicate_non_ascii(txt):
+    import unicodedata
+
+    splitter = TokenCountSplitter()
+    chunks = [chunk for chunk, _ in splitter.chunk(txt)]
+
+    assert "".join(chunks) == unicodedata.normalize("NFKC", txt)
+
+
+def test_tokencount_preserves_token_straddling_first_punctuation_cut():
+    # cl100k_base encodes "...)" as a single token. If the
+    # punctuation prefix has no whole token, emit the window intact.
+    splitter = TokenCountSplitter(min_tokens=0, max_tokens=1)
+    txt = "...) tail"
+    metadata = {"source": "example"}
+    chunks = splitter.chunk(txt, metadata)
+
+    assert "".join(chunk for chunk, _ in chunks) == txt
+    assert all(chunk and meta == metadata for chunk, meta in chunks)
 
 
 def test_recursive_from_encoding():
