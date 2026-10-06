@@ -21,10 +21,12 @@ class _QueryRewriteMockChat(llms.BaseChat):
     def _accepts_call_arg(self, arg_name: str) -> bool:
         return False
 
-    async def __wrapped__(self, messages: list[dict] | pw.Json, model: str) -> str:
+    async def __wrapped__(
+        self, messages: list[dict] | pw.Json, model: str
+    ) -> str | None:
         content = messages[0]["content"].as_str()
         if content.startswith("rewrite:"):
-            return content.removeprefix("rewrite:")
+            return content.removeprefix("rewrite:") or None
         return model + "," + content
 
 
@@ -172,10 +174,13 @@ def test_base_rag_uses_original_prompt_for_answer_without_transformer():
     )
 
 
-def test_base_rag_query_transformer_used_only_for_retrieval():
+@pytest.mark.parametrize("rewritten_query", ["bar", None])
+def test_base_rag_query_transformer_used_only_for_retrieval(
+    rewritten_query: str | None,
+):
     @pw.udf
     def query_transformer_prompt(query: str) -> str:
-        return "rewrite:bar"
+        return f"rewrite:{rewritten_query or ''}"
 
     schema = pw.schema_from_types(data=bytes, _metadata=dict)
     input = pw.debug.table_from_rows(
@@ -210,15 +215,14 @@ def test_base_rag_query_transformer_used_only_for_retrieval():
         result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"]),
     )
 
-    # `search_query` shows retrieval used the rewritten query ("bar", not the
-    # original prompt "foo"), while `result` shows the final LLM call still
-    # ran on the original, untransformed prompt.
+    # Retrieval uses the rewritten query, falling back to the original prompt
+    # when the LLM returns None. The final LLM call still uses the original prompt.
     assert_table_equality(
         casted_table,
         pw.debug.table_from_markdown(
-            """
+            f"""
             search_query | result
-            bar          | gpt3.5,foo
+            {rewritten_query or 'foo'} | gpt3.5,foo
             """
         ),
     )

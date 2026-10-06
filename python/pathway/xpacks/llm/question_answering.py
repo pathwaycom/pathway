@@ -679,6 +679,9 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
                 )
             )
             pw_ai_queries = pw_ai_queries.await_futures()
+            pw_ai_queries = pw_ai_queries.with_columns(
+                search_query=pw.coalesce(pw.this.search_query, pw.this.prompt)
+            )
         else:
             pw_ai_queries += pw_ai_queries.select(search_query=pw.this.prompt)
 
