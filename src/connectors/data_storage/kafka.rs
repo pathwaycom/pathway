@@ -687,22 +687,27 @@ impl Reader for KafkaReader {
     }
 
     fn has_buffered_data(&mut self) -> bool {
-        if self.deferred_read_result.is_some() || !self.pending_messages.is_empty() {
+        // A message already taken out of librdkafka is returned by the next
+        // `read()` at once: the rest of the batch consumed from the fetch
+        // queue, a message stashed while the reader was paused, or the data
+        // half of a message whose metadata was announced first. (Since the
+        // reader consumes in batches from its own fetch queue, nothing
+        // arrives on the consumer queue any more, so peeking there with a
+        // non-blocking poll found no messages and cost a poll per message.)
+        if self.deferred_read_result.is_some() {
             return true;
         }
-        if !matches!(self.mode, ConnectorMode::Streaming) || self.paused_for_backpressure {
-            return false;
-        }
-        // Peek: a message librdkafka already holds is taken now and read next.
-        // A non-blocking poll returns `None` for anything but a message, so a
-        // queue holding only group events never counts as buffered data.
-        match self.consumer.poll(Duration::ZERO) {
-            Some(Ok(message)) => {
-                self.pending_messages.push_back(message.detach());
-                true
-            }
-            _ => false,
-        }
+        // `read()` takes the stashed messages before the fetched batch. A
+        // message of a partition that still awaits its lazy seek is not
+        // returned but consumed by the seek, which also drops the rest of the
+        // batch for that partition; the read that follows may then wait for
+        // a fetch from the new position.
+        let next_partition = self
+            .pending_messages
+            .front()
+            .map(Message::partition)
+            .or_else(|| self.fetched_messages.front().map(FetchedMessage::partition));
+        next_partition.is_some_and(|partition| !self.positions_for_seek.contains_key(&partition))
     }
 
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
