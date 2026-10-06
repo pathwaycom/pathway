@@ -1,5 +1,7 @@
 # Copyright © 2026 Pathway
 
+import time
+
 import pytest
 from utils import WeaviateContext
 from weaviate.util import generate_uuid5
@@ -299,6 +301,46 @@ def test_write_streaming(weaviate):
         [{"uuid": _uuid(row["id"]), "vector": row["vector"]} for row in _STREAMING_ROWS]
     )
     assert result == expected
+
+
+def test_write_survives_idle_between_flushes(weaviate):
+    """Two flushes more than Weaviate's keep-alive idle timeout (~10s) apart
+    must both land. The server closes an idle connection; the writer's pool
+    kept it for 90s and only noticed when the next batch failed to send,
+    taking the pipeline down with a transport error."""
+    collection_name = weaviate.generate_collection_name()
+    weaviate.create_collection(collection_name)
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    class IdleSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next_json({"id": 1, "vector": [1.0, 2.0, 3.0]})
+            self.commit()
+            time.sleep(12)
+            self.next_json({"id": 2, "vector": [4.0, 5.0, 6.0]})
+            self.commit()
+
+    G.clear()
+    table = pw.io.python.read(IdleSubject(), schema=InputSchema)
+    pw.io.weaviate.write(
+        table,
+        collection_name=collection_name,
+        primary_key=table.id,
+        vector=table.vector,
+        **_connection_kwargs(weaviate),
+    )
+    run()
+
+    result = _sorted_by_uuid(weaviate.query_all(collection_name))
+    assert result == _sorted_by_uuid(
+        [
+            {"uuid": _uuid(1), "vector": [1.0, 2.0, 3.0]},
+            {"uuid": _uuid(2), "vector": [4.0, 5.0, 6.0]},
+        ]
+    )
 
 
 def test_write_reserved_property_name_raises(weaviate):

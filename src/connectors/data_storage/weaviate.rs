@@ -2,11 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::mem::take;
+use std::time::Duration;
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{serialize_value_to_json, FormatterContext};
 use crate::connectors::{WriteError, Writer};
 use crate::engine::{Key, Value};
+use crate::retry::{execute_with_retries_if_async, RetryConfig};
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
@@ -19,6 +21,18 @@ use uuid::Uuid;
 // network continuously busy without letting a huge mini-batch grow memory
 // unbounded.
 const MAX_BUFFERED_OBJECTS: usize = 20_000;
+
+// Weaviate closes a keep-alive connection it has not heard from for ~10s. A
+// pooled connection older than that is dead on our side without our knowing:
+// the writer's runtime only turns between flushes when a flush runs, so the
+// pool never sees the server's FIN. Dropping idle connections sooner than the
+// server does makes the next flush open a fresh one instead.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+// A batch that still hits a stale connection, or a transient 5xx/429, is
+// retried: every batch request here is idempotent (objects are addressed by
+// UUID, deletes by id set), so a repeat cannot duplicate or lose a write.
+const BATCH_MAX_RETRIES: usize = 4;
+const BATCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
 
 /// Errors specific to the Weaviate connector. Exposed to the engine through a
 /// single transparent [`WriteError::Weaviate`](crate::connectors::WriteError)
@@ -133,6 +147,7 @@ impl WeaviateWriter {
         // time instead of hanging it forever.
         let client = crate::connectors::socket_guard::http_client_builder()
             .default_headers(header_map)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
             .build()
             .map_err(WeaviateError::Http)?;
 
@@ -248,6 +263,32 @@ fn value_to_vector(value: &Value, vector_index: usize) -> Result<Vec<f64>, Weavi
     Ok(vector)
 }
 
+fn is_retriable(error: &WeaviateError) -> bool {
+    match error {
+        // Transport-level: a stale pooled connection, a reset, a timeout.
+        WeaviateError::Http(e) if e.status().is_none() => {
+            e.is_timeout() || e.is_connect() || e.is_request() || e.is_body()
+        }
+        // The server answered but asked us to come back later.
+        WeaviateError::Http(e) => e
+            .status()
+            .is_some_and(|s| s.as_u16() == 429 || s.is_server_error()),
+        _ => false,
+    }
+}
+
+async fn with_retries<T>(
+    operation: impl AsyncFnMut() -> Result<T, WeaviateError>,
+) -> Result<T, WeaviateError> {
+    execute_with_retries_if_async(
+        operation,
+        is_retriable,
+        RetryConfig::new(BATCH_RETRY_BASE_DELAY, 2.0, Duration::from_millis(50)),
+        BATCH_MAX_RETRIES,
+    )
+    .await
+}
+
 async fn insert_chunk(
     client: &HttpClient,
     batch_url: &str,
@@ -255,12 +296,17 @@ async fn insert_chunk(
     objects: Vec<JsonValue>,
 ) -> Result<(), WeaviateError> {
     let total = objects.len();
-    let response = client
-        .post(batch_url)
-        .json(&json!({ "objects": objects }))
-        .send()
-        .await?
-        .error_for_status()?;
+    let body = json!({ "objects": objects });
+    let response = with_retries(async || {
+        client
+            .post(batch_url)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()
+            .map_err(WeaviateError::Http)
+    })
+    .await?;
     let parsed: JsonValue = response.json().await?;
     let results = parsed.as_array().ok_or_else(|| {
         WeaviateError::MalformedResponse("batch insert response is not an array".to_string())
@@ -304,12 +350,16 @@ async fn delete_chunk(
             },
         },
     });
-    let response = client
-        .delete(batch_url)
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?;
+    let response = with_retries(async || {
+        client
+            .delete(batch_url)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()
+            .map_err(WeaviateError::Http)
+    })
+    .await?;
     let parsed: JsonValue = response.json().await?;
     let failed = parsed
         .get("results")
