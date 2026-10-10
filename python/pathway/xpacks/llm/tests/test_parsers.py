@@ -127,3 +127,34 @@ def test_parsers_explain_non_bytes_contents():
         asyncio.run(parser.__wrapped__(pw.Json({"text": "hello"})))
     with pytest.raises(TypeError, match=r"expects the raw file contents as bytes.*str"):
         asyncio.run(parser.__wrapped__("hello"))
+
+
+class _MarkdownResult(dict):
+    """Stands in for paddlex's ``MarkdownResult``, a ``dict`` subclass."""
+
+
+@pytest.mark.parametrize(
+    "concatenated",
+    [
+        "## Title\n\nSome text",
+        _MarkdownResult(markdown_texts="## Title\n\nSome text"),
+    ],
+    ids=["str", "markdown-result"],
+)
+def test_paddle_structure_parser_returns_plain_text(concatenated):
+    from types import SimpleNamespace
+
+    from pathway.xpacks.llm.parsers import _PaddlePPStructureV3Parser
+
+    class FakePipeline:
+        def concatenate_markdown_pages(self, pages):
+            assert pages == [{"markdown_texts": "## Title"}, {"markdown_texts": "x"}]
+            return concatenated
+
+    parser = _PaddlePPStructureV3Parser(FakePipeline())  # type: ignore[arg-type]
+    ocr_result = [
+        SimpleNamespace(markdown={"markdown_texts": "## Title"}),
+        SimpleNamespace(markdown={"markdown_texts": "x"}),
+    ]
+
+    assert parser.extract_text(ocr_result) == "## Title\n\nSome text"

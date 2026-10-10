@@ -105,6 +105,9 @@ xpack-llm = [
     # unbounded mcp >= 1.10, which sends pip's resolver into deep backtracking
     # now that mcp 2.x is on PyPI
     "fastmcp >= 2.12.0, < 2.13.0",
+    # FastMCP 2.12 pins mcp < 1.17, which imports eval_type_backport from
+    # Pydantic's internals. Pydantic 2.14 removed that function.
+    "pydantic < 2.14",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "sentence_transformers",
@@ -170,7 +173,7 @@ tests = [
     # paddlepaddle has no CPython 3.14 wheels yet; the paddle-based parser
     # degrades gracefully when the import is missing.
     "paddlepaddle >= 3.2.0, < 3.3.0; python_version < '3.14'", # required by paddleocr
-    "paddlex >= 3.0.0, <= 3.3.8; python_version < '3.14'",  # pinning the latest working version, then the format changes
+    "paddlex >= 3.0.0; python_version < '3.14'",
     # aiobotocore 3.x declares a ranged botocore window; aioboto3 (stale, pins an
     # exact aiobotocore/botocore) was dropped to keep pip out of the boto lattice
     "aiobotocore >= 3.0.0",

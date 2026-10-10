@@ -1170,6 +1170,9 @@ class _PaddlePPStructureV3Parser(_PaddleParser):
                 continue
 
         result = self.pipeline.concatenate_markdown_pages(pages)
+        if not isinstance(result, str):
+            # paddlex >= 3.3.13 wraps the text in MarkdownResult({"markdown_texts": ...})
+            result = result["markdown_texts"]
 
         return result
 
