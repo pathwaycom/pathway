@@ -34,7 +34,7 @@ BLOCKED_MODULES = [
     "transformers",
 ]
 
-_MINIMAL_ENV_SCRIPT = """
+_BLOCK_IMPORTS_PREAMBLE = """
 import sys
 
 BLOCKED = set(sys.argv[1:])
@@ -50,7 +50,11 @@ class _BlockOptionalDeps:
 
 
 sys.meta_path.insert(0, _BlockOptionalDeps())
+"""
 
+_MINIMAL_ENV_SCRIPT = (
+    _BLOCK_IMPORTS_PREAMBLE
+    + """
 import asyncio
 
 import pathway.xpacks.llm
@@ -83,11 +87,52 @@ except RuntimeError as e:
 else:
     raise AssertionError("PaddleOCRParser() should be unavailable here")
 """
+)
 
 
 def test_xpack_imports_without_docs_and_local_extras():
     result = subprocess.run(
         [sys.executable, "-c", _MINIMAL_ENV_SCRIPT, *BLOCKED_MODULES],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# The image and vision helpers in ``_parser_utils`` (used by PaddleOCRParser,
+# ImageParser and SlideParser) need only Pillow, so they must stay importable
+# without docling; only the docling chunkers require ``xpack-llm-docs``.
+_PARSER_UTILS_WITHOUT_DOCLING_SCRIPT = (
+    _BLOCK_IMPORTS_PREAMBLE
+    + """
+import PIL.Image
+
+from pathway.xpacks.llm import _parser_utils
+
+img = PIL.Image.new("RGB", (40, 20))
+assert _parser_utils.maybe_downscale(img, 10**6, 10).size == (40, 20)
+assert _parser_utils.maybe_downscale(img, 100, 10).size == (10, 5)
+
+try:
+    from pathway.xpacks.llm import _docling_chunking  # noqa: F401
+except ImportError as e:
+    assert "xpack-llm-docs" in str(e), str(e)
+else:
+    raise AssertionError("_docling_chunking should require xpack-llm-docs")
+"""
+)
+
+
+def test_parser_utils_without_docling():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _PARSER_UTILS_WITHOUT_DOCLING_SCRIPT,
+            "docling",
+            "docling_core",
+        ],
         capture_output=True,
         text=True,
         timeout=600,

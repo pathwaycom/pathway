@@ -429,9 +429,9 @@ class DoclingParser(pw.UDF):
                 PdfFormatOption,
             )
 
-        from pathway.xpacks.llm import _parser_utils
+        from pathway.xpacks.llm import _docling_chunking
 
-        self.chunker: _parser_utils._HybridChunker | None = None
+        self.chunker: _docling_chunking._HybridChunker | None = None
         self.multimodal_llm: llms.OpenAIChat | llms.LiteLLMChat | None = None
 
         if image_parsing_strategy == "llm" or table_parsing_strategy == "llm":
@@ -501,7 +501,7 @@ class DoclingParser(pw.UDF):
 
         # modified Docling's chunker
         if chunk:
-            self.chunker = _parser_utils._HybridChunker(merge_peers=True)
+            self.chunker = _docling_chunking._HybridChunker(merge_peers=True)
 
         executor = _prepare_executor(async_mode=async_mode)
         super().__init__(cache_strategy=cache_strategy, executor=executor)
