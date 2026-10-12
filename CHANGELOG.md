@@ -17,6 +17,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.xpacks.llm.parsers.PaddleOCRParser` no longer requires `unstructured` and `pdf2image` to OCR images: it tells PDF and PPT(X) input apart by the file contents, and `pdf2image` is imported only when such a document arrives. OCR of a PDF without poppler installed now fails with a message saying so, instead of `pdf2image`'s `PDFInfoNotInstalledError`.
 - `pw.xpacks.llm.parsers.PaddleOCRParser` with the default `PPStructureV3` pipeline again returns the recognized text. With paddlex 3.3.13 or newer, which `pathway[xpack-llm-docs]` installs, it returned the string form of a dict, `{'markdown_texts': '...'}`, instead.
 
+### Fixed
+- `pathway.xpacks.llm.splitters.TokenCountSplitter` no longer skips source text when a punctuation cut falls inside a token. It locates the cut using token byte lengths and advances by exactly the whole source tokens emitted in the chunk.
+
 ## [0.33.0] - 2026-09-18
 
 ### Changed

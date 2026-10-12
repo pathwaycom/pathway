@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
@@ -29,6 +30,49 @@ def test_tokencount():
     result = input_table.select(ret=splitter(pw.this.ret)[0][0])
 
     assert_table_equality(result, input_table)
+
+
+def test_tokencount_does_not_drop_characters():
+    # Regression: when a chunk was cut at a punctuation mark, the cursor advanced
+    # by the re-encoded kept text, which could skip the tokens straddling the cut
+    # and silently drop characters. Concatenating the chunks must reconstruct the
+    # (unicode-normalized) input exactly.
+    import unicodedata
+
+    splitter = TokenCountSplitter(min_tokens=1, max_tokens=3)
+    txt = "a.b.c.d.e.f.g.h.i.j.k.l."
+    chunks = [chunk for chunk, _ in splitter.chunk(txt)]
+
+    assert "".join(chunks) == unicodedata.normalize("NFKC", txt)
+
+
+@pytest.mark.parametrize(
+    "txt",
+    [
+        "Привет, мир. Это проверка разбиения текста! Работает ли оно? Да. " * 5,
+        "你好,世界。这是一个测试!它有效吗?是的. " * 10,
+    ],
+    ids=["russian", "chinese"],
+)
+def test_tokencount_does_not_duplicate_non_ascii(txt):
+    import unicodedata
+
+    splitter = TokenCountSplitter()
+    chunks = [chunk for chunk, _ in splitter.chunk(txt)]
+
+    assert "".join(chunks) == unicodedata.normalize("NFKC", txt)
+
+
+def test_tokencount_preserves_token_straddling_first_punctuation_cut():
+    # cl100k_base encodes "...)" as a single token. If the
+    # punctuation prefix has no whole token, emit the window intact.
+    splitter = TokenCountSplitter(min_tokens=0, max_tokens=1)
+    txt = "...) tail"
+    metadata = {"source": "example"}
+    chunks = splitter.chunk(txt, metadata)
+
+    assert "".join(chunk for chunk, _ in chunks) == txt
+    assert all(chunk and meta == metadata for chunk, meta in chunks)
 
 
 def test_recursive_from_encoding():
