@@ -138,3 +138,53 @@ def test_parser_utils_without_docling():
         timeout=600,
     )
     assert result.returncode == 0, result.stderr
+
+
+# PaddleOCRParser needs only Pillow to read an image; pdf2image (and poppler) are
+# needed for PDF and PPTX input only, and unstructured is not needed at all.
+_PADDLE_OCR_IMAGE_INPUT_SCRIPT = (
+    _BLOCK_IMPORTS_PREAMBLE
+    + """
+import io
+
+import PIL.Image
+
+from pathway.xpacks.llm.parsers import PaddleOCRParser
+
+parser = object.__new__(PaddleOCRParser)
+parser.intermediate_image_format = "jpg"
+parser.max_image_size = 15 * 1024 * 1024
+parser.downsize_horizontal_width = 1920
+
+buffer = io.BytesIO()
+PIL.Image.new("L", (8, 8)).save(buffer, format="PNG")
+images, filetype = parser._normalize_input(buffer.getvalue())
+assert filetype == "image", filetype
+assert len(images) == 1 and images[0].mode == "RGB", images
+
+try:
+    parser._normalize_input(b"%PDF-1.4\\n%%EOF\\n")
+except ImportError as e:
+    assert "xpack-llm-docs" in str(e), str(e)
+else:
+    raise AssertionError("OCR of a PDF should require xpack-llm-docs")
+"""
+)
+
+
+def test_paddle_ocr_image_input_without_unstructured_and_pdf2image():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _PADDLE_OCR_IMAGE_INPUT_SCRIPT,
+            "unstructured",
+            "pdf2image",
+            "docling",
+            "docling_core",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, result.stderr

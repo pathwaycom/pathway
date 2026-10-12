@@ -14,6 +14,7 @@ import re
 import sys
 import time
 import warnings
+import zipfile
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
@@ -38,7 +39,6 @@ if TYPE_CHECKING:
         from paddleocr import PaddleOCR, PPStructureV3
         from PIL import Image
         from unstructured.documents.elements import Element
-        from unstructured.file_utils.filetype import FileType
 
 logger = logging.getLogger(__name__)
 
@@ -1190,6 +1190,35 @@ class _PaddleOCRParser(_PaddleParser):
         return result
 
 
+_OcrInputType: TypeAlias = Literal["pdf", "pptx", "ppt", "image"]
+
+# Magic number shared by all Compound File Binary ("OLE") files: legacy PPT, DOC,
+# XLS and MSG.
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+# Directory entry names in an OLE file are stored as UTF-16LE; only a PPT file has
+# this stream.
+_OLE_PPT_STREAM_NAME = "PowerPoint Document".encode("utf-16-le")
+
+
+def _detect_ocr_input_type(contents: bytes) -> _OcrInputType:
+    """Tell PDF, PPTX and legacy PPT documents apart from anything else (treated as
+    an image) by the content, the same way ``unstructured``'s ``detect_filetype``
+    does for these types."""
+    if contents.startswith(b"%PDF"):
+        return "pdf"
+    if contents.startswith(_OLE_MAGIC):
+        # DOC, XLS and MSG files are OLE files too; they are not slides
+        return "ppt" if _OLE_PPT_STREAM_NAME in contents else "image"
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            names = archive.namelist()
+    except zipfile.BadZipFile:
+        return "image"
+    if any(re.match(r"ppt/presentation.*\.xml$", name) for name in names):
+        return "pptx"
+    return "image"
+
+
 class PaddleOCRParser(pw.UDF):
     """
     A class to parse images, PDFs and PPTX slides using PaddleOCR.
@@ -1248,14 +1277,11 @@ class PaddleOCRParser(pw.UDF):
             cache_strategy=cache_strategy,
         )
 
+        # pdf2image is needed only for PDF and PPT(X) input and is imported when
+        # such a document arrives.
         with optional_imports("xpack-llm-docs"):
             import paddleocr  # noqa:F401
-            from pdf2image import convert_from_bytes  # noqa:F401
             from PIL import Image  # noqa:F401
-            from unstructured.file_utils.filetype import (  # noqa:F401
-                FileType,
-                detect_filetype,
-            )
 
         try:
             import paddle  # noqa:F401
@@ -1294,27 +1320,20 @@ class PaddleOCRParser(pw.UDF):
     def _normalize_input(
         self,
         contents: bytes,
-    ) -> tuple[list[Image.Image], FileType | None]:
-        from pdf2image import convert_from_bytes
+    ) -> tuple[list[Image.Image], _OcrInputType | None]:
         from PIL import Image
-        from unstructured.file_utils.filetype import FileType, detect_filetype
 
         from pathway.xpacks.llm import _parser_utils
 
-        byte_file = io.BytesIO(contents)
-        filetype = detect_filetype(file=byte_file)
+        filetype = _detect_ocr_input_type(contents)
 
         match filetype:
-            case FileType.PPT | FileType.PPTX:
+            case "ppt" | "pptx":
                 contents = _parser_utils._convert_pptx_to_pdf(contents)
-                images = convert_from_bytes(
-                    contents, fmt=self.intermediate_image_format
-                )
-            case FileType.PDF:
-                images = convert_from_bytes(
-                    contents, fmt=self.intermediate_image_format
-                )
-            case _ as filetype:
+                images = self._pdf_to_images(contents)
+            case "pdf":
+                images = self._pdf_to_images(contents)
+            case "image":
                 try:
                     images = [Image.open(io.BytesIO(contents)).convert("RGB")]
                 except Exception as e:
@@ -1332,13 +1351,26 @@ class PaddleOCRParser(pw.UDF):
 
         return images, filetype
 
-    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
-        from unstructured.file_utils.filetype import FileType
+    def _pdf_to_images(self, contents: bytes) -> list[Image.Image]:
+        with optional_imports("xpack-llm-docs"):
+            from pdf2image import convert_from_bytes
+            from pdf2image.exceptions import PDFInfoNotInstalledError
 
+        try:
+            return convert_from_bytes(contents, fmt=self.intermediate_image_format)
+        except PDFInfoNotInstalledError as e:
+            raise RuntimeError(
+                "PaddleOCRParser needs poppler to OCR PDF and PPTX documents: "
+                "install it so that the `pdftoppm` and `pdfinfo` commands are "
+                "available (e.g. `apt-get install poppler-utils` or "
+                "`brew install poppler`)."
+            ) from e
+
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         images, original_filetype = self._normalize_input(contents)
 
         def metadata(page_number: int) -> dict:
-            if original_filetype in [FileType.PPT, FileType.PPTX, FileType.PDF]:
+            if original_filetype in ("ppt", "pptx", "pdf"):
                 return {"page_number": page_number}
             return {}
 

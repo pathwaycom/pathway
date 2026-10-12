@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 import nltk
 import pandas as pd
 import pytest
 from fpdf import FPDF
+from PIL import Image
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.parsers import PaddleOCRParser, PypdfParser, Utf8Parser
+from pathway.xpacks.llm.parsers import (
+    PaddleOCRParser,
+    PypdfParser,
+    Utf8Parser,
+    _detect_ocr_input_type,
+)
 
 for _ in range(10):
     try:
@@ -127,6 +135,78 @@ def test_parsers_explain_non_bytes_contents():
         asyncio.run(parser.__wrapped__(pw.Json({"text": "hello"})))
     with pytest.raises(TypeError, match=r"expects the raw file contents as bytes.*str"):
         asyncio.run(parser.__wrapped__("hello"))
+
+
+def _zip_with(*names: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name in names:
+            archive.writestr(name, "<xml/>")
+    return buffer.getvalue()
+
+
+def _png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+@pytest.mark.parametrize(
+    "contents,expected",
+    [
+        (b"%PDF-1.4\n%%EOF\n", "pdf"),
+        (_zip_with("[Content_Types].xml", "ppt/presentation.xml"), "pptx"),
+        (_OLE_MAGIC + b"\0" * 64 + "PowerPoint Document".encode("utf-16-le"), "ppt"),
+        # legacy Word and Excel files are OLE files too, but not slides
+        (_OLE_MAGIC + b"\0" * 64 + "WordDocument".encode("utf-16-le"), "image"),
+        (_OLE_MAGIC + b"\0" * 64 + "Workbook".encode("utf-16-le"), "image"),
+        (_png(), "image"),
+        (_zip_with("word/document.xml"), "image"),
+        (_zip_with("ppt/notes.txt"), "image"),
+        (b"PK\x03\x04 not really a zip", "image"),
+    ],
+    ids=[
+        "pdf",
+        "pptx",
+        "ppt",
+        "doc",
+        "xls",
+        "png",
+        "docx",
+        "zip-without-presentation",
+        "broken-zip",
+    ],
+)
+def test_paddle_parser_detects_input_type(contents: bytes, expected: str):
+    assert _detect_ocr_input_type(contents) == expected
+
+
+def _paddle_parser_without_pipeline() -> PaddleOCRParser:
+    # ``_normalize_input`` does not touch the Paddle pipeline, so the parser can
+    # be tested without paddle installed.
+    parser = object.__new__(PaddleOCRParser)
+    parser.intermediate_image_format = "jpg"
+    parser.max_image_size = 15 * 1024 * 1024
+    parser.downsize_horizontal_width = 1920
+    return parser
+
+
+def test_paddle_parser_normalizes_image():
+    images, filetype = _paddle_parser_without_pipeline()._normalize_input(_png())
+
+    assert filetype == "image"
+    assert len(images) == 1
+    assert images[0].mode == "RGB"
+    assert images[0].size == (8, 8)
+
+
+def test_paddle_parser_skips_non_image_zip():
+    parser = _paddle_parser_without_pipeline()
+
+    assert parser._normalize_input(_zip_with("word/document.xml")) == ([], None)
 
 
 class _MarkdownResult(dict):
