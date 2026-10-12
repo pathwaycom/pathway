@@ -2114,3 +2114,26 @@ def test_run_async_in_thread_reraises_exception():
             _run_async(coroutine())
 
     asyncio.run(main())
+
+
+@xfail_on_multiple_threads
+def test_batch_udf_across_completed_logical_times():
+    class InputSchema(pw.Schema):
+        x: int
+
+    batch_sizes = []
+
+    @pw.udf(max_batch_size=128, deterministic=True)
+    def increment(values: list[int]) -> list[int]:
+        batch_sizes.append(len(values))
+        return [value + 1 for value in values]
+
+    source = pw.debug.table_from_rows(
+        InputSchema, [(i, 2 * (i + 1), 1) for i in range(1000)], is_stream=True
+    )
+    result = source.select(x=increment(source.x))
+    rows = pw.debug._compute_tables(result)[0]
+    assert sorted(row.values[0] for row in rows) == list(range(1, 1001))
+    assert sum(batch_sizes) == 1000
+    # All times are supplied together; they should not force singleton UDF calls.
+    assert len(batch_sizes) < 100

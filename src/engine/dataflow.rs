@@ -117,7 +117,9 @@ use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
 use self::operators::time_column::TimeColumnBuffer;
-use self::operators::{ArrangeWithTypes, FlatMapBatchedWithDeletionsFirst, MapWrapped};
+use self::operators::{
+    ArrangeWithTypes, ConsolidatePerTime, FlatMapBatchedWithDeletionsFirst, MapWrapped,
+};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use self::time::{Epsilon, MaybeEpsilon, OriginalOrRetraction};
@@ -499,7 +501,7 @@ impl<S: MaybeTotalScope> ColumnData<S> {
     fn consolidated(&self) -> &Values<S> {
         match self {
             Self::Collection { consolidated, .. } => consolidated
-                .get_or_init(|| self.arranged().as_collection(|k, v| (*k, v.clone())).into()),
+                .get_or_init(|| self.collection().as_generic().consolidate_per_time().into()),
             Self::Arranged { .. } => self.collection(),
         }
     }
