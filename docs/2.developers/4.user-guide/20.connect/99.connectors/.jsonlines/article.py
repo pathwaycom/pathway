@@ -24,8 +24,10 @@
 # {"key": 3, "recipient": "Julian S.", "sender": "Dick F."}
 # ```
 #
-# ⚠️ JSON lines connectors work both in streaming and static modes.
+# ::warning
+# JSON lines connectors work both in streaming and static modes.
 # Be careful as the use of connectors differs depending on the chosen mode: see the [differences](/developers/user-guide/introduction/streaming-and-static-modes).
+# ::
 #
 # ## Input connector
 #
@@ -112,7 +114,9 @@ pw.debug.compute_and_print(table)
 # pw.io.jsonlines.write(table, "output_file.jsonl")
 # ```
 #
-# ⚠️ The JSON Lines output connector only works in streaming mode.
+# ::warning
+# The JSON Lines output connector only works in streaming mode.
+# ::
 #
 # ## Complete example
 #
