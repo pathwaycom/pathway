@@ -672,6 +672,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
                     pw.this.prompt
                 )
             )
+            pw_ai_queries = pw_ai_queries.await_futures()
             pw_ai_queries += pw_ai_queries.select(
                 search_query=self.llm(
                     llms.prompt_chat_single_qa(pw.this.query_transformer_prompt),

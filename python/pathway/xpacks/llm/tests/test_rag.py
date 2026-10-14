@@ -212,6 +212,7 @@ def test_base_rag_query_transformer_used_only_for_retrieval(
 
     casted_table = answer_output.select(
         search_query=pw.this.search_query,
+        retrieved_text=pw.unwrap(pw.this.docs[0]["text"].as_str()),
         result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"]),
     )
 
@@ -221,8 +222,43 @@ def test_base_rag_query_transformer_used_only_for_retrieval(
         casted_table,
         pw.debug.table_from_markdown(
             f"""
+            search_query | retrieved_text | result
+            {rewritten_query or 'foo'} | {rewritten_query or 'foo'} | gpt3.5,foo
+            """
+        ),
+    )
+
+
+def test_base_rag_fully_async_query_transformer_prompt():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def query_transformer_prompt(query: str) -> str:
+        return f"rewrite:{query}"
+
+    rag = BaseRAGQuestionAnswerer(
+        _QueryRewriteMockChat(),
+        build_vector_store(fake_embeddings_model),
+        prompt_template=_prompt_template,
+        query_transformer_prompt=query_transformer_prompt,
+        search_topk=1,
+    )
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[("foo", None, "gpt3.5", False)],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+
+    assert_table_equality(
+        answer_output.select(
+            search_query=pw.this.search_query,
+            result=pw.apply_with_type(
+                lambda x: x.value, str, pw.this.result["response"]
+            ),
+        ),
+        pw.debug.table_from_markdown(
+            """
             search_query | result
-            {rewritten_query or 'foo'} | gpt3.5,foo
+            foo          | gpt3.5,foo
             """
         ),
     )
