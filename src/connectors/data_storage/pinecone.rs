@@ -702,8 +702,8 @@ mod tests {
     fn an_empty_sparse_vector_is_valid() {
         let (indices, weights) =
             PineconeWriter::sparse_vector(&sparse_value(&[]), VECTOR_COLUMN).unwrap();
-        assert!(indices.is_empty());
-        assert!(weights.is_empty());
+        assert_eq!(indices, [] as [u32; 0]);
+        assert_eq!(weights, [] as [f64; 0]);
     }
 
     #[test]

@@ -1,3 +1,6 @@
+// PyO3 generates Clone-based extraction for the Copy stats classes below.
+#![allow(clippy::clone_on_copy)]
+
 // Copyright © 2026 Pathway
 
 use std::collections::VecDeque;

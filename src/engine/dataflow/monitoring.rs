@@ -1,3 +1,6 @@
+// PyO3 generates Clone-based extraction for the Copy stats classes below.
+#![allow(clippy::clone_on_copy)]
+
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::SystemTime};
 
 use once_cell::unsync::Lazy;

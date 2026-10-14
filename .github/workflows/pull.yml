@@ -10,7 +10,7 @@ on:
 
 env:
   PYTHON_VERSION: "3.10"
-  RUST_TOOLCHAIN: "1.97.1"
+  RUST_TOOLCHAIN: "1.99.0"
 
 jobs:
   python-black:

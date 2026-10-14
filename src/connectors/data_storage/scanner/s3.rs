@@ -316,7 +316,7 @@ impl S3Scanner {
 
     fn download_bulk(&mut self, new_objects: &[FileLikeMetadata]) -> Vec<S3DownloadResult> {
         if new_objects.is_empty() {
-            return Vec::with_capacity(0);
+            return Vec::new();
         }
         info!(
             "Downloading a bulk of {} objects. {} are still in the queue.",

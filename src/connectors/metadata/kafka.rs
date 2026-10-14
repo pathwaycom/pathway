@@ -30,7 +30,7 @@ impl KafkaMetadata {
             }
             headers
         } else {
-            Vec::with_capacity(0)
+            Vec::new()
         };
 
         Self {

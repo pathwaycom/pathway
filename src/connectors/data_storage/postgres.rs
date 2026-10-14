@@ -4782,7 +4782,7 @@ impl Reader for PsqlReader {
                                 ReaderContext::Diff((
                                     DataEventType::Delete,
                                     key.clone(),
-                                    HashMap::with_capacity(0).into(),
+                                    HashMap::new().into(),
                                 )),
                                 emit_offset(&mut self.total_entries_read),
                             ));

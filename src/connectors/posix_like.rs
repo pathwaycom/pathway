@@ -212,7 +212,7 @@ impl PosixLikeReader {
             match &action {
                 Some(QueuedAction::Read(path, queued_metadata)) => {
                     let (cached_object_contents, metadata) = if self.only_provide_metadata {
-                        (Vec::with_capacity(0), queued_metadata.clone())
+                        (Vec::new(), queued_metadata.clone())
                     } else {
                         match self.read_object_consistently(path, queued_metadata) {
                             Ok(contents_with_metadata) => contents_with_metadata,
@@ -227,7 +227,7 @@ impl PosixLikeReader {
                     let contents_for_caching = if are_deletions_enabled {
                         cached_object_contents.clone()
                     } else {
-                        Vec::with_capacity(0)
+                        Vec::new()
                     };
                     self.cached_object_storage.place_object(
                         path.as_ref(),

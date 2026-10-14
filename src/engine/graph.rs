@@ -313,7 +313,7 @@ impl Computer {
     pub fn compute<C: Context>(&mut self, context: &C, args: &[Value]) -> DynResult<Option<Value>> {
         match self {
             Computer::Attribute { logic, .. } => {
-                assert!(args.is_empty());
+                assert_eq!(args, []);
                 logic(context)
             }
             Computer::Method { logic, .. } => logic(context, args),

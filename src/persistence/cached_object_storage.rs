@@ -501,7 +501,7 @@ impl CachedObjectsExternalAccessor {
         batch.shrink_to_version(version);
         if batch.events.is_empty() {
             self.clean(batch.batch_id)?;
-            return Ok((batch, Vec::with_capacity(0)));
+            return Ok((batch, Vec::new()));
         }
         let last_event = batch
             .events
@@ -557,7 +557,7 @@ impl CachedObjectsExternalAccessor {
             object_blob_start: self.current_blobs.len(),
             object_blob_len: 0,
         };
-        self.add_event(event.clone(), Vec::with_capacity(0))?;
+        self.add_event(event.clone(), Vec::new())?;
         Ok(event)
     }
 
