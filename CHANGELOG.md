@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- Added Python 3.15 support for the core package. Optional ML/document extras are not yet supported on Python 3.15.
 - `pw.xpacks.llm.rerankers.LLMReranker` now accepts `call_kwargs`, the kwargs passed to each call of the LLM. The default is still `{"temperature": 0}`; pass `call_kwargs={}` to use the reranker with models that accept only the default `temperature`, such as Claude Opus 4.7 and newer (including Claude Opus 5.5) on Bedrock.
 - `pw.io.kafka.write` accepts `with_pathway_headers` (default `True`): with `False`, the messages are produced without the `pathway_time` and `pathway_diff` headers, which makes the writer cheaper when nothing downstream reads them.
 

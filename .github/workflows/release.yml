@@ -23,7 +23,7 @@ jobs:
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}
@@ -213,11 +213,15 @@ jobs:
 
   Verify_Linux:
     needs: Build_packages
-    name: Verify packages
+    name: Verify packages (${{ matrix.test-config.python-version }}, ${{ matrix.test-config.extra }})
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.14"]
+        test-config:
+          - {python-version: "3.10", extra: tests-core}
+          - {python-version: "3.15", extra: tests-core}
+          - {python-version: "3.10", extra: tests}
+          - {python-version: "3.14", extra: tests}
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -261,22 +265,30 @@ jobs:
           # present: a stale uv cache on a runner may only hold a pre-release
           # (e.g. 3.14.0a4), whose ABI differs from the final release and
           # crashes extensions built for the stable cp314 ABI.
-          uv python install "${{ matrix.python-version }}"
+          uv python install "${{ matrix.test-config.python-version }}"
+          # Airbyte connectors run in an isolated, supported interpreter.
+          uv python install "3.10"
 
       - name: Install and verify Linux package
         run: |
           set -ex
-          ENV_NAME="testenv_${{ matrix.python-version }}"
+          ENV_NAME="testenv_${{ matrix.test-config.python-version }}_${{ matrix.test-config.extra }}"
           rm -rf "${ENV_NAME}"
-          uv venv --seed --python "${{ matrix.python-version }}" "${ENV_NAME}"
+          uv venv --seed --python "${{ matrix.test-config.python-version }}" "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
+          export PATHWAY_AIRBYTE_PYTHON=$(uv python find "3.10")
           WHEEL=(./wheels/pathway-*.whl)
           # install with uv: pip backtracks for hours on the boto/google/openapi
           # dependency lattices that uv solves in seconds
-          uv pip install --no-cache "${WHEEL}[tests]"
+          uv pip install --no-cache "${WHEEL}[${{ matrix.test-config.extra }}]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           export PYTEST_ADDOPTS="--dist worksteal -n auto --timeout=900"
-          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+          PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+          TEST_ARGS=()
+          if [[ "${{ matrix.test-config.extra }}" == "tests-core" ]]; then
+            TEST_ARGS+=(--ignore "${PACKAGE_DIR}/xpacks")
+          fi
+          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules "${PACKAGE_DIR}" "${TEST_ARGS[@]}"
         env:
           PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
 
@@ -284,11 +296,15 @@ jobs:
     needs:
       - start-runner
       - Build_packages
-    name: Verify macOS and Linux
+    name: Verify ${{ matrix.os }} (${{ matrix.test-config.python-version }}, ${{ matrix.test-config.extra }})
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.14"]
+        test-config:
+          - {python-version: "3.10", extra: tests-core}
+          - {python-version: "3.15", extra: tests-core}
+          - {python-version: "3.10", extra: tests}
+          - {python-version: "3.14", extra: tests}
         os:
           - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
@@ -343,15 +359,18 @@ jobs:
           # present: a stale uv cache on a runner may only hold a pre-release
           # (e.g. 3.14.0a4), whose ABI differs from the final release and
           # crashes extensions built for the stable cp314 ABI.
-          uv python install "${{ matrix.python-version }}"
+          uv python install "${{ matrix.test-config.python-version }}"
+          # Airbyte connectors run in an isolated, supported interpreter.
+          uv python install "3.10"
 
       - name: Install and verify ${{ matrix.os }} package
         run: |
           set -ex
-          ENV_NAME="testenv_${{ matrix.python-version }}"
+          ENV_NAME="testenv_${{ matrix.test-config.python-version }}_${{ matrix.test-config.extra }}"
           rm -rf "${ENV_NAME}"
-          uv venv --seed --python "${{ matrix.python-version }}" "${ENV_NAME}"
+          uv venv --seed --python "${{ matrix.test-config.python-version }}" "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
+          export PATHWAY_AIRBYTE_PYTHON=$(uv python find "3.10")
           if [[ "${{ matrix.os }}" == 'selfhosted-macOS' ]]; then
             WHEEL=(./wheels/pathway-*arm64.whl)
           else
@@ -361,16 +380,24 @@ jobs:
           export LLAMA_READER_PORT=8799
           # install with uv: pip backtracks for hours on the boto/google/openapi
           # dependency lattices that uv solves in seconds
-          uv pip install --no-cache "${WHEEL}[tests]"
-          uv pip install llama_index
+          uv pip install --no-cache "${WHEEL}[${{ matrix.test-config.extra }}]"
+          if [[ "${{ matrix.test-config.extra }}" == "tests" ]]; then
+            uv pip install llama_index
+          fi
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           if [[ "$RUNNER_NAME" == *mac* ]]; then
             export PYTEST_XDIST_AUTO_NUM_WORKERS=2
           fi
           export PYTEST_ADDOPTS="--dist worksteal -n auto --timeout=900"
-          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+          PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+          TEST_ARGS=()
+          if [[ "${{ matrix.test-config.extra }}" == "tests-core" ]]; then
+            TEST_ARGS+=(--ignore "${PACKAGE_DIR}/xpacks")
+          fi
+          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules "${PACKAGE_DIR}" "${TEST_ARGS[@]}"
         env:
-          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          # Dependency source wheels need a valid arm64 platform tag (macOS 11+).
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
           PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
@@ -390,7 +417,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
@@ -460,7 +487,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
@@ -495,7 +522,7 @@ jobs:
     if: ${{ always() }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}

@@ -22,10 +22,12 @@ dependencies = [
     "pandas >= 2.1",
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
-    "pyarrow >= 10.0.0, < 26.0.0",
+    "pyarrow >= 10.0.0, < 26.0.0; python_version < '3.15'",
+    "pyarrow >= 26.0.0, < 27.0.0; python_version >= '3.15'",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",
-    "beartype >= 0.14.0, < 0.23.0",
+    "beartype >= 0.14.0, < 0.23.0; python_version < '3.15'",
+    "beartype >= 0.23.1, < 0.24.0; python_version >= '3.15'",
     "rich >= 12.6.0",
     "diskcache >= 5.2.1",
     "exceptiongroup >= 1.1.3; python_version < '3.11'",
@@ -155,7 +157,8 @@ all = [
     "pathway[milvus]",
     "pathway[twelvelabs]",
 ]
-tests = [
+# Core package tests do not require the ML/document dependency stack.
+tests-core = [
     "pytest >= 9.0.3, < 10.0.0",
     "pytest-xdist >= 3.8.0, < 4.0.0",
     "pytest-rerunfailures >= 16.2, < 17.0",
@@ -165,22 +168,27 @@ tests = [
     "openapi_spec_validator",
     "kafka-python >= 2.0.2",
     "python-magic",
-    "pathway[all]",
-    "duckdb >= 1.0.0",
+    "pathway[pyfilesystem,sql,airbyte]",
+    # No CPython 3.15 wheels yet; the DuckDB tests already use importorskip.
+    "duckdb >= 1.0.0; python_version < '3.15'",
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
+    "aiobotocore >= 3.0.0",
+    # Integration tests also verify AWS results through boto3.
+    "boto3 >= 1.26.76, < 2.0.0",
+]
+# Preserve the complete test extra for development and extras verification.
+tests = [
+    "pathway[tests-core]",
+    "pathway[all]",
+    "duckdb >= 1.0.0",
     "fpdf",
     # paddlepaddle has no CPython 3.14 wheels yet; the paddle-based parser
     # degrades gracefully when the import is missing.
     "paddlepaddle >= 3.2.0, < 3.3.0; python_version < '3.14'", # required by paddleocr
     "paddlex >= 3.0.0; python_version < '3.14'",
-    # aiobotocore 3.x declares a ranged botocore window; aioboto3 (stale, pins an
-    # exact aiobotocore/botocore) was dropped to keep pip out of the boto lattice
-    "aiobotocore >= 3.0.0",
-    # the integration tests verify S3/DynamoDB/Kinesis connector results through boto3;
-    # the shipped package itself does not need it
-    "boto3 >= 1.26.76, < 2.0.0",
 ]
+
 airbyte = [
     "google-cloud-run",
     "google-cloud-secret-manager",

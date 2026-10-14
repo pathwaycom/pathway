@@ -93,7 +93,7 @@ postgres = { version = "0.19.10", features = ["with-chrono-0_4", "with-serde_jso
 postgres-native-tls = "0.5.2"
 prometheus-client = "0.23.1"
 pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runtime", "compression", "auth-oauth2", "protobuf-src"] }
-pyo3 = { version = "0.29.0", features = ["abi3-py310", "multiple-pymethods"] }
+pyo3 = { version = "0.29.3", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-async-runtimes = "0.29.0"
 pyo3-log = "0.13.4"
 qdrant-client = "1.15.0"
@@ -157,4 +157,4 @@ inherits = "dev"
 debug = "full"
 
 [build-dependencies]
-pyo3-build-config = "0.29.0"
+pyo3-build-config = "0.29.3"
