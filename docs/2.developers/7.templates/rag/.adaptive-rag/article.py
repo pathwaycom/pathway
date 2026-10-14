@@ -171,7 +171,7 @@
 
 # ## Trying it out
 #
-# We provide an implementation of the Adaptive RAG in the [Pathway Live Data Framework](/developers/user-guide/introduction/welcome) data processing framework. The Pathway Live Data Framework is your one-stop-shop for building realtime data processing pipelines, from simple ETL to synchronizing and indexing document collections into knowledge bases. The Pathway Live Data Framework [LLM Xpack](/developers/user-guide/llm-xpack/overview) is a set of pipeline components that are useful in working with LLMs: [auto-updating vector stores](/developers/user-guide/llm-xpack/docs-indexing), [RAGs](/solutions)  and [many more LLM examples](https://github.com/pathwaycom/llm-app).
+# We provide an implementation of the Adaptive RAG in the [Pathway Live Data Framework](/developers/user-guide/introduction/welcome) data processing framework. The Pathway Live Data Framework is your one-stop-shop for building realtime data processing pipelines, from simple ETL to synchronizing and indexing document collections into knowledge bases. The Pathway Live Data Framework [LLM Xpack](/developers/user-guide/llm-xpack/overview) is a set of pipeline components that are useful in working with LLMs: [auto-updating vector stores](/developers/user-guide/llm-xpack/docs-indexing), [RAGs](/solutions)  and [many more LLM examples](https://github.com/pathwaycom/pathway/tree/main/examples/llm-app).
 # If you are interested in how Adaptive RAG is implemented inside the Pathway Live Data Framework, you can [dive into the internals directly here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/question_answering.py#L37).
 
 # As a prerequisite to run the code, install necessary packages and download sample data which will be used.

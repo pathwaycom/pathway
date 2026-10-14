@@ -1,0 +1,94 @@
+# This YAML configuration file sets up the TwelveLabs video RAG template.
+# It indexes videos by turning them into text with the TwelveLabs Pegasus model,
+# embedding that text with the TwelveLabs Marengo model, and serving a RAG
+# question-answering endpoint on top.
+# You can learn more about the YAML syntax here:
+# https://pathway.com/developers/templates/configure-yaml
+
+
+# $sources defines the data sources read and indexed in the RAG.
+# Here we read video files from the local `data` directory. The connector emits
+# raw bytes, which the TwelveLabs parser sends to Pegasus for analysis.
+# You can learn more about configuring data sources here:
+# https://pathway.com/developers/templates/yaml-examples/data-sources-examples
+$sources:
+  - !pw.io.fs.read
+    path: data
+    format: binary
+    with_metadata: true
+
+  # Uncomment to use the Google Drive connector to index videos from a Drive folder.
+  # - !pw.io.gdrive.read
+  #   object_id: $DRIVE_ID
+  #   service_user_credentials_file: gdrive_indexer.json
+  #   file_name_pattern:
+  #     - "*.mp4"
+  #     - "*.mov"
+  #   object_size_limit: null
+  #   with_metadata: true
+  #   refresh_interval: 30
+
+
+# The parser turns each video into text using the TwelveLabs Pegasus model.
+# The TWELVELABS_API_KEY environment variable must be set (see .env.example).
+# You can customize the prompt to extract exactly what your application needs.
+$parser: !pw.xpacks.llm.parsers.TwelveLabsVideoParser
+  model: "pegasus1.5"
+  max_tokens: 2048
+  cache_strategy: !pw.udfs.DefaultCache {}
+  # Uncomment so that a single malformed video does not halt the pipeline:
+  # on_error: "skip"
+  # prompt: "Describe this video, focusing on the products that appear and any prices shown."
+
+# The embedder converts the parsed text into 512-dimensional multimodal
+# embeddings using the TwelveLabs Marengo model.
+$embedder: !pw.xpacks.llm.embedders.MarengoEmbedder
+  model: "marengo3.0"
+  cache_strategy: !pw.udfs.DefaultCache {}
+  retry_strategy: !pw.udfs.ExponentialBackoffRetryStrategy {}
+
+# Splits the parsed video descriptions into chunks for indexing.
+$splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
+  max_tokens: 400
+
+# The LLM used to answer questions over the indexed video descriptions.
+# The list of available Pathway Live Data Framework LLM wrappers is available here:
+# https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms
+$llm: !pw.xpacks.llm.llms.OpenAIChat
+  model: "gpt-4.1-mini"
+  retry_strategy: !pw.udfs.ExponentialBackoffRetryStrategy
+    max_retries: 6
+  cache_strategy: !pw.udfs.DefaultCache {}
+  temperature: 0
+  capacity: 8
+  async_mode: "fully_async"
+
+# Builds the in-memory vector index over the Marengo embeddings.
+$retriever_factory: !pw.indexing.UsearchKnnFactory
+  reserved_space: 1000
+  embedder: $embedder
+  metric: !pw.indexing.USearchMetricKind.COS
+
+# Stores and retrieves the indexed video descriptions.
+$document_store: !pw.xpacks.llm.document_store.DocumentStore
+  docs: $sources
+  parser: $parser
+  splitter: $splitter
+  retriever_factory: $retriever_factory
+
+# The RAG question-answering component served over HTTP.
+question_answerer: !pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer
+  llm: $llm
+  indexer: $document_store
+  # You can set the number of documents to be included as the context of the query
+  # search_topk: 6
+  # You can use your own prompt for querying.
+  # prompt_template: "Given these documents: {context}, please answer the question: {query}"
+
+# Change host and port of the webserver by uncommenting these lines
+# host: "0.0.0.0"
+# port: 8000
+
+# By default, caching is enabled for UDFs with cache_strategy set.
+# You can disable it by uncommenting the following line.
+# persistence_mode: null

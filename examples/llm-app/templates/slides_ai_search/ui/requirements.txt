@@ -1,0 +1,6 @@
+streamlit==1.35.0
+load_dotenv==0.1.0
+nest_asyncio==1.6.0
+aiohttp==3.9.5
+beautifulsoup4==4.12.3
+openai==1.35.10

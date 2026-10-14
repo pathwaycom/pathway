@@ -1,0 +1,19 @@
+version: "3.8"
+services:
+  pathway:
+    build:
+      context: .
+    ports:
+      - "8080:8080"
+    environment:
+      OPENAI_API_KEY:
+      PATHWAY_PERSISTENT_STORAGE:
+  streamlit_ui:
+    depends_on:
+      - pathway
+    build:
+      context: ./ui
+    ports:
+      - "8501:8501"
+    environment:
+      PATHWAY_REST_CONNECTOR_HOST: "pathway"

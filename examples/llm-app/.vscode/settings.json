@@ -1,0 +1,17 @@
+{
+  "python.defaultInterpreterPath": "${env:HOME}/pw-env/bin/python",
+  "python.formatting.provider": "none",
+  "editor.formatOnSave": true,
+  "python.linting.enabled": true,
+  "python.linting.flake8Enabled": true,
+  "python.linting.mypyEnabled": true,
+  "[python]": {
+    "files.trimTrailingWhitespace": true,
+    "editor.rulers": [88],
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    },
+    "editor.defaultFormatter": "ms-python.black-formatter"
+  },
+  "git.autofetchPeriod": 315360000
+}

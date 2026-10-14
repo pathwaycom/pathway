@@ -1,0 +1,46 @@
+services:
+  app:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      PATHWAY_PORT: "${PATHWAY_PORT:-8000}"
+      PATHWAY_LICENSE_KEY: $PATHWAY_LICENSE_KEY
+    ports:
+      - "${PATHWAY_PORT:-8000}:${PATHWAY_PORT:-8000}"
+    networks:
+      - network
+    volumes:
+      - ./data:/app/data
+      - ./storage/pw_dump_files:/app/storage/pw_dump_files
+      - ./storage/pw_dump_images:/app/storage/pw_dump_images
+      - ./Cache:/app/Cache
+
+  nginx:
+    build:
+      context: nginx
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    networks:
+      - network
+    volumes:
+      - ./storage/pw_dump_files:/app/pw_dump_files
+      - ./storage/pw_dump_images:/app/pw_dump_images
+
+  ui:
+    build:
+      context: ui
+    environment:
+      PATHWAY_HOST: "app"
+      PATHWAY_PORT: "${PATHWAY_PORT:-8000}"
+      UI_PORT: 8501
+    ports:
+      - "8501:8501"
+    networks:
+      - network
+
+networks:
+  network:
+    driver: bridge

@@ -1,0 +1,34 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        PATHWAY_SRC_IMAGE: ${PATHWAY_SRC_IMAGE:-pathwaycom/pathway:latest}
+    ports:
+      - "${PATHWAY_PORT:-8000}:${PATHWAY_PORT:-8000}"
+    networks:
+      - network
+    environment:
+      PATHWAY_PORT: "${PATHWAY_PORT:-8000}"
+      PATHWAY_LICENSE_KEY: $PATHWAY_LICENSE_KEY
+    volumes:
+      - ./data:/app/data
+      - ./Cache:/app/Cache
+
+  ui:
+    build:
+      context: ui
+      args:
+        PATHWAY_SRC_IMAGE: ${PATHWAY_SRC_IMAGE:-pathwaycom/pathway:latest}
+    networks:
+      - network
+    environment:
+      PATHWAY_HOST: "app"
+      PATHWAY_PORT: "${PATHWAY_PORT:-8000}"
+      UI_PORT: 8501
+    ports:
+      - "8501:8501"
+
+networks:
+  network:
+    driver: bridge
