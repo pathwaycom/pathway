@@ -1,7 +1,6 @@
 use log::{error, warn};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::mem::take;
 use std::time::{Duration, Instant};
 
 use aws_sdk_kinesis::operation::describe_stream_summary::DescribeStreamSummaryError;
@@ -508,18 +507,23 @@ impl BufferedShardEntries {
 
         let mut retry = RetryConfig::default();
 
-        for _ in 0..N_SEND_ATTEMPTS {
+        for attempt in 0..N_SEND_ATTEMPTS {
+            // Keep the pending records until the response confirms acceptance.
+            // A transport error retries the same batch; a partial success below
+            // removes only accepted records before the next request.
             let response = client
                 .put_records()
                 .stream_name(stream)
-                .set_records(Some(take(&mut self.entries)))
+                .set_records(Some(self.entries.clone()))
                 .send()
                 .await;
 
             match response {
                 Ok(response) => {
                     if response.failed_record_count().unwrap_or(0) == 0 {
-                        break;
+                        self.entries.clear();
+                        self.total_length = 0;
+                        return Ok(());
                     }
 
                     let mut total_entries_to_retry = 0;
@@ -530,6 +534,11 @@ impl BufferedShardEntries {
                         }
                     }
                     self.entries.truncate(total_entries_to_retry);
+                    self.total_length = self
+                        .entries
+                        .iter()
+                        .map(|entry| entry.data.as_ref().len() + entry.partition_key.len())
+                        .sum();
                     if total_entries_to_retry > 0 {
                         warn!("There are {total_entries_to_retry} objects requiring retry. If you see this message often, it means that the writing rate is too high. Consider increasing the number of shards.");
                     }
@@ -542,16 +551,12 @@ impl BufferedShardEntries {
                 }
             }
 
-            retry.sleep_after_error();
+            if attempt + 1 < N_SEND_ATTEMPTS {
+                retry.sleep_after_error();
+            }
         }
 
-        self.total_length = 0;
-        if self.entries.is_empty() {
-            Ok(())
-        } else {
-            self.entries.clear();
-            Err(WriteError::SomeItemsNotDelivered(self.entries.len()))
-        }
+        Err(WriteError::SomeItemsNotDelivered(self.entries.len()))
     }
 }
 
