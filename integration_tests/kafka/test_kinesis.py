@@ -3,8 +3,10 @@ import os
 import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+import requests
 
 import pathway as pw
 from pathway.internals.parse_graph import G
@@ -244,6 +246,59 @@ def test_kinesis_io_much_data(kinesis_bulk_context, tmp_path):
         FileLinesNumberChecker(output_path, n_total_entries),
         MUCH_DATA_READ_TIMEOUT_SECS,
     )
+
+
+@pytest.mark.parametrize("omit_partition_key", [False, True])
+def test_kinesis_reads_records_with_optional_keys_and_binary_headers(
+    omit_partition_key, kinesis_context, tmp_path, monkeypatch, tcp_port
+):
+    # Kinesalite does not implement AUTO distribution yet. Forward its real
+    # responses, removing PartitionKey to exercise the new service response
+    # shape, and adding a legal non-UTF-8 header that the SDK must ignore.
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            response = requests.post(
+                kinesis_context.endpoint_url,
+                data=self.rfile.read(int(self.headers["Content-Length"])),
+                headers={
+                    name: value
+                    for name, value in self.headers.items()
+                    if name.lower() not in {"host", "content-length", "connection"}
+                },
+                timeout=30,
+            )
+            body = response.json()
+            if omit_partition_key:
+                for record in body.get("Records", []):
+                    record.pop("PartitionKey", None)
+            payload = json.dumps(body).encode()
+            self.send_response(response.status_code)
+            self.send_header("Content-Type", "application/x-amz-json-1.1")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("X-Unmodeled-Binary-Header", "\xff")
+            self.end_headers()
+            self.wfile.write(payload)
+
+    expected = ["first", "second", "third"]
+    for value in expected:
+        kinesis_context.send_record(KinesisRecord(key=value, value=value.encode()))
+
+    with ThreadingHTTPServer(("127.0.0.1", tcp_port), ProxyHandler) as proxy:
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("AWS_ENDPOINT_URL", f"http://127.0.0.1:{tcp_port}")
+            table = pw.io.kinesis.read(kinesis_context.stream_name, format="plaintext")
+            output = tmp_path / "output.jsonl"
+            pw.io.jsonlines.write(table, output)
+            wait_result_with_checker(FileLinesNumberChecker(output, len(expected)), 30)
+            actual = [
+                json.loads(line)["data"] for line in output.read_text().splitlines()
+            ]
+            assert sorted(actual) == expected
+        finally:
+            proxy.shutdown()
+            thread.join()
 
 
 @pytest.mark.parametrize("shard_count", [1, 4])

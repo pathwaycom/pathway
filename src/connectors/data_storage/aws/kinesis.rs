@@ -406,10 +406,10 @@ impl Reader for KinesisReader {
                         .map_err(|e| ReadError::Kinesis(Box::new(e.into())))?;
 
                     for record in records_response.records() {
-                        let key = record.partition_key.as_bytes();
+                        // AUTO record distribution can return records without a partition key.
+                        let key = record.partition_key().map(|key| key.as_bytes().to_vec());
                         let value = record.data.clone().into_inner();
-                        let context =
-                            ReaderContext::from_key_value(Some(key.to_vec()), Some(value));
+                        let context = ReaderContext::from_key_value(key, Some(value));
 
                         let offset = (
                             Self::offset_key_for_shard(&mut self.shard_offset_keys, &shard_id),
@@ -489,7 +489,7 @@ impl BufferedShardEntries {
         stream: &str,
         entry: PutRecordsRequestEntry,
     ) -> Result<(), WriteError> {
-        let entry_length = entry.data.as_ref().len() + entry.partition_key.len();
+        let entry_length = entry.data.as_ref().len() + entry.partition_key().map_or(0, str::len);
         let entry_limit_reached = self.entries.len() == MAX_KINESIS_BULK_REQUEST_ENTRIES;
         let size_limit_reached = self.total_length + entry_length > MAX_KINESIS_BULK_REQUEST_LENGTH;
         if entry_limit_reached || size_limit_reached {
@@ -537,7 +537,9 @@ impl BufferedShardEntries {
                     self.total_length = self
                         .entries
                         .iter()
-                        .map(|entry| entry.data.as_ref().len() + entry.partition_key.len())
+                        .map(|entry| {
+                            entry.data.as_ref().len() + entry.partition_key().map_or(0, str::len)
+                        })
                         .sum();
                     if total_entries_to_retry > 0 {
                         warn!("There are {total_entries_to_retry} objects requiring retry. If you see this message often, it means that the writing rate is too high. Consider increasing the number of shards.");
