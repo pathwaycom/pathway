@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 
+import boto3
 import pandas as pd
 import pytest
 
@@ -13,7 +14,64 @@ from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import get_aws_s3_settings, write_lines
 
-from .base import create_jsonlines, put_aws_object, read_jsonlines_fields
+from .base import (
+    MINIO_BUCKET_NAME,
+    MINIO_S3_ENDPOINT_URL,
+    create_jsonlines,
+    put_aws_object,
+    put_minio_object,
+    read_jsonlines_fields,
+)
+
+
+def test_s3_reads_and_recovers_with_temporary_session_credentials(tmp_path, s3_path):
+    sts = boto3.client(
+        "sts",
+        endpoint_url=MINIO_S3_ENDPOINT_URL,
+        region_name="us-east-1",
+        aws_access_key_id=os.environ["MINIO_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
+    )
+    credentials = sts.assume_role(
+        RoleArn="arn:aws:iam::123456789012:role/test",
+        RoleSessionName="pathway-session-token-test",
+        DurationSeconds=900,
+    )["Credentials"]
+    key = f"{s3_path}/temporary-credentials.txt"
+    put_minio_object(key, "temporary credentials work\n")
+    settings = pw.io.s3.AwsS3Settings(
+        bucket_name=MINIO_BUCKET_NAME,
+        access_key=credentials["AccessKeyId"],
+        secret_access_key=credentials["SecretAccessKey"],
+        session_token=credentials["SessionToken"],
+        endpoint=MINIO_S3_ENDPOINT_URL,
+        region="us-east-1",
+        with_path_style=True,
+    )
+    output = tmp_path / "output.jsonl"
+
+    def run_pipeline():
+        G.clear()
+        table = pw.io.s3.read(
+            key,
+            aws_s3_settings=settings,
+            format="plaintext",
+            mode="static",
+            name="temporary-credentials-input",
+        )
+        pw.io.jsonlines.write(table, output)
+        pw.run(
+            monitoring_level=MonitoringLevel.NONE,
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.s3(f"{s3_path}/persistence", settings)
+            ),
+        )
+        rows = [json.loads(line) for line in output.read_text().splitlines()]
+        return [row["data"] for row in rows]
+
+    assert run_pipeline() == ["temporary credentials work"]
+    put_minio_object(key, "temporary credentials work\nrecovery works too\n")
+    assert run_pipeline() == ["recovery works too"]
 
 
 @pytest.mark.parametrize(

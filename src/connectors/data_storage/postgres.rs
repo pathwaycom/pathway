@@ -3712,7 +3712,7 @@ impl WalReader {
         if is_append_only
             && matches!(
                 event.event_type,
-                EventType::Truncate(_) | EventType::Update { .. } | EventType::Delete { .. }
+                EventType::Truncate { .. } | EventType::Update { .. } | EventType::Delete { .. }
             )
         {
             return Err(ReplicationError::AppendOnlyNotRespected(Box::new(event)));
@@ -3729,7 +3729,10 @@ impl WalReader {
                     commit_possibility: CommitPossibility::Possible,
                 },
             ))],
-            EventType::Truncate(tables_from_event) => {
+            EventType::Truncate {
+                tables: tables_from_event,
+                ..
+            } => {
                 let expected_full_name =
                     format!("{}.{}", table_ctx.schema_name, table_ctx.table_name);
                 let has_target_table = tables_from_event.iter().any(|t| **t == *expected_full_name);
@@ -3805,7 +3808,11 @@ impl WalReader {
         let is_append_only = self.is_append_only;
         self.runtime.block_on(async {
             loop {
-                match self.stream.next_event_with_retry(&self.cancel_token).await {
+                // Our slot is temporary: a disconnected session loses both the
+                // slot and its retained WAL. The SDK's automatic reconnect can
+                // recreate it at a newer LSN, silently skipping changes. Surface
+                // the failure so a restart takes a fresh consistent snapshot.
+                match self.stream.next_event(&self.cancel_token).await {
                     Ok(event) => {
                         self.stream
                             .shared_lsn_feedback
@@ -3821,19 +3828,7 @@ impl WalReader {
                         }
                     }
                     Err(e @ pg_walstream::ReplicationError::Cancelled(_)) => {
-                        // `next_event_with_retry` reports `Cancelled` for two very
-                        // different situations: our cancellation token firing, and
-                        // the server ending the logical-replication COPY stream
-                        // (`PQgetCopyData` returning -1, e.g. the walsender was
-                        // terminated under load). We never trigger `cancel_token`,
-                        // so in streaming mode this is always the latter — an
-                        // unrequested stream death, not end-of-data. Reporting
-                        // `ReadResult::Finished` here (as this used to) makes the
-                        // reader claim completion right after the snapshot and
-                        // silently drop every change that followed. Surface it as a
-                        // read error so the engine reports the failure instead of
-                        // finishing the pipeline with missing data. Only a genuine,
-                        // explicit cancellation is a graceful end of stream.
+                        // Only explicit cancellation is a graceful end of stream.
                         if self.cancel_token.is_cancelled() {
                             info!("Cancelled, shutting down gracefully");
                             return Ok(vec![PgEventAfterParsing::SimpleChange(Box::new(

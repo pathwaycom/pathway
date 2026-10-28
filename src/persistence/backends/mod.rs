@@ -10,13 +10,13 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use ::s3::error::S3Error;
-use azure_storage::Error as AzureStorageError;
 use bincode::ErrorKind as BincodeError;
 use futures::channel::oneshot;
 use futures::channel::oneshot::Receiver as OneShotReceiver;
 use futures::channel::oneshot::Sender as OneShotSender;
 use glob::PatternError as GlobPatternError;
 use lz4_flex::block::DecompressError;
+use opendal::Error as AzureStorageError;
 use rusqlite::Error as SqliteError;
 use serde_json::Error as JsonParseError;
 

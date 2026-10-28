@@ -119,13 +119,13 @@ class AwsS3Settings:
     @property
     def settings(self) -> api.AwsS3Settings:
         return api.AwsS3Settings(
-            self._bucket_name,
-            self._access_key,
-            self._secret_access_key,
-            self._with_path_style,
-            self._region,
-            self._endpoint,
-            self._session_token,
+            bucket_name=self._bucket_name,
+            access_key=self._access_key,
+            secret_access_key=self._secret_access_key,
+            with_path_style=self._with_path_style,
+            region=self._region,
+            endpoint=self._endpoint,
+            session_token=self._session_token,
         )
 
     @classmethod

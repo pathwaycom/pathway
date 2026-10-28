@@ -26,9 +26,9 @@ use async_nats::Subscriber as NatsSubscriber;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_sdk_dynamodb::Client as DynamoDBClient;
 use aws_sdk_kinesis::Client as KinesisClient;
-use azure_storage::StorageCredentials as AzureStorageCredentials;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
+use derivative::Derivative;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
     http::{
@@ -4570,10 +4570,12 @@ pub fn resolve_aws_credentials(
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
 #[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct AzureBlobStorageSettings {
     account: String,
+    #[derivative(Debug = "ignore")]
     password: String,
     container: String,
 }
@@ -4588,12 +4590,6 @@ impl AzureBlobStorageSettings {
             password,
             container,
         }
-    }
-}
-
-impl AzureBlobStorageSettings {
-    fn credentials(&self) -> AzureStorageCredentials {
-        AzureStorageCredentials::access_key(self.account.clone(), self.password.clone())
     }
 }
 
@@ -4692,7 +4688,7 @@ impl AwsS3Settings {
                     ))?,
             ),
             None,
-            None,
+            self.session_token.as_deref(),
             None,
         )
         .map_err(|err| {
@@ -4746,6 +4742,7 @@ impl AwsS3Settings {
                                 .as_deref(),
                         )
                     })
+                    .or_else(|_| AwsCredentials::from_container_credentials_provider())
                     // `true` skips the crate's new is-this-EC2 heuristic and attempts
                     // the instance metadata endpoint unconditionally, as before.
                     .or_else(|_| AwsCredentials::from_instance_metadata(true));
@@ -8115,7 +8112,7 @@ impl DataStorage {
                 let path = self.path()?;
                 let azure_settings = self.azure_blob_storage_settings()?;
                 Ok(PersistentStorageConfig::Azure {
-                    credentials: azure_settings.credentials(),
+                    account_key: azure_settings.password,
                     account: azure_settings.account,
                     container: azure_settings.container,
                     root_path: path.into(),

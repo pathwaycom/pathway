@@ -1,6 +1,7 @@
 import copy
 import datetime
 import json
+import multiprocessing
 import os
 import threading
 import uuid
@@ -33,6 +34,69 @@ from pathway.tests.utils import FileLinesNumberChecker, run, wait_result_with_ch
 pytestmark = pytest.mark.xdist_group("postgres")
 
 CREDENTIALS_DIR = Path(os.getenv("CREDENTIALS_DIR", default=Path(__file__).parent))
+
+
+def test_postgres_temporary_slot_loss_fails_instead_of_skipping_changes(
+    tmp_path, postgres
+):
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+
+    with postgres.temporary_table(
+        ddl_fmt="CREATE TABLE {t} (id INT PRIMARY KEY)"
+    ) as table_name:
+        postgres.execute_sql(f"INSERT INTO {table_name} VALUES (1)")
+        with postgres.publication(table_name) as publication_name:
+            table = pw.io.postgres.read(
+                postgres_settings=POSTGRES_SETTINGS,
+                table_name=table_name,
+                schema=InputSchema,
+                mode="streaming",
+                publication_name=publication_name,
+                autocommit_duration_ms=10,
+            )
+            output = tmp_path / "output.jsonl"
+            pw.io.jsonlines.write(table, output)
+            process = multiprocessing.get_context("fork").Process(target=run)
+            process.start()
+            try:
+                # Observe a WAL-delivered row, not just the initial snapshot,
+                # before terminating precisely this test's walsender.
+                wait_result_with_checker(
+                    FileLinesNumberChecker(output, 1), 30, target=None
+                )
+                postgres.execute_sql(f"INSERT INTO {table_name} VALUES (2)")
+                wait_result_with_checker(
+                    FileLinesNumberChecker(output, 2), 30, target=None
+                )
+                # The pure-Rust replication client does not forward
+                # application_name. Identify the slot by its unique publication
+                # in START_REPLICATION and assert that we actually terminated it.
+                with postgres.connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT s.active_pid FROM pg_replication_slots s "
+                        "JOIN pg_stat_activity a ON a.pid = s.active_pid "
+                        "WHERE s.temporary AND a.query LIKE %s",
+                        (f"%{publication_name}%",),
+                    )
+                    senders = cursor.fetchall()
+                    assert len(senders) == 1
+                    cursor.execute("SELECT pg_terminate_backend(%s)", senders[0])
+                    assert cursor.fetchone() == (True,)
+                process.join(timeout=30)
+                assert (
+                    process.exitcode is not None
+                ), "reader reconnected or hung after losing its slot"
+                assert (
+                    process.exitcode != 0
+                ), "reader reported success after losing its slot"
+            finally:
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=10)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=10)
 
 
 def test_psql_output_stream(tmp_path, postgres):

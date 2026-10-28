@@ -11,6 +11,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.kafka.write` accepts `with_pathway_headers` (default `True`): with `False`, the messages are produced without the `pathway_time` and `pathway_diff` headers, which makes the writer cheaper when nothing downstream reads them.
 
 ### Fixed
+- S3 reads and persistence now pass the configured session token when using temporary credentials.
+- PostgreSQL streaming reads fail explicitly after losing their temporary replication slot instead of reconnecting with a new slot that could skip changes.
 - `pw.io.kinesis.write` now retries undelivered records after partial or transport failures and reports the correct pending count when retries are exhausted, instead of crashing or silently losing records.
 - `pw.io.weaviate.write` no longer fails the pipeline with `error sending request for url (.../v1/batch/objects)` on the first write after a pause of 10 to 90 seconds. Weaviate closes a keep-alive connection it has not heard from for about 10 seconds, while the writer's connection pool kept one for 90 seconds; the pool now drops idle connections after 5 seconds, and a batch that still hits a transport error or a 429/5xx response is retried (all batch requests are idempotent).
 - `pathway.xpacks.llm.rerankers.rerank_topk_filter` no longer trips a bare worker panic (`ValueError: not enough values to unpack`) on a row whose document list is empty. A query that retrieved nothing is a normal outcome, and it now yields empty document and score lists for that row instead of taking down the pipeline.
