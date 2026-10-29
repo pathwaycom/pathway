@@ -18,10 +18,10 @@ eyre = "0.6.12"
 mockall = "0.13.1"
 
 [dependencies]
-apache-avro = "0.21.0"
+apache-avro = "0.22.0"
 arc-swap = "1.7.1"
 arcstr = { version = "1.2.0", default-features = false, features = ["serde", "std"] }
-async-nats = "0.50.0"
+async-nats = "0.51.0"
 async-trait = "0.1.89"
 aws-config = "1.13.0"
 aws-credential-types = "1.3.1"
@@ -71,7 +71,8 @@ jmespath = "0.5.0"
 libc = "0.2.172"
 log = { version = "0.4.27", features = ["std"] }
 lz4_flex = "0.14.0"
-mongodb = { version = "3.2.2", features = ["sync"] }
+# MongoDB 3.9 drops support for servers older than 4.4.
+mongodb = { version = "~3.8.2", features = ["sync"] }
 mysql = { version = "28.0.4", features = ["binlog"] }
 native-tls = "0.2.14"
 ndarray = { version = "0.15.6", features = ["serde"] }
@@ -80,17 +81,17 @@ num-integer = "0.1.46"
 numpy = "0.29.0"
 once_cell = "1.21.3"
 opendal = { version = "0.57.0", default-features = false, features = ["services-azblob", "layers-retry"] }
-opentelemetry = { version = "0.32.0", features = ["trace", "metrics"] }
-opentelemetry-otlp = { version = "0.32.0", features = ["default", "tls", "tls-roots", "metrics", "grpc-tonic"] }
-opentelemetry-semantic-conventions = { version = "0.32.1", features = ["semconv_experimental"] }
-opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "rt-tokio-current-thread"] }
+opentelemetry = { version = "0.33.1", features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.33.1", features = ["default", "tls-ring", "tls-roots", "metrics", "grpc-tonic"] }
+opentelemetry-semantic-conventions = { version = "0.33.1", features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.33.1", features = ["rt-tokio", "rt-tokio-current-thread"] }
 ordered-float = { version = "4.6.0", features = ["serde"] }
 pg_walstream = "0.9.0"
 pgvector = { version = "0.4.1", features = ["postgres", "halfvec"] }
 postgres = { version = "0.19.10", features = ["with-chrono-0_4", "with-serde_json-1"] }
 postgres-native-tls = "0.5.2"
 prometheus-client = "0.23.1"
-pulsar = { version = "6.8.0", default-features = false, features = ["tokio-runtime", "compression", "auth-oauth2", "protobuf-src"] }
+pulsar = { version = "6.9.1", default-features = false, features = ["tokio-runtime", "compression", "auth-oauth2", "protobuf-src"] }
 pyo3 = { version = "0.29.3", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-async-runtimes = "0.29.0"
 pyo3-log = "0.13.4"
@@ -101,13 +102,13 @@ rand = "0.9.1"
 rayon = "1.10.0"
 rdkafka = { version = "0.39.0", features = ["ssl-vendored", "cmake-build", "zstd", "curl"] }
 regex = "1.11.1"
-reqwest = { version = "0.12.15", features = ["blocking", "json"] }
-# OpenDAL uses reqwest 0.13; give each persistence runtime its own HTTP pool.
-reqwest_opendal = { package = "reqwest", version = "0.13.4", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "charset", "form", "http2", "json", "native-tls", "query", "rustls", "system-proxy"] }
+# Iceberg's REST catalog still accepts a reqwest 0.12 Client.
+reqwest-0_12 = { package = "reqwest", version = "0.12.28" }
 rumqttc = { version = "0.25.1", features = ["url", "use-native-tls"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 rust-s3 = { version = "0.38.0", features = ["tokio-native-tls", "fail-on-err"], default-features = false }
-schema_registry_converter = { version = "4.4.0", features = ["blocking", "json"] }
+schema_registry_converter = { version = "6.0.0", features = ["blocking", "json"] }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
@@ -120,11 +121,11 @@ sysinfo = "0.39.6"
 tantivy = "0.22.1"  # Note: don't bump this dependency before the RAG integration test failure is investigated
 tempfile = "3.20.0"
 thiserror = "1.0.63"
-tiberius = { version = "0.12", default-features = false, features = ["tds73", "winauth", "rustls", "chrono"] }
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "winauth", "rustls", "chrono"] }
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "net", "io-util", "macros", "test-util"] }
 tokio-util = { version = "0.7.20", features = ["compat"] }
-tonic = { version = "0.14.6", features = ["tls-native-roots"] }
+tonic = { version = "0.14.8", features = ["tls-native-roots"] }
 typetag = "0.2.21"
 usearch = "2.26.6"
 uuid = { version = "1.17.0", features = ["v4", "v5"] }

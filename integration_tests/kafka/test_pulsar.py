@@ -768,8 +768,10 @@ def test_pulsar_raw_binary_roundtrip(pulsar_context, tmp_path):
     assert len(lines) == len(binary_payloads)
 
 
-@pytest.mark.flaky(reruns=3)
-def test_pulsar_write_survives_a_broker_disconnection(pulsar_context, tmp_path):
+@pytest.mark.parametrize("disconnection", ["tcp", "topic_unload"])
+def test_pulsar_write_survives_a_broker_disconnection(
+    pulsar_context, tmp_path, disconnection
+):
     """A dropped broker connection during active writing is a routine event —
     a failover, a bundle unload, a rolling restart. The writer must ride it
     out and deliver every row once the broker is reachable again, instead of
@@ -781,6 +783,7 @@ def test_pulsar_write_survives_a_broker_disconnection(pulsar_context, tmp_path):
     input_dir.mkdir()
     before = [f"before-{i:03d}" for i in range(10)]
     during = [f"during-{i:03d}" for i in range(10)]
+    seen: set[str] = set()
 
     def feed(payloads):
         for payload in payloads:
@@ -808,13 +811,15 @@ def test_pulsar_write_survives_a_broker_disconnection(pulsar_context, tmp_path):
 
     def wait_for(expected: set[str], timeout_sec: float) -> set[str]:
         deadline = time.monotonic() + timeout_sec
-        got: set[str] = set()
         while time.monotonic() < deadline:
-            got = received()
-            if expected <= got:
+            # Unloading a topic may discard a fully acknowledged ledger. Count
+            # deliveries across polls rather than requiring those messages to
+            # remain available for a second read after the unload.
+            seen.update(received())
+            if expected <= seen:
                 break
             time.sleep(0.5)
-        return got
+        return seen
 
     G.clear()
     table = pw.io.plaintext.read(
@@ -826,12 +831,23 @@ def test_pulsar_write_survives_a_broker_disconnection(pulsar_context, tmp_path):
     try:
         feed(before)
         assert wait_for(set(before), WAIT_TIMEOUT_SECS) >= set(before)
-        proxy.cut()
+        if disconnection == "tcp":
+            proxy.cut()
+        else:
+            # Sends CloseProducer while the connection itself may remain alive.
+            # This exercises the driver's producer recreation path separately
+            # from recovery after a TCP disconnect.
+            requests.put(
+                f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+                f"{pulsar_context.topic}/unload",
+                timeout=60,
+            ).raise_for_status()
         # The rows arriving while the broker is away must wait out the outage
         # inside the writer, not kill the pipeline.
         feed(during)
-        time.sleep(BROKER_OUTAGE_SECS)
-        proxy.restore()
+        if disconnection == "tcp":
+            time.sleep(BROKER_OUTAGE_SECS)
+            proxy.restore()
         got = wait_for(set(before) | set(during), WAIT_TIMEOUT_SECS * 3)
         assert process.is_alive(), "the writer died of the disconnection"
         assert (

@@ -87,7 +87,8 @@ impl AzureKVStorage {
         container: &str,
         account_key: &str,
     ) -> Result<Accessor, opendal::Error> {
-        let http_client = reqwest_opendal::Client::builder()
+        let http_client = reqwest::Client::builder()
+            .tls_backend_rustls()
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|error| {

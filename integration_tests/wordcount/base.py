@@ -313,11 +313,12 @@ class PwProcessGroup:
     the processes themselves and stops the run as soon as one of them is gone.
     """
 
-    def __init__(self, handles, log_paths, pstorage_type, pstorage_path):
+    def __init__(self, handles, log_paths, pstorage_type, pstorage_path, temp_path):
         self._handles = handles
         self._log_paths = log_paths
         self._pstorage_type = pstorage_type
         self._pstorage_path = pstorage_path
+        self._temp_path = temp_path
 
     def dead_processes(self) -> list[tuple[int, int]]:
         """`(process_id, exit_code)` of the processes that have already finished."""
@@ -433,6 +434,11 @@ class PwProcessGroup:
                 handle.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 warnings.warn(f"Process {handle.pid} didn't react to SIGKILL")
+        # SIGKILL bypasses Rust's TempDir destructors. Discard each run's local
+        # snapshot caches after all processes exit; persistence lives elsewhere.
+        if all(handle.poll() is not None for handle in self._handles):
+            if self._temp_path.exists():
+                shutil.rmtree(self._temp_path)
 
 
 def _cgroup_oom_kill_count() -> int | None:
@@ -612,10 +618,13 @@ def start_pw_computation(
     wait_for_free_ports(first_port, n_processes)
 
     log_dir = os.path.dirname(os.path.abspath(output_path))
+    temp_path = pathlib.Path(log_dir) / f"pw-tmp-{run_id}"
+    temp_path.mkdir()
     process_handles = []
     log_paths = []
     for process_id in range(n_processes):
         env = os.environ.copy()
+        env["TMPDIR"] = str(temp_path)
         env["PATHWAY_THREADS"] = str(n_threads)
         env["PATHWAY_PROCESSES"] = str(n_processes)
         env["PATHWAY_FIRST_PORT"] = str(first_port)
@@ -635,7 +644,9 @@ def start_pw_computation(
         process_handles.append(handle)
         log_paths.append(log_path)
 
-    return PwProcessGroup(process_handles, log_paths, pstorage_type, pstorage_path)
+    return PwProcessGroup(
+        process_handles, log_paths, pstorage_type, pstorage_path, temp_path
+    )
 
 
 def get_pw_program_run_time(

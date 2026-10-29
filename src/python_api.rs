@@ -127,7 +127,7 @@ use crate::connectors::data_storage::data_lake::{
     DeltaBatchWriter, MaintenanceMode, PathwayStorageFactory,
 };
 use crate::connectors::data_storage::elasticsearch::build_elasticsearch_reader;
-use crate::connectors::data_storage::mssql::MssqlWriter;
+use crate::connectors::data_storage::mssql::{self, MssqlWriter};
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
 use crate::connectors::data_storage::pinecone::PineconeWriter;
@@ -6631,7 +6631,7 @@ impl IcebergCatalogSettings {
         // The catalog client is built through the shared guard policy
         // (connect + whole-request timeouts); the library's own default
         // client has no request timeout at all.
-        let catalog_http_client = crate::connectors::socket_guard::http_client_builder()
+        let catalog_http_client = crate::connectors::socket_guard::iceberg_http_client_builder()
             .build()
             .map_err(|e| {
                 PyValueError::new_err(format!("failed to build Iceberg catalog HTTP client: {e}"))
@@ -7251,7 +7251,7 @@ impl DataStorage {
             license.check_entitlements(["mssql"])?;
         }
         let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(connection_string)
+        let config = mssql::config_from_connection_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
         let table_name = self.table_name.clone().ok_or_else(|| {
             PyValueError::new_err("For MSSQL connector, table_name should be specified")
@@ -8858,7 +8858,7 @@ impl DataStorage {
             license.check_entitlements(["mssql"])?;
         }
         let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(connection_string)
+        let config = mssql::config_from_connection_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
         let table_ctx = TableContext::new(
             self.schema_name()?,

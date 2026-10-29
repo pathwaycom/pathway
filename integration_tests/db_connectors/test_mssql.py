@@ -38,6 +38,89 @@ from pathway.tests.utils import (
 pytestmark = pytest.mark.xdist_group("mssql")
 
 
+@pytest.mark.parametrize("encrypt", [None, "false", "true"])
+def test_mssql_connection_encryption_roundtrip(encrypt, mssql, tmp_path):
+    class Schema(pw.Schema):
+        value: int = pw.column_definition(primary_key=True)
+
+    connection_string = MSSQL_CONNECTION_STRING
+    if encrypt is not None:
+        connection_string += f";Encrypt={encrypt}"
+    table_name = mssql.create_table(Schema, add_special_fields=True)
+    mssql.execute_sql(f"ALTER TABLE [dbo].[{table_name}] ADD encrypted NVARCHAR(10)")
+    mssql.execute_sql(
+        f"CREATE TRIGGER [transport_{table_name}] ON [dbo].[{table_name}] "
+        f"AFTER INSERT AS UPDATE [dbo].[{table_name}] SET encrypted = "
+        "(SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID)"
+    )
+    table = pw.debug.table_from_rows(Schema, [(42,)])
+    pw.io.mssql.write(
+        table,
+        connection_string,
+        table_name=table_name,
+        init_mode="create_if_not_exists",
+    )
+    pw.run()
+    expected_encryption = "TRUE" if encrypt == "true" else "FALSE"
+    assert mssql.get_table_contents(table_name, ["encrypted"]) == [
+        {"encrypted": expected_encryption}
+    ]
+
+    G.clear()
+    table = pw.io.mssql.read(
+        connection_string, table_name=table_name, schema=Schema, mode="static"
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+    assert [row["value"] for row in read_jsonlines(output_path)] == [42]
+
+
+@pytest.mark.parametrize("direction", ["read", "write"])
+def test_mssql_explicit_encryption_checks_certificate(direction, mssql):
+    class Schema(pw.Schema):
+        value: int = pw.column_definition(primary_key=True)
+
+    table_name = mssql.create_table(Schema, add_special_fields=True)
+    # The test server has a self-signed certificate. An explicit Encrypt=true
+    # must override the connector's compatibility default in both directions.
+    connection_string = (
+        MSSQL_CONNECTION_STRING.replace(
+            "TrustServerCertificate=true", "TrustServerCertificate=false"
+        )
+        + ";Encrypt=true"
+    )
+    with pytest.raises(
+        (ValueError, OSError, pw.engine.EngineError), match="(?i)tls|certificate"
+    ):
+        if direction == "read":
+            table = pw.io.mssql.read(
+                connection_string, table_name=table_name, schema=Schema, mode="static"
+            )
+            pw.io.null.write(table)
+        else:
+            table = pw.debug.table_from_rows(Schema, [(42,)])
+            pw.io.mssql.write(table, connection_string, table_name=table_name)
+        pw.run()
+
+
+def test_mssql_write_command_longer_than_driver_default(mssql):
+    class Schema(pw.Schema):
+        value: int
+
+    table_name = mssql.create_table(Schema, add_special_fields=True)
+    mssql.execute_sql(
+        f"CREATE TRIGGER [slow_{table_name}] ON [dbo].[{table_name}] "
+        "AFTER INSERT AS BEGIN SET NOCOUNT ON; WAITFOR DELAY '00:00:35'; END"
+    )
+    table = pw.debug.table_from_rows(Schema, [(42,)])
+    pw.io.mssql.write(table, MSSQL_CONNECTION_STRING, table_name=table_name)
+    # Tiberius 0.13's default command deadline is 30s, but the connector's
+    # existing writer silence guard permits 45s. The insert must finish once.
+    pw.run()
+    assert mssql.get_table_contents(table_name, ["value"]) == [{"value": 42}]
+
+
 @pytest.mark.parametrize("output_table_type", ["stream_of_changes", "snapshot"])
 @pytest.mark.parametrize("init_mode", ["default", "create_if_not_exists", "replace"])
 def test_mssql_write_outputs(output_table_type, init_mode, mssql):

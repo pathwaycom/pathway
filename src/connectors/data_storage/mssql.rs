@@ -331,18 +331,29 @@ fn qualified_table_name(schema_name: &str, table_name: &str) -> String {
     )
 }
 
+pub fn config_from_connection_string(
+    connection_string: &str,
+) -> Result<Config, tiberius::error::Error> {
+    // Keep the connector's pre-0.13 default. Tiberius parses duplicate keys
+    // with last-value-wins semantics, so an explicit Encrypt option from the
+    // caller takes precedence, including when values contain quoted semicolons.
+    let mut config = Config::from_ado_string(&format!("encrypt=false;{connection_string}"))?;
+    // The shared socket guards already bound stalls. The driver's new 15s/30s
+    // deadlines would cut short operations that those guards still permit.
+    config.handshake_timeout(None);
+    config.command_timeout(None);
+    Ok(config)
+}
+
 async fn connect_mssql(
     config: &Config,
     profile: SilenceProfile,
 ) -> Result<MssqlClient, tiberius::error::Error> {
-    // The client library performs no socket-level guarding of its own (no
-    // connect timeout, no keepalive, no bound on a pending read), so a
-    // silently dead TCP flow would park the connector thread forever. Open
-    // the stream through the shared guards instead: bounded connect,
-    // kernel-level liveness probing, and a wire-silence bound on every
-    // read/write.
+    // Preserve the shared policy for bounded connect, kernel-level liveness
+    // probing and wire silence. The driver's independent deadlines are
+    // disabled by config_from_connection_string.
     let tcp = connect_tcp_guarded(config.get_addr(), profile).await?;
-    let client = Client::connect(config.clone(), tcp.compat_write()).await?;
+    let client = Box::pin(Client::connect(config.clone(), tcp.compat_write())).await?;
     Ok(client)
 }
 

@@ -14,9 +14,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use apache_avro::reader::datum::GenericDatumReader;
 use apache_avro::schema::Schema as AvroSchema;
-use apache_avro::to_avro_datum;
 use apache_avro::types::Value as AvroValue;
+use apache_avro::writer::datum::GenericDatumWriter;
 use base64::engine::general_purpose;
 use base64::Engine;
 use bigdecimal::num_bigint::BigInt;
@@ -277,7 +278,9 @@ impl Formatter for AvroFormatter {
                 .map_err(FormatterError::Avro)?;
             record.push((value_field.name.clone(), avro_value));
         }
-        let raw_bytes = to_avro_datum(&self.schema, AvroValue::Record(record))
+        let raw_bytes = GenericDatumWriter::builder(&self.schema)
+            .build()
+            .and_then(|writer| writer.write_value_to_vec(AvroValue::Record(record)))
             .map_err(|e| FormatterError::Avro(AvroError::Encoding(e)))?;
         context.push_payload(raw_bytes);
         Ok(())
@@ -524,7 +527,9 @@ impl AvroParser {
         let writer_schema = self.writer_schema()?;
         let plan = self.projection_plan(&writer_schema);
         let mut reader = payload;
-        let decoded = apache_avro::from_avro_datum(&writer_schema, &mut reader, None)
+        let decoded = GenericDatumReader::builder(&writer_schema)
+            .build()
+            .and_then(|decoder| decoder.read_value(&mut reader))
             .map_err(AvroParseError::Decoding)?;
         let decoded = match &plan.decimal_names {
             Some(names) => normalize_decimals(decoded, &writer_schema, names),
@@ -1021,7 +1026,7 @@ fn avro_schema_to_engine_type(
         // Decimals map to their exact string form: turning them into
         // floats would silently lose precision.
         AvroSchema::String
-        | AvroSchema::Uuid
+        | AvroSchema::Uuid(_)
         | AvroSchema::Enum(_)
         | AvroSchema::Decimal(_)
         | AvroSchema::BigDecimal => Type::String,
@@ -1080,7 +1085,7 @@ fn avro_schema_to_engine_type(
         }
         // Nested records, maps and the calendar duration carry structure the
         // engine models as JSON.
-        AvroSchema::Record(_) | AvroSchema::Map(_) | AvroSchema::Duration => Type::Json,
+        AvroSchema::Record(_) | AvroSchema::Map(_) | AvroSchema::Duration(_) => Type::Json,
         // A reference to a named type declared elsewhere in the schema:
         // resolving it would need the whole-schema context the per-field
         // mapping does not carry.
@@ -1304,11 +1309,15 @@ mod tests {
     }
 
     fn encoded_row(schema: &AvroSchema, value: i64) -> Vec<u8> {
-        to_avro_datum(
-            schema,
-            AvroValue::Record(vec![("x".to_string(), AvroValue::Long(value))]),
-        )
-        .expect("the test datum encodes")
+        GenericDatumWriter::builder(schema)
+            .build()
+            .and_then(|writer| {
+                writer.write_value_to_vec(AvroValue::Record(vec![(
+                    "x".to_string(),
+                    AvroValue::Long(value),
+                )]))
+            })
+            .expect("the test datum encodes")
     }
 
     #[test]

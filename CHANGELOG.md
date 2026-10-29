@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.kafka.write` accepts `with_pathway_headers` (default `True`): with `False`, the messages are produced without the `pathway_time` and `pathway_diff` headers, which makes the writer cheaper when nothing downstream reads them.
 
 ### Fixed
+- Improved Pulsar producer recovery after topic unloads and retry handling for temporary monitoring collector failures.
 - S3 reads and persistence now pass the configured session token when using temporary credentials.
 - PostgreSQL streaming reads fail explicitly after losing their temporary replication slot instead of reconnecting with a new slot that could skip changes.
 - `pw.io.kinesis.write` now retries undelivered records after partial or transport failures and reports the correct pending count when retries are exhausted, instead of crashing or silently losing records.

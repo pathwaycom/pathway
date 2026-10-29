@@ -20,6 +20,7 @@ from .base import (
     STREAMING_MODE_NAME,
     generate_next_input,
     get_pw_program_run_time,
+    start_pw_computation,
 )
 
 
@@ -148,3 +149,33 @@ def test_run_with_a_failing_process_is_given_up_on_promptly(
         f"The failed run took {elapsed} seconds to be given up on, which means "
         "a timeout, rather than the failure itself, ended it"
     )
+
+
+def test_killed_process_does_not_leave_snapshot_caches(tmp_path, monkeypatch, port):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    inputs_path = tmp_path / "inputs"
+    inputs_path.mkdir()
+    generate_next_input(inputs_path, input_size=1000, dictionary=["a", "b", "c"])
+    process_group = start_pw_computation(
+        n_threads=1,
+        n_processes=1,
+        input_path=inputs_path,
+        output_path=tmp_path / "table.csv",
+        pstorage_path=str(tmp_path / "pstorage"),
+        mode=STREAMING_MODE_NAME,
+        pstorage_type=FS_STORAGE_NAME,
+        persistence_mode=INPUT_PERSISTENCE_MODE_NAME,
+        first_port=port,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not list(tmp_path.rglob("snapshot.sqlite3")):
+            assert not process_group.dead_processes(), "the pipeline exited early"
+            assert time.monotonic() < deadline, "the snapshot cache was not created"
+            time.sleep(0.1)
+    finally:
+        process_group.kill()
+
+    # SIGKILL bypasses the engine's TempDir destructor. The harness must remove
+    # these disposable caches after reaping the process, before the next run.
+    assert not list(tmp_path.rglob("snapshot.sqlite3"))

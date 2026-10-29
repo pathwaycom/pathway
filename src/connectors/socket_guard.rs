@@ -300,6 +300,13 @@ pub fn blocking_http_client_builder() -> reqwest::blocking::ClientBuilder {
         .timeout(HTTP_REQUEST_TIMEOUT)
 }
 
+/// Compatibility client for Iceberg's REST catalog, which still uses reqwest 0.12.
+pub fn iceberg_http_client_builder() -> reqwest_0_12::ClientBuilder {
+    reqwest_0_12::Client::builder()
+        .connect_timeout(TCP_CONNECT_TIMEOUT)
+        .timeout(HTTP_REQUEST_TIMEOUT)
+}
+
 /// Log a warning for configurations whose transport cannot be guarded from
 /// our side (the client library owns the socket and exposes no timeout
 /// controls past connection setup). Keep such cases rare and documented.
