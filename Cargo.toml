@@ -52,7 +52,7 @@ differential-dataflow = { path = "./external/differential-dataflow" }
 duckdb = { version = "1.10506.1", features = ["bundled", "json"] }
 ed25519-dalek = { version = "2.1.1", features = ["serde", "pkcs8"] }
 elasticsearch = "8.17.0-alpha.1"
-futures = "0.3.31"
+futures = "0.3.34"
 geozero = { version = "0.14", default-features = false, features = ["with-wkb", "with-wkt"] }
 glob = "0.3.2"
 half = "2.6.0"
