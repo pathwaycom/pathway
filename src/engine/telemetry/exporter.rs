@@ -171,9 +171,9 @@ impl SqliteExporter {
     }
 
     fn flush_buffer(&self) -> Result<()> {
-        let samples: Vec<_> = {
+        let samples = {
             let mut buf = self.buf.lock().unwrap();
-            buf.drain(..).collect()
+            std::mem::take(&mut *buf)
         };
 
         if samples.is_empty() {
