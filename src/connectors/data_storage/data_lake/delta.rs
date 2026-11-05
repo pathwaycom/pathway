@@ -277,6 +277,7 @@ pub struct OpenedDeltaTable {
     pub table: DeltaTable,
     pub metadata_per_column: MetadataPerColumn,
     pub decimal_overrides: HashMap<String, DecimalShape>,
+    runtime: TokioRuntime,
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -286,6 +287,9 @@ pub struct DeltaBatchWriter {
     metadata_per_column: MetadataPerColumn,
     optimizer_rule: Option<DeltaOptimizerRule>,
     decimal_overrides: HashMap<String, DecimalShape>,
+    // Keep the table's I/O tasks alive across batches. Clone the Arc when
+    // driving an async operation that also needs to borrow the writer.
+    runtime: std::sync::Arc<TokioRuntime>,
 }
 
 impl DeltaBatchWriter {
@@ -311,6 +315,7 @@ impl DeltaBatchWriter {
             metadata_per_column: opened.metadata_per_column,
             optimizer_rule,
             decimal_overrides: opened.decimal_overrides,
+            runtime: std::sync::Arc::new(opened.runtime),
         })
     }
 
@@ -440,6 +445,7 @@ impl DeltaBatchWriter {
             table,
             metadata_per_column,
             decimal_overrides,
+            runtime,
         })
     }
 
@@ -647,7 +653,8 @@ impl LakeBatchWriter for DeltaBatchWriter {
         batch: ArrowRecordBatch,
         payload_type: PayloadType,
     ) -> Result<(), WriteError> {
-        create_async_tokio_runtime()?.block_on(async {
+        let runtime = self.runtime.clone();
+        runtime.block_on(async {
             self.load_table_with_retries().await?;
             // The actual parquet PUT + log commit is where Jenkins runs see
             // `HttpErrorKind::Unknown` (reqwest `Kind::Request`) most often,
@@ -950,6 +957,8 @@ pub struct DeltaTableReader {
     parquet_files_queue: VecDeque<DeltaReaderAction>,
     current_action: Option<DeltaReaderAction>,
     backfilling_entries_queue: VecDeque<BackfillingEntry>,
+    // The table's storage client must keep using the runtime that opened it.
+    runtime: std::sync::Arc<TokioRuntime>,
 }
 
 const APPEND_ONLY_PROPERTY_NAME: &str = "delta.appendOnly";
@@ -1061,6 +1070,7 @@ impl DeltaTableReader {
             parquet_files_queue,
             rows_read_within_version: 0,
             current_action: None,
+            runtime: std::sync::Arc::new(runtime),
         })
     }
 
@@ -1571,7 +1581,7 @@ impl DeltaTableReader {
     }
 
     fn upgrade_table_version(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = self.runtime.clone();
         runtime.block_on(async {
             self.parquet_files_queue.clear();
             let mut sleep_duration = DELTA_LAKE_INITIAL_POLL_DURATION;
@@ -1764,7 +1774,7 @@ impl Reader for DeltaTableReader {
         };
 
         self.reader = None;
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = self.runtime.clone();
 
         self.current_version = *version;
         runtime.block_on(async {
