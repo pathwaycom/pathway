@@ -3,7 +3,9 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::async_runtime::create_async_tokio_runtime;
+use crate::async_runtime::{
+    create_async_tokio_runtime, create_async_tokio_runtime_with_background_worker,
+};
 use crate::connectors::data_storage::postgres::{
     create_psql_client, PsqlConnectionConfig, ReplicationSettings as PsqlInnerReplicationSettings,
     SslMode,
@@ -7361,7 +7363,7 @@ impl DataStorage {
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-nats")?;
         let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
         let readers_group_name = format!("pathway-reader-{connector_index}");
         let is_persisted = scope.is_persisted;
@@ -7485,7 +7487,7 @@ impl DataStorage {
 
         let uri = self.path()?;
         let stream_name = self.message_queue_fixed_topic()?;
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-rabbitmq")?;
 
         let start_from_end = self.start_from_timestamp_ms == Some(-1);
         if start_from_end && self.mode == ConnectorMode::Static {
@@ -7592,7 +7594,7 @@ impl DataStorage {
         }
 
         let topic = self.message_queue_fixed_topic()?;
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-pulsar")?;
         let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
         let worker_index = scope.worker_index();
         let is_static = self.mode == ConnectorMode::Static;
@@ -8511,7 +8513,7 @@ impl DataStorage {
 
     fn construct_nats_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.path()?;
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-nats")?;
         let client = runtime.block_on(async {
             let client = nats_connect(uri)
                 .await

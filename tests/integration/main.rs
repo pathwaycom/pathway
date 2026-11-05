@@ -6,6 +6,7 @@ mod helpers;
 mod operator_test_utils;
 
 mod test_arrow;
+mod test_async_runtime;
 mod test_bson;
 mod test_bytes;
 mod test_cached_object_storage;
