@@ -560,13 +560,7 @@ impl SystemMetrics {
         sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
-        );
-        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::nothing().with_cpu(),
+            ProcessRefreshKind::nothing().with_memory(),
         );
     }
 }

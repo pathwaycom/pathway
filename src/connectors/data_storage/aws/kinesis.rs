@@ -554,7 +554,7 @@ impl BufferedShardEntries {
             }
 
             if attempt + 1 < N_SEND_ATTEMPTS {
-                retry.sleep_after_error();
+                retry.sleep_after_error_async().await;
             }
         }
 

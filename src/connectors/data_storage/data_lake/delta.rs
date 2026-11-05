@@ -7,7 +7,6 @@ use std::fs::File;
 use std::hash::RandomState;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
@@ -1588,7 +1587,7 @@ impl DeltaTableReader {
                         break;
                     }
                     // Fully up to date, no changes yet
-                    sleep(sleep_duration);
+                    tokio::time::sleep(sleep_duration).await;
                     sleep_duration *= DELTA_LAKE_POLL_BACKOFF;
                     if sleep_duration > DELTA_LAKE_MAX_POLL_DURATION {
                         sleep_duration = DELTA_LAKE_MAX_POLL_DURATION;

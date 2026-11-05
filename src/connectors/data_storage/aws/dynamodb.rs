@@ -390,7 +390,7 @@ impl Writer for DynamoDBWriter {
                     }
                 }
 
-                retry.sleep_after_error();
+                retry.sleep_after_error_async().await;
             }
             let unprocessed_items = request_items.remove(&self.table_name);
             if let Some(unprocessed_items) = unprocessed_items {
