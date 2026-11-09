@@ -36,10 +36,13 @@ class HttpStreamingSubject(ConnectorSubject):
         self._response_mapper = response_mapper
 
     def run(self):
-        response = self._sender.send(
-            url=self._url, headers=self._headers, data=self._payload, stream=True
-        )
-        for line in response.iter_lines(delimiter=self._delimiter):
-            if self._response_mapper:
-                line = self._response_mapper(line)
-            self.next_bytes(line)
+        try:
+            with self._sender.send(
+                url=self._url, headers=self._headers, data=self._payload, stream=True
+            ) as response:
+                for line in response.iter_lines(delimiter=self._delimiter):
+                    if self._response_mapper:
+                        line = self._response_mapper(line)
+                    self.next_bytes(line)
+        finally:
+            self._sender.close()
