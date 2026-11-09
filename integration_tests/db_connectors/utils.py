@@ -2305,7 +2305,7 @@ class MySQLContext:
 
 
 class MssqlContext:
-    def __init__(self):
+    def __init__(self, *, database: str = MSSQL_DB_NAME, timeout: int = 0):
         import pymssql
 
         self.connection = pymssql.connect(
@@ -2313,11 +2313,14 @@ class MssqlContext:
             port=str(MSSQL_DB_PORT),
             user=MSSQL_DB_USER,
             password=MSSQL_DB_PASSWORD,
-            database=MSSQL_DB_NAME,
+            database=database,
             autocommit=True,
             tds_version="7.3",
+            timeout=timeout,
+            login_timeout=timeout or 60,
         )
         self.cursor = self.connection.cursor()
+        self.database = database
         # Tables and CDC capture instances we've registered.  ``cleanup()``
         # tears them all down on fixture teardown, so a crashed/skipped test
         # cannot leave orphan capture instances behind — orphans inflate
@@ -2326,6 +2329,69 @@ class MssqlContext:
         # to catch up.
         self._tracked_tables: set[str] = set()
         self._tracked_cdc: set[str] = set()
+
+    def cdc_diagnostics(self, input_table: str, output_table: str) -> str:
+        """Report the source, captured changes and sink before teardown.
+
+        Use a separate connection with bounded queries so a failed reader or
+        lock conflict cannot prevent the subprocess log from being reported.
+        Diagnostic failures must never replace the original test exception.
+        """
+        details = [f"MSSQL CDC diagnostics: input={input_table}, output={output_table}"]
+        try:
+            ctx = MssqlContext(database=self.database, timeout=5)
+        except Exception as exc:
+            return f"{details[0]}\nCannot connect for diagnostics: {exc!r}"
+        queries = {
+            "input rows": f"SELECT TOP (20) * FROM [{input_table}] ORDER BY pkey",
+            "output rows": f"SELECT TOP (20) * FROM [{output_table}] ORDER BY pkey",
+            "captured changes": (
+                f"SELECT TOP (20) * FROM cdc.[dbo_{input_table}_CT] "
+                "ORDER BY __$start_lsn, __$seqval"
+            ),
+            "LSN bounds": (
+                "SELECT capture_instance, CONVERT(varchar(22), start_lsn, 1) AS start_lsn, "
+                "CONVERT(varchar(22), sys.fn_cdc_get_min_lsn(capture_instance), 1) AS min_lsn, "
+                "CONVERT(varchar(22), sys.fn_cdc_get_max_lsn(), 1) AS max_lsn "
+                f"FROM cdc.change_tables WHERE capture_instance = 'dbo_{input_table}'"
+            ),
+            "CDC scan sessions": (
+                "SELECT TOP (5) session_id, start_time, end_time, scan_phase, "
+                "error_count, latency, last_commit_time, failed_sessions_count "
+                "FROM sys.dm_cdc_log_scan_sessions "
+                "ORDER BY session_id DESC"
+            ),
+            "CDC errors": "SELECT TOP (10) * FROM sys.dm_cdc_errors ORDER BY entry_time DESC",
+            "capture job": (
+                "SELECT j.name, a.start_execution_date, a.stop_execution_date "
+                "FROM msdb.dbo.sysjobactivity a "
+                "JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id "
+                "WHERE a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) "
+                "AND j.name = 'cdc.' + DB_NAME() + '_capture'"
+            ),
+            # Successful scan messages can bury the retry that caused a stall.
+            "capture job failures": (
+                "SELECT TOP (5) h.run_status, h.run_date, h.run_time, h.message "
+                "FROM msdb.dbo.sysjobhistory h "
+                "JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id "
+                "WHERE j.name = 'cdc.' + DB_NAME() + '_capture' "
+                "AND h.run_status IN (0, 2, 3) ORDER BY h.instance_id DESC"
+            ),
+        }
+        try:
+            for label, query in queries.items():
+                try:
+                    ctx.execute_sql(query, max_retries=1)
+                    columns = [column[0] for column in ctx.cursor.description or ()]
+                    details.append(f"{label} ({columns}): {ctx.cursor.fetchall()!r}")
+                except Exception as exc:
+                    details.append(f"{label}: {exc!r}")
+        finally:
+            try:
+                ctx.connection.close()
+            except Exception as exc:
+                details.append(f"Closing diagnostic connection: {exc!r}")
+        return "\n".join(details)
 
     def random_table_name(self) -> str:
         name = f"mssql_{uuid.uuid4().hex}"

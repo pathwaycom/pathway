@@ -4,15 +4,21 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
+import time
 import typing
+import uuid
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import pymssql
 import pytest
 from utils import (
     MSSQL_CONNECTION_STRING,
+    MSSQL_DB_NAME,
     MssqlContext,
     SimpleObject,
     _compare_input_and_output,
@@ -23,7 +29,7 @@ from utils import (
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import ExceptionAwareThread, run, wait_result_with_checker
+from pathway.tests.utils import run, wait_result_with_checker
 
 pytestmark = pytest.mark.xdist_group("mssql")
 
@@ -35,84 +41,74 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _MSSQL_CDC_SCRIPT = textwrap.dedent(
     """\
     import json
-    import random
     import sys
-    import time
 
     cfg = json.loads(sys.argv[1])
     sys.path.insert(0, cfg["test_dir"])
 
     import pathway as pw
-    from pathway.internals.parse_graph import G
     from pathway.tests.utils import run
 
     exec(cfg["schema_code"], globals())
 
-    # Retry the entire pipeline on transient TCP source-port exhaustion
-    # (EADDRNOTAVAIL).  Under heavy CI parallelism, the host occasionally
-    # cannot allocate an ephemeral source port for tiberius's connect, and
-    # the engine surfaces it as 'Cannot assign requested address'.  The CDC
-    # writer is in ``create_if_not_exists`` mode, so a retried run that hits
-    # an existing output table just reuses it.
-    max_attempts = 5
-    for attempt in range(max_attempts):
-        G.clear()
-        table = pw.io.mssql.read(
-            cfg["connection_string"],
-            cfg["input_table_name"],
-            InputSchemaWithPkey,
-            mode="streaming",
-        )
-        pw.io.mssql.write(
-            table,
-            cfg["connection_string"],
-            table_name=cfg["output_table_name"],
-            init_mode="create_if_not_exists",
-        )
-        try:
-            run()
-            sys.exit(0)
-        except Exception as e:
-            if (
-                "Cannot assign requested address" in str(e)
-                and attempt < max_attempts - 1
-            ):
-                time.sleep(2.0 * (attempt + 1) + random.uniform(0, 1.0))
-                continue
-            raise
+    table = pw.io.mssql.read(
+        cfg["connection_string"],
+        cfg["input_table_name"],
+        InputSchemaWithPkey,
+        mode="streaming",
+    )
+    pw.io.mssql.write(
+        table,
+        cfg["connection_string"],
+        table_name=cfg["output_table_name"],
+        init_mode="create_if_not_exists",
+    )
+    run()
     """
 )
 
 
-def _start_mssql_cdc_worker(
+@contextmanager
+def _mssql_cdc_worker(
     input_table_name: str,
     output_table_name: str,
     schema_code: str,
-) -> subprocess.Popen:
+    connection_string: str = MSSQL_CONNECTION_STRING,
+):
     cfg = json.dumps(
         {
-            "connection_string": MSSQL_CONNECTION_STRING,
+            "connection_string": connection_string,
             "input_table_name": input_table_name,
             "output_table_name": output_table_name,
             "schema_code": schema_code,
             "test_dir": _TEST_DIR,
         }
     )
-    import tempfile
-
-    log_file = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".log", prefix="mssql_cdc_", delete=False
-    )
-    log_path = log_file.name
-    log_file.close()
-    print(f"[CDC subprocess log: {log_path}]", flush=True)
-    proc = subprocess.Popen(
-        [sys.executable, "-c", _MSSQL_CDC_SCRIPT, cfg],
-        env=os.environ,
-        stdout=open(log_path, "w"),
-        stderr=subprocess.STDOUT,
-    )
-    return proc
+    with tempfile.TemporaryFile(mode="w+") as log_file:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", _MSSQL_CDC_SCRIPT, cfg],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            yield proc
+        finally:
+            # Always reap the child, including when a query or assertion fails.
+            returncode = proc.poll()
+            if returncode is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            if sys.exc_info()[0] is not None:
+                log_file.seek(0)
+                print(
+                    f"CDC subprocess for {input_table_name}: "
+                    f"returncode before teardown={returncode}\n{log_file.read()}",
+                    file=sys.stderr,
+                )
 
 
 def _to_json_serializable(value: Any) -> Any:
@@ -167,17 +163,45 @@ def _serialize_item_for_mssql(value: Any) -> Any:
 
 class MssqlRowCountChecker:
 
-    def __init__(self, mssql: MssqlContext, table_name: str, n_rows_expected: int):
+    def __init__(
+        self,
+        mssql: MssqlContext,
+        table_name: str,
+        n_rows_expected: int,
+        proc: subprocess.Popen | None = None,
+    ):
         self.mssql = mssql
         self.table_name = table_name
         self.n_rows_expected = n_rows_expected
+        self.proc = proc
+        self.last_rows: list[dict] | None = None
+        self.last_error: Exception | None = None
 
     def __call__(self) -> bool:
+        if self.proc is not None and self.proc.poll() is not None:
+            raise AssertionError(
+                f"CDC subprocess exited with code {self.proc.returncode}; "
+                f"{self.provide_information_on_failure()}"
+            )
         try:
             rows = self.mssql.get_table_contents(self.table_name, ["pkey", "item"])
-        except Exception:
-            return False
+        except Exception as exc:
+            self.last_error = exc
+            # The writer creates the output table asynchronously. Only a
+            # missing table is an expected intermediate state; report all
+            # other query failures immediately instead of hiding them for 60s.
+            if isinstance(exc, pymssql.ProgrammingError) and exc.args[0] == 208:
+                return False
+            raise AssertionError(self.provide_information_on_failure()) from exc
+        self.last_rows = rows
+        self.last_error = None
         return len(rows) == self.n_rows_expected
+
+    def provide_information_on_failure(self) -> str:
+        return (
+            f"table={self.table_name}, expected {self.n_rows_expected} rows, "
+            f"last rows={self.last_rows!r}, last SQL error={self.last_error!r}"
+        )
 
 
 def _create_table(ItemType: Any, input_rows: list[dict]) -> pw.Table:
@@ -217,6 +241,7 @@ def _test_mssql_static(
     ItemType: Any,
     items: list[Any],
     create_table: Any = _create_table,
+    connection_string: str = MSSQL_CONNECTION_STRING,
 ) -> str:
     G.clear()
     input_rows = [{"pkey": i, "item": item} for i, item in enumerate(items)]
@@ -228,7 +253,7 @@ def _test_mssql_static(
     # Write test data to MSSQL; terminates because the source is a static debug table.
     pw.io.mssql.write(
         table,
-        MSSQL_CONNECTION_STRING,
+        connection_string,
         table_name=input_table_name,
         init_mode="create_if_not_exists",
     )
@@ -238,14 +263,14 @@ def _test_mssql_static(
     G.clear()
     output_table_name = mssql.random_table_name()
     table = pw.io.mssql.read(
-        MSSQL_CONNECTION_STRING,
+        connection_string,
         input_table_name,
         InputSchemaWithPkey,
         mode="static",
     )
     pw.io.mssql.write(
         table,
-        MSSQL_CONNECTION_STRING,
+        connection_string,
         table_name=output_table_name,
         init_mode="create_if_not_exists",
     )
@@ -270,21 +295,14 @@ def _test_mssql_streaming(
     ItemType: Any,
     items: list[Any],
     create_table: Any = _create_table,
+    connection_string: str = MSSQL_CONNECTION_STRING,
 ) -> None:
-    input_table_name = _test_mssql_static(mssql, ItemType, items, create_table)
+    input_table_name = _test_mssql_static(
+        mssql, ItemType, items, create_table, connection_string
+    )
 
     # Enable CDC on the input table so the streaming (CDC) reader can use it.
     mssql.enable_cdc(input_table_name)
-    # Speed up the CDC capture job for tests: pollinginterval=0 means no sleep
-    # between scan cycles (~500 ms effective latency instead of the 5 s default).
-    # execute_sql retries on 1205 — sp_cdc_change_job touches msdb job metadata
-    # and competes with concurrent CDC traffic under xdist parallelism.
-    # drain_status_rows clears the proc's status output so the next statement
-    # on this connection isn't refused with "Statement(s) could not be prepared".
-    mssql.execute_sql(
-        "EXEC sys.sp_cdc_change_job @job_type = N'capture', @pollinginterval = 0",
-        drain_status_rows=True,
-    )
 
     output_table_name = mssql.random_table_name()
 
@@ -298,68 +316,149 @@ def _test_mssql_streaming(
         {"pkey": len(items) + i, "item": item} for i, item in enumerate(items)
     ]
 
-    def streaming_target():
-        # Use a separate connection so this thread's cursor doesn't race with
-        # the main thread's MssqlRowCountChecker polling the same mssql cursor.
-        thread_mssql = MssqlContext()
-        for index, row in enumerate(streaming_rows):
-            # Wait until the output has (index + len(items)) rows before
-            # inserting the next row.  At index=0 this waits for the CDC
-            # snapshot (the initial len(items) rows) to land in the output.
-            wait_result_with_checker(
-                MssqlRowCountChecker(
-                    thread_mssql, output_table_name, index + len(items)
-                ),
-                60,
-                target=None,
-            )
-            # The input table was created by pw.io.mssql.write which adds
-            # non-nullable `time` and `diff` columns.  The CDC reader only
-            # selects `pkey` and `item`, so any valid values work here.
-            thread_mssql.insert_row(
-                input_table_name,
-                {
-                    "pkey": row["pkey"],
-                    "item": _serialize_item_for_mssql(row["item"]),
-                    "time": 0,
-                    "diff": 1,
-                },
-            )
-
-    # Start the CDC reader subprocess first so it has time to connect and deliver
-    # the snapshot rows before streaming_target starts polling for them.
-    proc = _start_mssql_cdc_worker(
+    # Keep inserts and checks in the parent. An insertion-thread exception used
+    # to be hidden by the outer timeout, which skipped the thread's join().
+    with _mssql_cdc_worker(
         input_table_name,
         output_table_name,
         generate_pkey_item_schema_code(ItemType),
+        connection_string,
+    ) as proc:
+        deadline = time.monotonic() + 120
+
+        def wait_for_rows(n_rows: int) -> None:
+            wait_result_with_checker(
+                MssqlRowCountChecker(mssql, output_table_name, n_rows, proc),
+                # All phases share the original 120s budget. A separate 60s
+                # deadline used to abandon the inserts just as SQL Agent's
+                # one-minute capture-job retry was about to restore progress.
+                deadline - time.monotonic(),
+                target=None,
+            )
+
+        try:
+            wait_for_rows(len(items))
+            for index, row in enumerate(streaming_rows):
+                # The writer-created input table also requires time and diff.
+                mssql.insert_row(
+                    input_table_name,
+                    {
+                        "pkey": row["pkey"],
+                        "item": _serialize_item_for_mssql(row["item"]),
+                        "time": 0,
+                        "diff": 1,
+                    },
+                )
+                wait_for_rows(len(items) + index + 1)
+
+            output_rows = mssql.get_table_contents(
+                output_table_name, list(InputSchemaWithPkey.column_names())
+            )
+
+            # Combine snapshot rows (pkey 0..N-1) and streaming rows (pkey N..2N-1)
+            # for the final comparison.
+            all_input_rows = streaming_rows.copy()
+            for i, item in enumerate(items):
+                all_input_rows.append({"pkey": i, "item": item})
+            all_input_rows.sort(key=lambda r: r["pkey"])
+
+            _compare_input_and_output(ItemType, all_input_rows, output_rows)
+        except Exception:
+            print(
+                mssql.cdc_diagnostics(input_table_name, output_table_name),
+                file=sys.stderr,
+            )
+            raise
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_cdc_worker_reports_exit_and_log(mssql, monkeypatch, capsys, returncode):
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_MSSQL_CDC_SCRIPT",
+        f"import sys; print('CDC child diagnostic', file=sys.stderr); sys.exit({returncode})",
     )
+    with pytest.raises(
+        AssertionError, match=f"CDC subprocess exited with code {returncode}"
+    ):
+        with _mssql_cdc_worker("unused_input", "unused_output", "") as proc:
+            proc.wait(timeout=10)
+            MssqlRowCountChecker(mssql, "unused_output", 1, proc)()
+    assert "CDC child diagnostic" in capsys.readouterr().err
 
-    streaming_thread = ExceptionAwareThread(target=streaming_target, daemon=True)
-    streaming_thread.start()
 
+def test_row_count_checker_reports_query_error(mssql):
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(f"CREATE TABLE [{table_name}] (pkey INT)")
+    with pytest.raises(AssertionError, match="Invalid column name") as exc:
+        MssqlRowCountChecker(mssql, table_name, 1)()
+    assert table_name in str(exc.value)
+    assert isinstance(exc.value.__cause__, pymssql.ProgrammingError)
+
+
+def test_streaming_delivers_rows_after_capture_job_retry(mssql, monkeypatch):
+    # SQL Agent retries a failed capture step after one minute. Previously the
+    # insertion thread gave up at 60s, so even after capture recovered the last
+    # insert never happened and the outer 120s wait could not succeed.
+    # Give this test its own database and capture job: interrupting testdb's
+    # shared job would stall every other MSSQL test running under xdist.
+    database = f"cdc_retry_{uuid.uuid4().hex[:12]}"
+    mssql.execute_sql(f"CREATE DATABASE [{database}]")
     try:
-        wait_result_with_checker(
-            MssqlRowCountChecker(mssql, output_table_name, 2 * len(items)),
-            120,
-            target=None,
-        )
-        streaming_thread.join()
+        ctx = MssqlContext(database=database)
+        try:
+            ctx.ensure_database_cdc()
+            original_insert = ctx.insert_row
+            interrupted = False
+
+            def insert_after_capture_failure(table_name, values):
+                nonlocal interrupted
+                if not interrupted:
+                    sessions: list = []
+
+                    def capture_is_running() -> bool:
+                        ctx.execute_sql(
+                            "SELECT r.session_id FROM sys.dm_exec_requests r "
+                            "JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id "
+                            "JOIN msdb.dbo.sysjobs j ON s.program_name LIKE "
+                            "'SQLAgent - TSQL JobStep (Job ' "
+                            "+ CONVERT(varchar(34), CONVERT(binary(16), j.job_id), 1) "
+                            "+ ' : Step %' "
+                            "WHERE r.database_id = DB_ID() "
+                            "AND j.name = 'cdc.' + DB_NAME() + '_capture'"
+                        )
+                        sessions[:] = ctx.cursor.fetchall()
+                        return len(sessions) == 1
+
+                    wait_result_with_checker(
+                        capture_is_running, timeout_sec=30, target=None
+                    )
+                    ctx.execute_sql(f"KILL {int(sessions[0][0])}")
+                    interrupted = True
+                original_insert(table_name, values)
+
+            monkeypatch.setattr(ctx, "insert_row", insert_after_capture_failure)
+            _test_mssql_streaming(
+                ctx,
+                list[list[int]],
+                [[[1, 2], [3, 4]], [[5, 6], [7, 8]]],
+                connection_string=MSSQL_CONNECTION_STRING.replace(
+                    f"Database={MSSQL_DB_NAME};", f"Database={database};"
+                ),
+            )
+            assert interrupted
+        finally:
+            ctx.cleanup()
     finally:
-        proc.terminate()
-        proc.wait()
-
-    output_rows = mssql.get_table_contents(
-        output_table_name, list(InputSchemaWithPkey.column_names())
-    )
-
-    # Combine snapshot rows (pkey 0..N-1) and streaming rows (pkey N..2N-1)
-    # for the final comparison.
-    all_input_rows = streaming_rows.copy()
-    for i, item in enumerate(items):
-        all_input_rows.append({"pkey": i, "item": item})
-    all_input_rows.sort(key=lambda r: r["pkey"])
-
-    _compare_input_and_output(ItemType, all_input_rows, output_rows)
+        mssql.execute_sql(
+            f"IF EXISTS (SELECT 1 FROM sys.databases WHERE name = '{database}' "
+            f"AND is_cdc_enabled = 1) EXEC [{database}].sys.sp_cdc_disable_db",
+            drain_status_rows=True,
+        )
+        mssql.execute_sql(
+            f"ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+        )
+        mssql.execute_sql(f"DROP DATABASE [{database}]")
 
 
 def test_bool(mssql):
