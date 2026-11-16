@@ -232,7 +232,7 @@ class OpenAIChat(BaseChat):
     >>> chat = llms.OpenAIChat(model=None, retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6))
     >>> t = pw.debug.table_from_markdown('''
     ... txt     | model
-    ... Wazzup? | gpt-3.5-turbo
+    ... Wazzup? | gpt-5.6-terra
     ... ''')
     >>> r = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt), model=t.model))
     >>> r
@@ -246,7 +246,7 @@ class OpenAIChat(BaseChat):
             udfs.AsyncRetryStrategy | None
         ) = pw.udfs.ExponentialBackoffRetryStrategy(),
         cache_strategy: udfs.CacheStrategy | None = None,
-        model: str | None = "gpt-3.5-turbo",
+        model: str | None = "gpt-5.6-terra",
         *,
         async_mode: Literal["batch_async", "fully_async"] = "batch_async",
         **openai_kwargs,
