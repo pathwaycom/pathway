@@ -69,6 +69,14 @@ def test_empty_init_kwargs():
     assert llm.model is None
 
 
+def test_openai_chat_default_model_is_served():
+    # OpenAI shut gpt-3.5-turbo down on 2026-10-23. The listed replacement is
+    # gpt-5.6-terra: https://developers.openai.com/api/docs/deprecations
+    llm = llms.OpenAIChat()
+
+    assert llm.model == "gpt-5.6-terra"
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [{"base_url": "openai_api"}, {}],

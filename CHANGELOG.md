@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Fixed
+- `pw.xpacks.llm.llms.OpenAIChat` no longer defaults to `gpt-3.5-turbo`, which OpenAI shut down on 2026-10-23. The default is `gpt-5.6-terra`, the replacement listed in OpenAI's deprecations. Callers that pass `model` are unchanged.
 - HTTP input and output connectors now report final HTTP 4xx/5xx responses as errors instead of reading their bodies as data or silently accepting failed writes. Retry backoff resets for each request, no delay follows the last attempt, and connections are reused between requests.
 
 ## [0.33.1] - 2026-11-05
