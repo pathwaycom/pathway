@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Fixed
+- Google Drive reads now retry temporary network and API failures when fetching metadata, listing files, and downloading content.
 - HTTP input and output connectors now report final HTTP 4xx/5xx responses as errors instead of reading their bodies as data or silently accepting failed writes. Retry backoff resets for each request, no delay follows the last attempt, and connections are reused between requests.
 
 ## [0.33.1] - 2026-11-05

@@ -36,6 +36,7 @@ from pathway.io.python import ConnectorSubject
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 MIME_TYPE_FOLDER = "application/vnd.google-apps.folder"
 FILE_FIELDS = "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser, trashed, size"
+_NUM_RETRIES = 3
 
 DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
     "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -126,7 +127,9 @@ class _GDriveClient:
         from googleapiclient.discovery import build
 
         self.root = root
-        self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
+        self.drive = build(
+            "drive", "v3", credentials=credentials, num_retries=_NUM_RETRIES
+        )
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
         self.object_size_limit = object_size_limit
         self.file_name_pattern = file_name_pattern
@@ -158,7 +161,7 @@ class _GDriveClient:
                     pageToken=page_token,
                     corpora="allDrives",
                 )
-                .execute()
+                .execute(num_retries=_NUM_RETRIES)
             )
             items.extend(response.get("files", []))
             page_token = response.get("nextPageToken", None)
@@ -309,7 +312,7 @@ class _GDriveClient:
                     fields=FILE_FIELDS,
                     supportsAllDrives=True,
                 )
-                .execute()
+                .execute(num_retries=_NUM_RETRIES)
             )
             if file.get("trashed") is True:
                 warnings.warn(
@@ -355,7 +358,7 @@ class _GDriveClient:
             downloader = MediaIoBaseDownload(response, request)
             done = False
             while done is False:
-                _, done = downloader.next_chunk()
+                _, done = downloader.next_chunk(num_retries=_NUM_RETRIES)
             return response.getvalue()
         except HttpError as e:
             file_id = file["id"]
