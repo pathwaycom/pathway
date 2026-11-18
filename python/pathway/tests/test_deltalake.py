@@ -687,6 +687,7 @@ def test_deltalake_schema_mismatch_with_optionality(
         run_all()
 
 
+@only_with_license_key
 def test_deltalake_fails_to_reconstruct_schema(tmp_path: pathlib.Path):
     data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
     df = pd.DataFrame(data).set_index("k")
@@ -1199,6 +1200,7 @@ def test_deltalake_backfilling_thresholds(tmp_path: pathlib.Path):
     assert set(result["v"]) == {"two", "three"}
 
 
+@only_with_license_key
 def test_deltalake_snapshot_mode(tmp_path):
     first_payload = """
         k | v
@@ -1272,6 +1274,7 @@ def test_deltalake_snapshot_mode(tmp_path):
     run_reread(fourth_payload)
 
 
+@only_with_license_key
 def test_wrong_delta_optimizer_rule(tmp_path):
     input_path = tmp_path / "input"
     output_path = tmp_path / "output"
@@ -1302,6 +1305,7 @@ def test_wrong_delta_optimizer_rule(tmp_path):
         )
 
 
+@only_with_license_key
 def test_delta_optimizer_rule(tmp_path):
     input_path = tmp_path / "input.jsonl"
     output_path = tmp_path / "output_lake"
@@ -1386,6 +1390,7 @@ def test_delta_optimizer_rule(tmp_path):
     assert operations_history == expected_operations_history
 
 
+@only_with_license_key
 def test_delta_snapshot_mode_rewind(tmp_path):
     input_path = tmp_path / "input.jsonl"
     delta_table_path = tmp_path / "delta"

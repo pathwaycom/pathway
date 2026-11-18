@@ -107,11 +107,11 @@ and manual dispatch. Updating a PR starts one workflow run. New commits to that
 PR cancel its previous run; a failure on one Python version does not cancel the
 other version.
 
-The full suite requires a test license with the same feature entitlements as
-IoT-Pathway. Add it as the repository's `PATHWAY_LICENSE_KEY` Actions secret.
-The workflow checks that it is configured before starting the native build.
-GitHub does not provide repository secrets to PRs from external forks; those
-changes need a trusted branch in the receiving repository for this full suite.
+No license secret is required for public PRs. Tests that require licensed
+features use `only_with_license_key`; doctests request the `requires_license`
+fixture. Without a configured key (including an empty Actions secret), these
+cases are reported as `xfail`. When `PATHWAY_LICENSE_KEY` is available, they run
+normally against the real implementation. No license checks are mocked.
 
 The workflow builds one ABI3 wheel from the checked-out commit using Python 3.10,
 then installs that wheel with `tests-core` on **Python 3.10 and 3.15**. These are
@@ -133,7 +133,7 @@ uv pip install --python .buildenv/bin/python 'maturin>=1.4,<2'
 ```
 
 Install and verify it with the selected interpreter (`3.10` or `3.15`):
-Set `PATHWAY_LICENSE_KEY` in the local shell before running the tests.
+Optionally set `PATHWAY_LICENSE_KEY` to include the licensed cases.
 
 ```bash
 TEST_PYTHON=3.15

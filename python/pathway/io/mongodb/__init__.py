@@ -180,6 +180,7 @@ def read(
     With data in place, define a matching schema in the Pathway Live Data Framework. Note that no primary key
     is declared — the connector derives the row key from each document's ``_id``.
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class OrderSchema(pw.Schema):
     ...     product: str

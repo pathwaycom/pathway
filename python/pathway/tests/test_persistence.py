@@ -903,6 +903,7 @@ def test_upsert_session_with_python_connector(tmp_path, mode):
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 @pytest.mark.parametrize("as_udf", [True, False])
 @needs_multiprocessing_fork
+@only_with_license_key
 def test_async_transformer_append_only(tmp_path, mode, as_udf):
     class InputSchema(pw.Schema):
         a: int
@@ -1031,6 +1032,7 @@ def get_async_transformer_tester(
 
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 @needs_multiprocessing_fork
+@only_with_license_key
 def test_async_transformer(tmp_path, mode):
     input_path = tmp_path / "1"
     can_pass = [True, True, False, False, True, True, True, False, True]
@@ -1051,6 +1053,7 @@ def test_async_transformer(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 @needs_multiprocessing_fork
+@only_with_license_key
 def test_fully_async_udf(tmp_path, mode):
     input_path = tmp_path / "1"
     can_pass = [True, True, False, False, True, True, True, False, True]

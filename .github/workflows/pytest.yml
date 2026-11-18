@@ -27,15 +27,6 @@ jobs:
       CARGO_PROFILE_DEV_OPT_LEVEL: '0'
       RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
     steps:
-      - name: Check test license configuration
-        env:
-          PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
-        run: |
-          if [ -z "$PATHWAY_LICENSE_KEY" ]; then
-            echo '::error::Set the PATHWAY_LICENSE_KEY Actions secret to run the full core suite, as in IoT-Pathway.'
-            exit 1
-          fi
-
       - uses: actions/checkout@v6
         with:
           persist-credentials: false

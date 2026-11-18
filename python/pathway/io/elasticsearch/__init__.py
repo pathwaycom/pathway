@@ -138,6 +138,7 @@ def write(
     Now suppose we want to send a Pathway Live Data Framework table pets to this local instance of
     Elasticsearch.
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> pets = pw.debug.table_from_markdown('''
     ... age | owner | pet
@@ -288,6 +289,7 @@ def read(
     ``"logs"`` whose documents carry an integer ``ts`` field (epoch milliseconds) and a
     unique ``doc_id`` field:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import datetime
     >>> import pathway as pw
     >>> class LogSchema(pw.Schema):

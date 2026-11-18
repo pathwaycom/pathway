@@ -121,6 +121,7 @@ def read(
     Read messages in raw format (the default). The table will have ``key`` and ``data``
     columns:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> table = pw.io.rabbitmq.read(
     ...     "rabbitmq-stream://guest:guest@localhost:5552",
@@ -301,6 +302,7 @@ def write(
     Consider a RabbitMQ server with Streams enabled running locally on port ``5552``.
     First, create a Pathway Live Data Framework table:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> table = pw.debug.table_from_markdown('''
     ... age | owner | pet

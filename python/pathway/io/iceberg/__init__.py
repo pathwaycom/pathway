@@ -165,6 +165,7 @@ def read(
     all the columns of the table, you can only specify the ones that are needed for the
     computation:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
     ...     user_id: int = pw.column_definition(primary_key=True)
@@ -285,6 +286,7 @@ def write(
 
     The schema definition may look as follows:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
     ...     user_id: int = pw.column_definition(primary_key=True)

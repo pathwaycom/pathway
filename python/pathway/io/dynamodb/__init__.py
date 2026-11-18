@@ -109,6 +109,7 @@ def write(
 
     First, create a table:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> table = pw.debug.table_from_markdown('''
     ...    key | value

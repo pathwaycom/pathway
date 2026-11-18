@@ -390,6 +390,7 @@ def read(
     integer serving as the primary key), ``login`` (a string), and ``last_seen_at`` (a unix
     timestamp). To read this table with the Pathway Live Data Framework, start by declaring the corresponding schema:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class UsersSchema(pw.Schema):
     ...     id: int = pw.column_definition(primary_key=True)

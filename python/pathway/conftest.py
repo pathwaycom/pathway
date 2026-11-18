@@ -15,6 +15,7 @@ from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
     SerializationTestHelper,
     make_port_fixture,
+    only_with_license_key,
 )
 
 
@@ -50,6 +51,12 @@ def environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
 def local_pathway_config(environment_variables):
     with config.local_pathway_config() as cfg:
         yield cfg
+
+
+@pytest.fixture
+@only_with_license_key
+def requires_license() -> None:
+    """Require a configured license key for a test or doctest."""
 
 
 environment_stash_key = pytest.StashKey[dict[str, str]]()

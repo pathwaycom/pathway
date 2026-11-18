@@ -347,6 +347,7 @@ def read(
     a schema and pass it together with the ``"json"`` format — the connector
     then creates one column per schema field:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
     ...     sensor_id: str
@@ -696,6 +697,7 @@ def write(
     Suppose you want to send a stream of updates of the table ``t`` to a locally
     running Pulsar instance. First, create a sample table:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown(
     ...     '''

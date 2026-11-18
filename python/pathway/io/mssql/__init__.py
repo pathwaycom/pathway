@@ -135,6 +135,7 @@ def read(
 
     For static snapshot mode (no CDC setup required):
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class MySchema(pw.Schema):
     ...     id: int = pw.column_definition(primary_key=True)
