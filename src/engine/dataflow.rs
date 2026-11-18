@@ -7,6 +7,7 @@ mod async_transformer;
 mod complex_columns;
 pub mod config;
 mod export;
+pub mod expression_cache;
 pub mod maybe_total;
 pub mod monitoring;
 pub mod operators;
@@ -17,12 +18,13 @@ mod variable;
 mod windows;
 
 use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
-use crate::connectors::data_format::{Formatter, Parser};
+use crate::connectors::data_format::{Formatter, FormatterContext, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, OutputConnectorStats};
 use crate::connectors::synchronization::{
     ConnectorGroupDescriptor, ConnectorSynchronizer, SharedConnectorSynchronizer,
 };
+use crate::connectors::wakeup::{self, ACTIVE_POLL_INTERVAL};
 use crate::connectors::{Connector, PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::monitoring::{OperatorProbe, Prober, ProberStats};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
@@ -56,6 +58,7 @@ use std::iter::once;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,7 +96,7 @@ use persist::{
     OldOrNew, PersistableCollection, PersistedStatefulReduce, PersistenceWrapper,
     TimestampBasedPersistenceWrapper,
 };
-use pyo3::PyObject;
+use pyo3::{Py, PyAny};
 use serde::{Deserialize, Serialize};
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::{Filter, Inspect, Probe};
@@ -108,12 +111,15 @@ use xxhash_rust::xxh3::{Xxh3 as Hasher, Xxh3Builder};
 use self::async_transformer::async_transformer;
 use self::complex_columns::complex_columns;
 use self::export::{export_table, import_table};
+use self::expression_cache::ExpressionCache;
 use self::maybe_total::MaybeTotalScope;
 use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
 use self::operators::time_column::TimeColumnBuffer;
-use self::operators::{ArrangeWithTypes, FlatMapBatchedWithDeletionsFirst, MapWrapped};
+use self::operators::{
+    ArrangeWithTypes, ConsolidatePerTime, FlatMapBatchedWithDeletionsFirst, MapWrapped,
+};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use self::time::{Epsilon, MaybeEpsilon, OriginalOrRetraction};
@@ -495,7 +501,7 @@ impl<S: MaybeTotalScope> ColumnData<S> {
     fn consolidated(&self) -> &Values<S> {
         match self {
             Self::Collection { consolidated, .. } => consolidated
-                .get_or_init(|| self.arranged().as_collection(|k, v| (*k, v.clone())).into()),
+                .get_or_init(|| self.collection().as_generic().consolidate_per_time().into()),
             Self::Arranged { .. } => self.collection(),
         }
     }
@@ -747,6 +753,8 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     reducer_factory: Box<dyn CreateDataflowReducer<S>>,
     connector_synchronizer: SharedConnectorSynchronizer,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
+    expression_cache_counter: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1207,6 +1215,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         reducer_factory: Box<dyn CreateDataflowReducer<S>>,
         connector_synchronizer: SharedConnectorSynchronizer,
         max_expression_batch_size: usize,
+        udf_cache_directory: Option<PathBuf>,
     ) -> Result<Self> {
         Ok(Self {
             scope,
@@ -1233,6 +1242,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             reducer_factory,
             connector_synchronizer,
             max_expression_batch_size,
+            udf_cache_directory,
+            expression_cache_counter: 0,
         })
     }
 
@@ -1475,14 +1486,37 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
+        // The common case: the paths pick the row's columns as they are, in
+        // order (`[0], [1], ..., [n-1]`). Such a row is passed on as is, sharing
+        // its column slice, instead of being copied column by column into a
+        // fresh allocation. Rows that aren't a tuple of that width (errors,
+        // pending values, ...) take the general path, which reports them.
+        let paths_select_whole_row = column_paths
+            .iter()
+            .enumerate()
+            .all(|(index, path)| matches!(path, ColumnPath::ValuePath(steps) if steps.as_slice() == [index]));
+        let column_count = column_paths.len();
+
         let result = table
             .values()
             .map_named("extract_columns::extract", move |(key, values)| {
+                if paths_select_whole_row {
+                    if let Value::Tuple(row) = &values {
+                        if row.len() == column_count {
+                            return (key, row.clone());
+                        }
+                    }
+                }
+                // unwrap per element: a `Result` iterator isn't `TrustedLen`,
+                // so `try_collect` would go through an intermediate `Vec`
+                // instead of allocating the `Arc` slice directly
                 let extracted_values: Arc<[Value]> = column_paths
                     .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .try_collect()
-                    .unwrap_with_reporter(&error_reporter);
+                    .map(|path| {
+                        path.extract(&key, &values)
+                            .unwrap_with_reporter(&error_reporter)
+                    })
+                    .collect();
                 (key, extracted_values)
             });
         Ok(TupleCollection::More(result))
@@ -1561,48 +1595,77 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_logger = self.create_error_logger()?;
         let max_expression_batch_size = self.max_expression_batch_size;
 
+        // Extracted arguments of all rows live in one flat buffer that the operator
+        // keeps between batches: no per-row allocation and no allocation at all
+        // once its capacity has settled.
+        let mut flat_args: Vec<Value> = Vec::new();
         Ok(table.values_consolidated().map_wrapped_batched_named(
             "expression_table::evaluate_expression",
             move |data| {
-                let mut results = Vec::with_capacity(data.len());
-                let mut args = Vec::with_capacity(data.len());
-                let mut keys = Vec::with_capacity(data.len());
+                let n_expressions = expressions.len();
+                let n_paths = column_paths.len();
+                let n_rows = data.len();
+                flat_args.clear();
+                flat_args.reserve(n_rows * n_paths);
+                let mut keys = Vec::with_capacity(n_rows);
                 for (key, values) in data {
-                    let args_i: Vec<Value> = column_paths
-                        .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter);
-                    args.push(args_i);
+                    for path in &column_paths {
+                        flat_args.push(
+                            path.extract(&key, &values)
+                                .unwrap_with_reporter(&error_reporter),
+                        );
+                    }
                     keys.push(key);
-                    results.push(vec![Value::None; expressions.len()]);
                 }
+                // single flat buffer instead of a per-row Vec of results
+                let mut results = vec![Value::None; n_rows * n_expressions];
 
-                let args: Vec<&[Value]> = args.iter().map(|a| -> &[Value] { a }).collect();
+                let args: Vec<&[Value]> = if n_paths == 0 {
+                    vec![&[][..]; n_rows]
+                } else {
+                    flat_args.chunks_exact(n_paths).collect()
+                };
                 // if a better behavior for append only is needed (then only output has to be append only, not input):
                 // split this closure here into two - first part (extraction from paths) before consolidation
                 // and second part (evals) after consolidation
                 for (i, expression_data) in expressions.iter().enumerate() {
-                    let result_for_expression: Vec<_> = args
-                        .chunks(max_expression_batch_size)
-                        .flat_map(|args| expression_data.expression.eval(args))
-                        .collect();
-                    for (j, result_i) in result_for_expression.into_iter().enumerate() {
-                        let result_i = result_i.unwrap_or_log_with_trace(
-                            error_logger.as_ref(),
-                            expression_data.properties.trace().as_ref(),
-                            Value::Error,
-                        );
-                        results[j][i] = result_i;
+                    let mut j = 0;
+                    for chunk in args.chunks(max_expression_batch_size) {
+                        for result_i in expression_data.expression.eval(chunk) {
+                            let result_i = result_i.unwrap_or_log_with_trace(
+                                error_logger.as_ref(),
+                                expression_data.properties.trace().as_ref(),
+                                Value::Error,
+                            );
+                            results[j * n_expressions + i] = result_i;
+                            j += 1;
+                        }
                     }
+                    assert_eq!(j, n_rows);
                 }
-                results
-                    .into_iter()
-                    .zip_eq(keys)
-                    .map(|(result_i, key)| (key, Value::Tuple(result_i.into())))
+                let mut results = results.into_iter();
+                keys.into_iter()
+                    .map(|key| {
+                        let row: Arc<[Value]> = results.by_ref().take(n_expressions).collect();
+                        (key, Value::Tuple(row))
+                    })
                     .collect()
             },
         ))
+    }
+
+    /// Creates the memoization storage for the non-deterministic expressions
+    /// of a single `expression_table` operator.
+    fn create_expression_cache(
+        &mut self,
+        should_cache: &[bool],
+    ) -> Result<Box<dyn ExpressionCache>> {
+        Ok(expression_cache::create_expression_cache(
+            should_cache,
+            self.udf_cache_directory.as_deref(),
+            self.worker_index(),
+            &mut self.expression_cache_counter,
+        )?)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1619,6 +1682,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             position: usize,
         }
 
+        let should_cache: Vec<_> = expressions
+            .iter()
+            .map(|expression| !expression.deterministic)
+            .collect();
+        let mut caches = self.create_expression_cache(&should_cache)?;
+
         let table = self
             .tables
             .get(table_handle)
@@ -1627,12 +1696,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
 
-        let should_cache: Vec<_> = expressions
-            .iter()
-            .map(|expression| !expression.deterministic)
-            .collect();
-        let mut caches: Vec<HashMap<Key, Value>> = Vec::with_capacity(expressions.len());
-        caches.resize_with(expressions.len(), HashMap::new);
         let collection = table.values().clone();
         let max_expression_batch_size = self.max_expression_batch_size;
 
@@ -1643,6 +1706,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 collection.flat_map_batched_named_with_deletions_first(
                     "expression_table::evaluate_expression",
                     move |data_with_diffs| {
+                        caches.begin_batch();
                         let mut results = vec![None; data_with_diffs.len()];
                         let mut rows = Vec::with_capacity(data_with_diffs.len());
                         for (i, ((key, values), diff)) in data_with_diffs.into_iter().enumerate() {
@@ -1652,18 +1716,28 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                     for (j, (expression, state)) in
                                         expressions.iter().zip(states.iter()).enumerate()
                                     {
-                                        if !expression.deterministic {
-                                            let current = caches[j].insert(key, state.clone());
-                                            assert!(current.is_none());
+                                        if !expression.deterministic
+                                            && caches.insert(j, key, state).is_err()
+                                        {
+                                            // `Old` rows come from the operator's own persisted
+                                            // snapshot, not from the input source, so a duplicate
+                                            // here is a corrupted snapshot - never something the
+                                            // user's connector configuration can cause or fix.
+                                            error_reporter.report_and_panic_with_trace(
+                                                DataError::DuplicateKeyInRestoredState(key),
+                                                expression.properties.trace().as_ref(),
+                                            );
                                         }
                                     }
                                 }
                                 OldOrNew::New(values) => {
                                     let args: Vec<Value> = column_paths
                                         .iter()
-                                        .map(|path| path.extract(&key, &values))
-                                        .collect::<Result<_>>()
-                                        .unwrap_with_reporter(&error_reporter);
+                                        .map(|path| {
+                                            path.extract(&key, &values)
+                                                .unwrap_with_reporter(&error_reporter)
+                                        })
+                                        .collect();
                                     rows.push(RowData {
                                         key,
                                         args,
@@ -1682,17 +1756,45 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                 let mut should_be_computed = true;
                                 if expression_data.deterministic {
                                     // If the expression is deterministic, compute it normally.
+                                } else if row.diff > DIFF_INSERTION {
+                                    // Insertions of identical rows arriving in one batch are
+                                    // consolidated upstream into a single row with diff > 1,
+                                    // so they never hit the cache twice. It is still the same
+                                    // duplicate-key situation as a second insertion arriving
+                                    // in a later batch - report it identically.
+                                    error_reporter.report_and_panic_with_trace(
+                                        DataError::DuplicateInsertion {
+                                            key: row.key,
+                                            values: row.args.clone(),
+                                        },
+                                        expression_data.properties.trace().as_ref(),
+                                    );
+                                } else if row.diff < DIFF_DELETION {
+                                    // The mirror image: deletions of identical rows consolidated
+                                    // into a single row with diff < -1 remove the row more times
+                                    // than it was inserted. Report it as such instead of as a
+                                    // duplicate insertion.
+                                    error_reporter.report_and_panic_with_trace(
+                                        DataError::DuplicateDeletion {
+                                            key: row.key,
+                                            values: row.args.clone(),
+                                        },
+                                        expression_data.properties.trace().as_ref(),
+                                    );
                                 } else if expression_data.append_only {
                                     // If the expression is append_only but the stream is not, don't remove key from cache.
-                                    if let Some(result) = caches[i].get(&row.key) {
-                                        results[row.position].as_mut().unwrap()[i] = result.clone();
+                                    if let Some(result) = caches.get(i, row.key) {
+                                        results[row.position].as_mut().unwrap()[i] = result;
                                         should_be_computed = false;
                                     }
-                                } else if let Some(result) = caches[i].remove(&row.key) {
+                                } else if let Some(result) = caches.remove(i, row.key) {
                                     // If expression is not append_only, remove key from cache as a new result can be different.
                                     if row.diff != DIFF_DELETION {
                                         error_reporter.report_and_panic_with_trace(
-                                            DataError::ExpectedDeletion(row.key),
+                                            DataError::DuplicateInsertion {
+                                                key: row.key,
+                                                values: row.args.clone(),
+                                            },
                                             expression_data.properties.trace().as_ref(),
                                         );
                                     }
@@ -1710,22 +1812,31 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                 .flat_map(|args| expression_data.expression.eval(args))
                                 .collect();
 
-                            for (result_i, (position, key)) in result_for_expression
+                            for (row_index, (result_i, (position, key))) in result_for_expression
                                 .into_iter()
                                 .zip_eq(rows_for_expression)
+                                .enumerate()
                             {
                                 let result_i = result_i.unwrap_or_log_with_trace(
                                     error_logger.as_ref(),
                                     expression_data.properties.trace().as_ref(),
                                     Value::Error,
                                 );
-                                if !expression_data.deterministic {
-                                    let current = caches[i].insert(key, result_i.clone());
-                                    assert!(current.is_none());
+                                if !expression_data.deterministic
+                                    && caches.insert(i, key, &result_i).is_err()
+                                {
+                                    error_reporter.report_and_panic_with_trace(
+                                        DataError::DuplicateInsertion {
+                                            key,
+                                            values: args_for_expression[row_index].to_vec(),
+                                        },
+                                        expression_data.properties.trace().as_ref(),
+                                    );
                                 }
                                 results[position].as_mut().unwrap()[i] = result_i;
                             }
                         }
+                        caches.commit_batch();
                         let mut rows_iter = rows.into_iter();
                         results
                             .into_iter()
@@ -2742,6 +2853,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         ) -> Result<(
             Collection<S, (Option<Key>, (Key, Value))>,
             Option<Variable<S, (Key, (Key, Value)), isize>>,
+            Collection<S, (Key, (Key, Value))>,
             ArrangedByKey<S, Key, (Key, Value)>,
         )> {
             let table = graph
@@ -2781,29 +2893,37 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             } else {
                 (join_side, None)
             };
+            let join_side_persisted = join_side_updated.maybe_persist(graph, "join")?;
             let join_side_arranged: ArrangedByKey<S, Key, (Key, Value)> =
-                join_side_updated.maybe_persist(graph, "join")?.arrange();
-            Ok((side_with_join_key, retractions, join_side_arranged))
+                join_side_persisted.arrange();
+            Ok((
+                side_with_join_key,
+                retractions,
+                join_side_persisted,
+                join_side_arranged,
+            ))
         }
 
         if left_data.column_paths.len() != right_data.column_paths.len() {
             return Err(Error::DifferentJoinConditionLengths);
         }
 
-        let (left_with_join_key, left_retractions, join_left_arranged) = prepare_join_side(
-            self,
-            left_data,
-            shard_policy,
-            join_exactly_once.left,
-            table_properties.clone(),
-        )?;
-        let (right_with_join_key, right_retractions, join_right_arranged) = prepare_join_side(
-            self,
-            right_data,
-            shard_policy,
-            join_exactly_once.right,
-            table_properties.clone(),
-        )?;
+        let (left_with_join_key, left_retractions, join_left_persisted, join_left_arranged) =
+            prepare_join_side(
+                self,
+                left_data,
+                shard_policy,
+                join_exactly_once.left,
+                table_properties.clone(),
+            )?;
+        let (right_with_join_key, right_retractions, _join_right_persisted, join_right_arranged) =
+            prepare_join_side(
+                self,
+                right_data,
+                shard_policy,
+                join_exactly_once.right,
+                table_properties.clone(),
+            )?;
 
         let join_left_right = join_left_arranged
             .join_core(&join_right_arranged, |join_key, left_key, right_key| {
@@ -2878,35 +2998,47 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             },
         );
 
+        // The closure returns both the outer rows and the distinct matched
+        // left rows before `filter_out_persisted` — the latter still carries
+        // its T=0 entries, needed below to re-anchor the outer branch of
+        // `LeftKeysFull` under operator persistence.
         let mut left_outer = || -> Result<_> {
-            Ok(left_with_join_key.concat(
-                &join_left_right
-                    .map_named(
-                        "join::left_outer_res",
-                        |(join_key, left_key_values, _right_key_values)| {
-                            (join_key, left_key_values)
-                        },
-                    )
-                    .distinct()
+            let matched_left_distinct = join_left_right
+                .map_named(
+                    "join::left_outer_res",
+                    |(join_key, left_key_values, _right_key_values)| (join_key, left_key_values),
+                )
+                .distinct();
+            let left_outer = left_with_join_key.concat(
+                &matched_left_distinct
                     .filter_out_persisted(&mut self.persistence_wrapper)?
                     .negate()
                     .map_named("join::left_outer_wrap", |(key, values)| (Some(key), values)),
-            ))
+            );
+            Ok((left_outer, matched_left_distinct))
         };
+        let mut left_keys_full_matched_distinct: Option<Collection<S, (Key, (Key, Value))>> = None;
         let result_left_outer = match join_type {
-            JoinType::LeftOuter | JoinType::FullOuter => Some(left_outer()?.map_named(
-                "join::result_left_outer",
-                |(join_key, (left_key, left_values))| {
-                    let result_key = Key::for_values(&[Value::from(left_key), Value::None])
-                        .with_shard_of(join_key.unwrap_or(left_key));
-                    // unwrap_or needed for rows with Value::Error in join condition
-                    (left_key, left_values, result_key)
-                },
-            )),
-            JoinType::LeftKeysFull => Some(left_outer()?.map_named(
-                "join::result_left_outer",
-                |(_join_key, (left_key, left_values))| (left_key, left_values, left_key),
-            )),
+            JoinType::LeftOuter | JoinType::FullOuter => {
+                let (left_outer, _matched_left_distinct) = left_outer()?;
+                Some(left_outer.map_named(
+                    "join::result_left_outer",
+                    |(join_key, (left_key, left_values))| {
+                        let result_key = Key::for_values(&[Value::from(left_key), Value::None])
+                            .with_shard_of(join_key.unwrap_or(left_key));
+                        // unwrap_or needed for rows with Value::Error in join condition
+                        (left_key, left_values, result_key)
+                    },
+                ))
+            }
+            JoinType::LeftKeysFull => {
+                let (left_outer, matched_left_distinct) = left_outer()?;
+                left_keys_full_matched_distinct = Some(matched_left_distinct);
+                Some(left_outer.map_named(
+                    "join::result_left_outer",
+                    |(_join_key, (left_key, left_values))| (left_key, left_values, left_key),
+                ))
+            }
             _ => None,
         }
         .map(|result_left_outer| {
@@ -2982,24 +3114,107 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             let error_logger = self.create_error_logger()?;
             let error_reporter = self.error_reporter.clone();
             let trace = table_properties.trace();
-            result_left_right.replace_duplicates_with_error(
-                move |value| {
-                    let tuple = value
-                        .as_tuple()
-                        .unwrap_with_reporter_and_trace(&error_reporter, &trace);
-                    Value::from(
-                        [
-                            tuple[0].clone(), // left key
-                            tuple[1].clone(), // left value
-                            Value::Error,
-                            Value::Error,
-                        ]
-                        .as_slice(),
-                    )
-                },
-                error_logger,
-                table_properties.trace(),
-            )
+            let make_error_value = move |value: &Value| {
+                let tuple = value
+                    .as_tuple()
+                    .unwrap_with_reporter_and_trace(&error_reporter, &trace);
+                Value::from(
+                    [
+                        tuple[0].clone(), // left key
+                        tuple[1].clone(), // left value
+                        Value::Error,
+                        Value::Error,
+                    ]
+                    .as_slice(),
+                )
+            };
+            // The duplicate check is a stateful reduce and needs the full
+            // per-key multiset, but under operator persistence its input is
+            // T=0-stripped — an update of an old row would look like a
+            // duplicate. Re-anchor the T=0 join products (and, for
+            // `LeftKeysFull`, the T=0 outer rows) and strip T=0 from the
+            // output instead.
+            let operator_persistence_active = self
+                .persistence_wrapper
+                .get_worker_persistent_storage()
+                .is_some_and(|storage| {
+                    let storage = storage.lock().unwrap();
+                    storage.persistent_id_generation_enabled(
+                        RequiredPersistenceMode::OperatorPersistence,
+                    ) && storage.table_persistence_enabled()
+                });
+            if operator_persistence_active {
+                let join_left_right_t0: Collection<S, (Key, (Key, Value), (Key, Value)), isize> =
+                    self.persistence_wrapper
+                        .keep_only_persisted(join_left_right.clone().into())
+                        .into();
+                let result_left_right_t0 = join_left_right_t0.map_named(
+                    "join::result_left_right_t0",
+                    move |(join_key, (left_key, left_values), (right_key, right_values))| {
+                        (
+                            join_left_right_to_result_fn(join_key, left_key, right_key),
+                            Value::from(
+                                [
+                                    Value::Pointer(left_key),
+                                    left_values,
+                                    Value::Pointer(right_key),
+                                    right_values,
+                                ]
+                                .as_slice(),
+                            ),
+                        )
+                    },
+                );
+                let result_left_right_t0 =
+                    if let Some(matched_left_distinct) = left_keys_full_matched_distinct {
+                        let left_t0: Collection<S, (Key, (Key, Value))> = self
+                            .persistence_wrapper
+                            .keep_only_persisted(join_left_persisted.into())
+                            .into();
+                        let matched_left_distinct_t0: Collection<S, (Key, (Key, Value))> = self
+                            .persistence_wrapper
+                            .keep_only_persisted(matched_left_distinct.into())
+                            .into();
+                        let result_left_outer_t0 = left_t0
+                            .concat(&matched_left_distinct_t0.negate())
+                            .map_named(
+                                "join::result_left_outer_t0",
+                                |(_join_key, (left_key, left_values))| {
+                                    (
+                                        left_key,
+                                        Value::from(
+                                            [
+                                                Value::Pointer(left_key),
+                                                left_values,
+                                                Value::None,
+                                                Value::None,
+                                            ]
+                                            .as_slice(),
+                                        ),
+                                    )
+                                },
+                            );
+                        result_left_right_t0.concat(&result_left_outer_t0)
+                    } else {
+                        result_left_right_t0
+                    };
+                let deduplicated = result_left_right
+                    .concat(&result_left_right_t0)
+                    .replace_duplicates_with_error(
+                        make_error_value,
+                        error_logger,
+                        table_properties.trace(),
+                    );
+                self.persistence_wrapper
+                    .filter_out_persisted(deduplicated.into())
+                    .into()
+            } else {
+                result_left_right.replace_duplicates_with_error(
+                    make_error_value,
+                    error_logger,
+                    table_properties.trace(),
+                )
+            }
         } else {
             result_left_right
         };
@@ -3455,9 +3670,10 @@ where
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
-        _trace: Trace,
+        trace: Trace,
         graph: &mut DataflowGraphInner<S>,
     ) -> Result<Values<S>> {
+        let error_reporter = graph.error_reporter.clone();
         Ok(values
             .map_named(
                 "LatestReducer::reduce::init",
@@ -3472,7 +3688,16 @@ where
                     let (_result_key, result_value) = values
                         .into_iter()
                         .map(|((key, values), diff)| {
-                            assert!(diff > 0, "deletion encountered in latest reducer");
+                            // The reducer keeps no state to fall back to, so a
+                            // deletion cannot be answered correctly - the input
+                            // is required to be append-only (also checked, as a
+                            // warning, at graph construction time).
+                            if diff <= 0 {
+                                error_reporter.report_and_panic_with_trace(
+                                    DataError::ExpectedAppendOnly(key),
+                                    &trace,
+                                );
+                            }
                             (key, values.into_iter().exactly_one().unwrap())
                         })
                         .max_by_key(|(key, _value)| *key)
@@ -3492,9 +3717,10 @@ where
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
-        _trace: Trace,
+        trace: Trace,
         graph: &mut DataflowGraphInner<S>,
     ) -> Result<Values<S>> {
+        let error_reporter = graph.error_reporter.clone();
         Ok(values
             .map_named(
                 "EarliestReducer::reduce::init",
@@ -3512,7 +3738,15 @@ where
                     let (_result_key, result_value) = values
                         .into_iter()
                         .map(|((key, values), diff)| {
-                            assert!(diff > 0, "deletion encountered in earliest reducer");
+                            // Same append-only requirement as in LatestReducer:
+                            // only the single earliest value is retained, so a
+                            // deletion cannot be answered correctly.
+                            if diff <= 0 {
+                                error_reporter.report_and_panic_with_trace(
+                                    DataError::ExpectedAppendOnly(key),
+                                    &trace,
+                                );
+                            }
                             (key, values.into_iter().exactly_one().unwrap())
                         })
                         .min_by_key(|(key, _value)| *key)
@@ -3628,7 +3862,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         if set_id {
-            assert!(grouping_columns_paths.len() == 1);
+            assert_eq!(grouping_columns_paths.len(), 1);
         }
         let table = self
             .tables
@@ -4224,6 +4458,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         if let Some(sort_by_indices) = sort_by_indices {
             Self::prepare_batch_for_output(&mut batch.data, sort_by_indices);
         }
+        // One context for the whole batch: its buffers are reused row after row.
+        let mut context = FormatterContext::default();
         for ((key, values), diff) in batch.data {
             if time.is_from_persistence() && worker_persistent_storage.is_some() {
                 // Ignore entries, which had been written before
@@ -4239,10 +4475,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
             execute_with_retries(
                 || {
-                    let formatted = data_formatter
-                        .format(&key, &values, time, diff)
+                    context.start_row(key, &values, time, diff);
+                    data_formatter
+                        .format_into(&mut context)
                         .map_err(DynError::from)?;
-                    data_sink.write(formatted).map_err(DynError::from)
+                    data_sink.write(&context).map_err(DynError::from)
                 },
                 RetryConfig::default(),
                 retries,
@@ -4525,10 +4762,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
     /// Load operator snapshots for iterate's columns and universes.
     /// In PERSISTING mode (or when operator persistence is disabled),
     /// returns empty state — all subsequent phases become no-ops.
+    ///
+    /// `extra` tables (available inside the loop but not iterated) need
+    /// snapshots too — otherwise the loop body sees them empty on restart.
+    /// Their snapshots use a dedicated id counter (`next_extra_state_id`), so
+    /// the persistent ids of the other operators stay as they were.
+    #[allow(clippy::too_many_lines)] // three parallel load sections
     fn load_snapshots_for_iterate(
         &mut self,
         iterated: &[LegacyTable],
         iterated_with_universe: &[LegacyTable],
+        extra: &[LegacyTable],
     ) -> Result<IterateSnapshots<S>> {
         let mut snaps = IterateSnapshots::default();
 
@@ -4626,6 +4870,57 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 snaps.values_writers.push_back(Some(writer));
             }
         }
+        for (table_idx, (univ_handle, col_handles)) in extra.iter().enumerate() {
+            // Load universe keys so old extra rows exist in the iterative scope.
+            if seen_univ_handles.contains(univ_handle) {
+                snaps.keys_writers.push_back(None);
+            } else {
+                let next_id = self.persistence_wrapper.next_extra_state_id();
+                let pid = format!("iterate-extra-{next_id}-univ-{table_idx}").into_persistent_id();
+                let reader = storage_lock
+                    .create_operator_snapshot_reader(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let writer = storage_lock
+                    .create_operator_snapshot_writer(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let (loaded, poller, thread) = read_persisted_state(
+                    &format!("iterate-extra-univ-{table_idx}"),
+                    self.scope.clone(),
+                    reader,
+                );
+                snaps.persisted_keys.insert(*univ_handle, loaded);
+                self.pollers.push(poller);
+                self.connector_threads.push(thread);
+                seen_univ_handles.insert(*univ_handle);
+                snaps.keys_writers.push_back(Some(writer));
+            }
+            // Load column snapshots for this `extra` table.
+            for (col_idx, col_handle) in col_handles.iter().enumerate() {
+                if seen_col_handles.contains(col_handle) {
+                    snaps.values_writers.push_back(None);
+                    continue;
+                }
+                let next_id = self.persistence_wrapper.next_extra_state_id();
+                let pid = format!("iterate-extra-{next_id}-col-{table_idx}-{col_idx}")
+                    .into_persistent_id();
+                let reader = storage_lock
+                    .create_operator_snapshot_reader(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let writer = storage_lock
+                    .create_operator_snapshot_writer(pid)
+                    .map_err(Error::PersistentStorage)?;
+                let (loaded, poller, thread) = read_persisted_state(
+                    &format!("iterate-extra-col-{table_idx}-{col_idx}"),
+                    self.scope.clone(),
+                    reader,
+                );
+                snaps.persisted_values.insert(*col_handle, loaded);
+                self.pollers.push(poller);
+                self.connector_threads.push(thread);
+                seen_col_handles.insert(*col_handle);
+                snaps.values_writers.push_back(Some(writer));
+            }
+        }
 
         Ok(snaps)
     }
@@ -4655,6 +4950,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         &mut self,
         iterated: &mut [LegacyTable],
         iterated_with_universe: &mut [LegacyTable],
+        extra: &mut [LegacyTable],
         persisted_values: &mut HashMap<ColumnHandle, Collection<S, (Key, Value)>>,
         persisted_keys: &mut HashMap<UniverseHandle, Keys<S>>,
     ) {
@@ -4675,7 +4971,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         // HashMap keys (non-deterministic) — otherwise multi-worker runs would
         // allocate handles in different order on different workers.
         let mut col_remap: HashMap<ColumnHandle, ColumnHandle> = HashMap::new();
-        for (_univ_handle, col_handles) in iterated.iter().chain(iterated_with_universe.iter()) {
+        for (_univ_handle, col_handles) in iterated
+            .iter()
+            .chain(iterated_with_universe.iter())
+            .chain(extra.iter())
+        {
             for col_handle in col_handles {
                 if col_remap.contains_key(col_handle) || !persisted_values.contains_key(col_handle)
                 {
@@ -4696,14 +4996,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             }
         }
         if !col_remap.is_empty() {
-            for (_univ_handle, col_handles) in iterated.iter_mut() {
-                for handle in col_handles.iter_mut() {
-                    if let Some(new) = col_remap.get(handle) {
-                        *handle = *new;
-                    }
-                }
-            }
-            for (_univ_handle, col_handles) in iterated_with_universe.iter_mut() {
+            for (_univ_handle, col_handles) in iterated
+                .iter_mut()
+                .chain(iterated_with_universe.iter_mut())
+                .chain(extra.iter_mut())
+            {
                 for handle in col_handles.iter_mut() {
                     if let Some(new) = col_remap.get(handle) {
                         *handle = *new;
@@ -4717,9 +5014,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         }
 
         // Same logic for universe keys — collect handles first to avoid
-        // borrowing iterated_with_universe while also mutating it.
+        // borrowing the tables while also mutating them. `extra` universes
+        // need the same T=0 filtering: their snapshots are loaded too, and an
+        // extra table fed from another iterate's output carries T=0 upstream.
         let univ_handles_to_filter: Vec<UniverseHandle> = iterated_with_universe
             .iter()
+            .chain(extra.iter())
             .map(|(uh, _)| *uh)
             .filter(|uh| persisted_keys.contains_key(uh))
             .collect();
@@ -4741,7 +5041,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             }
         }
         if !univ_remap.is_empty() {
-            for (handle, _) in iterated_with_universe.iter_mut() {
+            for (handle, _) in iterated_with_universe.iter_mut().chain(extra.iter_mut()) {
                 if let Some(new) = univ_remap.get(handle) {
                     *handle = *new;
                 }
@@ -4760,9 +5060,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         &self,
         iterated_input: &[LegacyTable],
         iterated_with_universe_input: &[LegacyTable],
+        extra_input: &[LegacyTable],
         mut values_writers: VecDeque<Option<SharedOperatorSnapshotWriter<(Key, Value), isize>>>,
         mut keys_writers: VecDeque<Option<SharedOperatorSnapshotWriter<Key, isize>>>,
     ) -> Result<()> {
+        // Test-only chaos hook, see the doc of `persist_state`.
+        let test_write_delay: Option<Duration> =
+            crate::env::parse_env_var::<u64>("PATHWAY_TEST_ITERATE_PERSIST_WRITE_DELAY_MS")
+                .expect("invalid PATHWAY_TEST_ITERATE_PERSIST_WRITE_DELAY_MS")
+                .map(Duration::from_millis);
         for (_univ_handle, col_handles) in iterated_input {
             for col_handle in col_handles {
                 if let Some(writer) = values_writers.pop_front().flatten() {
@@ -4770,21 +5076,34 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                         .columns
                         .get(*col_handle)
                         .ok_or(Error::InvalidColumnHandle)?;
-                    persist_state(col.values().deref(), "iterate-col-persist", writer, |v| v)
-                        .inner
-                        .probe_with(&self.output_probe);
+                    let persisted = persist_state(
+                        col.values().deref(),
+                        "iterate-col-persist",
+                        writer,
+                        test_write_delay,
+                        |v| v,
+                    );
+                    self.gate_persistence_commit_on_stream(&persisted.inner);
                 }
             }
         }
-        for (univ_handle, col_handles) in iterated_with_universe_input {
+        for (univ_handle, col_handles) in iterated_with_universe_input
+            .iter()
+            .chain(extra_input.iter())
+        {
             if let Some(writer) = keys_writers.pop_front().flatten() {
                 let univ = self
                     .universes
                     .get(*univ_handle)
                     .ok_or(Error::InvalidUniverseHandle)?;
-                persist_state(univ.keys(), "iterate-univ-persist", writer, |k| k)
-                    .inner
-                    .probe_with(&self.output_probe);
+                let persisted = persist_state(
+                    univ.keys(),
+                    "iterate-univ-persist",
+                    writer,
+                    test_write_delay,
+                    |k| k,
+                );
+                self.gate_persistence_commit_on_stream(&persisted.inner);
             }
             for col_handle in col_handles {
                 if let Some(writer) = values_writers.pop_front().flatten() {
@@ -4792,20 +5111,54 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                         .columns
                         .get(*col_handle)
                         .ok_or(Error::InvalidColumnHandle)?;
-                    persist_state(col.values().deref(), "iterate-col-persist", writer, |v| v)
-                        .inner
-                        .probe_with(&self.output_probe);
+                    let persisted = persist_state(
+                        col.values().deref(),
+                        "iterate-col-persist",
+                        writer,
+                        test_write_delay,
+                        |v| v,
+                    );
+                    self.gate_persistence_commit_on_stream(&persisted.inner);
                 }
             }
         }
         Ok(())
     }
 
+    /// Register a persisted stream as a pseudo-sink of the persistence tracker,
+    /// so checkpoint commits wait for its data to reach the snapshot writer.
+    /// Needed for persisted state with no datapath to any output sink (iterate's
+    /// input snapshots) — otherwise the last commit could race the writes.
+    fn gate_persistence_commit_on_stream<D: timely::Data>(
+        &self,
+        stream: &timely::dataflow::Stream<S, D>,
+    ) {
+        let Some(worker_storage) = self.persistence_wrapper.get_worker_persistent_storage() else {
+            return;
+        };
+        let worker_storage = worker_storage.clone();
+        let sink_id = worker_storage.lock().unwrap().register_sink();
+        let error_reporter = self.error_reporter.clone();
+        stream
+            .inspect_core(move |event| {
+                if let Err(frontier) = event {
+                    assert!(frontier.len() <= 1);
+                    worker_storage
+                        .lock()
+                        .unwrap()
+                        .update_sink_finalized_time(sink_id, frontier.first().copied())
+                        .map_err(Error::PersistentStorage)
+                        .unwrap_with_reporter(&error_reporter);
+                }
+            })
+            .probe_with(&self.output_probe);
+    }
+
     fn iterate<'a>(
         &'a mut self,
         mut iterated: Vec<LegacyTable>,
         mut iterated_with_universe: Vec<LegacyTable>,
-        extra: Vec<LegacyTable>,
+        mut extra: Vec<LegacyTable>,
         limit: Option<u32>,
         logic: IterationLogic<'a>,
     ) -> Result<(Vec<LegacyTable>, Vec<LegacyTable>)> {
@@ -4817,18 +5170,27 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         }
 
         // Phase 1: load operator snapshots (OPERATOR_PERSISTING only).
-        let mut snaps = self.load_snapshots_for_iterate(&iterated, &iterated_with_universe)?;
+        let mut snaps =
+            self.load_snapshots_for_iterate(&iterated, &iterated_with_universe, &extra)?;
 
         // Clone input handles BEFORE filtering — these originals are what
         // we persist (raw input, not the T=0-filtered version).
         let iterated_input: Vec<LegacyTable> = iterated.clone();
         let iterated_with_universe_input: Vec<LegacyTable> = iterated_with_universe.clone();
+        let extra_input: Vec<LegacyTable> = extra.clone();
+
+        // Snapshot of the loaded T=0 state keyed by the ORIGINAL input column
+        // handles (before `filter_upstream_t0_for_iterate` remaps them). Used in
+        // Phase 5 to re-anchor the input columns at T=0.
+        let original_persisted_values: HashMap<ColumnHandle, Collection<S, (Key, Value)>> =
+            snaps.persisted_values.clone();
 
         // Phase 2: filter T=0 from upstream input to prevent double entries
         // when chained with another iterate.
         self.filter_upstream_t0_for_iterate(
             &mut iterated,
             &mut iterated_with_universe,
+            &mut extra,
             &mut snaps.persisted_values,
             &mut snaps.persisted_keys,
         );
@@ -4847,6 +5209,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     self.current_error_log.clone(),
                     Arc::new(Mutex::new(ConnectorSynchronizer::new())),
                     self.max_expression_batch_size,
+                    self.udf_cache_directory.clone(),
                 )?;
                 let mut subgraph_ref = subgraph.0.borrow_mut();
                 let mut state = BeforeIterate::new(
@@ -4903,11 +5266,82 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         self.persist_input_for_iterate(
             &iterated_input,
             &iterated_with_universe_input,
+            &extra_input,
             snaps.values_writers,
             snaps.keys_writers,
         )?;
 
+        // Phase 5: re-anchor the input columns' persisted state at T=0.
+        self.reanchor_input_columns_t0(
+            &iterated_input,
+            &iterated_with_universe_input,
+            &original_persisted_values,
+        );
+
         Ok((result, result_with_universe))
+    }
+
+    /// Re-anchor the persisted state of `iterate`'s input columns at T=0.
+    ///
+    /// Iterate's INPUT comes from an operator (e.g. a persisted reduce) whose
+    /// output already has T=0 stripped (`filter_out_persisted`). The ITERATED
+    /// output columns re-introduce T=0 via the snapshot injected in
+    /// `BeforeIterate`, so for an old row they hold the persisted value at T=0.
+    /// But non-iterated, pass-through columns of the iterate output are stored
+    /// as references to these INPUT columns, which still lack T=0. A downstream
+    /// multi-column materialization then joins a T=0-anchored iterated column
+    /// with a T=0-stripped pass-through column; for an old row where only the
+    /// iterated column changes at T>0, the join can't reconstruct the row and
+    /// drops it. Concatenating the loaded snapshot back (at T=0) onto the input
+    /// columns makes the pass-through references T=0-consistent. The iterative
+    /// loop is unaffected: it ran on the separate T=0-filtered copies produced
+    /// by `filter_upstream_t0_for_iterate`, so no double T=0 is introduced.
+    ///
+    /// `original_persisted_values` is keyed by the ORIGINAL input column handles
+    /// (cloned before `filter_upstream_t0_for_iterate` remaps them) and is empty
+    /// unless operator persistence is enabled, in which case this is a no-op.
+    fn reanchor_input_columns_t0(
+        &mut self,
+        iterated_input: &[LegacyTable],
+        iterated_with_universe_input: &[LegacyTable],
+        original_persisted_values: &HashMap<ColumnHandle, Collection<S, (Key, Value)>>,
+    ) {
+        if original_persisted_values.is_empty() {
+            return;
+        }
+        let mut anchored_handles: HashSet<ColumnHandle> = HashSet::new();
+        for (_univ_handle, col_handles) in iterated_input
+            .iter()
+            .chain(iterated_with_universe_input.iter())
+        {
+            for col_handle in col_handles {
+                if !anchored_handles.insert(*col_handle) {
+                    continue; // already re-anchored (handle shared across tables)
+                }
+                let Some(snapshot) = original_persisted_values.get(col_handle) else {
+                    continue;
+                };
+                let Some(column) = self.columns.get(*col_handle) else {
+                    continue;
+                };
+                // Strip any existing T=0 from the input before re-adding the
+                // snapshot, so that when the input is itself another iterate's
+                // output (which already carries T=0) we don't double it.
+                let anchored = column
+                    .values()
+                    .deref()
+                    .inner
+                    .filter(|(_data, time, _diff)| !time.is_from_persistence())
+                    .as_collection()
+                    .concat(snapshot);
+                let universe = column.universe;
+                let properties = column.properties.clone();
+                if let Some(column) = self.columns.get_mut(*col_handle) {
+                    *column =
+                        Column::from_collection(universe, anchored).with_properties(properties);
+                }
+            }
+        }
     }
 
     fn error_log(
@@ -5574,6 +6008,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
         default_error_log: Option<ErrorLog>,
         connector_synchronizer: SharedConnectorSynchronizer,
         max_expression_batch_size: usize,
+        udf_cache_directory: Option<PathBuf>,
     ) -> Result<Self> {
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
@@ -5586,6 +6021,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             Box::new(NotTotalReducerFactory),
             connector_synchronizer,
             max_expression_batch_size,
+            udf_cache_directory,
         )?)))
     }
 }
@@ -6229,6 +6665,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
         terminate_on_error: bool,
         connector_synchronizer: SharedConnectorSynchronizer,
         max_expression_batch_size: usize,
+        udf_cache_directory: Option<PathBuf>,
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
@@ -6250,6 +6687,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
             Box::new(TimestampReducerFactory),
             connector_synchronizer,
             max_expression_batch_size,
+            udf_cache_directory,
         )?)))
     }
 }
@@ -6967,7 +7405,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     finish: impl Fn(R) -> R2 + Send + Sync + 'static,
     config: Config,
     mut wakeup_receiver: Option<WakeupReceiver>,
-    stats_monitor: Option<PyObject>,
+    stats_monitor: Option<Py<PyAny>>,
     ignore_asserts: bool,
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
@@ -6976,6 +7414,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
@@ -7011,6 +7450,7 @@ where
 
     let guards = execute(config.to_timely_config(), move |worker| {
         catch_unwind(AssertUnwindSafe(|| {
+            let wakeup = wakeup::install_for_current_thread();
             if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
                 if let Ok(stream) = std::net::TcpStream::connect(&addr) {
                     differential_dataflow::logging::enable(worker, stream);
@@ -7043,6 +7483,7 @@ where
                     terminate_on_error,
                     connector_synchronizer.clone(),
                     max_expression_batch_size,
+                    udf_cache_directory.clone(),
                 )
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(
@@ -7079,6 +7520,7 @@ where
             });
 
             let mut workload_tracker = WorkloadTracker::new(workload_tracking_window);
+            let mut seen_entries = 0;
             loop {
                 if failed.load(Ordering::SeqCst) {
                     resume_unwind(Box::new("other worker panicked"));
@@ -7130,7 +7572,22 @@ where
                 }
 
                 let started_at = Instant::now();
-                let step_stats = worker.step_or_park(next_step_duration);
+                // While entries keep arriving, poll them on a short timer instead of
+                // being woken per entry; readers only unpark a worker that announced
+                // a long park (see `connectors::wakeup`).
+                let sent_entries = wakeup.sent();
+                let park_for = if sent_entries != seen_entries {
+                    seen_entries = sent_entries;
+                    Some(next_step_duration.map_or(ACTIVE_POLL_INTERVAL, |duration| {
+                        min(duration, ACTIVE_POLL_INTERVAL)
+                    }))
+                } else if wakeup.enter_parked(seen_entries) {
+                    next_step_duration
+                } else {
+                    Some(Duration::ZERO)
+                };
+                let step_stats = worker.step_or_park(park_for);
+                wakeup.leave_parked();
                 if !step_stats.has_more_work {
                     break;
                 }

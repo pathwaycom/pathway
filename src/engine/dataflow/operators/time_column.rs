@@ -24,6 +24,7 @@ use std::collections::hash_map::{Entry, Keys};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
+use std::time::Instant;
 use timely::communication::Push;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
@@ -330,6 +331,18 @@ where
                 let mut maybe_cap = Some(outer_cap.delayed(&G::Timestamp::get_max_timestamp()));
                 // remember instances updated previously to revisit them after time advancemet caused by them takes effect
                 let mut previousuly_updated_instances: HashSet<I> = HashSet::new();
+                // Diagnostics for a stalled forget()/windowing buffer: the
+                // buffer only releases rows once the "current time" it reads
+                // from the data (`current_time_extractor`) passes their
+                // threshold. If that time stops advancing while fresh rows
+                // keep arriving — e.g. one lagging event-time stamp from a
+                // skewed clock, a stuck watermark — the buffer grows without
+                // bound and the pipeline eventually OOMs with no error. Warn
+                // once when we have seen a long run of incoming batches that
+                // did not advance the release time.
+                let mut batches_without_release_progress: u64 = 0;
+                let mut stall_warned = false;
+                let stall_start = Instant::now();
                 move |input, output| {
                     input.for_each(|capability, batches| {
                         batches.swap(&mut input_buffer);
@@ -348,6 +361,42 @@ where
                             for (key, val, _time, _diff) in &entries {
                                 future_release_threshold_column_times
                                     .update(key.instance.clone(), current_time_extractor(val));
+                            }
+
+                            // Did this batch push the release time forward for
+                            // any instance? (only ever moves forward, so a
+                            // strict `>` against the accumulated max suffices).
+                            let advanced_release_time =
+                                future_release_threshold_column_times.instances().any(|i| {
+                                    match (
+                                        future_release_threshold_column_times.get(i),
+                                        release_threshold_column_times.get(i),
+                                    ) {
+                                        (Some(new), Some(old)) => new > old,
+                                        (Some(_), None) => true,
+                                        _ => false,
+                                    }
+                                });
+                            if entries.is_empty() {
+                                // no incoming data: not evidence of a stall
+                            } else if advanced_release_time {
+                                batches_without_release_progress = 0;
+                            } else {
+                                batches_without_release_progress += 1;
+                                if !stall_warned
+                                    && batches_without_release_progress >= 1000
+                                    && stall_start.elapsed().as_secs() >= 60
+                                {
+                                    stall_warned = true;
+                                    log::warn!(
+                                        "forget()/windowing buffer has received {batches_without_release_progress} \
+                                         batches of new data without its release time advancing. Old rows cannot be \
+                                         dropped until the time read from the data moves forward, so the buffer — and \
+                                         memory — will keep growing. This usually means the column driving forgetting \
+                                         (e.g. an event timestamp) has a lagging or non-increasing value; check for \
+                                         clock skew or out-of-order times in that column."
+                                    );
+                                }
                             }
 
                             if update_time_before_emitting {

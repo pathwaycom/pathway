@@ -17,6 +17,7 @@ import requests
 import pathway as pw
 import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
+from pathway.io._utils import DurationLike, as_duration_seconds
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.retrievers import AbstractRetrieverFactory
 from pathway.stdlib.ml.classifiers import _knn_lsh
@@ -643,7 +644,7 @@ class DocumentStoreClient:
         host: host on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/document_store#pathway.xpacks.llm.document_store.DocumentStore>`_ listens
         port: port on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/document_store#pathway.xpacks.llm.document_store.DocumentStore>`_ listens
         url: url at which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/document_store#pathway.xpacks.llm.document_store.DocumentStore>`_ listens
-        timeout: timeout for the post requests in seconds
+        timeout: timeout for the post requests, given as a number of seconds or a ``datetime.timedelta`` / ``pw.Duration``
     """  # noqa
 
     def __init__(
@@ -651,7 +652,7 @@ class DocumentStoreClient:
         host: str | None = None,
         port: int | None = None,
         url: str | None = None,
-        timeout: int | None = 15,
+        timeout: DurationLike | None = 15,
         additional_headers: dict | None = None,
     ):
         err = "Either (`host` and `port`) or `url` must be provided, but not both."
@@ -665,7 +666,11 @@ class DocumentStoreClient:
             port = port or 80
             self.url = f"http://{host}:{port}"
 
-        self.timeout = timeout
+        self.timeout = (
+            as_duration_seconds(timeout, "timeout", allow_zero=False)
+            if timeout is not None
+            else None
+        )
         self.additional_headers = additional_headers or {}
 
     def query(
@@ -735,7 +740,7 @@ class DocumentStoreClient:
                 satisfying this filtering.
             filepath_globpattern: optional glob pattern specifying which documents
                 will be searched for this query.
-            return_status: flag telling whether `_indexing_status` should be returned
+            return_status: flag telling whether ``_indexing_status`` should be returned
                 for each document
         """
         url = self.url + "/v1/inputs"

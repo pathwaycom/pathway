@@ -36,11 +36,21 @@ use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
     StorageType, WriteError, Writer,
 };
+use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::value::parse_pathway_pointer;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
 use crate::retry::execute_with_retries_if;
+
+/// `PostGIS` `geometry` / `geography` are extension types without a static
+/// `Type` constant, so they are matched by name. The `Kind::Simple` guard
+/// keeps user-defined ENUM / composite types that happen to carry the same
+/// name on their own code paths.
+fn is_postgis_type(ty: &PgType) -> bool {
+    matches!(ty.kind(), postgres::types::Kind::Simple)
+        && matches!(ty.name(), "geometry" | "geography")
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SslError {
@@ -74,7 +84,11 @@ pub enum PostgresError {
     #[error(transparent)]
     Io(#[from] io::Error),
 
-    #[error("query {query:?} failed: {}", format_error_chain(.error))]
+    #[error(
+        "{}; the failing query was: {}",
+        format_error_chain(.error),
+        limit_length(.query.clone(), STANDARD_OBJECT_LENGTH_LIMIT)
+    )]
     PsqlQueryFailed {
         query: String,
         error: postgres::Error,
@@ -318,7 +332,21 @@ pub fn create_psql_client(
     ssl_mode: SslMode,
     ssl_cert_path: Option<String>,
 ) -> Result<PsqlClient, PostgresError> {
-    ssl_mode.connect(connection_string, ssl_cert_path)
+    // Bound connection establishment unless the caller configured it
+    // explicitly: without a cap, a host that silently drops packets blocks
+    // the connect for ~130 s of kernel-level retries (twice that under
+    // sslmode=prefer/allow, which attempt two connections in sequence). The
+    // Python layer injects the same default; filling it here as well keeps
+    // every construction path covered.
+    if connection_string.contains("connect_timeout") {
+        ssl_mode.connect(connection_string, ssl_cert_path)
+    } else {
+        let bounded = format!(
+            "{connection_string} connect_timeout={}",
+            crate::connectors::socket_guard::TCP_CONNECT_TIMEOUT.as_secs()
+        );
+        ssl_mode.connect(&bounded, ssl_cert_path)
+    }
 }
 
 /// Bundle of inputs sufficient to (re)open a `PostgreSQL` connection.
@@ -554,12 +582,15 @@ mod to_sql {
 
     use bytes::{BufMut, BytesMut};
     use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+    use geozero::{wkt::Wkt, CoordDimensions, ToWkb};
     use half::f16;
     use ndarray::ArrayD;
     use numpy::Ix1;
     use ordered_float::OrderedFloat;
     use pgvector::{HalfVector, Vector};
     use postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type};
+    use wkt::types::{Coord, Point as WktPoint};
+    use wkt::Wkt as ParsedWkt;
 
     use crate::engine::time::DateTime as _;
     use crate::engine::Value;
@@ -786,6 +817,15 @@ mod to_sql {
                 try_forward!(f64, Ok::<f64, std::convert::Infallible>(i as f64));
                 try_forward!(f32, Ok::<f32, std::convert::Infallible>(i as f32));
             }
+            // An i64 is by itself a valid JSON value, so a Pathway int
+            // has an unambiguous representation in a JSON / JSONB
+            // destination column.
+            if <serde_json::Value as ToSql>::accepts(ty) {
+                let value = serde_json::Value::from(i);
+                assert!(matches!(self.encode_format(ty), Format::Binary));
+                assert!(matches!(value.encode_format(ty), Format::Binary));
+                return Some(value.to_sql(ty, out));
+            }
             None
         }
 
@@ -816,6 +856,22 @@ mod to_sql {
             #[allow(clippy::cast_possible_truncation)]
             let f32_val = f as f32;
             try_forward!(f32, f32_val);
+            // A finite f64 is a valid JSON value. NaN and the infinities
+            // are not representable in JSON (PostgreSQL rejects them for
+            // jsonb as well), so they get an explicit error instead of
+            // the generic type-mismatch fallthrough.
+            if <serde_json::Value as ToSql>::accepts(ty) {
+                let Some(number) = serde_json::Number::from_f64(f) else {
+                    return Some(Err(format!(
+                        "cannot represent non-finite float {f} as a JSON value"
+                    )
+                    .into()));
+                };
+                let value = serde_json::Value::Number(number);
+                assert!(matches!(self.encode_format(ty), Format::Binary));
+                assert!(matches!(value.encode_format(ty), Format::Binary));
+                return Some(value.to_sql(ty, out));
+            }
             None
         }
 
@@ -856,6 +912,180 @@ mod to_sql {
             }
             None
         }
+    }
+
+    /// The coordinate dimensions found in a parsed WKT geometry, as
+    /// `(has_z, has_m)`, or `None` for a geometry without coordinates.
+    /// Every coordinate has to agree - `PostGIS` rejects a geometry that
+    /// mixes dimensionalities, so a mismatch (e.g. `GEOMETRYCOLLECTION Z`
+    /// with a 2D member) is an error rather than a zero-filled coordinate.
+    /// Empty points nested in a collection are rejected as well: the WKB
+    /// writer has no representation for them and would emit a member
+    /// count the payload does not match.
+    fn wkt_coordinate_dimensions(
+        geometry: &ParsedWkt<f64>,
+    ) -> Result<Option<(bool, bool)>, String> {
+        fn record(coord: &Coord<f64>, dims: &mut Option<(bool, bool)>) -> Result<(), String> {
+            let coord_dims = (coord.z.is_some(), coord.m.is_some());
+            match dims {
+                Some(seen) if *seen != coord_dims => {
+                    Err("mixed coordinate dimensions in a geometry".to_string())
+                }
+                _ => {
+                    *dims = Some(coord_dims);
+                    Ok(())
+                }
+            }
+        }
+        fn point(point: &WktPoint<f64>, dims: &mut Option<(bool, bool)>) -> Result<(), String> {
+            match &point.0 {
+                Some(coord) => record(coord, dims),
+                None => Err("empty points inside a collection are not supported".to_string()),
+            }
+        }
+        fn visit(geometry: &ParsedWkt<f64>, dims: &mut Option<(bool, bool)>) -> Result<(), String> {
+            match geometry {
+                ParsedWkt::Point(p) => point(p, dims),
+                ParsedWkt::LineString(l) => l.0.iter().try_for_each(|c| record(c, dims)),
+                ParsedWkt::Polygon(p) => {
+                    p.0.iter()
+                        .flat_map(|l| l.0.iter())
+                        .try_for_each(|c| record(c, dims))
+                }
+                ParsedWkt::MultiPoint(m) => m.0.iter().try_for_each(|p| point(p, dims)),
+                ParsedWkt::MultiLineString(m) => {
+                    m.0.iter()
+                        .flat_map(|l| l.0.iter())
+                        .try_for_each(|c| record(c, dims))
+                }
+                ParsedWkt::MultiPolygon(m) => {
+                    m.0.iter()
+                        .flat_map(|p| p.0.iter())
+                        .flat_map(|l| l.0.iter())
+                        .try_for_each(|c| record(c, dims))
+                }
+                ParsedWkt::GeometryCollection(g) => g.0.iter().try_for_each(|m| visit(m, dims)),
+            }
+        }
+        let mut dims = None;
+        match geometry {
+            // A top-level empty point is fine (see `empty_point_ewkb`).
+            ParsedWkt::Point(WktPoint(None)) => {}
+            _ => visit(geometry, &mut dims)?,
+        }
+        Ok(dims)
+    }
+
+    /// The dimensions declared in the WKT header, used for geometries
+    /// without coordinates (`LINESTRING Z EMPTY`), where the coordinates
+    /// cannot tell. The `Z` / `M` / `ZM` token follows the type keyword,
+    /// either separated by whitespace (`POINT ZM (...)`) or glued to it
+    /// (`POINTZM(...)`); squashing the whitespace makes both spellings
+    /// alike, and no WKT type name ends with `Z` or `M`.
+    fn wkt_header_dimensions(wkt: &str) -> (bool, bool) {
+        let head: String = wkt[..wkt.find('(').unwrap_or(wkt.len())]
+            .split_whitespace()
+            .collect::<String>()
+            .to_uppercase();
+        let head = head.strip_suffix("EMPTY").unwrap_or(&head);
+        if head.ends_with("ZM") {
+            (true, true)
+        } else if head.ends_with('Z') {
+            (true, false)
+        } else if head.ends_with('M') {
+            (false, true)
+        } else {
+            (false, false)
+        }
+    }
+
+    /// `POINT EMPTY` in EWKB, the way `PostGIS` encodes it: a point whose
+    /// coordinates are all NaN. `geozero` cannot write empty points.
+    fn empty_point_ewkb(dims: CoordDimensions, srid: Option<i32>) -> Vec<u8> {
+        let mut out = vec![0x01]; // little-endian
+        let mut type_with_flags: u32 = 1; // POINT
+        if dims.z {
+            type_with_flags |= 0x8000_0000;
+        }
+        if dims.m {
+            type_with_flags |= 0x4000_0000;
+        }
+        if srid.is_some() {
+            type_with_flags |= 0x2000_0000;
+        }
+        out.extend_from_slice(&type_with_flags.to_le_bytes());
+        if let Some(srid) = srid {
+            out.extend_from_slice(&srid.to_le_bytes());
+        }
+        let n_coords = 2 + usize::from(dims.z) + usize::from(dims.m);
+        for _ in 0..n_coords {
+            out.extend_from_slice(&f64::NAN.to_le_bytes());
+        }
+        out
+    }
+
+    /// Converts the textual geometry representations users keep in `str`
+    /// columns into EWKB — the binary wire format `PostGIS` expects for
+    /// `geometry` / `geography` values. Accepts hex-encoded (E)WKB
+    /// (the canonical `PostgreSQL` output format, so values read from a
+    /// `PostGIS` column can be written back verbatim) and (E)WKT,
+    /// optionally with an `SRID=n;` prefix.
+    fn ewkb_from_string(s: &str) -> Result<Vec<u8>, String> {
+        let s = s.trim();
+        // A hex-encoded (E)WKB payload starts with the byte-order marker
+        // (`00` big-endian / `01` little-endian). No WKT keyword starts
+        // with a digit, so the prefix alone tells the two forms apart, and
+        // a damaged payload gets the hex decoder's own diagnostics.
+        if s.starts_with("00") || s.starts_with("01") {
+            return hex::decode(s).map_err(|e| format!("malformed hex EWKB: {e}"));
+        }
+        // The EWKT `SRID=n;` prefix; PostGIS matches the keyword
+        // case-insensitively.
+        let (srid, wkt) = match s.get(..5) {
+            Some(prefix) if prefix.eq_ignore_ascii_case("srid=") => {
+                let (srid, wkt) = s[5..]
+                    .split_once(';')
+                    .ok_or("expected ';' after the SRID prefix of a WKT geometry")?;
+                let srid: i32 = srid
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("malformed SRID '{srid}': {e}"))?;
+                (Some(srid), wkt.trim())
+            }
+            _ => (None, s),
+        };
+        // `geozero` needs the coordinate dimensions up front and silently
+        // drops whatever the requested dimensions leave out, so they are
+        // taken from the parsed coordinates themselves (`POINTZ(1 2 3)`
+        // and `POINT Z (1 2 3)` alike), falling back to the header for
+        // empty geometries.
+        let parsed: ParsedWkt<f64> = wkt
+            .parse()
+            .map_err(|e| format!("cannot parse WKT geometry: {e}"))?;
+        let (header_z, header_m) = wkt_header_dimensions(wkt);
+        let (has_z, has_m) = wkt_coordinate_dimensions(&parsed)
+            .map_err(|e| format!("cannot parse WKT geometry: {e}"))?
+            .unwrap_or((header_z, header_m));
+        // A header that declares Z / M while the coordinates lack it
+        // (`GEOMETRYCOLLECTION Z (POINT(1 2))`) is a mixed-dimension
+        // geometry, which PostGIS rejects too.
+        if (header_z && !has_z) || (header_m && !has_m) {
+            return Err(
+                "cannot parse WKT geometry: mixed coordinate dimensions in a geometry".to_string(),
+            );
+        }
+        let dims = CoordDimensions {
+            z: has_z,
+            m: has_m,
+            t: false,
+            tm: false,
+        };
+        if let ParsedWkt::Point(WktPoint(None)) = parsed {
+            return Ok(empty_point_ewkb(dims, srid));
+        }
+        Wkt(wkt)
+            .to_ewkb(dims, srid)
+            .map_err(|e| format!("cannot parse WKT geometry: {e}"))
     }
 
     impl ToSql for Value {
@@ -902,6 +1132,11 @@ mod to_sql {
                 Self::None => return Ok(IsNull::Yes),
                 Self::Bool(b) => {
                     try_forward!(bool, *b);
+                    if <serde_json::Value as ToSql>::accepts(ty) {
+                        let value = serde_json::Value::Bool(*b);
+                        assert!(matches!(value.encode_format(ty), Format::Binary));
+                        return value.to_sql(ty, out);
+                    }
                     "bool"
                 }
                 Self::Int(i) => {
@@ -921,6 +1156,25 @@ mod to_sql {
                     "pointer"
                 }
                 Self::String(s) => {
+                    // PostGIS ``geometry`` / ``geography``: the binary wire
+                    // format is EWKB; see `ewkb_from_string` for the
+                    // accepted textual forms.
+                    if super::is_postgis_type(ty) {
+                        out.extend_from_slice(&ewkb_from_string(s)?);
+                        return Ok(IsNull::No);
+                    }
+                    // A Pathway string maps to the JSON *string* value in a
+                    // JSON / JSONB destination column — the value-preserving
+                    // counterpart of writing it into TEXT. A string holding a
+                    // serialized JSON document is deliberately NOT parsed:
+                    // that conversion is explicit via the pw.Json column
+                    // type, and parsing here would silently turn "123" into
+                    // a number.
+                    if <serde_json::Value as ToSql>::accepts(ty) {
+                        let value = serde_json::Value::String(s.to_string());
+                        assert!(matches!(value.encode_format(ty), Format::Binary));
+                        return value.to_sql(ty, out);
+                    }
                     // PostgreSQL UUID binary layout is the raw 16
                     // bytes of the uuid. Parse the user's string here
                     // (accepting both canonical `xxxxxxxx-xxxx-…` and
@@ -1149,7 +1403,7 @@ fn copy_flush_stream(
             // `ToSql` impl as the row payload, adapting to whatever
             // width the destination columns declare.
             let diff = Value::Int(data.diff.try_into().unwrap());
-            let time = Value::Int(data.time.0.try_into().unwrap());
+            let time = Value::Int(data.time.as_i64_saturating());
             let mut row: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(data.values.len() + 2);
             for v in &data.values {
                 row.push(v as &(dyn ToSql + Sync));
@@ -1284,8 +1538,8 @@ fn copy_flush_snapshot(
 }
 
 impl Writer for PsqlWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.push(data);
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        self.buffer.push(data.clone());
         if let Some(max_batch_size) = self.max_batch_size {
             // Defensive ``>=`` rather than ``==``: an upstream caller
             // that passes ``max_batch_size = 0`` (or any value smaller
@@ -1382,7 +1636,7 @@ impl PsqlWriter {
                 for data in &buffer {
                     // We reuse `Value`'s serialization to pass additional `time` and `diff` columns.
                     let diff = Value::Int(data.diff.try_into().unwrap());
-                    let time = Value::Int(data.time.0.try_into().unwrap());
+                    let time = Value::Int(data.time.as_i64_saturating());
                     let mut params: Vec<_> = data
                         .values
                         .iter()
@@ -2499,6 +2753,14 @@ mod from_sql {
                 return parse_binary_array(elem_type, raw);
             }
 
+            // PostGIS ``geometry`` / ``geography``: the binary payload is
+            // EWKB. Expose it in its canonical textual form — hex — which
+            // both PostgreSQL itself and the Pathway writer accept back
+            // verbatim.
+            if super::is_postgis_type(ty) {
+                return Ok(Value::String(hex::encode_upper(raw).into()));
+            }
+
             Err(Box::new(FromSqlError::UnsupportedPostgresType {
                 postgres_type: ty.clone(),
             }))
@@ -2558,7 +2820,7 @@ pub enum ReplicationError {
     Query(#[from] postgres::Error),
 
     #[error("Modification of a non-append-only table: {0:?}")]
-    AppendOnlyNotRespected(ChangeEvent),
+    AppendOnlyNotRespected(Box<ChangeEvent>),
 
     #[error(
         "Table {schema}.{table} has no primary key; non-append-only tables without a primary key are not supported"
@@ -3450,10 +3712,10 @@ impl WalReader {
         if is_append_only
             && matches!(
                 event.event_type,
-                EventType::Truncate(_) | EventType::Update { .. } | EventType::Delete { .. }
+                EventType::Truncate { .. } | EventType::Update { .. } | EventType::Delete { .. }
             )
         {
-            return Err(ReplicationError::AppendOnlyNotRespected(event));
+            return Err(ReplicationError::AppendOnlyNotRespected(Box::new(event)));
         }
 
         Ok(match event.event_type {
@@ -3467,7 +3729,10 @@ impl WalReader {
                     commit_possibility: CommitPossibility::Possible,
                 },
             ))],
-            EventType::Truncate(tables_from_event) => {
+            EventType::Truncate {
+                tables: tables_from_event,
+                ..
+            } => {
                 let expected_full_name =
                     format!("{}.{}", table_ctx.schema_name, table_ctx.table_name);
                 let has_target_table = tables_from_event.iter().any(|t| **t == *expected_full_name);
@@ -3543,7 +3808,11 @@ impl WalReader {
         let is_append_only = self.is_append_only;
         self.runtime.block_on(async {
             loop {
-                match self.stream.next_event_with_retry(&self.cancel_token).await {
+                // Our slot is temporary: a disconnected session loses both the
+                // slot and its retained WAL. The SDK's automatic reconnect can
+                // recreate it at a newer LSN, silently skipping changes. Surface
+                // the failure so a restart takes a fresh consistent snapshot.
+                match self.stream.next_event(&self.cancel_token).await {
                     Ok(event) => {
                         self.stream
                             .shared_lsn_feedback
@@ -3559,19 +3828,7 @@ impl WalReader {
                         }
                     }
                     Err(e @ pg_walstream::ReplicationError::Cancelled(_)) => {
-                        // `next_event_with_retry` reports `Cancelled` for two very
-                        // different situations: our cancellation token firing, and
-                        // the server ending the logical-replication COPY stream
-                        // (`PQgetCopyData` returning -1, e.g. the walsender was
-                        // terminated under load). We never trigger `cancel_token`,
-                        // so in streaming mode this is always the latter — an
-                        // unrequested stream death, not end-of-data. Reporting
-                        // `ReadResult::Finished` here (as this used to) makes the
-                        // reader claim completion right after the snapshot and
-                        // silently drop every change that followed. Surface it as a
-                        // read error so the engine reports the failure instead of
-                        // finishing the pipeline with missing data. Only a genuine,
-                        // explicit cancellation is a graceful end of stream.
+                        // Only explicit cancellation is a graceful end of stream.
                         if self.cancel_token.is_cancelled() {
                             info!("Cancelled, shutting down gracefully");
                             return Ok(vec![PgEventAfterParsing::SimpleChange(Box::new(
@@ -3692,7 +3949,7 @@ pub enum CompatDirection {
 /// reject an `INSERT` whose serialization would fail at flush
 /// because the destination column is of an incompatible type).
 ///
-/// Mirror of the read-side mapping described in `360.postgres.rst`.
+/// Mirror of the read-side mapping described in `370.postgres.rst`.
 /// This is a scalar-only check — container types (ARRAY, custom
 /// DOMAIN / ENUM / extensions like `pgvector`) fall through to
 /// `permissive = true` because the runtime `ToSql` / `FromSql`
@@ -3751,11 +4008,16 @@ fn is_pathway_type_compatible_with_pg_udt(
     // Arrays (both built-in like `_int4` and pgvector's `vector`/`halfvec`)
     // and any non-standard udt_name (custom domains / enums) are
     // permitted unconditionally — the runtime parser validates them.
+    // PostGIS ``geometry`` / ``geography`` are the exception among the
+    // extension types: only ``str`` can be serialized into them, so they
+    // go through the per-type match below like the built-ins.
     let looks_like_custom_or_array = actual_udt.starts_with('_')
         || matches!(actual_udt, "vector" | "halfvec")
         || !matches!(
             actual_udt,
-            "bool"
+            "geometry"
+                | "geography"
+                | "bool"
                 | "int2"
                 | "int4"
                 | "int8"
@@ -3816,6 +4078,8 @@ fn is_pathway_type_compatible_with_pg_udt(
                 | "cidr"
                 | "macaddr"
                 | "macaddr8"
+                | "geometry"
+                | "geography"
         ),
         Type::Pointer => actual_udt == "text",
         Type::Bytes | Type::PyObjectWrapper => actual_udt == "bytea",
@@ -4513,7 +4777,7 @@ impl Reader for PsqlReader {
                                 ReaderContext::Diff((
                                     DataEventType::Delete,
                                     key.clone(),
-                                    HashMap::with_capacity(0).into(),
+                                    HashMap::new().into(),
                                 )),
                                 emit_offset(&mut self.total_entries_read),
                             ));

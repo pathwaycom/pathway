@@ -136,7 +136,7 @@ class _PathwayAirbyteSubject(ConnectorSubject):
         self,
         source: AbstractAirbyteSource,
         mode: str,
-        refresh_interval_ms: int,
+        refresh_interval: float,
         streams: Sequence[str],
         *args,
         **kwargs,
@@ -144,7 +144,7 @@ class _PathwayAirbyteSubject(ConnectorSubject):
         super().__init__(*args, **kwargs)
         self.source = source
         self.mode = mode
-        self.refresh_interval = refresh_interval_ms / 1000.0
+        self.refresh_interval = refresh_interval
         self.destination = _PathwayAirbyteDestination(
             on_event=self.on_event,
             on_state=self.on_state,

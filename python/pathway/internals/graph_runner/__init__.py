@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
+import signal
 import sys
+import threading
 import uuid
 import warnings
 from collections.abc import Callable, Collection, Iterable
@@ -36,6 +40,49 @@ from pathway.persistence import (
 )
 
 
+@contextlib.contextmanager
+def _sigterm_graceful_shutdown():
+    """Turns SIGTERM into a graceful engine shutdown for the duration of a run.
+
+    Platform supervisors (Kubernetes, docker stop, systemd) terminate
+    pipelines with SIGTERM. Python's default disposition kills the process
+    on the spot: the run span is never closed and buffered telemetry and
+    logs are lost, so every external termination looks identical to a hard
+    crash. Raising ``SystemExit`` from the signal handler instead routes
+    the shutdown through the same interrupt path as ``KeyboardInterrupt``:
+    the engine unwinds, providers flush, and the run records how it ended.
+
+    The handler is installed only in the main thread and only when the
+    user has not set their own (the default disposition is in effect); it
+    is restored afterwards.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+    except (ValueError, OSError):  # pragma: no cover - exotic platforms
+        yield
+        return
+    if previous is not signal.SIG_DFL:
+        yield
+        return
+
+    def _handler(signum, frame):
+        logging.getLogger(__name__).warning(
+            "Received SIGTERM: shutting down the computation gracefully"
+        )
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _handler)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError, OSError):
+            if signal.getsignal(signal.SIGTERM) is _handler:
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 class GraphRunner:
     """Runs evaluation of ParseGraph."""
 
@@ -60,6 +107,7 @@ class GraphRunner:
         terminate_on_error: bool | None = None,
         max_expression_batch_size: int = 1024,
         event_loop: asyncio.AbstractEventLoop | None = None,
+        udf_cache_directory: str | None = None,
         _stacklevel: int = 1,
     ) -> None:
         pathway_config = get_pathway_config()
@@ -82,6 +130,7 @@ class GraphRunner:
         self.terminate_on_error = terminate_on_error
         self.max_expression_batch_size = max_expression_batch_size
         self.event_loop = event_loop
+        self.udf_cache_directory = udf_cache_directory
         if not self.terminate_on_error:
             warnings.warn(
                 "terminate_on_error=False mode is experimental",
@@ -208,6 +257,7 @@ class GraphRunner:
                     get_persistence_engine_config(
                         self.persistence_config
                     ) as persistence_engine_config,
+                    _sigterm_graceful_shutdown(),
                 ):
                     try:
                         return api.run_with_new_graph(
@@ -222,6 +272,7 @@ class GraphRunner:
                             license_key=self.license_key,
                             terminate_on_error=self.terminate_on_error,
                             max_expression_batch_size=self.max_expression_batch_size,
+                            udf_cache_directory=self.udf_cache_directory,
                         )
                     except api.EngineErrorWithTrace as e:
                         error, frame = e.args

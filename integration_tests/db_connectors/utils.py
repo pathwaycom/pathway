@@ -3,12 +3,16 @@ import json
 import logging
 import os
 import random
+import socket
 import tempfile
+import threading
 import time
+import types as builtin_types
 import uuid
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, cast, get_args, get_origin
 
 import boto3
 import mysql.connector
@@ -18,6 +22,7 @@ import psycopg2
 import pymssql
 import requests
 from pymongo import MongoClient
+from pymongo.operations import SearchIndexModel
 
 import pathway as pw
 from pathway.internals import api, dtype
@@ -108,9 +113,28 @@ MONGODB_HOST_WITH_PORT = "mongodb:27017"
 MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
 
+# Atlas Local runs as its own compose service (the ``mongodb/mongodb-atlas-local``
+# image), separate from the plain ``mongo`` service above: it is the only MongoDB
+# image that ships the ``mongot`` search process, so ``$vectorSearch`` works in CI
+# without a cloud Atlas account. ``directConnection=true`` talks straight to the
+# single node instead of going through replica-set/SRV topology discovery.
+MONGODB_ATLAS_HOST_WITH_PORT = "mongodb-atlas:27017"
+MONGODB_ATLAS_CONNECTION_STRING = (
+    f"mongodb://{MONGODB_ATLAS_HOST_WITH_PORT}/?directConnection=true"
+)
+MONGODB_ATLAS_BASE_NAME = "pathway_atlas_tests"
+MONGODB_ATLAS_VECTOR_DIM = 736
+
 ELASTICSEARCH_HOST = "elasticsearch"
 ELASTICSEARCH_PORT = 9200
 ELASTICSEARCH_URL = f"http://{ELASTICSEARCH_HOST}:{ELASTICSEARCH_PORT}"
+
+# Defaults match the compose service name; override via env vars to point the
+# tests at a locally port-proxied Weaviate (see the module docstring).
+WEAVIATE_HOST = os.environ.get("WEAVIATE_HOST", "weaviate")
+WEAVIATE_HTTP_PORT = int(os.environ.get("WEAVIATE_PORT", "8080"))
+WEAVIATE_GRPC_PORT = int(os.environ.get("WEAVIATE_GRPC_PORT", "50051"))
+WEAVIATE_VECTOR_DIM = 3
 
 
 def elasticsearch_now_ms() -> int:
@@ -131,14 +155,29 @@ KAFKA_SETTINGS = {
 DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
 MYSQL_DB_HOST = "mysql"
+# A second, otherwise-identical MySQL booted with `--local-infile=ON`. The
+# `mysql` host keeps the image default (`local_infile=OFF`), so the connector's
+# startup probe selects the multi-row INSERT fallback there and the LOAD DATA
+# LOCAL INFILE fast path here. Tests parametrize over both to cover both write
+# strategies. See the service definition in docker-compose-integration.yml.
+MYSQL_LOCAL_INFILE_DB_HOST = "mysql-local-infile"
 MYSQL_DB_PORT = 3306
 MYSQL_DB_NAME = "testdb"
 MYSQL_DB_USER = "testuser"
 MYSQL_DB_PASSWORD = "testpass"
 MYSQL_DB_ROOT_PASSWORD = "rootpass"
-MYSQL_CONNECTION_STRING = (
-    f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
-    + f"@{MYSQL_DB_HOST}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+
+
+def mysql_connection_string(host: str = MYSQL_DB_HOST) -> str:
+    return (
+        f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
+        + f"@{host}:{MYSQL_DB_PORT}/{MYSQL_DB_NAME}"
+    )
+
+
+MYSQL_CONNECTION_STRING = mysql_connection_string()
+MYSQL_LOCAL_INFILE_CONNECTION_STRING = mysql_connection_string(
+    MYSQL_LOCAL_INFILE_DB_HOST
 )
 
 # ---------------------------------------------------------------------------
@@ -208,6 +247,87 @@ def binlog_purge_access():
         fcntl.flock(gate_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
         os.close(gate_fd)
+
+
+class TcpBlackholeProxy(threading.Thread):
+    """Forwarding TCP proxy that can blackhole its live connections.
+
+    ``blackhole_current()`` stops forwarding on every connection open at that
+    moment while keeping the sockets open: both peers see an established but
+    completely silent flow — exactly what a half-open connection or a dropped
+    NAT/conntrack entry looks like on a loaded host. Connections opened
+    afterwards are proxied normally, so the server itself stays reachable.
+
+    Used to verify that connectors detect a stalled connection in bounded time
+    and recover, instead of silently freezing the pipeline.
+    """
+
+    def __init__(self, listen_port: int, target_host: str, target_port: int):
+        super().__init__(daemon=True)
+        self.target_host = target_host
+        self.target_port = target_port
+        self._lock = threading.Lock()
+        self._blackholed_conns: list[threading.Event] = []
+        self._closed = False
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Loopback only, and the IPv4 literal on the connect side must
+        # match: inside the test containers `localhost` resolves to the
+        # IPv6 `::1` first, which this IPv4 listener would refuse.
+        self.listener.bind(("127.0.0.1", listen_port))
+        self.listener.listen(64)
+
+    def run(self) -> None:
+        while True:
+            try:
+                client, _ = self.listener.accept()
+                upstream = socket.create_connection(
+                    (self.target_host, self.target_port)
+                )
+            except OSError:
+                return  # listener closed
+            blackholed = threading.Event()
+            with self._lock:
+                if self._closed:
+                    client.close()
+                    upstream.close()
+                    return
+                self._blackholed_conns.append(blackholed)
+            for src, dst in ((client, upstream), (upstream, client)):
+                threading.Thread(
+                    target=self._pump, args=(src, dst, blackholed), daemon=True
+                ).start()
+
+    def _pump(self, src: socket.socket, dst: socket.socket, blackholed) -> None:
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                if blackholed.is_set():
+                    # Swallow traffic but keep both sockets open, so the
+                    # peers observe a live-but-silent flow, not a reset. The
+                    # thread is daemonic, so it dies with the test process.
+                    while True:
+                        time.sleep(3600)
+                dst.sendall(data)
+        except OSError:
+            pass
+
+    def blackhole_current(self) -> int:
+        """Stop forwarding on every currently-open connection; return how many
+        connections were affected."""
+        with self._lock:
+            for blackholed in self._blackholed_conns:
+                blackholed.set()
+            affected = len(self._blackholed_conns)
+            self._blackholed_conns = []
+        return affected
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+        self.listener.close()
 
 
 MSSQL_DB_HOST = "mssql"
@@ -308,6 +428,18 @@ MONGODB_MAX_CONCURRENCY = 12
 # MySQL streaming tests tail the binary log; bound how many do so at once so the
 # server isn't saturated while a resume test races the binlog position.
 MYSQL_MAX_CONCURRENCY = 12
+# Every ElasticSearch test creates its own index(es) on a single ES node with a
+# small (512 MB) heap. Under the full suite (dozens of xdist workers, the host
+# CPU saturated by every other connector's engine work) the node falls behind:
+# index creation backs up the master's pending-task queue and freshly created
+# primary shards stay INITIALIZING. A write that arrives before its primary is
+# active fails with ``503 ... primary shard is not active`` once the bulk's
+# one-minute wait elapses, which the engine surfaces as a hard error. Capping how
+# many ES tests hit the node at once keeps that backlog short so primaries
+# activate promptly (verified: at a starved node uncapped concurrency 503s while
+# a cap of 8 lands every write). ``create_index`` additionally waits for the
+# primary to be active before returning, as belt-and-suspenders for the race.
+ELASTICSEARCH_MAX_CONCURRENCY = 8
 
 
 @contextmanager
@@ -340,7 +472,13 @@ def mysql_concurrency_slot():
         yield
 
 
-def _connect_to_mysql(timeout_sec: float = 120.0):
+@contextmanager
+def elasticsearch_concurrency_slot():
+    with db_concurrency_slot("elasticsearch", ELASTICSEARCH_MAX_CONCURRENCY):
+        yield
+
+
+def _connect_to_mysql(host: str = MYSQL_DB_HOST, timeout_sec: float = 120.0):
     """Open a MySQL connection, waiting for the server to become reachable.
 
     The official ``mysql`` Docker image briefly runs a socket-only temporary
@@ -357,7 +495,7 @@ def _connect_to_mysql(timeout_sec: float = 120.0):
     while True:
         try:
             return mysql.connector.connect(
-                host=MYSQL_DB_HOST,
+                host=host,
                 port=MYSQL_DB_PORT,
                 database=MYSQL_DB_NAME,
                 user=MYSQL_DB_USER,
@@ -399,6 +537,16 @@ class WireProtocolSupporterContext:
         )
         self.connection.autocommit = True
         self.cursor = self.connection.cursor()
+        # A single psycopg2 cursor holds one result set and one read position,
+        # so it must not be used by two threads at once: an ``execute`` in one
+        # thread replaces the result set the other thread is about to
+        # ``fetchall``, which then returns the wrong rows -- or none at all,
+        # because the interleaved fetch already consumed them. Tests routinely
+        # stream input from a helper thread (whose progress checker polls this
+        # context) while the main thread queries the same context, so every
+        # statement issued through this class takes this lock and holds it for
+        # the whole execute + fetch.
+        self._lock = threading.RLock()
 
     def get_table_schema(
         self, table_name: str, schema: str = "public"
@@ -412,8 +560,9 @@ class WireProtocolSupporterContext:
             WHERE table_name = %s AND table_schema = %s
             ORDER BY ordinal_position;
         """
-        self.cursor.execute(query, (table_name, schema))
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute(query, (table_name, schema))
+            rows = self.cursor.fetchall()
 
         schema_props = {}
         for column_name, type_name, is_nullable in rows:
@@ -440,7 +589,8 @@ class WireProtocolSupporterContext:
                 field_values.append(str(value))
         condition = f'INSERT INTO {table_name} ({",".join(field_names)}) VALUES ({",".join(field_values)})'
         print(f"Inserting a row: {condition}")
-        self.cursor.execute(condition)
+        with self._lock:
+            self.cursor.execute(condition)
 
     def create_table(self, schema: type[pw.Schema], *, add_special_fields: bool) -> str:
         table_name = self.random_table_name()
@@ -478,9 +628,10 @@ class WireProtocolSupporterContext:
             fields.append("time BIGINT NOT NULL")
             fields.append("diff BIGINT NOT NULL")
 
-        self.cursor.execute(
-            f'CREATE TABLE IF NOT EXISTS {table_name} ({",".join(fields)})'
-        )
+        with self._lock:
+            self.cursor.execute(
+                f'CREATE TABLE IF NOT EXISTS {table_name} ({",".join(fields)})'
+            )
 
         return table_name
 
@@ -498,8 +649,9 @@ class WireProtocolSupporterContext:
             return value
 
         select_query = f'SELECT {",".join(column_names)} FROM {table_name};'
-        self.cursor.execute(select_query)
-        rows = self.cursor.fetchall()
+        with self._lock:
+            self.cursor.execute(select_query)
+            rows = self.cursor.fetchall()
         result = []
         for row in rows:
             row_map = {}
@@ -513,8 +665,21 @@ class WireProtocolSupporterContext:
                 result.sort(key=lambda item: item[sort_by])
         return result
 
+    def count_rows(self, table_name: str) -> int:
+        """Server-side ``SELECT count(*)``, serialized on the context lock.
+
+        Checkers must use this instead of touching ``self.cursor`` directly:
+        an unguarded execute/fetch pair interleaves with whatever another
+        thread runs through the same cursor and reads the wrong result set
+        (see the lock's comment in ``__init__``).
+        """
+        with self._lock:
+            self.cursor.execute(f'SELECT count(*) FROM "{table_name}"')
+            return self.cursor.fetchone()[0]
+
     def execute_sql(self, query: str):
-        self.cursor.execute(query)
+        with self._lock:
+            self.cursor.execute(query)
 
     def execute_sql_with_retry(self, query: str, max_retries: int = 6) -> None:
         """``execute_sql`` with retry on PostgreSQL catalog concurrency
@@ -537,7 +702,8 @@ class WireProtocolSupporterContext:
         )
         for attempt in range(max_retries):
             try:
-                self.cursor.execute(query)
+                with self._lock:
+                    self.cursor.execute(query)
                 return
             except psycopg2.Error as e:
                 msg = str(e)
@@ -546,7 +712,8 @@ class WireProtocolSupporterContext:
                 # The cursor may be in an aborted state after the
                 # failed transaction. Recreate it before retrying.
                 try:
-                    self.cursor = self.connection.cursor()
+                    with self._lock:
+                        self.cursor = self.connection.cursor()
                 except Exception:
                     pass
                 time.sleep(0.1 * (1.5**attempt) + random.uniform(0, 0.05))
@@ -643,8 +810,9 @@ class NeonContext(WireProtocolSupporterContext):
         # The ``neon_local`` proxy provisions a fresh ephemeral branch when its
         # container starts; the upstream compute can take several seconds to
         # become routable, and the proxy may briefly refuse connections in that
-        # window. The compose dependency is therefore ``service_started`` (not
-        # ``service_healthy``), so wait for the endpoint here with bounded
+        # window. Compose health-gates the suite on the proxy's listener, but
+        # the proxy can still restart mid-run (its ``on-failure`` policy after
+        # an upstream blip), so also wait for the endpoint here with bounded
         # backoff — the same approach ``_connect_to_mysql`` uses for the MySQL
         # init window.
         deadline = time.monotonic() + timeout_sec
@@ -1041,6 +1209,446 @@ class MilvusContext:
         self.client.close()
 
 
+# Host/port of the Chroma server. The defaults match the ``chroma`` service in
+# docker-compose; both are env-overridable so the suite can also run against a
+# Chroma container published on localhost without editing this file.
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "chroma")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
+
+
+class ChromaContext:
+    """Test helper talking to a Chroma server over its HTTP API.
+
+    ``host``/``port`` are what the tests pass to ``pw.io.chroma.write``. The
+    constructor polls the server's heartbeat with bounded backoff before
+    returning: the container's TCP healthcheck flips as soon as the socket is
+    open, which can be a moment before the API actually answers, so this is the
+    same readiness pattern :class:`QuestDBContext` uses.
+    """
+
+    def __init__(
+        self,
+        host: str = CHROMA_HOST,
+        port: int = CHROMA_PORT,
+        timeout_sec: float = 60.0,
+    ) -> None:
+        import chromadb
+
+        self.host = host
+        self.port = port
+        deadline = time.monotonic() + timeout_sec
+        delay = 0.25
+        while True:
+            try:
+                self.client = chromadb.HttpClient(host=host, port=port)
+                self.client.heartbeat()
+                return
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 2.0)
+
+    def generate_collection_name(self) -> str:
+        return f"chroma_{uuid.uuid4().hex[:12]}"
+
+    def create_collection(self, collection_name: str) -> None:
+        self.client.create_collection(collection_name)
+
+    def delete_collection(self, collection_name: str) -> None:
+        try:
+            self.client.delete_collection(collection_name)
+        except Exception as e:
+            logging.warning(f"Failed to drop Chroma collection {collection_name}: {e}")
+
+    def count(self, collection_name: str) -> int:
+        return self.client.get_collection(collection_name).count()
+
+    def query_all(
+        self,
+        collection_name: str,
+        include: tuple[str, ...] = ("embeddings", "documents", "metadatas"),
+    ) -> list[dict]:
+        """Return every record as a list of dicts keyed ``id``/``embedding``/
+        ``document``/``metadata``, sorted by id.
+
+        Embeddings come back from Chroma as ``numpy.ndarray`` (float32); they are
+        converted to plain ``list[float]`` so callers can compare against the
+        values they wrote.
+        """
+        collection = self.client.get_collection(collection_name)
+        # ``include`` is a Chroma Literal union and ``GetResult`` is a TypedDict
+        # whose optional fields are typed ``... | None``; cast to a plain dict so
+        # the by-index access below type-checks.
+        result: dict = cast(dict, collection.get(include=cast(Any, list(include))))
+        rows = []
+        for index, id_ in enumerate(result["ids"]):
+            row: dict[str, Any] = {"id": id_}
+            if result.get("embeddings") is not None:
+                row["embedding"] = [float(x) for x in result["embeddings"][index]]
+            if result.get("documents") is not None:
+                row["document"] = result["documents"][index]
+            if result.get("metadatas") is not None:
+                row["metadata"] = result["metadatas"][index]
+            rows.append(row)
+        rows.sort(key=lambda r: r["id"])
+        return rows
+
+    def close(self) -> None:
+        # chromadb.HttpClient holds no socket of its own to close; clearing the
+        # process-wide client cache keeps repeated fixtures from accumulating
+        # identity-cached clients across the run.
+        try:
+            self.client.clear_system_cache()
+        except Exception:
+            pass
+
+
+QDRANT_VECTOR_DIM = 3
+
+
+class QdrantContext:
+    def __init__(self, grpc_url: str, rest_url: str) -> None:
+        import httpx
+        from qdrant_client import QdrantClient
+
+        # The native connector talks to Qdrant over gRPC, so the URL handed to
+        # ``pw.io.qdrant.write`` points at the gRPC port. The verification client
+        # below is the Python client, which uses the REST port.
+        #
+        # An explicit timeout because the client's default (httpx's 5 s) is far
+        # too tight for a shared container under the full parallel suite: when
+        # the host is saturated by every other connector's engine work, a
+        # ``create_collection`` (WAL fsync + collection registry updates) can
+        # take tens of seconds even though it succeeds — with the default the
+        # whole test dies on ``ReadTimeout`` instead of just waiting it out.
+        #
+        # HTTP keep-alive is disabled (``max_keepalive_connections=0``) because
+        # Qdrant's REST server (actix-web) closes idle connections after ~5 s,
+        # and the gap between two verification requests spans a whole pipeline
+        # run. A pooled connection therefore routinely expires in between, and
+        # under CI load the server's FIN can arrive late enough that httpx
+        # reuses the already-closed connection and the test dies with
+        # "Server disconnected without sending a response". qdrant-client
+        # disables keep-alive itself when the host is ``localhost``, but here
+        # the host is the docker-network service name, so it must be explicit.
+        self.url = grpc_url
+        self.client = QdrantClient(
+            url=rest_url,
+            timeout=120,
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=0),
+        )
+        # Names handed out by ``generate_collection_name`` so the fixture can
+        # drop them on teardown. A Qdrant node keeps every collection's RocksDB
+        # files open, so leaking collections across the (parallel) suite would
+        # eventually exhaust the container's file descriptors and fail
+        # create_collection — delete each test's collections instead.
+        self._collections: list[str] = []
+
+    def create_collection(
+        self,
+        collection_name: str,
+        *,
+        dense: dict[str, int] | None = None,
+        sparse: Sequence[str] = (),
+        multivector: dict[str, int] | None = None,
+        unnamed_dimension: int | None = None,
+        distance=None,
+    ) -> None:
+        """Create a collection with the given named vector slots.
+
+        ``dense`` maps slot names to dimensions and defaults to a single slot
+        named ``"vector"`` of dimension ``QDRANT_VECTOR_DIM`` (pass ``dense={}``
+        together with no other slots to create a collection without vector
+        slots). ``sparse`` slots are configured with the IDF modifier — the
+        hybrid-search setup the connector targets. ``multivector`` slots carry a
+        multivector config (unsupported by the connector, used to test the
+        loud failure). ``unnamed_dimension`` creates the legacy single unnamed
+        vector instead of named slots.
+
+        Defaults to Euclidean distance so that stored vectors are returned
+        verbatim — Qdrant normalizes vectors when the collection uses Cosine
+        distance, which would break exact vector comparisons in the tests.
+        """
+        from qdrant_client.models import (
+            Distance,
+            Modifier,
+            MultiVectorComparator,
+            MultiVectorConfig,
+            SparseVectorParams,
+            VectorParams,
+        )
+
+        distance = distance or Distance.EUCLID
+        if unnamed_dimension is not None:
+            self._create_collection_outlasting_a_stalled_server(
+                collection_name,
+                vectors_config=VectorParams(size=unnamed_dimension, distance=distance),
+            )
+            return
+
+        if dense is None and not sparse and not multivector:
+            dense = {"vector": QDRANT_VECTOR_DIM}
+        named_config = {
+            slot: VectorParams(size=dimension, distance=distance)
+            for slot, dimension in (dense or {}).items()
+        }
+        for slot, dimension in (multivector or {}).items():
+            named_config[slot] = VectorParams(
+                size=dimension,
+                distance=distance,
+                multivector_config=MultiVectorConfig(
+                    comparator=MultiVectorComparator.MAX_SIM
+                ),
+            )
+        sparse_config = {
+            slot: SparseVectorParams(modifier=Modifier.IDF) for slot in sparse
+        } or None
+
+        self._create_collection_outlasting_a_stalled_server(
+            collection_name,
+            vectors_config=named_config,
+            sparse_vectors_config=sparse_config,
+        )
+
+    # The bound past which the server is declared broken. Qdrant's REST server
+    # answers 408 (Request Timeout, empty body) when it cannot read a request
+    # within its own few-second budget - seen for a tiny PUT on the loaded CI
+    # node, where every suite hammers the host at once - and the client does
+    # not retry that. The request was not processed, so retrying it is safe;
+    # a collection that did get created by an attempt whose answer was lost
+    # is accepted as done.
+    _CREATE_RETRY_TIMEOUT_SECS = 60.0
+    _CREATE_RETRY_INTERVAL_SECS = 1.0
+
+    def _create_collection_outlasting_a_stalled_server(
+        self, collection_name: str, **kwargs
+    ) -> None:
+        import httpx
+        from qdrant_client.http.exceptions import (
+            ResponseHandlingException,
+            UnexpectedResponse,
+        )
+
+        deadline = time.monotonic() + self._CREATE_RETRY_TIMEOUT_SECS
+        while True:
+            try:
+                self.client.create_collection(collection_name, **kwargs)
+                return
+            except UnexpectedResponse as e:
+                status = e.status_code or 0
+                transient = status == 408 or status >= 500
+                if not transient or time.monotonic() >= deadline:
+                    raise
+            except (httpx.TransportError, ResponseHandlingException):
+                if time.monotonic() >= deadline:
+                    raise
+            if self.client.collection_exists(collection_name):
+                return
+            time.sleep(self._CREATE_RETRY_INTERVAL_SECS)
+
+    def query_all(
+        self, collection_name: str, *, with_vectors: bool = True
+    ) -> list[dict]:
+        """Return every point as its payload merged with its named vectors.
+
+        Vector slot names equal column names, so each vector lands in the row
+        under its slot name: dense vectors as ``list[float]``, sparse vectors as
+        a list of ``(index, weight)`` tuples sorted by index.
+
+        The Qdrant point id is the connector-generated UUID derived from the
+        Pathway row key, so it is not asserted on directly; the row's own
+        identifier columns live in the payload.
+        """
+        from qdrant_client.models import SparseVector
+
+        points, _ = self.client.scroll(
+            collection_name,
+            limit=100000,
+            with_payload=True,
+            with_vectors=with_vectors,
+        )
+        result = []
+        for point in points:
+            row: dict = dict(point.payload or {})
+            if with_vectors and point.vector is not None:
+                assert isinstance(point.vector, dict)  # named vectors only
+                for slot, vector in point.vector.items():
+                    if isinstance(vector, SparseVector):
+                        row[slot] = sorted(zip(vector.indices, vector.values))
+                    else:
+                        row[slot] = list(vector)
+            result.append(row)
+        return result
+
+    def sparse_query(
+        self,
+        collection_name: str,
+        slot: str,
+        pairs: Sequence[tuple[int, float]],
+        *,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Query the given sparse vector slot and return the payloads of the
+        matching points, best score first."""
+        from qdrant_client.models import SparseVector
+
+        response = self.client.query_points(
+            collection_name,
+            query=SparseVector(
+                indices=[index for index, _ in pairs],
+                values=[weight for _, weight in pairs],
+            ),
+            using=slot,
+            with_payload=True,
+            limit=limit,
+        )
+        return [dict(point.payload or {}) for point in response.points]
+
+    def count(self, collection_name: str) -> int:
+        return self.client.count(collection_name, exact=True).count
+
+    def generate_collection_name(self) -> str:
+        name = f"qdrant_{uuid.uuid4().hex[:12]}"
+        self._collections.append(name)
+        return name
+
+    def close(self) -> None:
+        # Drop every collection the test touched before closing, so collections
+        # do not accumulate on the shared Qdrant container.
+        for collection_name in self._collections:
+            try:
+                self.client.delete_collection(collection_name)
+            except Exception:
+                pass
+        self.client.close()
+
+
+class WeaviateContext:
+    """Minimal Weaviate helper for the output-connector tests.
+
+    Connects to a running Weaviate over its REST + gRPC endpoints. Each test
+    creates a uniquely named collection (Weaviate class names must start with a
+    capital letter) configured with the ``none`` vectorizer so the vectors the
+    connector sends are stored verbatim rather than recomputed server-side. The
+    vector dimension is not pinned at creation time — Weaviate fixes it from the
+    first object written — so :meth:`create_collection` ignores the ``dimension``
+    argument it accepts for parity with the other vector-store contexts.
+
+    Connecting goes through :meth:`_connect`, which lifts the client's startup
+    timeout and retries. The client's default two-second budget for the startup
+    gRPC health check is easily exceeded by a single Weaviate instance shared by
+    many parallel xdist workers (each also running a Pathway engine that hammers
+    it), and the readiness probe the container exposes only covers the REST
+    endpoint — so the gRPC listener can still be busy when the tests start. A
+    slow health check is back-pressure, not a broken server, so it is waited out
+    rather than turned into a spurious test error.
+    """
+
+    # Generous startup budget plus retries: the health check answers in
+    # milliseconds when the server is idle, so this only comes into play when
+    # the instance is saturated.
+    _INIT_TIMEOUT = 60
+    _MAX_ATTEMPTS = 5
+
+    def __init__(
+        self,
+        host: str = WEAVIATE_HOST,
+        http_port: int = WEAVIATE_HTTP_PORT,
+        grpc_port: int = WEAVIATE_GRPC_PORT,
+    ) -> None:
+        self.host = host
+        self.http_port = http_port
+        self.grpc_port = grpc_port
+        self._created_collections: list[str] = []
+        self.client = self._connect()
+
+    def _connect(self):
+        import weaviate
+        from weaviate.classes.init import AdditionalConfig, Timeout
+
+        last_exc: Exception | None = None
+        for attempt in range(self._MAX_ATTEMPTS):
+            try:
+                return weaviate.connect_to_custom(
+                    http_host=self.host,
+                    http_port=self.http_port,
+                    http_secure=False,
+                    grpc_host=self.host,
+                    grpc_port=self.grpc_port,
+                    grpc_secure=False,
+                    additional_config=AdditionalConfig(
+                        timeout=Timeout(init=self._INIT_TIMEOUT)
+                    ),
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt + 1 == self._MAX_ATTEMPTS:
+                    break
+                delay = min(1.0 * (2**attempt), 8.0)
+                logging.warning(
+                    f"Weaviate connection attempt {attempt + 1}/{self._MAX_ATTEMPTS} "
+                    f"failed, retrying in {delay:.1f}s: {exc}"
+                )
+                time.sleep(delay)
+        assert last_exc is not None
+        raise last_exc
+
+    def create_collection(
+        self, collection_name: str, *, dimension: int = WEAVIATE_VECTOR_DIM
+    ) -> None:
+        from weaviate.classes.config import Configure
+
+        # No explicit properties: the primary key is encoded in the object UUID
+        # (Weaviate reserves the "id" property name), and any other property the
+        # connector writes is added by Weaviate's auto-schema on first insert.
+        self._created_collections.append(collection_name)
+        self.client.collections.create(
+            collection_name,
+            vectorizer_config=Configure.Vectorizer.none(),
+        )
+
+    def query_all(
+        self, collection_name: str, *, include_vector: bool = True
+    ) -> list[dict]:
+        """Return every object as a dict of its properties plus its ``"uuid"``.
+
+        The primary key is not stored as a property — it is encoded in the object
+        UUID — so the UUID (as a string) is included for identity checks. When
+        ``include_vector`` is set, the vector is included under ``"vector"``.
+        """
+        collection = self.client.collections.get(collection_name)
+        results = []
+        for obj in collection.iterator(include_vector=include_vector):
+            row = dict(obj.properties)
+            row["uuid"] = str(obj.uuid)
+            if include_vector:
+                row["vector"] = list(obj.vector["default"])
+            results.append(row)
+        return results
+
+    def count(self, collection_name: str) -> int:
+        collection = self.client.collections.get(collection_name)
+        return collection.aggregate.over_all(total_count=True).total_count
+
+    def property_types(self, collection_name: str) -> dict[str, str]:
+        """Return the Weaviate-inferred data type (as a string) of each property."""
+        config = self.client.collections.get(collection_name).config.get()
+        return {prop.name: prop.data_type.value for prop in config.properties}
+
+    def generate_collection_name(self) -> str:
+        return f"Pwtest{uuid.uuid4().hex[:12]}"
+
+    def cleanup(self) -> None:
+        for collection_name in self._created_collections:
+            try:
+                self.client.collections.delete(collection_name)
+            except Exception:
+                pass
+        self._created_collections = []
+        self.client.close()
+
+
 class MongoDBContext:
     client: MongoClient
 
@@ -1104,6 +1712,109 @@ class MongoDBContext:
         db = self.client[MONGODB_BASE_NAME]
         collection = db[collection_name]
         collection.delete_one(filter)
+
+
+class AtlasContext:
+    """Helper for the ``mongodb-atlas`` compose service (MongoDB Atlas Local).
+
+    Wraps a ``pymongo`` client pointed at the in-network ``mongodb-atlas``
+    service. That service runs the ``mongodb/mongodb-atlas-local`` image, the
+    only MongoDB image that ships the ``mongot`` search process, so the
+    Atlas-specific ``$vectorSearch`` aggregation works against it directly —
+    no cloud Atlas account, and no per-test ``docker run`` from inside the
+    tests. The vector-search index is created through the regular driver
+    (``createSearchIndexes``), which is why these helpers use ``pymongo``
+    rather than any connector code.
+    """
+
+    INDEX_READY_TIMEOUT_S = 180
+
+    def __init__(self):
+        self.connection_string = MONGODB_ATLAS_CONNECTION_STRING
+        self.client: MongoClient = MongoClient(MONGODB_ATLAS_CONNECTION_STRING)
+
+    def collection_name(self) -> str:
+        return f"vec_{uuid.uuid4().hex}"
+
+    def collection(self, name: str):
+        return self.client[MONGODB_ATLAS_BASE_NAME][name]
+
+    def documents(self, name: str) -> list[dict]:
+        return list(self.collection(name).find({}))
+
+    def create_vector_index(
+        self,
+        collection: str,
+        *,
+        path: str = "embedding",
+        dimensions: int = MONGODB_ATLAS_VECTOR_DIM,
+        similarity: str = "cosine",
+        index_name: str = "pw_vector_index",
+    ) -> str:
+        """Create an Atlas Vector Search index and block until it is queryable.
+
+        This is the only Atlas-specific step. It mirrors what a user would run
+        once after pointing ``pw.io.mongodb.write`` at their Atlas collection.
+        """
+        model = SearchIndexModel(
+            definition={
+                "fields": [
+                    {
+                        "type": "vector",
+                        "path": path,
+                        "numDimensions": dimensions,
+                        "similarity": similarity,
+                    }
+                ]
+            },
+            name=index_name,
+            type="vectorSearch",
+        )
+        self.collection(collection).create_search_index(model)
+        self._wait_index_queryable(collection, index_name)
+        return index_name
+
+    def _wait_index_queryable(self, collection: str, index_name: str) -> None:
+        deadline = time.monotonic() + self.INDEX_READY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            for idx in self.collection(collection).list_search_indexes():
+                if idx.get("name") == index_name and idx.get("queryable"):
+                    return
+            time.sleep(2)
+        raise TimeoutError(
+            f"vector search index {index_name!r} did not become queryable "
+            f"within {self.INDEX_READY_TIMEOUT_S}s"
+        )
+
+    def vector_search(
+        self,
+        collection: str,
+        query_vector,
+        *,
+        index_name: str = "pw_vector_index",
+        path: str = "embedding",
+        limit: int = 3,
+        num_candidates: int = 100,
+    ) -> list[dict]:
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": index_name,
+                    "path": path,
+                    "queryVector": [float(x) for x in query_vector],
+                    "numCandidates": num_candidates,
+                    "limit": limit,
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "doc_id": 1,
+                    "score": {"$meta": "vectorSearchScore"},
+                }
+            },
+        ]
+        return list(self.collection(collection).aggregate(pipeline))
 
 
 class DebeziumContext:
@@ -1203,6 +1914,10 @@ class ElasticsearchContext:
     # connection should be retried rather than failing the test.
     _REQUEST_TIMEOUT = 120
     _MAX_ATTEMPTS = 8
+    # Overall budget for creating one index, spanning retries of server-side
+    # 503s (master pending-task queue timeouts under suite-wide load). Matches
+    # the `_wait_for_index_active` deadline.
+    _CREATE_INDEX_DEADLINE = 120.0
 
     def __init__(self, base_url: str = ELASTICSEARCH_URL):
         self.base_url = base_url.rstrip("/")
@@ -1248,15 +1963,85 @@ class ElasticsearchContext:
         # Track the index up-front so cleanup runs even if a retried create
         # actually succeeded server-side before a read timeout surfaced.
         self._created_indices.append(index_name)
-        response = self._request("PUT", f"/{index_name}", json={"mappings": mappings})
-        # A create that timed out after succeeding, then retried, comes back as
-        # "already exists" — treat that as success.
-        if response.status_code == 400 and (
-            "resource_already_exists_exception" in response.text
-        ):
-            return index_name
-        response.raise_for_status()
+        deadline = time.monotonic() + self._CREATE_INDEX_DEADLINE
+        attempt = 0
+        while True:
+            # `wait_for_active_shards=1` makes the create wait for the primary
+            # shard to be active before returning (see `_wait_for_index_active`
+            # for why). `master_timeout` bounds how long the create task may sit
+            # in the master's pending-task queue before ES gives up with a 503;
+            # raise it above the 30s default so a busy node gets to process the
+            # task on the first try more often.
+            response = self._request(
+                "PUT",
+                f"/{index_name}",
+                json={"mappings": mappings},
+                params={
+                    "wait_for_active_shards": 1,
+                    "master_timeout": "60s",
+                    "timeout": "60s",
+                },
+            )
+            # A create that timed out after succeeding, then retried, comes back
+            # as "already exists" — treat that as success.
+            if response.status_code == 400 and (
+                "resource_already_exists_exception" in response.text
+            ):
+                break
+            # 503 means the master could not process the create in time
+            # (`process_cluster_event_timeout_exception`: its pending-task queue
+            # is backed up while the whole suite hammers the single small-heap
+            # node). On that timeout ES drops the task from the queue — the
+            # index will *not* appear later (verified against 8.17.0) — so the
+            # only way the create ever happens is to retry it here. The
+            # "already exists" branch above still covers a transport-level
+            # retry in `_request` racing a create that actually landed.
+            if response.status_code == 503 and time.monotonic() < deadline:
+                time.sleep(min(0.5 * (2**attempt), 8.0))
+                attempt += 1
+                continue
+            response.raise_for_status()
+            break
+        self._wait_for_index_active(index_name)
         return index_name
+
+    def _wait_for_index_active(self, index_name: str, timeout: float = 120.0) -> None:
+        """Block until the index's primary shard is active.
+
+        A successful ``PUT /<index>`` only means the index exists in cluster
+        state; its primary shard may still be ``INITIALIZING``. Writing to it
+        before the primary is active fails the bulk request with
+        ``503 ... primary shard is not active`` — which the connector surfaces as
+        an engine error after exhausting its retries. Under a busy single-node
+        cluster (the whole db-connectors suite hammering one ES container) shard
+        allocation lags far enough behind index creation that the write loses
+        this race. ``wait_for_active_shards`` on create covers the common case,
+        but its own timeout can elapse under load, so poll cluster health here
+        with a generous deadline as the actual guarantee.
+
+        On a single node the default replica stays ``UNASSIGNED`` (health never
+        reaches ``green``), so ``yellow`` is the success state — it means exactly
+        "primary active".
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            response = self._request(
+                "GET",
+                f"/_cluster/health/{index_name}",
+                params={"wait_for_status": "yellow", "timeout": "10s"},
+            )
+            if response.status_code == 200:
+                body = response.json()
+                if not body.get("timed_out", True) and body.get("status") in (
+                    "yellow",
+                    "green",
+                ):
+                    return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Elasticsearch index {index_name!r} primary shard did not "
+                    f"become active within {timeout}s (last health: {response.text})"
+                )
 
     def refresh(self, index_name: str) -> None:
         self._request("POST", f"/{index_name}/_refresh")
@@ -1351,8 +2136,10 @@ class ElasticsearchContext:
 
 
 class MySQLContext:
-    def __init__(self):
-        self.connection = _connect_to_mysql()
+    def __init__(self, host: str = MYSQL_DB_HOST):
+        self.host = host
+        self.connection_string = mysql_connection_string(host)
+        self.connection = _connect_to_mysql(host)
         self.cursor = self.connection.cursor()
 
     def close(self) -> None:
@@ -1463,7 +2250,7 @@ class MySQLContext:
         from every streaming test).
         """
         root_connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
+            host=self.host,
             port=MYSQL_DB_PORT,
             user="root",
             password=MYSQL_DB_ROOT_PASSWORD,
@@ -1487,7 +2274,7 @@ class MySQLContext:
         hold. Non-result statements simply return an empty list.
         """
         root_connection = mysql.connector.connect(
-            host=MYSQL_DB_HOST,
+            host=self.host,
             port=MYSQL_DB_PORT,
             user="root",
             password=MYSQL_DB_ROOT_PASSWORD,
@@ -1518,7 +2305,7 @@ class MySQLContext:
 
 
 class MssqlContext:
-    def __init__(self):
+    def __init__(self, *, database: str = MSSQL_DB_NAME, timeout: int = 0):
         import pymssql
 
         self.connection = pymssql.connect(
@@ -1526,11 +2313,14 @@ class MssqlContext:
             port=str(MSSQL_DB_PORT),
             user=MSSQL_DB_USER,
             password=MSSQL_DB_PASSWORD,
-            database=MSSQL_DB_NAME,
+            database=database,
             autocommit=True,
             tds_version="7.3",
+            timeout=timeout,
+            login_timeout=timeout or 60,
         )
         self.cursor = self.connection.cursor()
+        self.database = database
         # Tables and CDC capture instances we've registered.  ``cleanup()``
         # tears them all down on fixture teardown, so a crashed/skipped test
         # cannot leave orphan capture instances behind — orphans inflate
@@ -1539,6 +2329,69 @@ class MssqlContext:
         # to catch up.
         self._tracked_tables: set[str] = set()
         self._tracked_cdc: set[str] = set()
+
+    def cdc_diagnostics(self, input_table: str, output_table: str) -> str:
+        """Report the source, captured changes and sink before teardown.
+
+        Use a separate connection with bounded queries so a failed reader or
+        lock conflict cannot prevent the subprocess log from being reported.
+        Diagnostic failures must never replace the original test exception.
+        """
+        details = [f"MSSQL CDC diagnostics: input={input_table}, output={output_table}"]
+        try:
+            ctx = MssqlContext(database=self.database, timeout=5)
+        except Exception as exc:
+            return f"{details[0]}\nCannot connect for diagnostics: {exc!r}"
+        queries = {
+            "input rows": f"SELECT TOP (20) * FROM [{input_table}] ORDER BY pkey",
+            "output rows": f"SELECT TOP (20) * FROM [{output_table}] ORDER BY pkey",
+            "captured changes": (
+                f"SELECT TOP (20) * FROM cdc.[dbo_{input_table}_CT] "
+                "ORDER BY __$start_lsn, __$seqval"
+            ),
+            "LSN bounds": (
+                "SELECT capture_instance, CONVERT(varchar(22), start_lsn, 1) AS start_lsn, "
+                "CONVERT(varchar(22), sys.fn_cdc_get_min_lsn(capture_instance), 1) AS min_lsn, "
+                "CONVERT(varchar(22), sys.fn_cdc_get_max_lsn(), 1) AS max_lsn "
+                f"FROM cdc.change_tables WHERE capture_instance = 'dbo_{input_table}'"
+            ),
+            "CDC scan sessions": (
+                "SELECT TOP (5) session_id, start_time, end_time, scan_phase, "
+                "error_count, latency, last_commit_time, failed_sessions_count "
+                "FROM sys.dm_cdc_log_scan_sessions "
+                "ORDER BY session_id DESC"
+            ),
+            "CDC errors": "SELECT TOP (10) * FROM sys.dm_cdc_errors ORDER BY entry_time DESC",
+            "capture job": (
+                "SELECT j.name, a.start_execution_date, a.stop_execution_date "
+                "FROM msdb.dbo.sysjobactivity a "
+                "JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id "
+                "WHERE a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) "
+                "AND j.name = 'cdc.' + DB_NAME() + '_capture'"
+            ),
+            # Successful scan messages can bury the retry that caused a stall.
+            "capture job failures": (
+                "SELECT TOP (5) h.run_status, h.run_date, h.run_time, h.message "
+                "FROM msdb.dbo.sysjobhistory h "
+                "JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id "
+                "WHERE j.name = 'cdc.' + DB_NAME() + '_capture' "
+                "AND h.run_status IN (0, 2, 3) ORDER BY h.instance_id DESC"
+            ),
+        }
+        try:
+            for label, query in queries.items():
+                try:
+                    ctx.execute_sql(query, max_retries=1)
+                    columns = [column[0] for column in ctx.cursor.description or ()]
+                    details.append(f"{label} ({columns}): {ctx.cursor.fetchall()!r}")
+                except Exception as exc:
+                    details.append(f"{label}: {exc!r}")
+        finally:
+            try:
+                ctx.connection.close()
+            except Exception as exc:
+                details.append(f"Closing diagnostic connection: {exc!r}")
+        return "\n".join(details)
 
     def random_table_name(self) -> str:
         name = f"mssql_{uuid.uuid4().hex}"
@@ -1699,7 +2552,7 @@ class MssqlContext:
         captured_column_list: str | None = None,
         capture_instance: str | None = None,
     ) -> None:
-        """Enable CDC on a table, retrying on deadlock (SQL Server error 1205).
+        """Enable CDC on a table, retrying on transient SQL Server failures.
 
         ``captured_column_list`` restricts capture to a subset of the table's
         columns (``@captured_column_list``); ``capture_instance`` names the
@@ -1735,12 +2588,37 @@ class MssqlContext:
                 self._tracked_cdc.add(table_name)
                 return
             except pymssql.exceptions.OperationalError as e:
-                if attempt < max_retries - 1 and "1205" in str(e):
+                message = str(e)
+                # Three distinct transient failures, all of which SQL Server
+                # asks the caller to resubmit:
+                #  - 1205: the proc was picked as a deadlock victim on CDC
+                #    system-table locks;
+                #  - 2714 on 'create table msdb.dbo.cdc_jobs' (wrapped in
+                #    22832/22836): the server bootstraps msdb.dbo.cdc_jobs
+                #    lazily on its first-ever sp_cdc_add_job, and two workers
+                #    enabling CDC concurrently right after server start both
+                #    attempt the create — the loser fails, and on resubmit
+                #    finds the table in place and succeeds.
+                #  - 14258 (wrapped in 22832/22836): sp_cdc_add_job ran while
+                #    the SQL Server Agent service was still starting — the
+                #    server's healthcheck passes before the Agent is up, and
+                #    the Agent also restarts whenever the container's
+                #    on-failure restart policy reboots mssql mid-suite. The
+                #    error text itself says "Try again later." — the mssql-init
+                #    compose job pre-creates the CDC jobs so this path is
+                #    normally never taken, and this retry is the backstop.
+                transient = (
+                    "1205" in message
+                    or "There is already an object named 'cdc_jobs'" in message
+                    or "Cannot perform this operation while SQLServerAgent is starting"
+                    in message
+                )
+                if attempt < max_retries - 1 and transient:
                     delay = retry_delay * (1.25**attempt) + random.uniform(
                         0, retry_delay
                     )
                     logging.warning(
-                        f"CDC enable deadlock on {table_name} "
+                        f"transient CDC enable failure on {table_name} "
                         f"(attempt {attempt + 1}/{max_retries}), "
                         f"retrying in {delay:.1f}s: {e}"
                     )
@@ -2056,8 +2934,9 @@ class RowCountChecker:
 
     def __call__(self) -> bool:
         try:
-            self.db_context.cursor.execute(f'SELECT count(*) FROM "{self.table_name}"')
-            return self.db_context.cursor.fetchone()[0] >= self.n_expected_entries
+            return (
+                self.db_context.count_rows(self.table_name) >= self.n_expected_entries
+            )
         except Exception:
             return False
 
@@ -2319,3 +3198,281 @@ def check_write_quotes_reserved_word_column_name(
             db_context.execute_sql(f"DROP TABLE IF EXISTS {table_name}")
         except Exception:
             pass
+
+
+PINECONE_VECTOR_DIM = 3
+
+
+def _pinecone_plaintext_host(host: str) -> str:
+    """Rewrite a Pinecone host to a plaintext ``http://`` URL.
+
+    Pinecone Local advertises its per-index hosts with an ``https://`` scheme even
+    though it only serves plaintext HTTP, so the scheme has to be forced down to
+    ``http://`` before connecting to the data plane.
+    """
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix) :]
+            break
+    return "http://" + host
+
+
+def _pinecone_sparse_pairs(vector: Any) -> list[tuple[int, float]]:
+    """The fetched record's sparse (index, weight) pairs, empty when it has none."""
+    sparse = getattr(vector, "sparse_values", None)
+    if sparse is None:
+        return []
+    return [
+        (int(index), round(float(weight), 4))
+        for index, weight in zip(sparse.indices, sparse.values)
+    ]
+
+
+class PineconeSparseUnsupported(Exception):
+    """The Pinecone deployment under test cannot host sparse indexes."""
+
+
+class PineconeContext:
+    """Test helper around a `Pinecone Local <https://docs.pinecone.io/guides/operations/local-development>`_ instance.
+
+    The control-plane host defaults to ``http://localhost:5080`` and can be
+    pointed at the in-network service name via the ``PINECONE_HOST`` environment
+    variable (set to the compose service name when running under docker-compose).
+    """
+
+    def __init__(self) -> None:
+        from pinecone import Pinecone, ServerlessSpec
+
+        self._ServerlessSpec = ServerlessSpec
+        self.pinecone_host = os.environ.get("PINECONE_HOST", "localhost")
+        self.control_host = f"http://{self.pinecone_host}:5080"
+        self.api_key = "pclocal"
+        self.client = Pinecone(api_key=self.api_key, host=self.control_host)
+        self._created: list[str] = []
+        self._wait_until_control_ready()
+
+    def _wait_until_control_ready(self, timeout: float = 60.0) -> None:
+        # The emulator image is distroless, so it can't expose a docker
+        # healthcheck; poll the control plane until it answers instead.
+        deadline = time.time() + timeout
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                self.client.list_indexes()
+                return
+            except Exception as e:  # connection refused while still starting up
+                last_error = e
+                time.sleep(0.5)
+        raise RuntimeError(
+            f"Pinecone Local control plane at {self.control_host} did not become "
+            f"ready within {timeout}s"
+        ) from last_error
+
+    def generate_index_name(self) -> str:
+        # Pinecone index names must be lowercase alphanumeric or hyphens.
+        return f"pw-test-{uuid.uuid4().hex[:12]}"
+
+    def create_index(
+        self, index_name: str, *, dimension: int = PINECONE_VECTOR_DIM
+    ) -> None:
+        self.client.create_index(
+            name=index_name,
+            dimension=dimension,
+            metric="cosine",
+            spec=self._ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+        self._created.append(index_name)
+        self._wait_until_ready(index_name)
+
+    def create_sparse_index(self, index_name: str) -> None:
+        """Create a sparse index (always ``dotproduct``, and dimensionless).
+
+        Raises ``PineconeSparseUnsupported`` when the deployment under test
+        cannot host sparse indexes; callers turn that into a skip with an
+        explicit reason.
+
+        The local emulator does implement sparse indexes, but only under
+        ``X-Pinecone-Api-Version: 2025-01``: its image (``v1.0.0.rc0``, built
+        2025-02) knows no other version string and falls back to a dense-only
+        schema for every one of them, so under the ``2025-10`` the connector
+        pins it requires a ``dimension`` here and rejects sparse records later.
+        """
+        try:
+            self.client.create_index(
+                name=index_name,
+                metric="dotproduct",
+                vector_type="sparse",
+                spec=self._ServerlessSpec(cloud="aws", region="us-east-1"),
+            )
+        except Exception as e:
+            raise PineconeSparseUnsupported(str(e)) from e
+        self._created.append(index_name)
+        self._wait_until_ready(index_name)
+
+    def _wait_until_ready(self, index_name: str, timeout: float = 30.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            desc = self.client.describe_index(index_name)
+            if desc.host and getattr(desc.status, "ready", True):
+                return
+            time.sleep(0.5)
+
+    def _data_index(self, index_name: str):
+        raw_host = self.client.describe_index(index_name).host
+        assert raw_host, f"Pinecone index {index_name!r} has no data-plane host yet"
+        host = _pinecone_plaintext_host(raw_host)
+        return self.client.Index(host=host)
+
+    def count(self, index_name: str, namespace: str = "") -> int:
+        stats = self._data_index(index_name).describe_index_stats()
+        return stats.total_vector_count
+
+    def fetch(self, index_name: str, ids: list, namespace: str = "") -> dict[str, dict]:
+        res = self._data_index(index_name).fetch(
+            ids=[str(i) for i in ids], namespace=namespace
+        )
+        return {
+            key: {
+                "values": [round(float(x), 4) for x in (vec.values or [])],
+                "sparse_values": _pinecone_sparse_pairs(vec),
+                "metadata": dict(vec.metadata) if vec.metadata else {},
+            }
+            for key, vec in res.vectors.items()
+        }
+
+    def query_sparse(
+        self,
+        index_name: str,
+        pairs: list[tuple[int, float]],
+        *,
+        top_k: int = 10,
+        namespace: str = "",
+    ) -> list[tuple[str, float]]:
+        """Run a sparse query and return the (id, score) hits, best first."""
+        res = self._data_index(index_name).query(
+            sparse_vector={
+                "indices": [index for index, _ in pairs],
+                "values": [weight for _, weight in pairs],
+            },
+            top_k=top_k,
+            namespace=namespace,
+        )
+        return [(match["id"], float(match["score"])) for match in res["matches"]]
+
+    def wait_for_count(
+        self, index_name: str, expected: int, namespace: str = "", timeout: float = 60.0
+    ) -> int:
+        """Poll until the index holds ``expected`` vectors (Pinecone is eventually
+        consistent, so writes are not immediately visible). Returns the final
+        observed count, which the caller asserts on."""
+        deadline = time.time() + timeout
+        count = self.count(index_name, namespace)
+        while count != expected and time.time() < deadline:
+            time.sleep(0.5)
+            count = self.count(index_name, namespace)
+        return count
+
+    def cleanup(self) -> None:
+        for index_name in self._created:
+            try:
+                self.client.delete_index(index_name)
+            except Exception:
+                pass
+        self._created.clear()
+
+
+def type_to_source_str(t: Any) -> str:
+    """Return a Python source expression for *t* suitable for exec'd schema code."""
+    if t is type(None):
+        return "None"
+    if t is Any:
+        return "Any"
+    if t in (int, float, bool, str, bytes):
+        return t.__name__
+    if t is pw.Pointer:
+        return "pw.Pointer"
+    if t is pw.Json:
+        return "pw.Json"
+    if t is pw.Duration:
+        return "pw.Duration"
+    if t is pw.DateTimeNaive:
+        return "pw.DateTimeNaive"
+    if t is pw.DateTimeUtc:
+        return "pw.DateTimeUtc"
+
+    origin = get_origin(t)
+    args = get_args(t)
+
+    if origin is Union or (
+        hasattr(builtin_types, "UnionType") and isinstance(t, builtin_types.UnionType)
+    ):
+        return " | ".join(type_to_source_str(a) for a in args)
+
+    if origin is list:
+        return f"list[{type_to_source_str(args[0])}]"
+
+    if origin is tuple:
+        return f"tuple[{', '.join(type_to_source_str(a) for a in args)}]"
+
+    if origin is np.ndarray:
+        dims_arg, scalar_arg = args
+        scalar_str = type_to_source_str(scalar_arg)
+        if dims_arg is None:
+            return f"np.ndarray[None, {scalar_str}]"
+        return f"np.ndarray[{type_to_source_str(dims_arg)}, {scalar_str}]"
+
+    # pw.PyObjectWrapper[X]
+    if origin is pw.PyObjectWrapper and args:
+        return f"pw.PyObjectWrapper[{args[0].__name__}]"
+
+    if hasattr(t, "__name__"):
+        return t.__name__
+    return repr(t)
+
+
+def generate_pkey_item_schema_code(ItemType: Any, *, primary_key: bool = True) -> str:
+    """Return Python source that defines InputSchemaWithPkey for the given type.
+
+    Used by the parsing suites' streaming tests, whose reader pipeline runs in
+    a separate interpreter (``subprocess.Popen``) and therefore has to receive
+    the schema as source code rather than as a Python object."""
+    item_type_str = type_to_source_str(ItemType)
+    lines: list[str] = []
+
+    def add_import(line: str) -> None:
+        if line not in lines:
+            lines.append(line)
+
+    # Walk the whole (possibly nested, e.g. list[PyObjectWrapper[...]]) type
+    # and emit the imports its source form needs: numpy for ndarray, and the
+    # inner class of a PyObjectWrapper if it comes from utils.
+    def collect_imports(t: Any) -> None:
+        origin = get_origin(t)
+        if origin is np.ndarray:
+            add_import("import numpy as np")
+            add_import("from typing import Any")
+        if origin is pw.PyObjectWrapper:
+            args = get_args(t)
+            if args:
+                inner = args[0]
+                module = getattr(inner, "__module__", "builtins")
+                if not module.startswith(("builtins", "pathway")):
+                    add_import(f"from utils import {inner.__name__}")
+        for arg in get_args(t):
+            if arg is not None:
+                collect_imports(arg)
+
+    collect_imports(ItemType)
+    if lines:
+        lines.append("")
+    pkey_definition = (
+        "pkey: int = pw.column_definition(primary_key=True)"
+        if primary_key
+        else "pkey: int"
+    )
+    lines += [
+        "class InputSchemaWithPkey(pw.Schema):",
+        f"    {pkey_definition}",
+        f"    item: {item_type_str}",
+    ]
+    return "\n".join(lines)

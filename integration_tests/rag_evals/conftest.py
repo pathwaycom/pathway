@@ -1,14 +1,8 @@
 import nltk
-import pytest
 
-from pathway.tests.utils import UniquePortDispenser
+from pathway.tests.utils import make_port_fixture
 
-PORT_DISPENSER = UniquePortDispenser()
-
-
-@pytest.fixture
-def port(testrun_uid):
-    yield PORT_DISPENSER.get_unique_port(testrun_uid)
+port = make_port_fixture()
 
 
 def pytest_configure(config):

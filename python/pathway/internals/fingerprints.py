@@ -14,7 +14,9 @@ def fingerprint(obj, *, format="hex", seed=""):
         "u32", "integer", "u16", "i64", "i32", "i16".
         - seed: salt to be added to hash
     """
-    return _hash_to_output(hashlib.md5(f"{seed}{obj}".encode()), format=format)
+    return _hash_to_output(
+        hashlib.md5(f"{seed}{obj}".encode(), usedforsecurity=False), format=format
+    )
 
 
 def _hash_to_output(hash_val, *, format):

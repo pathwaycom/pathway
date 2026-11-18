@@ -1,8 +1,10 @@
 // Copyright © 2026 Pathway
 
 pub mod aws;
+pub mod chroma;
 pub mod clickhouse;
 pub mod data_lake;
+pub mod duckdb;
 pub mod elasticsearch;
 pub mod file;
 pub mod kafka;
@@ -12,22 +14,32 @@ pub mod mssql;
 pub mod mysql;
 pub mod nats;
 pub mod null;
+pub mod pinecone;
 pub mod polling;
 pub mod postgres;
+pub mod pulsar;
 pub mod python;
+pub mod qdrant;
 pub mod questdb;
 pub mod rabbitmq;
 pub mod scanner;
 pub mod sharding;
 pub mod sqlite;
+pub mod vectors;
+pub mod weaviate;
 
 pub use file::FileWriter;
-pub use kafka::{KafkaReader, KafkaReaderError, KafkaWriter, RdkafkaWatermark};
+pub use kafka::{
+    KafkaConsumer, KafkaReader, KafkaReaderError, KafkaWriter, PathwayConsumerContext,
+    RdkafkaWatermark,
+};
 pub use mqtt::{MqttReader, MqttWriter, MQTT_CLIENT_MAX_CHANNEL_SIZE, MQTT_MAX_MESSAGES_IN_QUEUE};
 pub use null::NullWriter;
 pub use python::{PythonReader, PythonReaderBuilder};
+pub use qdrant::QdrantWriter;
 pub use questdb::{QuestDBAtColumnPolicy, QuestDBWriter};
 
+pub use self::chroma::{ChromaError, ChromaWriter};
 pub use self::clickhouse::{ClickHouseError, ClickHouseWriter};
 
 use s3::error::S3Error;
@@ -61,6 +73,7 @@ use crate::connectors::data_storage::aws::kinesis::KinesisReader;
 use crate::connectors::data_storage::data_lake::buffering::IncorrectSnapshotError;
 use crate::connectors::data_storage::scanner::s3::S3CommandName;
 use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::offset::PulsarOffsetValue;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::{Offset, OffsetValue};
 use crate::engine::error::DynResult;
@@ -84,18 +97,24 @@ use serde::{Deserialize, Serialize};
 pub use self::data_lake::delta::{DeltaError, DeltaTableReader, ObjectDownloader};
 pub use self::data_lake::iceberg::{IcebergError, IcebergReader};
 pub use self::data_lake::LakeWriter;
+pub use self::duckdb::{DuckDbError, DuckDbWriter};
 pub use self::elasticsearch::{ElasticSearchError, ElasticSearchReader, ElasticSearchWriter};
 pub use self::mongodb::{MongoReader, MongoWriter};
 pub use self::mssql::{MssqlError, MssqlReader};
 pub use self::mysql::{MysqlError, MysqlReader, MysqlReaderError};
 pub use self::nats::NatsReader;
 pub use self::nats::NatsWriter;
+pub use self::pinecone::{PineconeError, PineconeWriter};
 pub use self::polling::{LiveState, PolledRow, PollingDataSource, PollingReader};
 pub use self::postgres::{
     PostgresError, PsqlReader, PsqlWriter, ReplicationError as PostgresReplicationError, SslError,
 };
+pub use self::pulsar::{
+    DeliverySchedule as PulsarDeliverySchedule, PulsarError, PulsarReader, PulsarWriter,
+};
 pub use self::rabbitmq::{RabbitmqError, RabbitmqReader, RabbitmqWriter};
 pub use self::sqlite::{SqliteError, SqliteReader, SqliteWriter};
+pub use self::weaviate::{WeaviateError, WeaviateWriter};
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -189,6 +208,14 @@ pub enum MessageQueueTopic {
 }
 
 impl MessageQueueTopic {
+    /// Like `get_for_posting`, but a fixed topic is borrowed rather than cloned.
+    pub fn topic_for_posting(&self, values: &[Value]) -> Result<Cow<'_, str>, WriteError> {
+        match self {
+            Self::Fixed(t) => Ok(Cow::Borrowed(t.as_str())),
+            Self::Dynamic(_) => self.get_for_posting(values).map(Cow::Owned),
+        }
+    }
+
     pub fn get_for_posting(&self, values: &[Value]) -> Result<String, WriteError> {
         match self {
             Self::Fixed(t) => Ok(t.clone()),
@@ -290,6 +317,7 @@ pub enum ReadResult {
 }
 
 use crate::connectors::data_storage::mongodb::MongoDbError;
+use crate::connectors::data_storage::qdrant::QdrantWriteError;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -383,6 +411,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     ElasticSearch(#[from] ElasticSearchError),
+
+    #[error(transparent)]
+    Pulsar(#[from] PulsarError),
 }
 
 // Allow `?` on unboxed `AwsKinesisError` in functions returning `Result<_, ReadError>`.
@@ -469,6 +500,7 @@ pub enum StorageType {
     Rabbitmq,
     Mysql,
     ElasticSearch,
+    Pulsar,
 }
 
 impl StorageType {
@@ -497,15 +529,55 @@ impl StorageType {
             StorageType::Rabbitmq => RabbitmqReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mysql => MysqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::ElasticSearch => ElasticSearchReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Pulsar => PulsarReader::merge_two_frontiers(lhs, rhs),
         }
     }
+}
+
+/// The second phase of the two-phase commit between a persisted pipeline and a
+/// message broker that deletes data once it is acknowledged.
+///
+/// A reader whose source cannot be re-read by `seek` (MQTT, NATS, ...) defers
+/// the broker acknowledgements: `read` only buffers the ack handles, and this
+/// worker sends them once the offsets are covered by a durably saved
+/// checkpoint. On a crash the unacknowledged messages are redelivered by the
+/// broker, which restores at-least-once delivery.
+///
+/// `ack_up_to` runs on the checkpoint-committing thread, so it must not
+/// block: acknowledgements are handed to the client's outgoing queue, never
+/// awaited over the network. Handles that cannot be enqueued right now must be
+/// kept and retried on the next call.
+pub trait DeferredAckWorker: Send {
+    fn ack_up_to(&mut self, frontier: &OffsetAntichain);
 }
 
 pub trait Reader {
     fn read(&mut self) -> Result<ReadResult, ReadError>;
 
+    /// Whether the next `read()` returns `Data` at once, from a message the
+    /// reader already holds. While it does, the connector gathers the parsed
+    /// rows into batches before handing them to the engine's thread; once it
+    /// doesn't, whatever is gathered is handed over before `read()` may wait,
+    /// so batching never delays a row. The answer must not be a guess: a
+    /// `true` followed by a `read()` that waits would hold the batch back for
+    /// as long as the wait. Readers that can't tell answer `false` and keep
+    /// sending row by row.
+    fn has_buffered_data(&mut self) -> bool {
+        false
+    }
+
     #[allow(clippy::missing_errors_doc)]
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError>;
+
+    /// Called once, before reading starts, if this source takes part in
+    /// persistence. A reader that defers broker acknowledgements until the
+    /// checkpoint switches itself into the deferred mode here and returns the
+    /// worker that performs the acknowledgements. If the engine never calls
+    /// this method (persistence is off), the reader keeps acknowledging
+    /// inline and nothing changes.
+    fn take_deferred_ack_worker(&mut self) -> Option<Box<dyn DeferredAckWorker>> {
+        None
+    }
 
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()
@@ -629,6 +701,48 @@ pub trait Reader {
                         result.advance_offset(offset_key.clone(), other_value.clone());
                     }
                     (
+                        OffsetValue::NatsReadEntriesCount(offset_entries_read),
+                        OffsetValue::NatsReadEntriesCount(other_entries_read),
+                    )
+                    | (
+                        OffsetValue::MqttReadEntriesCount(offset_entries_read),
+                        OffsetValue::MqttReadEntriesCount(other_entries_read),
+                    )
+                    | (
+                        OffsetValue::PostgresReadEntriesCount(offset_entries_read),
+                        OffsetValue::PostgresReadEntriesCount(other_entries_read),
+                    )
+                    | (
+                        OffsetValue::Pulsar(PulsarOffsetValue::EntriesCount(offset_entries_read)),
+                        OffsetValue::Pulsar(PulsarOffsetValue::EntriesCount(other_entries_read)),
+                    ) => {
+                        if other_entries_read > offset_entries_read {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
+                        OffsetValue::Pulsar(PulsarOffsetValue::MessagePosition {
+                            ledger_id: offset_ledger_id,
+                            entry_id: offset_entry_id,
+                            batch_index: offset_batch_index,
+                        }),
+                        OffsetValue::Pulsar(PulsarOffsetValue::MessagePosition {
+                            ledger_id: other_ledger_id,
+                            entry_id: other_entry_id,
+                            batch_index: other_batch_index,
+                        }),
+                    ) => {
+                        // Positions within one partition are ordered
+                        // lexicographically: ledger ids grow monotonically
+                        // within a topic, entry ids within a ledger, and
+                        // batch indexes within an entry.
+                        if (other_ledger_id, other_entry_id, other_batch_index)
+                            > (offset_ledger_id, offset_entry_id, offset_batch_index)
+                        {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
                         OffsetValue::MysqlBinlogPos {
                             filename: lhs_file,
                             position: lhs_pos,
@@ -675,6 +789,13 @@ pub trait Reader {
     fn max_allowed_consecutive_errors(&self) -> usize {
         0
     }
+
+    /// Called periodically while backpressure (`max_backlog_size`) blocks the
+    /// delivery of an already-read entry. Sources whose connection degrades
+    /// when unserviced override this to keep it alive without reading new
+    /// data — e.g. Kafka must keep polling, or the broker evicts the consumer
+    /// from its group and re-delivers messages after the rejoin.
+    fn keep_alive(&mut self) {}
 }
 
 pub trait ReaderBuilder: Send + 'static {
@@ -768,11 +889,20 @@ pub enum WriteError {
     #[error(transparent)]
     MqttPoll(#[from] MqttConnectionError),
 
+    #[error(
+        "the MQTT broker kept the connection alive but did not confirm delivery of {0} in-flight \
+         message(s); giving up to avoid blocking the pipeline indefinitely"
+    )]
+    MqttDeliveryConfirmationTimeout(usize),
+
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
 
     #[error(transparent)]
     Rabbitmq(#[from] RabbitmqError),
+
+    #[error(transparent)]
+    Pulsar(#[from] PulsarError),
 
     #[error(transparent)]
     JetStream(#[from] NatsError<JetStreamPublishError>),
@@ -788,6 +918,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     ClickHouse(#[from] ClickHouseError),
+
+    #[error(transparent)]
+    Chroma(#[from] ChromaError),
 
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),
@@ -805,6 +938,9 @@ pub enum WriteError {
     ElasticSearch(#[from] ElasticSearchError),
 
     #[error(transparent)]
+    Weaviate(#[from] WeaviateError),
+
+    #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
     #[error(transparent)]
@@ -814,6 +950,9 @@ pub enum WriteError {
     MongoDB(#[from] MongoDbError),
 
     #[error(transparent)]
+    Qdrant(#[from] QdrantWriteError),
+
+    #[error(transparent)]
     Mssql(#[from] MssqlError),
 
     #[error(transparent)]
@@ -821,6 +960,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     Sqlite(#[from] SqliteError),
+
+    #[error(transparent)]
+    DuckDB(#[from] DuckDbError),
 
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
@@ -857,6 +999,9 @@ pub enum WriteError {
 
     #[error("primary key field names must be specified for a snapshot mode")]
     EmptyKeyFieldsForSnapshot,
+
+    #[error(transparent)]
+    Pinecone(#[from] PineconeError),
 }
 
 // Allow `?` on `mongodb::error::Error` in functions returning `Result<_, WriteError>`.
@@ -864,6 +1009,14 @@ pub enum WriteError {
 impl From<::mongodb::error::Error> for WriteError {
     fn from(e: ::mongodb::error::Error) -> Self {
         WriteError::MongoDB(MongoDbError::Driver(e))
+    }
+}
+
+// Allow `?` on raw `duckdb::Error` in functions returning `Result<_, WriteError>`.
+// Routes through `DuckDbError::Driver` so the full chain is `WriteError::DuckDB`.
+impl From<::duckdb::Error> for WriteError {
+    fn from(e: ::duckdb::Error) -> Self {
+        WriteError::DuckDB(DuckDbError::Driver(e))
     }
 }
 
@@ -900,7 +1053,10 @@ impl From<SslError> for WriteError {
 }
 
 pub trait Writer: Send {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError>;
+    /// Writes one formatted row. The context is borrowed: it is reused for
+    /// the next row as soon as this returns, so a writer that keeps anything
+    /// beyond the call (a batch of rows, a payload sent later) copies it.
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError>;
 
     fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         Ok(())

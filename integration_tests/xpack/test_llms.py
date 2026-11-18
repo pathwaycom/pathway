@@ -9,7 +9,7 @@ from pathway.xpacks.llm._utils import _run_async
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-3.5-turbo"],
+    ["gpt-4o-mini"],
 )
 def test_llm_func_openai(model):
     llm = llms.OpenAIChat(
@@ -27,7 +27,7 @@ def test_llm_func_openai(model):
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-3.5-turbo"],
+    ["gpt-4o-mini"],
 )
 def test_llm_wrapped_openai(model):
     llm = llms.OpenAIChat(
@@ -50,7 +50,7 @@ def test_llm_apply_openai():
     t = pw.debug.table_from_markdown(
         """
         txt     | model
-        Wazzup? | gpt-3.5-turbo
+        Wazzup? | gpt-4o-mini
         """
     )
     resp_table = t.select(
@@ -133,7 +133,7 @@ def test_llm_openai_list_of_jsons():
             )
         ],
     )
-    resp_table = t.select(ret=chat(t.txt, model="gpt-3.5-turbo", max_tokens=2))
+    resp_table = t.select(ret=chat(t.txt, model="gpt-4o-mini", max_tokens=2))
 
     _, table_values = pw.debug.table_to_dicts(resp_table)
 
@@ -229,7 +229,7 @@ def test_litellm():
     t = pw.debug.table_from_markdown(
         """
         txt     | model
-        Wazzup? | gpt-3.5-turbo
+        Wazzup? | gpt-4o-mini
         """
     )
     resp_table = t.select(

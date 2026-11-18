@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::{self as channel, Receiver};
@@ -91,7 +90,7 @@ pub fn full_cycle_read(
         }
     }
 
-    let main_thread = thread::current();
+    let wakeup = pathway_engine::connectors::wakeup::for_current_thread();
     let (sender, receiver) = channel::unbounded();
     let mut snapshot_writer = Connector::snapshot_writer(
         reader.as_ref(),
@@ -119,11 +118,21 @@ pub fn full_cycle_read(
         &mut *reader,
         &mut *parser,
         &sender,
-        &main_thread,
+        &wakeup,
         &reporter,
         None,
     );
-    let result = get_entries_in_receiver(receiver);
+    // Batched rows are looked at message by message, like the plain ones.
+    let result: Vec<Entry> = get_entries_in_receiver(receiver)
+        .into_iter()
+        .flat_map(|entry| match entry {
+            Entry::RealtimeEntriesBatch(gathered) => gathered
+                .into_iter()
+                .map(|(events, offset)| Entry::RealtimeEntries(events, offset, None))
+                .collect(),
+            entry => vec![entry],
+        })
+        .collect();
 
     let has_persistent_storage = persistent_storage.is_some();
     let mut frontier = OffsetAntichain::new();
@@ -187,6 +196,7 @@ pub fn full_cycle_read(
                 rewind_finish_sentinel_seen = true;
             }
             Entry::RealtimeParsingError(e) => panic!("{e}"),
+            Entry::RealtimeEntriesBatch(_) => unreachable!("batches are flattened above"),
         }
     }
 
@@ -263,24 +273,34 @@ pub fn create_persistence_manager(
     fs_path: &Path,
     recreate: bool,
 ) -> Arc<Mutex<WorkerPersistentStorage>> {
+    create_persistence_manager_with_run_start(fs_path, recreate, None)
+}
+
+pub fn create_persistence_manager_with_run_start(
+    fs_path: &Path,
+    recreate: bool,
+    run_start_timestamp: Option<Timestamp>,
+) -> Arc<Mutex<WorkerPersistentStorage>> {
     if recreate {
         let _ = std::fs::remove_dir_all(fs_path);
     }
 
+    let mut outer_config = PersistenceManagerOuterConfig::new(
+        Duration::ZERO,
+        PersistentStorageConfig::Filesystem(fs_path.to_path_buf()),
+        SnapshotAccess::Full,
+        PersistenceMode::Batch,
+        true,
+        false,
+        Duration::ZERO,
+    );
+    if let Some(run_start_timestamp) = run_start_timestamp {
+        outer_config = outer_config.with_run_start_timestamp(run_start_timestamp);
+    }
+
     Arc::new(Mutex::new(
-        WorkerPersistentStorage::new(
-            PersistenceManagerOuterConfig::new(
-                Duration::ZERO,
-                PersistentStorageConfig::Filesystem(fs_path.to_path_buf()),
-                SnapshotAccess::Full,
-                PersistenceMode::Batch,
-                true,
-                false,
-                Duration::ZERO,
-            )
-            .into_inner(0, 1),
-        )
-        .expect("Failed to create persistence manager"),
+        WorkerPersistentStorage::new(outer_config.into_inner(0, 1))
+            .expect("Failed to create persistence manager"),
     ))
 }
 

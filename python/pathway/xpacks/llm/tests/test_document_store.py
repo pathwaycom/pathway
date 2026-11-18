@@ -745,3 +745,20 @@ def test_docstore_metadata_post_processor():
     (query_result,) = val.as_list()  # extract the single match
     assert isinstance(query_result, dict)
     assert query_result["metadata"]["id"] == 1
+
+
+def test_document_store_client_accepts_all_timeout_forms():
+    import datetime
+
+    from pathway.xpacks.llm.document_store import DocumentStoreClient
+
+    for timeout in (15, 15.0, datetime.timedelta(seconds=15), pw.Duration("15s")):
+        client = DocumentStoreClient(host="localhost", port=8080, timeout=timeout)
+        assert client.timeout == 15.0
+
+    assert (
+        DocumentStoreClient(host="localhost", port=8080, timeout=None).timeout is None
+    )
+
+    with pytest.raises(ValueError, match="'timeout' must be positive"):
+        DocumentStoreClient(host="localhost", port=8080, timeout=0)

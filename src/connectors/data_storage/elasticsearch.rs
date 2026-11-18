@@ -818,9 +818,9 @@ fn summarize_failure_reasons(reasons: &[String]) -> String {
 }
 
 impl Writer for ElasticSearchWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in data.payloads {
-            let payload = payload.into_raw_bytes()?;
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        for payload in &data.payloads {
+            let payload = payload.as_raw_bytes()?.to_vec();
             let entry_bytes = bulk_entry_byte_size(payload.len());
 
             // Flush the buffered documents before this one would push the bulk

@@ -4,6 +4,7 @@ use std::any::Any;
 use std::error;
 use std::fmt;
 use std::result;
+use std::sync::Mutex;
 
 use super::ColumnPath;
 use super::{Key, Value};
@@ -167,6 +168,31 @@ const OTHER_WORKER_ERROR_MESSAGES: [&str; 3] = [
     "Send thread panic: Any { .. }",
 ];
 
+/// The panic hook records the last panic's message and source location here
+/// and `from_panic_payload` reads it back. A panic's payload carries only the
+/// message, and by the time it is caught - often on the joining thread - the
+/// `PanicHookInfo` location is gone, yet that location is exactly what makes
+/// a reported worker panic actionable. Entries are matched by message so a
+/// concurrent panic on another thread cannot mislabel the location.
+static LAST_PANIC_LOCATION: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+fn record_panic_location(message: &str, location: &std::panic::Location) {
+    if let Ok(mut guard) = LAST_PANIC_LOCATION.lock() {
+        *guard = Some((message.to_string(), location.to_string()));
+    }
+}
+
+fn take_panic_location(message: &str) -> Option<String> {
+    let mut guard = LAST_PANIC_LOCATION.lock().ok()?;
+    match guard.take() {
+        Some((recorded_message, location)) if recorded_message == message => Some(location),
+        other => {
+            *guard = other;
+            None
+        }
+    }
+}
+
 impl Error {
     pub fn from_panic_payload(panic_payload: Box<dyn Any + Send + 'static>) -> Self {
         let message = match panic_payload.downcast::<&'static str>() {
@@ -179,6 +205,10 @@ impl Error {
         if OTHER_WORKER_ERROR_MESSAGES.contains(&message.as_str()) {
             Self::OtherWorkerPanic
         } else {
+            let message = match take_panic_location(&message) {
+                Some(location) => format!("{message} (panicked at {location})"),
+                None => message,
+            };
             Self::WorkerPanic(message)
         }
     }
@@ -269,16 +299,30 @@ pub enum DataError {
     #[error("value missing")]
     ValueMissing,
 
-    #[error("key missing in input table: {0}")]
+    #[error(
+        "key {0} exists in the table but not in the universe it is restricted to: \
+        with_universe_of() requires both tables to have exactly the same ids - use restrict() \
+        or a join when they can differ"
+    )]
     KeyMissingInInputTable(Key),
 
-    #[error("key missing in output table: {0}")]
+    #[error(
+        "key {0} exists in the universe (the table providing the ids) but not in the table \
+        restricted to it: with_universe_of(), restrict(), ix() and update_cells() need every id \
+        of the universe to be present there - use a left join or ix(..., optional=True) when ids \
+        can be absent"
+    )]
     KeyMissingInOutputTable(Key),
 
     #[error("missing key: {0}")]
     MissingKey(Key),
 
-    #[error("duplicate key: {0}")]
+    #[error(
+        "duplicate key {0}: two rows with the same id reached an operation that needs unique ids \
+        (a join with id= taken from one side, update_rows()/update_cells(), or a source repeating \
+        a primary key) - drop the explicit id= from the join, deduplicate the source, or give the \
+        sources distinct primary keys"
+    )]
     DuplicateKey(Key),
 
     #[error("value error: {0}")]
@@ -305,10 +349,16 @@ pub enum DataError {
     #[error("parse error: {0}")]
     ParseError(String),
 
-    #[error("date time conversion error")]
-    DateTimeConversionError,
+    #[error("cannot convert date time {value} in timezone {timezone:?}: this local time does not exist in that timezone")]
+    DateTimeConversionError { value: String, timezone: String },
 
-    #[error("Error value in column")]
+    #[error(
+        "An error value reached an operator that cannot propagate it. Error values are \
+        produced when an earlier operation on the row failed (a UDF raised an exception, a \
+        type conversion or an arithmetic operation failed); the root cause is in the error \
+        log above. Drop such rows with table.remove_errors() or replace the error with a \
+        default using pw.fill_error() before this operator."
+    )]
     ErrorInValue,
 
     #[error("Error value encountered in filter condition, skipping the row")]
@@ -351,8 +401,31 @@ pub enum DataError {
     #[error("updating a row that does not exist, key: {0}")]
     UpdatingNonExistingRow(Key),
 
-    #[error("Expected deletion of a row with key: {0}, but got insertion instead.")]
-    ExpectedDeletion(Key),
+    #[error(
+        "Got a second insertion of a row with key: {key}, but expected a deletion of that row first. \
+        This can happen when the input source produces multiple entries with the same primary key. \
+        Duplicated row: {}. \
+        If the entries come from pw.io.python.read, you can make the connector treat them as updates \
+        by overriding the `_session_type` property of your ConnectorSubject to return \
+        `SessionType.UPSERT` (importable from `pathway.internals.api`).",
+        limit_length(format!("{values:?}"), STANDARD_OBJECT_LENGTH_LIMIT)
+    )]
+    DuplicateInsertion { key: Key, values: Vec<Value> },
+
+    #[error(
+        "Got more deletions of a row with key: {key} than insertions of that row. \
+        This can happen when the input source produces multiple deletions for the same primary key. \
+        Deleted row: {}.",
+        limit_length(format!("{values:?}"), STANDARD_OBJECT_LENGTH_LIMIT)
+    )]
+    DuplicateDeletion { key: Key, values: Vec<Value> },
+
+    #[error(
+        "Internal error: the state restored from the persisted snapshot of an operator contains \
+        a second entry for key {0}. The snapshot is inconsistent; please report this issue to \
+        the Pathway team."
+    )]
+    DuplicateKeyInRestoredState(Key),
 
     #[error("Expected table to be append-only, but got deletion for key: {0}.")]
     ExpectedAppendOnly(Key),
@@ -388,8 +461,29 @@ pub fn register_custom_panic_hook() {
             Some(message) => Some(*message),
             None => payload.downcast_ref::<String>().map(String::as_str),
         };
+        if let (Some(message), Some(location)) = (message, panic_info.location()) {
+            record_panic_location(message, location);
+        }
         if message.is_none_or(|message| !OTHER_WORKER_ERROR_MESSAGES.contains(&message)) {
             prev(panic_info);
         }
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{register_custom_panic_hook, Error};
+
+    #[test]
+    fn worker_panic_message_carries_the_panic_location() {
+        register_custom_panic_hook();
+        let payload = std::panic::catch_unwind(|| panic!("test panic for location capture"))
+            .expect_err("the closure must panic");
+        let message = Error::from_panic_payload(payload).to_string();
+        assert!(
+            message.contains("test panic for location capture"),
+            "{message}"
+        );
+        assert!(message.contains("error.rs:"), "{message}");
+    }
 }

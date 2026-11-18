@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::connectors::data_storage::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::data_storage::{CommitPossibility, ConnectorMode};
 use crate::connectors::data_tokenize::Tokenize;
+use crate::connectors::metadata::FileLikeMetadata;
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, StorageType,
 };
@@ -20,6 +21,10 @@ use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::PersistentId;
+
+/// How many times an object is read before the reader gives up on seeing it
+/// unchanged across a read (see `read_object_consistently`).
+const MAX_CONSISTENT_READ_ATTEMPTS: usize = 3;
 
 struct CurrentAction {
     action: QueuedAction,
@@ -99,13 +104,13 @@ impl Reader for PosixLikeReader {
         self.current_action = None;
         self.scanner_actions_queue.clear();
         let are_deletions_enabled = self.are_deletions_enabled();
-        let stored_metadata = self
+        let stored_tag = self
             .cached_object_storage
-            .stored_metadata(object_path_arc.as_ref());
-        if let Some(stored_metadata) = stored_metadata {
+            .stored_tag(object_path_arc.as_ref());
+        if let Some(stored_tag) = stored_tag {
             let actual_metadata = self.scanner.object_metadata(object_path_arc.as_ref())?;
             if let Some(metadata) = actual_metadata {
-                let reread_needed = stored_metadata.is_changed(&metadata);
+                let reread_needed = self.cached_object_storage.is_changed(stored_tag, &metadata);
                 if reread_needed && are_deletions_enabled {
                     info!(
                         "The last read object has changed since it was last read. It will be reread."
@@ -205,15 +210,15 @@ impl PosixLikeReader {
         loop {
             let action = self.scanner_actions_queue.pop_front();
             match &action {
-                Some(QueuedAction::Read(path, metadata)) => {
-                    let cached_object_contents = if self.only_provide_metadata {
-                        Vec::with_capacity(0)
+                Some(QueuedAction::Read(path, queued_metadata)) => {
+                    let (cached_object_contents, metadata) = if self.only_provide_metadata {
+                        (Vec::new(), queued_metadata.clone())
                     } else {
-                        match self.scanner.read_object(path.as_ref()) {
-                            Ok(contents) => contents,
+                        match self.read_object_consistently(path, queued_metadata) {
+                            Ok(contents_with_metadata) => contents_with_metadata,
                             Err(e) => {
                                 error!(
-                                    "Failed to get contents of a queued object {metadata:?}: {e}"
+                                    "Failed to get contents of a queued object {queued_metadata:?}: {e}"
                                 );
                                 continue;
                             }
@@ -222,7 +227,7 @@ impl PosixLikeReader {
                     let contents_for_caching = if are_deletions_enabled {
                         cached_object_contents.clone()
                     } else {
-                        Vec::with_capacity(0)
+                        Vec::new()
                     };
                     self.cached_object_storage.place_object(
                         path.as_ref(),
@@ -232,19 +237,18 @@ impl PosixLikeReader {
                     let reader = Box::new(Cursor::new(cached_object_contents));
                     self.tokenizer
                         .set_new_reader(reader, DataEventType::Insert)?;
-                    let result = ReadResult::NewSource(metadata.clone().into());
+                    let result = ReadResult::NewSource(metadata.into());
                     self.current_action = Some(action.unwrap().into());
                     return Ok(Some(result));
                 }
                 Some(QueuedAction::Delete(path) | QueuedAction::Update(path, _)) => {
-                    let old_metadata = self
+                    // A disk read that happens once per deletion or
+                    // modification event: the full old metadata is stored
+                    // on disk, next to the object contents, while the RAM
+                    // snapshot only keeps the compact comparison tags.
+                    let (cached_object_contents, old_metadata) = self
                         .cached_object_storage
-                        .stored_metadata(path.as_ref())
-                        .expect("Metadata for all indexed objects must be stored in the engine")
-                        .clone();
-                    let cached_object_contents = self
-                        .cached_object_storage
-                        .get_object(path.as_ref())
+                        .get_object_with_metadata(path.as_ref())
                         .expect("Copy of a cached object must be present to perform deletion");
                     self.cached_object_storage
                         .remove_object(path.as_ref())
@@ -252,7 +256,7 @@ impl PosixLikeReader {
                     let reader = Box::new(Cursor::new(cached_object_contents));
                     self.tokenizer
                         .set_new_reader(reader, DataEventType::Delete)?;
-                    let result = ReadResult::NewSource(old_metadata.clone().into());
+                    let result = ReadResult::NewSource(old_metadata.into());
                     self.current_action = Some(action.unwrap().into());
                     return Ok(Some(result));
                 }
@@ -278,6 +282,50 @@ impl PosixLikeReader {
                     }
                 }
             }
+        }
+    }
+
+    /// Reads the object that a scan queued with `queued_metadata` and
+    /// returns its contents together with the metadata they belong to.
+    ///
+    /// A scan may tag an object before its writer is done with it: a local
+    /// file is created empty and filled afterwards. The read that follows
+    /// then sees the complete contents under the stale tag, the next scan
+    /// finds the object "modified", and the reader retracts and re-inserts
+    /// rows that never changed. So, when the scanner allows objects to
+    /// change under it, the metadata is taken again after the read, and
+    /// while it differs from the one taken before, the object is read once
+    /// more. An object still changing after a few attempts is kept with the
+    /// metadata taken before its last read, so that the next scan reads it
+    /// again.
+    fn read_object_consistently(
+        &mut self,
+        path: &[u8],
+        queued_metadata: &FileLikeMetadata,
+    ) -> Result<(Vec<u8>, FileLikeMetadata), ReadError> {
+        let mut expected = queued_metadata.clone();
+        let mut attempts_left = MAX_CONSISTENT_READ_ATTEMPTS;
+        loop {
+            let contents = self.scanner.read_object(path)?;
+            if !self.scanner.can_object_change_during_read() {
+                return Ok((contents, expected));
+            }
+            let Some(actual) = self.scanner.object_metadata(path)? else {
+                // Gone right after the read: the next scan reports the deletion.
+                return Ok((contents, expected));
+            };
+            if !expected.is_changed(&actual) {
+                return Ok((contents, expected));
+            }
+            attempts_left -= 1;
+            if attempts_left == 0 {
+                warn!(
+                    "The object {} was changing while it was being read; it will be read again on the next scan",
+                    expected.path
+                );
+                return Ok((contents, expected));
+            }
+            expected = actual;
         }
     }
 

@@ -52,6 +52,12 @@ def rerank_topk_filter(
     doc_list                                                            | score_list
     (pw.Json({'text': 'Something else'}), pw.Json({'text': 'Pathway'})) | (3.0, 2.0)
     """  # noqa: E501
+    if not docs:
+        # zip(*[]) yields nothing to unpack, which would raise ValueError and panic the
+        # worker. A query that matched no documents is a normal outcome, not an error.
+        logging.info("Number of docs after rerank: 0")
+        return ([], [])
+
     docs, scores = zip(*sorted(zip(docs, scores), key=lambda tup: tup[1], reverse=True))
     logging.info(f"Number of docs after rerank: {len(docs[:k])}\nScores: {scores[:k]}")
     return (docs[:k], scores[:k])
@@ -65,11 +71,14 @@ class LLMReranker:
     Args:
         llm: Chat instance to be called during reranking.
         prompt_template: str or Callable[[str, str], str] or pw.UDF. Template to be used for
-            generating prompt for the LLM. Defaults to `prompts.prompt_rerank`.
-            The prompt template should accept two arguments, `doc` and `query`. The prompt
+            generating prompt for the LLM. Defaults to ``prompts.prompt_rerank``.
+            The prompt template should accept two arguments, ``doc`` and ``query``. The prompt
             should ask the LLM to return jsonl with an attribute 'score'.
         response_parser: pw.UDF or Callable[[str], float]. Function to parse the response from the LLM.
-            Must take a string as input and return a float. Defaults to `prompts.parse_score_json`.
+            Must take a string as input and return a float. Defaults to ``prompts.parse_score_json``.
+        call_kwargs: kwargs passed to each call of ``llm``. Defaults to ``{"temperature": 0}``.
+            Pass ``{}`` for models that accept only the default ``temperature``, such as
+            Claude Opus 4.7 and newer.
     Example:
 
     >>> import pathway as pw
@@ -95,8 +104,10 @@ class LLMReranker:
             str | Callable[[str, str], str] | pw.UDF
         ) = prompts.prompt_rerank,
         response_parser: pw.UDF | Callable[[str], float] = prompts.parse_score_json,
+        call_kwargs: dict | None = None,
     ) -> None:
         self.llm = llm
+        self.call_kwargs = {"temperature": 0} if call_kwargs is None else call_kwargs
 
         self.prompt_udf = self._get_prompt_udf(prompt_template)
         self.parse_response_udf = self._get_parse_response_udf(response_parser)
@@ -116,15 +127,11 @@ class LLMReranker:
         """
         doc, query = pw.udf(_extract_value)(doc), pw.udf(_extract_value)(query)
 
-        call_kwargs = dict(
-            temperature=0,
-        )
-
         prompt = self.prompt_udf(doc, query)
 
         response = self.llm(
             prompt_chat_single_qa(prompt),
-            **call_kwargs,
+            **self.call_kwargs,
         )
 
         if isinstance(self.llm.executor, FullyAsyncExecutor):
@@ -169,7 +176,7 @@ class CrossEncoderReranker(pw.UDF):
     Args:
         model_name: Embedding model to be used.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
 
@@ -234,7 +241,7 @@ class EncoderReranker(pw.UDF):
     Args:
         model_name: Embedding model to be used.
         cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
+            a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
 

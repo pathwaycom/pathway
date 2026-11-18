@@ -180,8 +180,8 @@ class TokenCountSplitter(BaseSplitter):
     count.
 
     This splitter tokenizes the input texts and splits them into smaller parts ("chunks")
-    ensuring that each chunk has a token count between `min_tokens` and
-    `max_tokens`. It also attempts to break chunks at sensible points such as
+    ensuring that each chunk has a token count between ``min_tokens`` and
+    ``max_tokens``. It also attempts to break chunks at sensible points such as
     punctuation marks.
     Splitter expects input to be a Pathway Live Data Framework column of strings OR pairs of strings and dict metadata.
 
@@ -190,7 +190,7 @@ class TokenCountSplitter(BaseSplitter):
     Args:
         min_tokens: minimum tokens in a chunk of text.
         max_tokens: maximum size of a chunk in tokens.
-        encoding_name: name of the encoding from `tiktoken`.
+        encoding_name: name of the encoding from ``tiktoken``.
             For a list of available encodings please refer to the tiktoken documentation:
             https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
 
@@ -259,6 +259,7 @@ class TokenCountSplitter(BaseSplitter):
         while i < len(tokens):
             chunk_tokens = tokens[i : i + max_tokens]
             chunk = tokenizer.decode(chunk_tokens)
+            consumed = len(chunk_tokens)
             last_punctuation = max(
                 [chunk.rfind(p) for p in self.PUNCTUATION], default=-1
             )
@@ -266,8 +267,24 @@ class TokenCountSplitter(BaseSplitter):
                 last_punctuation != -1
                 and last_punctuation > self.CHARS_PER_TOKEN * min_tokens
             ):
-                chunk = chunk[: last_punctuation + 1]
-            i += len(tokenizer.encode_ordinary(chunk))
+                cut_bytes = len(chunk[: last_punctuation + 1].encode("utf-8"))
+                token_bytes = 0
+                cut_tokens = 0
+                # Token boundaries can split a UTF-8 character. Count bytes rather
+                # than decoding every growing prefix to locate the punctuation cut.
+                for token in chunk_tokens:
+                    token_bytes += len(tokenizer.decode_single_token_bytes(token))
+                    if token_bytes > cut_bytes:
+                        break
+                    cut_tokens += 1
+                # If the first token straddles the cut, keep the full window so
+                # that the emitted text still matches the tokens we consume.
+                if cut_tokens:
+                    consumed = cut_tokens
+                    chunk = tokenizer.decode(chunk_tokens[:consumed])
+            # Guard against a chunk that would not advance the cursor, which would
+            # otherwise stall the loop forever.
+            i += max(consumed, 1)
             output.append((chunk, metadata))
 
         return output

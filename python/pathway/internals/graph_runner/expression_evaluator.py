@@ -705,7 +705,11 @@ class RowwiseEvaluator(
         expression: expr.ReducerExpression,
         eval_state: RowwiseEvalState | None = None,
     ):
-        raise RuntimeError("RowwiseEvaluator encountered ReducerExpression")
+        raise ValueError(
+            "Reducers (pw.reducers.*) can only be used in reduce(): pass this expression "
+            "to table.reduce(...) or table.groupby(...).reduce(...) instead of a row-wise "
+            "operation such as select(), with_columns() or filter()."
+        )
 
     def eval_pointer(
         self,

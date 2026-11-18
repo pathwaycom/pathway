@@ -6,13 +6,11 @@ use itertools::Itertools;
 use log::{debug, error, info};
 use scopeguard::guard;
 use std::cell::RefCell;
-use std::env;
 use std::mem::take;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::thread::Thread;
 use std::time::{Duration, Instant, SystemTime};
 use timely::dataflow::operators::probe::Handle;
 
@@ -21,11 +19,14 @@ pub mod backlog;
 pub mod data_format;
 pub mod data_storage;
 pub mod data_tokenize;
+pub mod exploration;
 pub mod metadata;
 pub mod monitoring;
 pub mod offset;
 pub mod posix_like;
+pub mod socket_guard;
 pub mod synchronization;
+pub mod wakeup;
 
 use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::error::{DynError, Trace};
@@ -35,6 +36,7 @@ use crate::engine::report_error::{
 use crate::engine::{DataError, Key, Value};
 
 use crate::connectors::synchronization::{ConnectorGroupAccessor, EntrySendApproval};
+use crate::connectors::wakeup::WorkerWakeup;
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
@@ -57,6 +59,16 @@ pub use offset::{Offset, OffsetKey, OffsetValue};
 const SPECIAL_FIELD_TIME: &str = "time";
 const SPECIAL_FIELD_DIFF: &str = "diff";
 const MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS: usize = 100_000;
+/// How many messages' rows the connector gathers into one channel message at
+/// most while the reader has more data already fetched.
+const CHANNEL_BATCH_SIZE: usize = 64;
+
+/// How many rows the connector lets accumulate in the input session before
+/// handing them to the dataflow ahead of the commit (see
+/// `flush_between_steps`). Small enough to split a large batch into several
+/// sorted runs, large enough not to flood the arrangements with tiny batches
+/// at high rates and short autocommits.
+const FLUSH_MIN_ROWS: usize = 32_768;
 
 /*
     Below is the custom reader stuff.
@@ -105,18 +117,18 @@ pub struct Connector {
     // timestamp, so all parallel readers agree on one minibatch for the initial
     // snapshot (see `advance_time` / the `FinishedSource` handling).
     timestamp_at_start: Timestamp,
-    // Whether the start-up batch must be coordinated across readers. This is only
-    // meaningful when several readers run in parallel (each on its own wall clock):
-    // they must agree on the boundary of the initial snapshot. With a single reader
-    // there is nothing to coordinate, so we keep the plain wall-clock behavior —
-    // crucially, this is also the case whenever persistence is enabled, where the
-    // read always runs on one worker and recovery must stay byte-for-byte identical
-    // to the long-standing single-reader path.
+    // True when the start-up batch must be kept at the shared
+    // `timestamp_at_start` until the auto-commit timer / source completion:
+    // set upfront for parallel readers of one source, and turned on after
+    // persistence recovery for single readers (see `RewindFinishSentinel`).
     coordinate_startup_batch: bool,
     num_columns: usize,
     current_frontier: OffsetAntichain,
     skip_all_errors: bool,
     error_logger: Rc<dyn LogError>,
+    // Built once on first use: `on_parsed_data` runs per message, and boxing
+    // the closure there would cost an allocation per message.
+    error_removal_logic: std::cell::OnceCell<Rc<data_format::ErrorRemovalLogic>>,
     group: Option<ConnectorGroupAccessor>,
     n_parse_attempts: usize,
     n_parse_errors_in_log: usize,
@@ -135,6 +147,9 @@ pub enum Entry {
         Offset,
         Option<Vec<EntrySendApproval>>,
     ),
+    /// Several consecutive `RealtimeEntries` (without approvals) in one
+    /// channel message, in reading order: see `Reader::has_buffered_data`.
+    RealtimeEntriesBatch(Vec<(Vec<ParsedEventWithErrors>, Offset)>),
     RealtimeEvent(ReadResult),
     RealtimeParsingError(DynError),
 }
@@ -254,6 +269,7 @@ impl Connector {
             current_frontier: OffsetAntichain::new(),
             skip_all_errors,
             error_logger,
+            error_removal_logic: std::cell::OnceCell::new(),
             group,
             n_parse_attempts: 0,
             n_parse_errors_in_log: 0,
@@ -388,17 +404,58 @@ impl Connector {
         Ok(frontier)
     }
 
+    /// How often a send blocked by backpressure wakes up to service the
+    /// reader's connection (see `Reader::keep_alive`).
+    const BACKPRESSURE_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
+
+    /// Sends an entry to the engine, blocking while the bounded channel
+    /// (`max_backlog_size` backpressure) is full. While blocked, periodically
+    /// calls `reader.keep_alive()` so the source's connection survives an
+    /// arbitrarily long stall. Returns `false` if the receiver disconnected.
+    fn send_entry_with_keep_alive(
+        sender: &Sender<Entry>,
+        reader: &mut dyn Reader,
+        mut entry: Entry,
+    ) -> bool {
+        loop {
+            match sender.send_timeout(entry, Self::BACKPRESSURE_KEEP_ALIVE_INTERVAL) {
+                Ok(()) => return true,
+                Err(channel::SendTimeoutError::Timeout(returned)) => {
+                    entry = returned;
+                    reader.keep_alive();
+                }
+                Err(channel::SendTimeoutError::Disconnected(_)) => return false,
+            }
+        }
+    }
+
+    /// Hands the gathered rows over (a lone message goes as a plain
+    /// `RealtimeEntries`); true unless the receiver is gone.
+    fn send_batch(
+        sender: &Sender<Entry>,
+        reader: &mut dyn Reader,
+        batch: &mut Vec<(Vec<ParsedEventWithErrors>, Offset)>,
+    ) -> bool {
+        let entry = match batch.len() {
+            0 => return true,
+            1 => {
+                let (entries, offset) = batch.pop().expect("one gathered message");
+                Entry::RealtimeEntries(entries, offset, None)
+            }
+            _ => Entry::RealtimeEntriesBatch(take(batch)),
+        };
+        Self::send_entry_with_keep_alive(sender, reader, entry)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn read_realtime_updates(
         reader: &mut dyn Reader,
         parser: &mut dyn Parser,
         sender: &Sender<Entry>,
-        main_thread: &Thread,
+        wakeup: &WorkerWakeup,
         error_reporter: &(impl ReportError + 'static),
         mut group: Option<ConnectorGroupAccessor>,
     ) {
-        let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
-        let mut amt_send = 0;
         let mut consecutive_errors = 0;
         // Backoff applied between failed `reader.read()` calls. This loop
         // otherwise re-invokes `read()` immediately, so a reader stuck on a
@@ -410,7 +467,21 @@ impl Connector {
         // reset after any successful read so an isolated error doesn't slow
         // down steady reading.
         let mut error_backoff = RetryConfig::default();
+        // Rows gathered for one channel message; handed over before anything
+        // else is sent, when full, and before a `read()` that may wait.
+        let mut batch: Vec<(Vec<ParsedEventWithErrors>, Offset)> = Vec::new();
         loop {
+            if !batch.is_empty() && !reader.has_buffered_data() {
+                if !Self::send_batch(sender, reader, &mut batch) {
+                    break;
+                }
+                // The engine's thread was notified when these rows were
+                // gathered, before they were in the channel; a thread that
+                // looked then and parked again would find them only at its
+                // next timer, so notify it once more now that the rows are
+                // there.
+                wakeup.notify();
+            }
             let row_read_result = reader.read();
             let finished = matches!(row_read_result, Ok(ReadResult::Finished));
             let is_read_error = row_read_result.is_err();
@@ -419,7 +490,14 @@ impl Connector {
                 Ok(ReadResult::Data(reader_context, offset)) => {
                     match parser.parse(&reader_context) {
                         Ok(entries) => {
-                            if let Some(group) = group.as_mut() {
+                            if group.is_none() {
+                                batch.push((entries, offset));
+                                if batch.len() >= CHANNEL_BATCH_SIZE
+                                    && !Self::send_batch(sender, reader, &mut batch)
+                                {
+                                    break;
+                                }
+                            } else if let Some(group) = group.as_mut() {
                                 let mut entries_for_sending = Vec::new();
                                 let mut approvals = Vec::new();
                                 let mut disconnected = false;
@@ -427,12 +505,16 @@ impl Connector {
                                     let mut can_be_sent = group.can_entry_be_sent(&entry);
                                     while can_be_sent.is_wait() {
                                         if !entries_for_sending.is_empty() {
-                                            let send_res = sender.send(Entry::RealtimeEntries(
-                                                take(&mut entries_for_sending),
-                                                offset.clone(),
-                                                Some(take(&mut approvals)),
-                                            ));
-                                            if send_res.is_err() {
+                                            let sent = Self::send_entry_with_keep_alive(
+                                                sender,
+                                                reader,
+                                                Entry::RealtimeEntries(
+                                                    take(&mut entries_for_sending),
+                                                    offset.clone(),
+                                                    Some(take(&mut approvals)),
+                                                ),
+                                            );
+                                            if !sent {
                                                 disconnected = true;
                                                 break;
                                             }
@@ -449,25 +531,28 @@ impl Connector {
                                     entries_for_sending.push(entry);
                                     approvals.push(approval);
                                 }
-                                let send_res = sender.send(Entry::RealtimeEntries(
-                                    take(&mut entries_for_sending),
-                                    offset,
-                                    Some(take(&mut approvals)),
-                                ));
-                                if disconnected || send_res.is_err() {
-                                    break;
-                                }
-                            } else {
-                                let send_res =
-                                    sender.send(Entry::RealtimeEntries(entries, offset, None));
-                                if send_res.is_err() {
+                                let sent = Self::send_entry_with_keep_alive(
+                                    sender,
+                                    reader,
+                                    Entry::RealtimeEntries(
+                                        take(&mut entries_for_sending),
+                                        offset,
+                                        Some(take(&mut approvals)),
+                                    ),
+                                );
+                                if disconnected || !sent {
                                     break;
                                 }
                             }
                         }
                         Err(e) => {
-                            let send_res = sender.send(Entry::RealtimeParsingError(e));
-                            if send_res.is_err() {
+                            let sent = Self::send_batch(sender, reader, &mut batch)
+                                && Self::send_entry_with_keep_alive(
+                                    sender,
+                                    reader,
+                                    Entry::RealtimeParsingError(e),
+                                );
+                            if !sent {
                                 break;
                             }
                         }
@@ -477,17 +562,32 @@ impl Connector {
                     if let ReadResult::NewSource(ref metadata) = other_read_result {
                         parser.on_new_source_started(metadata);
                     }
-                    let send_res = sender.send(Entry::RealtimeEvent(other_read_result));
-                    if send_res.is_err() {
+                    let sent = Self::send_batch(sender, reader, &mut batch)
+                        && Self::send_entry_with_keep_alive(
+                            sender,
+                            reader,
+                            Entry::RealtimeEvent(other_read_result),
+                        );
+                    if !sent {
                         break;
                     }
                     consecutive_errors = 0;
                 }
                 Err(error) => {
+                    // The gathered rows must not wait out the backoff below.
+                    if !Self::send_batch(sender, reader, &mut batch) {
+                        break;
+                    }
                     error!("There had been an error processing the row read result: {error}");
                     consecutive_errors += 1;
                     if consecutive_errors > reader.max_allowed_consecutive_errors() {
                         error_reporter.report(EngineError::ReaderFailed(Box::new(error)));
+                        // The reported error takes the whole pipeline down, and
+                        // the error path of the run never joins connector
+                        // threads — without this `break` the thread outlives
+                        // the run, retrying and logging the same error forever
+                        // in the host process.
+                        break;
                     }
                     // Pause before the loop retries `read()`, growing the delay
                     // while errors persist (see `error_backoff` above).
@@ -503,14 +603,7 @@ impl Connector {
                 break;
             }
 
-            if use_rare_wakeup {
-                amt_send += 1;
-                if amt_send % 50 == 0 {
-                    main_thread.unpark();
-                }
-            } else {
-                main_thread.unpark();
-            }
+            wakeup.notify();
         }
     }
 
@@ -628,7 +721,7 @@ impl Connector {
         assert_eq!(self.num_columns, parser.column_count());
         self.timestamp_at_start = timestamp_at_start;
 
-        let main_thread = thread::current();
+        let wakeup = wakeup::for_current_thread();
         let (sender, receiver) = match max_backlog_size {
             Some(size) => channel::bounded(size),
             None => channel::unbounded(),
@@ -653,6 +746,11 @@ impl Connector {
         .map_err(|e| EngineError::SnapshotWriter(Box::new(e)))?;
 
         let realtime_reader_group = self.group.clone();
+        // Deferred broker acknowledgements are pointless without the input
+        // snapshot: the ack frontier is derived from the snapshot's
+        // `AdvanceTime` records. Leaving the worker untaken keeps the reader
+        // acknowledging inline, exactly as in a non-persisted run.
+        let deferred_acks_supported = snapshot_writer.is_some();
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
             .spawn_with_reporter(error_reporter, move |reporter| {
@@ -660,10 +758,22 @@ impl Connector {
                     // ensure that we always unpark the main thread after dropping the sender, so it
                     // notices we are done sending
                     drop(sender);
-                    main_thread.unpark();
+                    wakeup.wake();
                 });
 
                 let mut reader = reader.build()?;
+                if deferred_acks_supported {
+                    if let (Some(persistent_storage), Some(persistent_id)) =
+                        (persistent_storage.as_ref(), persistent_id)
+                    {
+                        if let Some(ack_worker) = reader.take_deferred_ack_worker() {
+                            persistent_storage
+                                .lock()
+                                .unwrap()
+                                .register_deferred_ack_worker(persistent_id, ack_worker);
+                        }
+                    }
+                }
                 Self::read_snapshot(
                     &mut *reader,
                     persistent_storage.as_ref(),
@@ -680,7 +790,7 @@ impl Connector {
                         &mut *reader,
                         &mut *parser,
                         &sender,
-                        &main_thread,
+                        &wakeup,
                         reporter,
                         realtime_reader_group,
                     );
@@ -734,6 +844,7 @@ impl Connector {
 
             self.backlog_tracker.advance_with_probe(&output_probe);
             let mut n_entries_in_batch = 0;
+            let mut rows_since_flush = 0;
             loop {
                 if let Some(max_backlog_size) = max_backlog_size {
                     if self.backlog_tracker.backlog_size() >= max_backlog_size && commit_allowed {
@@ -760,7 +871,8 @@ impl Connector {
                 // So once the number of events within a single batch reaches the limit, we
                 // yield to timely to perform the work. That may or may not lead to time advancement.
                 n_entries_in_batch += 1;
-                if n_entries_in_batch == MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS {
+                if n_entries_in_batch >= MAX_EVENTS_BETWEEN_TWO_TIMELY_STEPS {
+                    Self::flush_between_steps(&mut parse_context, &mut rows_since_flush);
                     return ControlFlow::Continue(next_commit_at);
                 }
                 match receiver.try_recv() {
@@ -790,6 +902,10 @@ impl Connector {
                         return ControlFlow::Continue(Some(iteration_start));
                     }
                     Ok(mut entry) => {
+                        if let Entry::RealtimeEntriesBatch(ref gathered) = entry {
+                            // A batch counts as its messages towards the step limit.
+                            n_entries_in_batch += gathered.len().saturating_sub(1);
+                        }
                         let need_to_defer_processing = match entry {
                             Entry::RealtimeEvent(ReadResult::NewSource(ref metadata)) => {
                                 // Deferring events is only necessary when the data source
@@ -825,7 +941,7 @@ impl Connector {
                         }
                         deferred_events.push(entry);
                         for entry in take(&mut deferred_events) {
-                            self.handle_input_entry(
+                            rows_since_flush += self.handle_input_entry(
                                 entry,
                                 &mut backfilling_finished,
                                 &mut commit_allowed,
@@ -854,6 +970,7 @@ impl Connector {
                                 }
                             }
                         }
+                        Self::flush_between_steps(&mut parse_context, &mut rows_since_flush);
                         return ControlFlow::Continue(next_commit_at);
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -870,35 +987,89 @@ impl Connector {
         ))
     }
 
+    /// Returns how many rows the message put into the input session.
+    fn handle_realtime_entries<F>(
+        &mut self,
+        mut parsed_entries: Vec<ParsedEventWithErrors>,
+        offset: Offset,
+        approvals: Option<Vec<EntrySendApproval>>,
+        backfilling_finished: bool,
+        ctx: &mut ParseContext<'_, F>,
+    ) -> usize
+    where
+        F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+    {
+        if !backfilling_finished {
+            parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
+        }
+        let rows = parsed_entries.len();
+
+        if let Some(group) = &self.group {
+            if group.forced_time_advancement().is_some() {
+                parsed_entries.insert(0, ParsedEventWithErrors::AdvanceTime);
+            }
+        }
+
+        self.on_parsed_data(parsed_entries, Some(&offset.clone()), ctx);
+        let (offset_key, offset_value) = offset;
+        if ctx.snapshot_writer.is_some() {
+            assert!(backfilling_finished);
+            self.current_frontier
+                .advance_offset(offset_key, offset_value);
+        }
+
+        if let Some(approvals) = approvals {
+            self.group
+                .as_mut()
+                .expect("if approvals are dispatched there must be a synchronization group")
+                .report_entries_sent(approvals);
+        }
+        rows
+    }
+
+    /// Hands the rows ingested since the last dataflow step to the dataflow
+    /// now, at the current (unchanged) time, instead of holding them until
+    /// the batch commits. The operators then sort and merge them in small
+    /// runs spread over the batch's window, rather than in one burst at the
+    /// commit: with large batches (a long `autocommit_duration_ms` at a high
+    /// rate) that burst is what let the worker fall behind. Upsert sessions
+    /// keep their buffer whole, since they consolidate a batch's updates
+    /// per key before sending them.
+    fn flush_between_steps<F>(ctx: &mut ParseContext<'_, F>, rows_since_flush: &mut usize)
+    where
+        F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
+    {
+        if *rows_since_flush >= FLUSH_MIN_ROWS && matches!(ctx.session_type, SessionType::Native) {
+            ctx.input_session.flush();
+            *rows_since_flush = 0;
+        }
+    }
+
+    /// Returns how many rows the entry put into the input session.
     fn handle_input_entry<F>(
         &mut self,
         entry: Entry,
         backfilling_finished: &mut bool,
         commit_allowed: &mut bool,
         ctx: &mut ParseContext<'_, F>,
-    ) where
+    ) -> usize
+    where
         F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
     {
+        let mut rows = 0;
         match entry {
             Entry::RealtimeEvent(read_result) => match read_result {
                 ReadResult::Finished => {}
                 ReadResult::FinishedSource { commit_possibility } => {
                     *commit_allowed = commit_possibility.commit_allowed();
-                    // With several parallel readers, keep the start-up batch
-                    // together: while we are still at the shared `timestamp_at_start`,
-                    // don't let per-file wall-clock advances split the initial
-                    // snapshot across minibatches. Otherwise parallel readers, each
-                    // advancing on their own wall clock, would disagree on the
-                    // boundary and expose stateful operators (e.g. `iterate`) to
-                    // partial input. The batch is closed instead by the auto-commit
-                    // timer / source completion. Forced commits (synchronization
-                    // groups) still advance.
-                    //
-                    // With a single reader (always the case under persistence) there
-                    // is nothing to coordinate, so we keep the original wall-clock
-                    // behavior to leave the persisted recovery path unchanged.
+                    // Don't split the coordinated start-up batch on per-file
+                    // wall-clock advances: it is closed by the auto-commit timer,
+                    // `*COMMIT*` messages, forced commits or source completion.
+                    // Without an auto-commit timer a streaming source might have
+                    // none of these, so there we do let `FinishedSource` close it.
                     let in_startup_batch = self.coordinate_startup_batch
-                        && self.current_timestamp <= self.timestamp_at_start;
+                        && self.current_timestamp <= self.timestamp_at_start
+                        && self.commit_duration.is_some();
                     let commit_needed = commit_possibility.commit_forced()
                         || (!in_startup_batch && self.has_clock_advanced());
                     if *commit_allowed && commit_needed {
@@ -916,30 +1087,24 @@ impl Connector {
             Entry::RealtimeParsingError(e) => {
                 self.log_parse_error(e);
             }
-            Entry::RealtimeEntries(mut parsed_entries, offset, approvals) => {
-                if !*backfilling_finished {
-                    parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
-                }
-
-                if let Some(group) = &self.group {
-                    if group.forced_time_advancement().is_some() {
-                        parsed_entries.insert(0, ParsedEventWithErrors::AdvanceTime);
-                    }
-                }
-
-                self.on_parsed_data(parsed_entries, Some(&offset.clone()), ctx);
-                let (offset_key, offset_value) = offset;
-                if ctx.snapshot_writer.is_some() {
-                    assert!(*backfilling_finished);
-                    self.current_frontier
-                        .advance_offset(offset_key, offset_value);
-                }
-
-                if let Some(approvals) = approvals {
-                    self.group
-                        .as_mut()
-                        .expect("if approvals are dispatched there must be a synchronization group")
-                        .report_entries_sent(approvals);
+            Entry::RealtimeEntries(parsed_entries, offset, approvals) => {
+                rows = self.handle_realtime_entries(
+                    parsed_entries,
+                    offset,
+                    approvals,
+                    *backfilling_finished,
+                    ctx,
+                );
+            }
+            Entry::RealtimeEntriesBatch(gathered) => {
+                for (parsed_entries, offset) in gathered {
+                    rows += self.handle_realtime_entries(
+                        parsed_entries,
+                        offset,
+                        None,
+                        *backfilling_finished,
+                        ctx,
+                    );
                 }
             }
             Entry::RewindFinishSentinel {
@@ -951,28 +1116,22 @@ impl Connector {
                 self.current_frontier = restored_frontier;
 
                 if needs_time_advancement {
-                    if self.coordinate_startup_batch {
-                        // Advance to the shared `timestamp_at_start` (not each
-                        // worker's own wall clock), so every parallel reader opens
-                        // the start-up batch at the very same timestamp.
-                        let target = self.timestamp_at_start;
-                        let time_advanced = self.advance_time_to(ctx.input_session, target);
-                        ctx.connector_monitor.borrow_mut().commit();
-                        if let Some(snapshot_writer) = ctx.snapshot_writer {
-                            snapshot_writer
-                                .lock()
-                                .unwrap()
-                                .write(&SnapshotEvent::AdvanceTime(
-                                    time_advanced,
-                                    self.current_frontier.clone(),
-                                ));
-                        }
-                    } else {
-                        // Single reader (always the case under persistence): keep the
-                        // original wall-clock advancement so the persisted recovery
-                        // path is unchanged.
-                        let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
-                        self.on_parsed_data(parsed_entries, None, ctx); // no key generation for time advancement
+                    // Open the start-up batch at the shared `timestamp_at_start`,
+                    // so every source sees post-recovery data at one timestamp —
+                    // otherwise cross-source operators (ix, join with id=...)
+                    // hit spurious "key missing" errors on restart.
+                    self.coordinate_startup_batch = true;
+                    let target = self.timestamp_at_start;
+                    let time_advanced = self.advance_time_to(ctx.input_session, target);
+                    ctx.connector_monitor.borrow_mut().commit();
+                    if let Some(snapshot_writer) = ctx.snapshot_writer {
+                        snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&SnapshotEvent::AdvanceTime(
+                                time_advanced,
+                                self.current_frontier.clone(),
+                            ));
                     }
                 }
                 info!(
@@ -995,6 +1154,7 @@ impl Connector {
                 }
             }
         }
+        rows
     }
 
     fn on_insert(key: Key, values: Vec<Value>, input_session: &mut dyn InputAdaptor<Timestamp>) {
@@ -1013,17 +1173,23 @@ impl Connector {
     ) where
         F: FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
     {
-        let error_logger = self.error_logger.clone();
-        let error_handling_logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
-            Box::new(move |values| values.into_iter().try_collect())
-        } else {
-            Box::new(move |values| {
-                Ok(values
-                    .into_iter()
-                    .map(|value| value.unwrap_or_log(error_logger.as_ref(), Value::Error))
-                    .collect())
+        let error_handling_logic = self
+            .error_removal_logic
+            .get_or_init(|| {
+                let error_logger = self.error_logger.clone();
+                let logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
+                    Box::new(move |values| values.into_iter().try_collect())
+                } else {
+                    Box::new(move |values| {
+                        Ok(values
+                            .into_iter()
+                            .map(|value| value.unwrap_or_log(error_logger.as_ref(), Value::Error))
+                            .collect())
+                    })
+                };
+                Rc::new(logic)
             })
-        }; // logic to handle errors in values
+            .clone(); // logic to handle errors in values
         for entry in parsed_entries {
             let entry = match entry.remove_errors(&error_handling_logic) {
                 Ok(entry) => {

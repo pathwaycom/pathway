@@ -655,7 +655,7 @@ impl IcebergBatchWriter {
         >,
         WriteError,
     > {
-        let location_generator = DefaultLocationGenerator::new(table.metadata().clone())?;
+        let location_generator = DefaultLocationGenerator::new(table.metadata())?;
         let file_name_generator = DefaultFileNameGenerator::new(
             // Include a random uuid so two batches flushed within the same
             // millisecond can never generate the same parquet path. The
@@ -1320,6 +1320,7 @@ impl IcebergReader {
         let entries: Vec<_> = reader_builder
             .build()
             .read(iceberg_task_stream)?
+            .stream()
             .try_collect()
             .await?;
         let mut result = Vec::new();

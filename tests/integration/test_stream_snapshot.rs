@@ -397,3 +397,49 @@ fn test_stream_snapshot_stateless() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_commit_threshold_never_precedes_run_start() -> eyre::Result<()> {
+    let test_storage = tempdir()?;
+    let test_storage_path = test_storage.path();
+
+    let tracker = super::helpers::create_persistence_manager_with_run_start(
+        test_storage_path,
+        true,
+        Some(Timestamp(100)),
+    );
+    let mock_sink_id = tracker.lock().unwrap().register_sink();
+
+    // A time before the run start must not be committed: it could only
+    // certify snapshot leftovers of an earlier (crashed) run.
+    tracker
+        .lock()
+        .unwrap()
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(10)))?;
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        TotalFrontier::At(Timestamp(0))
+    );
+
+    // Times from the run's own range commit as usual.
+    tracker
+        .lock()
+        .unwrap()
+        .update_sink_finalized_time(mock_sink_id, Some(Timestamp(102)))?;
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        TotalFrontier::At(Timestamp(102))
+    );
+
+    // The end of the computation commits as usual.
+    tracker
+        .lock()
+        .unwrap()
+        .update_sink_finalized_time(mock_sink_id, None)?;
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        TotalFrontier::Done
+    );
+
+    Ok(())
+}

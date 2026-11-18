@@ -22,14 +22,15 @@ dependencies = [
     "pandas >= 2.1",
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
-    "pyarrow >= 10.0.0, < 25.0.0",
+    "pyarrow >= 10.0.0, < 26.0.0; python_version < '3.15'",
+    "pyarrow >= 26.0.0, < 27.0.0; python_version >= '3.15'",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",
-    "beartype >= 0.14.0, < 0.16.0",
+    "beartype >= 0.14.0, < 0.23.0; python_version < '3.15'",
+    "beartype >= 0.23.1, < 0.24.0; python_version >= '3.15'",
     "rich >= 12.6.0",
     "diskcache >= 5.2.1",
     "exceptiongroup >= 1.1.3; python_version < '3.11'",
-    "boto3 >= 1.26.76, < 2.0.0",
     "google-api-python-client >= 2.108.0",
     "typing_extensions >= 4.8.0",
     "panel >= 1.3.1",
@@ -42,10 +43,10 @@ dependencies = [
     "async-lru >= 2.0.4",
     "networkx >= 3.2.1",
     "google-cloud-pubsub >= 2.21.1",
-    "google-cloud-bigquery ~= 3.29.0",
+    "google-cloud-bigquery >= 3.29.0, < 4.0.0",
     "pydantic ~= 2.9",
     "gitpython >= 3.1.43",
-    "deltalake >= 0.17.0, < 0.18.0",
+    "deltalake >= 1.6.0, < 2.0.0",
     "sqlalchemy >= 2.0.43",
     "sqlmodel >= 0.0.24",
     "fastapi >= 0.116.1",
@@ -65,25 +66,54 @@ sql = [
     "sqlglot == 10.6.1", # the new versions are incompatible with the current pw.sql Implementation
 ]
 xpack-llm = [
-    "openai ~= 1.60",
-    "litellm ~= 1.44, < 1.77.3",
-    "cohere ~= 5.1",
+    "openai >= 2.20, < 3.0",
+    # >= 1.92 ships no macOS wheels (Rust bridge, sdist needs cargo with edition2024)
+    "litellm >= 1.84.0, < 1.92; python_version < '3.14'",
+    # on 3.14 the choice is narrow: 1.84-1.92 declare requires-python < 3.14,
+    # >= 1.93 ships no macOS wheels, and 1.83.1-1.83.7 pin python-dotenv==1.0.1,
+    # which conflicts with fastmcp; 1.83.0 installs everywhere
+    "litellm == 1.83.0; python_version >= '3.14'",
+    "cohere >= 5.1, < 8.0",
     "tiktoken >= 0.5",
-    "aioboto3 >= 13.0.0",
+    # aiobotocore 3.x declares a ranged botocore window; aioboto3 (stale, pins an
+    # exact aiobotocore/botocore) was dropped to keep pip out of the boto lattice
+    "aiobotocore >= 3.0.0",
     "langchain >= 0.2.0, < 0.4.0",
     "langchain_community >= 0.2.0, < 0.4.0",
-    "llama-index-core >= 0.10.0, < 0.13.0",
+    "llama-index-core >= 0.13.0, < 0.15.0",
     "llama-index-readers-pathway >= 0.1.3",
     "llama-index-retrievers-pathway >= 0.1.3",
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
     "instructor ~= 1.2",
     "google-generativeai ~= 0.8.4",
-    "google-api-core ~= 2.24.1",
-    "fastmcp >= 2.11.0, < 2.13.0",
+    "google-api-core >= 2.24.1, < 3.0.0",
+    # google-generativeai's google-ai-generativelanguage dependency forces
+    # protobuf < 6; stating it up front keeps pip from backtracking through
+    # dozens of grpcio-status / grpc-google-iam-v1 releases (newer ones require
+    # protobuf 6) before discovering the cap on its own
+    "protobuf >= 5.26.1, < 6.0.0",
+    # the google ecosystem is migrating to protobuf 6 one package at a time;
+    # each of the caps below marks the last protobuf-5-compatible release. They
+    # follow from the protobuf cap above, but stating them explicitly keeps
+    # pip's resolver from discovering each one by walking whole version ranges
+    # (grpcio-status alone has dozens of releases to reject otherwise)
+    "googleapis-common-protos < 1.75.1",
+    "grpcio-status < 1.72",
+    "grpc-google-iam-v1 < 0.14.5",
+    "proto-plus < 1.28.3",
+    # fastmcp >= 2.13 requires platformdirs >= 4, which is incompatible with the
+    # dvc 2.x line the monorepo environment still needs; revisit after the dvc 3
+    # migration of the .dvc metadata lands. >= 2.12 because 2.11.x declares an
+    # unbounded mcp >= 1.10, which sends pip's resolver into deep backtracking
+    # now that mcp 2.x is on PyPI
+    "fastmcp >= 2.12.0, < 2.13.0",
+    # FastMCP 2.12 pins mcp < 1.17, which imports eval_type_backport from
+    # Pydantic's internals. Pydantic 2.14 removed that function.
+    "pydantic < 2.14",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
-    "sentence_transformers", 
-    "transformers >= 4.42.0, <= 4.49.0",  # >= 4.50.2, this can be updated after docling updates
+    "sentence_transformers",
+    "transformers >= 4.50.2, < 5.0",
 ]
 xpack-llm-docs = [
     "docling >= 2.27, < 2.67.0",
@@ -93,11 +123,28 @@ xpack-llm-docs = [
     "pdf2image",
     "pypdf",
     # unstructured dependency, but unstructured doesn't force this version even though it's needed
-    "pdfminer.six == 20250506",
-    "paddleocr[doc-parser] >= 3.3.1, < 4.0.0",
+    "pdfminer.six == 20260107",
+    # unstructured dependency; nltk 3.10.1 ships an import hook that aborts
+    # imports resolved while the CWD is on sys.path, which breaks `import nltk`
+    # in ordinary `python script.py` and `python -m pytest` runs. Revisit when
+    # a release relaxes the hook.
+    "nltk < 3.10.1",
+    # The whole paddle stack is unavailable on Python 3.14: paddlepaddle has
+    # no cp314 wheels, and paddlex pins pyyaml==6.0.2, which only builds from
+    # source there. The parser reports a clear error when paddleocr is absent.
+    "paddleocr[doc-parser] >= 3.3.1, < 4.0.0; python_version < '3.14'",
+    # `paddlex` pins `opencv-contrib-python == 4.10.0.84` while `unstructured`
+    # and `rapidocr` pull an unconstrained `opencv-python`. Both distributions
+    # install the same `cv2/*` files, and OpenCV 5 dropped the G-API Python glue
+    # that OpenCV 4 ships, so a mixed 4/5 install makes `import cv2` fail with
+    # `module 'cv2' has no attribute 'gapi_wip_gst_GStreamerPipeline'`.
+    "opencv-python < 5",
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
+]
+twelvelabs = [
+    "twelvelabs >= 1.2.8",
 ]
 all = [
     "pathway[pyfilesystem]",
@@ -108,12 +155,13 @@ all = [
     "pathway[xpack-sharepoint]",
     "pathway[airbyte]",
     "pathway[milvus]",
+    "pathway[twelvelabs]",
 ]
-# Dependencies for core tests without the optional ML/document processing stack.
+# Core package tests do not require the ML/document dependency stack.
 tests-core = [
-    "pytest >= 8.0.0, < 9.0.0",
-    "pytest-xdist >= 3.3.1, < 4.0.0",
-    "pytest-rerunfailures >= 13.0, < 14.0",
+    "pytest >= 9.0.3, < 10.0.0",
+    "pytest-xdist >= 3.8.0, < 4.0.0",
+    "pytest-rerunfailures >= 16.2, < 17.0",
     "pytest-asyncio >= 1.2.0",
     "pytest-timeout >= 2.3.0, < 3.0.0",
     "python-louvain",
@@ -121,17 +169,28 @@ tests-core = [
     "kafka-python >= 2.0.2",
     "python-magic",
     "pathway[pyfilesystem,sql,airbyte]",
+    # Test databases must be readable by the bundled DuckDB 1.x engine;
+    # DuckDB 2.x creates an incompatible storage format by default.
+    # No CPython 3.15 wheels yet; the DuckDB tests already use importorskip.
+    "duckdb >= 1.0.0, < 2.0.0; python_version < '3.15'",
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
+    "aiobotocore >= 3.0.0",
+    # Integration tests also verify AWS results through boto3.
+    "boto3 >= 1.26.76, < 2.0.0",
 ]
+# Preserve the complete test extra for development and extras verification.
 tests = [
     "pathway[tests-core]",
     "pathway[all]",
+    "duckdb >= 1.0.0, < 2.0.0",
     "fpdf",
-    "paddlepaddle >= 3.2.0, < 3.3.0", # required by paddleocr
-    "paddlex >= 3.0.0, <= 3.3.8",  # pinning the latest working version, then the format changes
-    "aioboto3 >= 13.0.0",
+    # paddlepaddle has no CPython 3.14 wheels yet; the paddle-based parser
+    # degrades gracefully when the import is missing.
+    "paddlepaddle >= 3.2.0, < 3.3.0; python_version < '3.14'", # required by paddleocr
+    "paddlex >= 3.0.0; python_version < '3.14'",
 ]
+
 airbyte = [
     "google-cloud-run",
     "google-cloud-secret-manager",
@@ -171,6 +230,11 @@ check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
+
+# transformers >= 4.50 ships py.typed and crashes mypy < 1.11 when analyzed
+[[tool.mypy.overrides]]
+module = "transformers.*"
+follow_imports = "skip"
 
 [tool.isort]
 profile = "black"

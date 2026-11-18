@@ -168,3 +168,17 @@ def test_invalid_prompt_template_raises_error(prompt: str):
 
     assert "context" in err_msg
     assert "query" in err_msg
+
+
+def test_rag_client_accepts_all_timeout_forms():
+    import datetime
+
+    from pathway.xpacks.llm.question_answering import RAGClient
+
+    for timeout in (90, 90.0, datetime.timedelta(seconds=90), pw.Duration("90s")):
+        client = RAGClient(url="http://localhost:8080", timeout=timeout)
+        assert client.timeout == 90.0
+        assert client.index_client.timeout == 90.0
+
+    with pytest.raises(ValueError, match="'timeout' must be positive"):
+        RAGClient(url="http://localhost:8080", timeout=-1)

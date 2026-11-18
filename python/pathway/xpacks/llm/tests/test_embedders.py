@@ -8,7 +8,11 @@ import os
 import pytest
 
 import pathway as pw
-from pathway.internals.udfs import DiskCache, ExponentialBackoffRetryStrategy
+from pathway.internals.udfs import (
+    DiskCache,
+    ExponentialBackoffRetryStrategy,
+    FixedDelayRetryStrategy,
+)
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm import embedders
 
@@ -128,3 +132,161 @@ def test_bedrock_embedder_extra_kwargs():
 
     assert embedder.kwargs.get("dimensions") == 512
     assert embedder.kwargs.get("normalize") is True
+
+
+# ===== Retries on direct `__wrapped__` calls =====
+
+
+@pytest.mark.asyncio
+async def test_openai_embedder_wrapped_retries_transient_errors():
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(
+        model="text-embedding-3-small",
+        api_key="mock-key",
+        truncation_keep_strategy=None,
+        retry_strategy=FixedDelayRetryStrategy(max_retries=4, delay_ms=1),
+    )
+
+    ok_response = MagicMock()
+    ok_response.data = [MagicMock(embedding=[0.1, 0.2])]
+    create = AsyncMock(
+        side_effect=[RuntimeError("connection reset by peer"), ok_response]
+    )
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    result = await embedder.__wrapped__(["."])
+
+    assert len(result) == 1
+    assert result[0].shape == (2,)
+    assert create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_wrapped_retries_transient_errors():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    embedder = embedders.LiteLLMEmbedder(
+        model="text-embedding-3-small",
+        retry_strategy=FixedDelayRetryStrategy(max_retries=4, delay_ms=1),
+    )
+
+    ok_response = MagicMock()
+    ok_response.data = [{"embedding": [0.1, 0.2]}]
+    aembedding = AsyncMock(
+        side_effect=[RuntimeError("connection reset by peer"), ok_response]
+    )
+
+    with patch("litellm.aembedding", aembedding):
+        result = await embedder.__wrapped__(".")
+
+    assert result.shape == (2,)
+    assert aembedding.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_bedrock_embedder_wrapped_retries_transient_errors():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    embedder = embedders.BedrockEmbedder(
+        model_id="amazon.titan-embed-text-v2:0",
+        region_name="us-east-1",
+        retry_strategy=FixedDelayRetryStrategy(max_retries=4, delay_ms=1),
+    )
+
+    body = MagicMock()
+    body.read = AsyncMock(return_value=json.dumps({"embedding": [0.1, 0.2]}))
+    mock_client = AsyncMock()
+    mock_client.invoke_model = AsyncMock(
+        side_effect=[RuntimeError("connection reset by peer"), {"body": body}]
+    )
+    mock_client_cm = AsyncMock()
+    mock_client_cm.__aenter__.return_value = mock_client
+    mock_client_cm.__aexit__.return_value = None
+    mock_session = MagicMock()
+    mock_session.create_client.return_value = mock_client_cm
+
+    with patch.object(embedder, "_session", mock_session):
+        result = await embedder.__wrapped__("hello")
+
+    assert result.shape == (2,)
+    assert mock_client.invoke_model.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_marengo_embedder_wrapped_retries_transient_errors():
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.MarengoEmbedder(
+        retry_strategy=FixedDelayRetryStrategy(max_retries=4, delay_ms=1),
+    )
+
+    segment = MagicMock()
+    segment.float_ = [0.1, 0.2]
+    ok_response = MagicMock()
+    ok_response.text_embedding.segments = [segment]
+    create = AsyncMock(
+        side_effect=[RuntimeError("connection reset by peer"), ok_response]
+    )
+    embedder._aclient = MagicMock()
+    embedder._aclient.embed.create = create
+
+    result = await embedder.__wrapped__(["hi"])
+
+    assert len(result) == 1
+    assert result[0].shape == (2,)
+    assert create.await_count == 2
+
+
+# ===== `get_embedding_dimension` =====
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [("text-embedding-3-small", 1536), ("text-embedding-3-large", 3072)],
+)
+def test_openai_embedder_dimension_of_known_model_sends_no_request(
+    model: str, expected: int
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(model=model, api_key="mock-key")
+    create = AsyncMock(side_effect=AssertionError("should not be called"))
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    assert embedder.get_embedding_dimension() == expected
+    assert create.await_count == 0
+
+
+def test_openai_embedder_dimension_of_unknown_model_is_computed():
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(
+        model="custom-embedder", api_key="mock-key", truncation_keep_strategy=None
+    )
+    response = MagicMock()
+    response.data = [MagicMock(embedding=[0.1, 0.2, 0.3])]
+    create = AsyncMock(return_value=response)
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    assert embedder.get_embedding_dimension() == 3
+    assert create.await_count == 1
+
+
+def test_openai_embedder_dimension_with_shortened_vectors_is_computed():
+    from unittest.mock import AsyncMock, MagicMock
+
+    embedder = embedders.OpenAIEmbedder(
+        model="text-embedding-3-large", api_key="mock-key", dimensions=2
+    )
+    response = MagicMock()
+    response.data = [MagicMock(embedding=[0.1, 0.2])]
+    create = AsyncMock(return_value=response)
+    embedder.client = MagicMock()
+    embedder.client.embeddings.create = create
+
+    assert embedder.get_embedding_dimension() == 2
+    assert create.await_count == 1

@@ -12,6 +12,16 @@ use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
 
+/// Attaches the offending path to a filesystem error: a bare
+/// "Permission denied (os error 13)" from a persistence backend gives the
+/// operator nothing to act on.
+fn io_with_path(error: std::io::Error, path: &Path) -> Error {
+    Error::IoWithPath {
+        path: path.to_path_buf(),
+        error,
+    }
+}
+
 use super::BackendPutFuture;
 
 const TEMPORARY_OBJECT_SUFFIX: &str = ".tmp";
@@ -25,8 +35,8 @@ pub struct FilesystemKVStorage {
 
 impl FilesystemKVStorage {
     pub fn new(root_path: &Path) -> Result<Self, Error> {
-        ensure_directory(root_path)?;
-        let root_path = std::fs::canonicalize(root_path)?;
+        ensure_directory(root_path).map_err(|e| io_with_path(e, root_path))?;
+        let root_path = std::fs::canonicalize(root_path).map_err(|e| io_with_path(e, root_path))?;
         let root_path_str = root_path.to_str().ok_or(Error::PathIsNotUtf8)?;
         let root_glob_pattern = GlobPattern::new(&format!("{root_path_str}/**/*"))?;
         Ok(Self {
@@ -37,12 +47,14 @@ impl FilesystemKVStorage {
     }
 
     fn write_file(temp_path: &Path, final_path: &Path, value: &[u8]) -> Result<(), Error> {
-        let mut output_file = File::create(temp_path)?;
-        output_file.write_all(value)?;
+        let mut output_file = File::create(temp_path).map_err(|e| io_with_path(e, temp_path))?;
+        output_file
+            .write_all(value)
+            .map_err(|e| io_with_path(e, temp_path))?;
         // Note: if we need Pathway to tolerate not only Pathway failures,
         // but only OS crash or power loss, the below line must be uncommented.
         // output_file.sync_all()?;
-        std::fs::rename(temp_path, final_path)?;
+        std::fs::rename(temp_path, final_path).map_err(|e| io_with_path(e, final_path))?;
         Ok(())
     }
 }
@@ -69,7 +81,8 @@ impl PersistenceBackend for FilesystemKVStorage {
     }
 
     fn get_value(&self, key: &str) -> Result<Vec<u8>, Error> {
-        Ok(std::fs::read(self.root_path.join(key))?)
+        let path = self.root_path.join(key);
+        std::fs::read(&path).map_err(|e| io_with_path(e, &path))
     }
 
     fn put_value(&self, key: &str, value: Vec<u8>) -> BackendPutFuture {
@@ -87,7 +100,22 @@ impl PersistenceBackend for FilesystemKVStorage {
     }
 
     fn remove_key(&self, key: &str) -> Result<(), Error> {
-        std::fs::remove_file(self.root_path.join(key))?;
+        let path = self.root_path.join(key);
+        std::fs::remove_file(&path).map_err(|e| io_with_path(e, &path))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilesystemKVStorage;
+    use crate::persistence::backends::PersistenceBackend;
+
+    #[test]
+    fn io_errors_carry_the_offending_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = FilesystemKVStorage::new(dir.path()).unwrap();
+        let message = storage.get_value("missing-key").unwrap_err().to_string();
+        assert!(message.contains("missing-key"), "{message}");
     }
 }

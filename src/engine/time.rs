@@ -585,7 +585,10 @@ where
             if let LocalResult::Single(localized) = localized {
                 localized.try_into()
             } else {
-                Err(DataError::DateTimeConversionError)
+                Err(DataError::DateTimeConversionError {
+                    value: naive_local.to_string(),
+                    timezone: timezone.to_string(),
+                })
             }
         }
     }

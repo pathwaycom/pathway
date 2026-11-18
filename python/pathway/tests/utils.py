@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import collections
+import fcntl
 import functools
 import inspect
 import json
 import multiprocessing
 import os
 import pathlib
+import random
 import re
+import socket
+import sqlite3
 import sys
 import tempfile
 import threading
 import time
 import uuid
+import warnings
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Hashable, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
@@ -34,6 +39,13 @@ from pathway.internals.config import get_pathway_config
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.schema import is_subschema, schema_from_columns
 from pathway.internals.table import Table
+
+# Pathway pipelines are built in the parent process and are not picklable, so
+# tests that hand a constructed pipeline to a child process must inherit it
+# via fork(). Python 3.14 switched the default start method on Linux to
+# forkserver, so the fork context is requested explicitly instead of relying
+# on the default.
+mp_fork = multiprocessing.get_context("fork") if sys.platform != "win32" else None
 
 needs_multiprocessing_fork = pytest.mark.xfail(
     sys.platform != "linux",
@@ -105,6 +117,10 @@ AIRBYTE_FAKER_CONNECTION_REL_PATH = "connections/faker.yaml"
 # post-exit check. Five seconds is several times the worst-case default settling
 # lag of the systems we test against.
 POST_EXIT_GRACE_PERIOD_SEC = 5.0
+PROCESS_TERMINATE_TIMEOUT_SEC = 30.0
+# How many times an operation on the shared port database waits out a lock held
+# by another test run before giving up.
+DB_LOCK_RETRIES = 4
 
 
 def skip_on_multiple_workers() -> None:
@@ -130,52 +146,218 @@ class ExceptionAwareThread(threading.Thread):
         return self._result
 
 
-class UniquePortDispenser:
-    """
-    Tests are run simultaneously by several workers.
-    Since they involve running a web server, they shouldn't interfere, so they
-    should occupy distinct ports.
-    This class automates unique port assignments for different tests.
-    """
+_DbResultT = TypeVar("_DbResultT")
 
-    range_start: int
-    worker_range_size: int
-    step_size: int
-    next_available_port: int | None
-    lock: threading.Lock
+
+class PortBlockRegistry:
+    """Blocks of ports handed out to tests, tracked in a file on the machine.
+
+    Slicing a range per xdist worker only keeps the workers of one pytest run
+    apart. It says nothing about the other runs sharing the machine, about the
+    blocks left behind by a run that was killed, or about whatever else happens
+    to listen on those numbers - and a test process that can't bind its port
+    dies, taking the run with it. So a block is handed out only when the
+    registry has no live claim on it and the kernel confirms every port of it
+    is bindable.
+    """
 
     def __init__(
         self,
-        range_start: int = 12345,
-        worker_range_size: int = 1000,
-        step_size: int = 1,
+        db_path: str | None = None,
+        range_start: int = 20000,
+        range_end: int = 32000,
+        block_size: int = 5,
     ):
-        # the main worker is sometimes 'master', sometimes just not defined
-        pytest_worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
-        if pytest_worker_id == "master":
-            worker_id = 0
-        elif pytest_worker_id.startswith("gw"):
-            worker_id = int(pytest_worker_id[2:])
-        else:
-            raise ValueError(f"Unknown xdist worker id: {pytest_worker_id}")
+        self.db_path = db_path or os.path.join(
+            tempfile.gettempdir(), "pathway-test-ports.sqlite"
+        )
+        self.range_start = range_start
+        self.range_end = range_end
+        self.block_size = block_size
+        # The database is not touched here: a registry is built while a conftest
+        # is imported, which every xdist worker does at once, and a test session
+        # that asks for no port at all should not pay for it either.
+        self._schema_ready = False
+        # Blocks that something outside the registry occupies; worth skipping
+        # for the rest of the session, but not worth recording in a shared file.
+        self._unusable: set[int] = set()
 
-        self.step_size = step_size
-        self.range_start = range_start + worker_id * worker_range_size
-        self.worker_range_size = worker_range_size
-        self.next_available_port = None
-        self.lock = threading.Lock()
+    @contextmanager
+    def _connection(self) -> Generator[sqlite3.Connection, None, None]:
+        # sqlite waits for a busy database by polling on a ~100 ms grid, and that
+        # polling is unfair: with enough writers and an fsync-bound disk a worker
+        # can lose every poll for longer than any `timeout`. The flock queues the
+        # workers in the kernel instead, so sqlite itself never contends here;
+        # `timeout` stays as a guard against processes running older code.
+        with open(f"{self.db_path}.lock", "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            connection = sqlite3.connect(self.db_path, timeout=60, isolation_level=None)
+            try:
+                # The registry is disposable bookkeeping on a tmp filesystem, so
+                # it does not need to survive a machine crash - and not fsyncing
+                # keeps the lock hold times short even on a loaded CI disk.
+                connection.execute("PRAGMA synchronous=OFF")
+                if not self._schema_ready:
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS reservations ("
+                        "first_port INTEGER PRIMARY KEY, pid INTEGER NOT NULL)"
+                    )
+                    self._schema_ready = True
+                yield connection
+            finally:
+                connection.close()
 
-    def get_unique_port(self, testrun_uid: str) -> int:
-        with self.lock:
-            if self.next_available_port is None:
-                self.next_available_port = (
-                    hash(testrun_uid) % self.worker_range_size + self.range_start
+    def acquire(self) -> int:
+        """Reserve a block of ports and return its first port."""
+        for _ in range(self._n_blocks()):
+            first_port = self._retrying_on_lock(self._claim_unclaimed_block)
+            # Probed after the claim rather than under the write lock: binding
+            # a block takes long enough that doing it inside the transaction
+            # made every other worker queue behind it, until one of them hit
+            # the busy timeout and failed with "database is locked".
+            if self._is_block_bindable(first_port):
+                return first_port
+            # Something outside the registry listens there. Give the claim
+            # back rather than leaving it in a file that outlives the run, and
+            # remember not to try this block again.
+            self._unusable.add(first_port)
+            self.release(first_port)
+        raise RuntimeError(
+            f"No bindable block of {self.block_size} ports in "
+            f"[{self.range_start}, {self.range_end})"
+        )
+
+    def _n_blocks(self) -> int:
+        return (self.range_end - self.range_start) // self.block_size
+
+    def _claim_unclaimed_block(self) -> int:
+        """Claim a block nobody holds, in a transaction short enough to queue on."""
+        n_blocks = self._n_blocks()
+        # A random starting point rather than a scan from the bottom: two runs
+        # starting at once would otherwise fight over the very same blocks.
+        offset = random.randrange(n_blocks)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                taken = {
+                    row[0]
+                    for row in connection.execute("SELECT first_port FROM reservations")
+                }
+                first_port = self._first_free_block(taken, offset, n_blocks)
+                if first_port is None:
+                    # Only worth the syscalls when the range looks exhausted:
+                    # most of those claims belong to processes that are alive.
+                    self._collect_garbage(connection)
+                    taken = {
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT first_port FROM reservations"
+                        )
+                    }
+                    first_port = self._first_free_block(taken, offset, n_blocks)
+                if first_port is not None:
+                    connection.execute(
+                        "INSERT INTO reservations (first_port, pid) VALUES (?, ?)",
+                        (first_port, os.getpid()),
+                    )
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+            if first_port is None:
+                connection.execute("ROLLBACK")
+                raise RuntimeError(
+                    f"No free block of {self.block_size} ports in "
+                    f"[{self.range_start}, {self.range_end})"
                 )
-            port = self.next_available_port
-            self.next_available_port += self.step_size
-            if self.next_available_port >= self.range_start + self.worker_range_size:
-                self.next_available_port = self.range_start
-        return port
+            connection.execute("COMMIT")
+            return first_port
+
+    def _first_free_block(
+        self, taken: set[int], offset: int, n_blocks: int
+    ) -> int | None:
+        for i in range(n_blocks):
+            candidate = self.range_start + ((offset + i) % n_blocks) * self.block_size
+            if candidate not in taken and candidate not in self._unusable:
+                return candidate
+        return None
+
+    def release(self, first_port: int) -> None:
+        def delete() -> None:
+            with self._connection() as connection:
+                connection.execute(
+                    "DELETE FROM reservations WHERE first_port = ?", (first_port,)
+                )
+
+        try:
+            self._retrying_on_lock(delete)
+        except sqlite3.OperationalError as e:
+            # Releasing runs in a teardown, and failing there fails a test that
+            # has already passed. The claim is not lost either way: it names
+            # this process, so it is collected once the process is gone.
+            warnings.warn(f"Could not release the port block {first_port}: {e}")
+
+    def _retrying_on_lock(self, operation: Callable[[], _DbResultT]) -> _DbResultT:
+        """Run `operation`, waiting out a database busy for longer than sqlite does.
+
+        Whole test runs share this database, so a lock can be held longer than
+        one connection is willing to wait - and giving up then means failing a
+        test over bookkeeping.
+        """
+        for n_attempt in range(DB_LOCK_RETRIES):
+            try:
+                return operation()
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) and "busy" not in str(e):
+                    raise
+                time.sleep(2**n_attempt * random.uniform(0.5, 1.5))
+        return operation()
+
+    def _collect_garbage(self, connection) -> None:
+        """Drop the claims of the runs that are gone, e.g. killed mid-test."""
+        for (pid,) in connection.execute(
+            "SELECT DISTINCT pid FROM reservations"
+        ).fetchall():
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                connection.execute("DELETE FROM reservations WHERE pid = ?", (pid,))
+            except PermissionError:
+                continue
+
+    def _is_block_bindable(self, first_port: int) -> bool:
+        for port in range(first_port, first_port + self.block_size):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                # what Rust's TcpListener::bind does, so that a socket left in
+                # TIME_WAIT isn't reported as occupied
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except OSError:
+                    return False
+        return True
+
+
+def make_port_fixture(block_size: int = 1, **registry_kwargs):
+    """A fixture giving out the first port of a block reserved for one test.
+
+    Meant to be bound to the name `port` in a conftest:
+
+        port = make_port_fixture(block_size=16)
+
+    A test that needs several consecutive ports - one per pathway process -
+    asks for a block that large and uses `port`, `port + 1`, and so on.
+    """
+    registry = PortBlockRegistry(block_size=block_size, **registry_kwargs)
+
+    @pytest.fixture
+    def port() -> Generator[int, None, None]:
+        first_port = registry.acquire()
+        try:
+            yield first_port
+        finally:
+            registry.release(first_port)
+
+    return port
 
 
 @dataclass(order=True)
@@ -683,6 +865,26 @@ assert_stream_split_into_groups_wo_index_types = run_graph_and_validate_result(
 )
 
 
+def terminate_process(p: multiprocessing.process.BaseProcess) -> None:
+    """Terminate a test child process without risking an unbounded wait.
+
+    A child that doesn't react to SIGTERM (e.g. stuck in uninterruptible I/O
+    on a stalled filesystem) must not hang the test run forever: escalate to
+    SIGKILL and give up loudly instead of blocking the whole CI job.
+    """
+    p.terminate()
+    p.join(PROCESS_TERMINATE_TIMEOUT_SEC)
+    if p.is_alive():
+        print(
+            f"Process {p.pid} did not exit after SIGTERM, killing it",
+            file=sys.stderr,
+        )
+        p.kill()
+        p.join(PROCESS_TERMINATE_TIMEOUT_SEC)
+        if p.is_alive():
+            raise RuntimeError(f"Process {p.pid} is still alive after SIGKILL")
+
+
 def run(**kwargs):
     apply_defaults_for_run_kwargs(kwargs)
     pw.run(**kwargs)
@@ -705,12 +907,12 @@ def wait_result_with_checker(
     args: Iterable[Any] = (),
     kwargs: Mapping[str, Any] = {},
 ) -> None:
-    handles: list[multiprocessing.Process] = []
+    handles: list[multiprocessing.process.BaseProcess] = []
     try:
         if target is not None:
             assert (
-                multiprocessing.get_start_method() == "fork"
-            ), "multiprocessing does not use fork(), pw.run() will not work"
+                mp_fork is not None
+            ), "multiprocessing cannot use fork(), pw.run() will not work"
 
             if processes != 1:
                 assert first_port is not None
@@ -728,14 +930,14 @@ def wait_result_with_checker(
                     target(*args, **kwargs)
 
                 for process_id in range(processes):
-                    p = multiprocessing.Process(
+                    p = mp_fork.Process(
                         target=target_wrapped, args=(process_id, *args), kwargs=kwargs
                     )
                     p.start()
                     handles.append(p)
             else:
                 target_wrapped = target
-                p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
+                p = mp_fork.Process(target=target, args=args, kwargs=kwargs)
                 p.start()
                 handles.append(p)
 
@@ -801,9 +1003,8 @@ def wait_result_with_checker(
             if "persistence_config" in kwargs:
                 time.sleep(5.0)  # allow a little gap to persist state
 
-            for p in handles:
-                p.terminate()
-                p.join()
+            for handle in handles:
+                terminate_process(handle)
 
 
 def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):

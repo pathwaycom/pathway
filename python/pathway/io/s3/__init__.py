@@ -94,7 +94,9 @@ class WasabiS3Settings:
 @trace_user_frame
 def read(
     path: str,
-    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
+    format: Literal[
+        "csv", "json", "plaintext", "plaintext_by_object", "binary", "only_metadata"
+    ],
     *,
     aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
@@ -119,16 +121,24 @@ def read(
     the smaller the modification time is, the earlier the file will be passed to the
     engine.
 
+    Note that if you only need to monitor changes in the bucket, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only metadata, and no
+    time or traffic will be spent on downloading the objects.
+
     Args:
         path: Path to an object or to a folder of objects in Amazon S3 bucket.
         aws_s3_settings: Connection parameters for the S3 account and the bucket.
         format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
-            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            ``plaintext_by_object``, ``binary`` and ``only_metadata`` formats are
+            supported. The difference
             between ``plaintext`` and ``plaintext_by_object`` is how the input is
             tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
             Otherwise, the files are split in full and one row will correspond to one
             file. In case the ``binary`` format is specified, the data is read as raw
-            bytes without UTF-8 parsing.
+            bytes without UTF-8 parsing. If the ``only_metadata`` format is chosen, the
+            objects are not downloaded at all: the resulting table contains only the
+            ``_metadata`` column, which is useful when you only need to track changes in
+            the bucket without spending time and traffic on fetching the objects' contents.
         schema: Schema of the resulting table. Not required for ``plaintext_by_object``
             and ``binary`` formats: if they are chosen, the contents of the read objects
             are stored in the column ``data``.
@@ -279,6 +289,7 @@ def read(
     else:
         prepared_aws_settings = AwsS3Settings.new_from_path(path)
 
+    only_provide_metadata = format == "only_metadata"
     data_storage = api.DataStorage(
         storage_type="s3",
         path=path,
@@ -288,6 +299,7 @@ def read(
         mode=internal_connector_mode(mode),
         read_method=internal_read_method(format),
         downloader_threads_count=downloader_threads_count,
+        only_provide_metadata=only_provide_metadata,
     )
 
     schema, data_format = construct_schema_and_data_format(
@@ -295,7 +307,7 @@ def read(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
-        with_metadata=with_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
         _stacklevel=_stacklevel + 4,
     )
     data_source_options = datasource.DataSourceOptions(
@@ -303,7 +315,7 @@ def read(
         unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
         max_backlog_size=max_backlog_size,
     )
-    return table_from_datasource(
+    table = table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
@@ -313,6 +325,9 @@ def read(
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table
 
 
 @check_arg_types
@@ -320,7 +335,9 @@ def read(
 def read_from_digital_ocean(
     path: str,
     do_s3_settings: DigitalOceanS3Settings,
-    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
+    format: Literal[
+        "csv", "json", "plaintext", "plaintext_by_object", "binary", "only_metadata"
+    ],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
@@ -341,16 +358,24 @@ def read_from_digital_ocean(
     the smaller the modification time is, the earlier the file will be passed to the
     engine.
 
+    Note that if you only need to monitor changes in the bucket, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only metadata, and no
+    time or traffic will be spent on downloading the objects.
+
     Args:
         path: Path to an object or to a folder of objects in S3 bucket.
         do_s3_settings: Connection parameters for the account and the bucket.
         format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
-            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            ``plaintext_by_object``, ``binary`` and ``only_metadata`` formats are
+            supported. The difference
             between ``plaintext`` and ``plaintext_by_object`` is how the input is
             tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
             Otherwise, the files are split in full and one row will correspond to one
             file. In case the ``binary`` format is specified, the data is read as raw
-            bytes without UTF-8 parsing.
+            bytes without UTF-8 parsing. If the ``only_metadata`` format is chosen, the
+            objects are not downloaded at all: the resulting table contains only the
+            ``_metadata`` column, which is useful when you only need to track changes in
+            the bucket without spending time and traffic on fetching the objects' contents.
         schema: Schema of the resulting table. Not required for ``plaintext_by_object``
             and ``binary`` formats: if they are chosen, the contents of the read objects
             are stored in the column ``data``.
@@ -419,6 +444,7 @@ def read_from_digital_ocean(
     work with Digital Ocean version.
     """
     prepared_s3_settings = do_s3_settings.create_aws_settings()
+    only_provide_metadata = format == "only_metadata"
     data_storage = api.DataStorage(
         storage_type="s3",
         path=path,
@@ -427,6 +453,7 @@ def read_from_digital_ocean(
         mode=internal_connector_mode(mode),
         read_method=internal_read_method(format),
         downloader_threads_count=downloader_threads_count,
+        only_provide_metadata=only_provide_metadata,
     )
 
     schema, data_format = construct_schema_and_data_format(
@@ -434,7 +461,7 @@ def read_from_digital_ocean(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
-        with_metadata=with_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
         _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
@@ -442,7 +469,7 @@ def read_from_digital_ocean(
         unique_name=_get_unique_name(name, kwargs),
         max_backlog_size=max_backlog_size,
     )
-    return table_from_datasource(
+    table = table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
@@ -452,6 +479,9 @@ def read_from_digital_ocean(
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table
 
 
 @check_arg_types
@@ -459,7 +489,9 @@ def read_from_digital_ocean(
 def read_from_wasabi(
     path: str,
     wasabi_s3_settings: WasabiS3Settings,
-    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
+    format: Literal[
+        "csv", "json", "plaintext", "plaintext_by_object", "binary", "only_metadata"
+    ],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
@@ -479,16 +511,24 @@ def read_from_wasabi(
     this prefix, their order is determined according to their modification times: the
     smaller the modification time is, the earlier the file will be passed to the engine.
 
+    Note that if you only need to monitor changes in the bucket, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only metadata, and no
+    time or traffic will be spent on downloading the objects.
+
     Args:
         path: Path to an object or to a folder of objects in S3 bucket.
         wasabi_s3_settings: Connection parameters for the account and the bucket.
         format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
-            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            ``plaintext_by_object``, ``binary`` and ``only_metadata`` formats are
+            supported. The difference
             between ``plaintext`` and ``plaintext_by_object`` is how the input is
             tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
             Otherwise, the files are split in full and one row will correspond to one
             file. In case the ``binary`` format is specified, the data is read as raw
-            bytes without UTF-8 parsing.
+            bytes without UTF-8 parsing. If the ``only_metadata`` format is chosen, the
+            objects are not downloaded at all: the resulting table contains only the
+            ``_metadata`` column, which is useful when you only need to track changes in
+            the bucket without spending time and traffic on fetching the objects' contents.
         schema: Schema of the resulting table. Not required for ``plaintext_by_object``
             and ``binary`` formats: if they are chosen, the contents of the read objects
             are stored in the column ``data``.
@@ -557,6 +597,7 @@ def read_from_wasabi(
     work with Wasabi version.
     """
     prepared_s3_settings = wasabi_s3_settings.create_aws_settings()
+    only_provide_metadata = format == "only_metadata"
     data_storage = api.DataStorage(
         storage_type="s3",
         path=path,
@@ -565,6 +606,7 @@ def read_from_wasabi(
         mode=internal_connector_mode(mode),
         read_method=internal_read_method(format),
         downloader_threads_count=downloader_threads_count,
+        only_provide_metadata=only_provide_metadata,
     )
 
     schema, data_format = construct_schema_and_data_format(
@@ -572,7 +614,7 @@ def read_from_wasabi(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
-        with_metadata=with_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
         _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
@@ -580,7 +622,7 @@ def read_from_wasabi(
         unique_name=_get_unique_name(name, kwargs),
         max_backlog_size=max_backlog_size,
     )
-    return table_from_datasource(
+    table = table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
@@ -590,6 +632,9 @@ def read_from_wasabi(
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table
 
 
 # This is made to force AwsS3Settings documentation

@@ -20,6 +20,24 @@ from pathway.tests.utils import (
     run,
 )
 
+_DUP_KEY = (
+    "duplicate key {k}: two rows with the same id reached an operation that needs unique ids "
+    "(a join with id= taken from one side, update_rows()/update_cells(), or a source repeating "
+    "a primary key) - drop the explicit id= from the join, deduplicate the source, or give the "
+    "sources distinct primary keys"
+)
+_MISSING_OUT = (
+    "key {k} exists in the universe (the table providing the ids) but not in the table "
+    "restricted to it: with_universe_of(), restrict(), ix() and update_cells() need every id "
+    "of the universe to be present there - use a left join or ix(..., optional=True) when ids "
+    "can be absent"
+)
+_MISSING_IN = (
+    "key {k} exists in the table but not in the universe it is restricted to: "
+    "with_universe_of() requires both tables to have exactly the same ids - use restrict() or "
+    "a join when they can differ"
+)
+
 
 @pw.udf
 def extract_trace_line(trace: str) -> str:
@@ -398,10 +416,16 @@ def test_udf(sync: bool) -> None:
         6 |  3
     """
     )
+    try:
+        _ = 1 // 0
+    except ZeroDivisionError as e:
+        # The message differs between Python versions (3.14 says just
+        # "division by zero"), so take it from the running interpreter.
+        zero_division_message = str(e)
     expected_errors = T(
-        """
+        f"""
         message | line
-        ZeroDivisionError: integer division or modulo by zero | t2 = t1.select(pw.this.a, x=div(pw.this.a, pw.this.b))
+        ZeroDivisionError: {zero_division_message} | t2 = t1.select(pw.this.a, x=div(pw.this.a, pw.this.b))
     """,
         split_on_whitespace=False,
     )
@@ -529,9 +553,9 @@ def test_left_join_preserving_id():
     """
     )
     expected_errors = T(
-        """
+        f"""
         message | line
-        duplicate key: ^X1MXHYYG4YM0DB900V28XN5T4W | t1.join_left(t2, pw.left.a == pw.right.b, id=pw.left.id)
+        {_DUP_KEY.format(k="^X1MXHYYG4YM0DB900V28XN5T4W")} | t1.join_left(t2, pw.left.a == pw.right.b, id=pw.left.id)
         """,
         split_on_whitespace=False,
     )
@@ -574,9 +598,9 @@ def test_restrict():
     """
     )
     expected_errors = T(
-        """
+        f"""
         message | line
-        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4 | res = t1.restrict(t2)
+        {_MISSING_OUT.format(k="^3S2X6B265PV8BRY8MZJ91KQ0Z4")} | res = t1.restrict(t2)
         """,
         split_on_whitespace=False,
     )
@@ -619,11 +643,11 @@ def test_with_universe_of():
     """
     )
     expected_errors = T(
-        """
+        f"""
         message | line
-        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4 | res = t1.with_universe_of(t2)
-        key missing in input table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4  | res = t1.with_universe_of(t2)
-        key missing in output table: ^3HN31E1PBT7YHH5PWVKTZCPRJ8 | res = t1.with_universe_of(t2)
+        {_MISSING_OUT.format(k="^3S2X6B265PV8BRY8MZJ91KQ0Z4")} | res = t1.with_universe_of(t2)
+        {_MISSING_IN.format(k="^3S2X6B265PV8BRY8MZJ91KQ0Z4")} | res = t1.with_universe_of(t2)
+        {_MISSING_OUT.format(k="^3HN31E1PBT7YHH5PWVKTZCPRJ8")} | res = t1.with_universe_of(t2)
         """,
         split_on_whitespace=False,
     )
@@ -664,9 +688,9 @@ def test_ix():
     """
     )
     expected_errors = T(
-        """
+        f"""
         message | line
-        key missing in output table: ^Z3QWT294JQSHPSR8KTPG9ECE4W | res = t1.select(pw.this.a, c=t2.ix(pw.this.ap).c)
+        {_MISSING_OUT.format(k="^Z3QWT294JQSHPSR8KTPG9ECE4W")} | res = t1.select(pw.this.a, c=t2.ix(pw.this.ap).c)
         """,
         split_on_whitespace=False,
     )
@@ -1177,10 +1201,10 @@ def test_update_cells():
         """
     )
     expected_errors = T(
-        """
+        f"""
         message | line
         updating a row that does not exist, key: ^3S2X6B265PV8BRY8MZJ91KQ0Z4 | res = old.update_cells(update)
-        duplicate key: ^Z3QWT294JQSHPSR8KTPG9ECE4W | res = old.update_cells(update)
+        {_DUP_KEY.format(k="^Z3QWT294JQSHPSR8KTPG9ECE4W")} | res = old.update_cells(update)
         """,
         split_on_whitespace=False,
     )
@@ -1218,9 +1242,9 @@ def test_update_rows():
         """
     )
     expected_errors = T(
-        """
+        f"""
         message | line
-        duplicate key: ^YYY4HABTRW7T8VX2Q429ZYV70W | res = t1.update_rows(t2)
+        {_DUP_KEY.format(k="^YYY4HABTRW7T8VX2Q429ZYV70W")} | res = t1.update_rows(t2)
         """,
         split_on_whitespace=False,
     )
@@ -1749,7 +1773,116 @@ def test_repeated_keys_for_nondeterministic_udf():
     with pytest.raises(
         Exception,
         match=re.escape(
-            "Expected deletion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, but got insertion instead."
+            "Got a second insertion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, "
+            "but expected a deletion of that row first."
         ),
     ):
         pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_repeated_keys_in_single_batch_for_nondeterministic_udf():
+    # Identical duplicate insertions arriving in one batch are consolidated
+    # into a single row with diff=+2 before they reach the expression cache,
+    # so they must be reported by the multiplicity of the row, not by a
+    # cache-occupancy conflict. The deletion of another key keeps the table
+    # non-append-only: an append-only input never uses the cache at all.
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |     2    |     1
+        1 | 2 |     2    |     1
+        2 | 3 |     2    |     1
+        2 | 3 |     6    |    -1
+        """,
+        schema=InputSchema,
+    )
+
+    @pw.udf
+    def foo(x: int) -> int:
+        return x + 1
+
+    t.select(b=foo(pw.this.b))
+    with pytest.raises(
+        Exception,
+        match=re.escape(
+            "Got a second insertion of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W, "
+            "but expected a deletion of that row first."
+        ),
+    ):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_repeated_deletions_in_single_batch_for_nondeterministic_udf():
+    # The mirror image of the test above: two deletions of the same row in one
+    # batch are consolidated into a single row with diff=-2, which removes the
+    # row more times than it was inserted.
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 2 |     2    |     1
+        1 | 2 |     6    |    -1
+        1 | 2 |     6    |    -1
+        """,
+        schema=InputSchema,
+    )
+
+    @pw.udf
+    def foo(x: int) -> int:
+        return x + 1
+
+    t.select(b=foo(pw.this.b))
+    with pytest.raises(
+        Exception,
+        match=re.escape(
+            "Got more deletions of a row with key: ^YYY4HABTRW7T8VX2Q429ZYV70W "
+            "than insertions of that row."
+        ),
+    ):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_reducer_outside_reduce_is_explained():
+    t = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        """
+    )
+    with pytest.raises(ValueError, match=r"only be used in reduce\(\)"):
+        t.select(s=pw.reducers.sum(pw.this.a))
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_output_file_in_missing_directory_names_the_directory(tmp_path):
+    t = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        """
+    )
+    missing = tmp_path / "missing"
+    pw.io.csv.write(t, missing / "out.csv")
+    with pytest.raises(OSError, match=f"{missing} does not exist"):
+        pw.run_all(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_iterating_an_expression_is_explained():
+    t = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        """
+    )
+    with pytest.raises(TypeError, match=r"is not iterable.*pw\.apply"):
+        list(t.a)
+    with pytest.raises(TypeError, match=r"is not iterable"):
+        _first, _second = pw.make_tuple(t.a, t.a)

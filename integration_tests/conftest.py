@@ -15,7 +15,11 @@ from click.testing import CliRunner
 
 import pathway as pw
 from pathway.internals import parse_graph
-from pathway.tests.utils import SerializationTestHelper
+from pathway.tests.utils import (
+    PortBlockRegistry,
+    SerializationTestHelper,
+    make_port_fixture,
+)
 
 CREDENTIALS_DIR = Path(os.getenv("CREDENTIALS_DIR", default=Path(__file__).parent))
 TESTS_BUCKET = "aws-integrationtest"
@@ -90,29 +94,20 @@ def serialization_tester():
     return SerializationTestHelper()
 
 
-@pytest.fixture
-def tcp_port() -> int:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
+# Ports come from the registry rather than from `bind(("", 0))`: a port the
+# kernel picks that way is released again before the test uses it, and it comes
+# from the ephemeral range, where an outgoing connection can take it meanwhile.
+tcp_port = make_port_fixture()
+_TWO_PORT_REGISTRY = PortBlockRegistry(block_size=2)
 
 
 @pytest.fixture
-def two_free_ports():
-    import socket
-
-    ports = []
-    sockets = []
-    for _ in range(2):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("", 0))
-        ports.append(s.getsockname()[1])
-        sockets.append(s)
-    for s in sockets:
-        s.close()
-    return ports
+def two_free_ports() -> Generator[list[int], None, None]:
+    first_port = _TWO_PORT_REGISTRY.acquire()
+    try:
+        yield [first_port, first_port + 1]
+    finally:
+        _TWO_PORT_REGISTRY.release(first_port)
 
 
 @pytest.fixture

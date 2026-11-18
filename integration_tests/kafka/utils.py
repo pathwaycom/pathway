@@ -5,6 +5,10 @@ import dataclasses
 import json
 import os
 import pathlib
+import signal
+import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -36,12 +40,21 @@ from rstream.exceptions import (
 
 KAFKA_SETTINGS = {"bootstrap_servers": "kafka:9092"}
 MQTT_BASE_ROUTE = "mqtt://mqtt:1883?client_id=$CLIENT_ID"
+# A dedicated broker with the in-flight/queued limits lifted, required by the
+# persistence tests (see the `mqtt-persistent` service in
+# `.jenkins/integration_tests/docker-compose-integration.yml`).
+MQTT_PERSISTENT_BASE_ROUTE = "mqtt://mqtt-persistent:1883?client_id=$CLIENT_ID"
 SCHEMA_REGISTRY_BASE_ROUTE = "http://schema-registry:8081"
 # How long to keep retrying a schema-registry request while the service is
 # still coming up (connection refused or a transient 5xx).
 SCHEMA_REGISTRY_READY_TIMEOUT = 60.0
 SCHEMA_REGISTRY_RETRY_INTERVAL = 0.5
-KINESIS_ENDPOINT_URL = "http://kinesis:4567"
+KINESIS_ENDPOINT_URL = os.environ.get("KINESIS_ENDPOINT_URL", "http://kinesis:4567")
+# The emulator reserved for the bulk test, see `kinesis-bulk` in the compose
+# file and the `kinesis_bulk_context` fixture.
+KINESIS_BULK_ENDPOINT_URL = os.environ.get(
+    "KINESIS_BULK_ENDPOINT_URL", "http://kinesis-bulk:4567"
+)
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5552"))
@@ -108,8 +121,11 @@ def random_topic_name():
 # creating/deleting topics can fail transiently while the cluster is still
 # settling at startup (no broker reachable yet, controller not elected, request
 # timed out). On a shared CI host every connector stack contends for the same
-# resources, so that window is generous on purpose.
-KAFKA_READY_TIMEOUT = 90.0
+# resources, so that window is generous on purpose: observed brownouts (the
+# broker starved of CPU/IO by dozens of parallel workers) last minutes, and
+# admin requests burn up to 30s each before timing out, so a 90s budget was
+# exhausted by just a few attempts. Matches _TOPIC_SETTLE_HARD_TIMEOUT below.
+KAFKA_READY_TIMEOUT = 240.0
 KAFKA_RETRY_INTERVAL = 0.2
 
 
@@ -181,8 +197,24 @@ class KafkaTestContext:
     # that silently vanishes and the test sees an empty topic. Waiting for each
     # operation to settle in the cluster metadata makes the sequence
     # deterministic.
-    _TOPIC_SETTLE_TIMEOUT = 60.0
+    #
+    # The settle budget counts only *answered* metadata polls: like
+    # KAFKA_READY_TIMEOUT it is generous because on a shared CI host the
+    # controller can lag far behind an acknowledged create/delete while dozens
+    # of workers hammer the broker. A poll that fails with a KafkaError says
+    # nothing about the topic — the broker could not be asked (admin requests
+    # time out after 30s and reconnects back off up to 30s, so a broker
+    # brownout starves the whole window with just a couple of attempts). Such
+    # polls must not eat the settle budget, otherwise a transient brownout
+    # surfaces as a misleading "topic did not appear": every failed poll
+    # extends the deadline so that at least _TOPIC_SETTLE_ERROR_GRACE of
+    # answered polling remains once the broker responds again, with
+    # _TOPIC_SETTLE_HARD_TIMEOUT capping the total wait so a genuinely dead
+    # broker still fails loudly (and with the real error attached).
+    _TOPIC_SETTLE_TIMEOUT = 90.0
     _TOPIC_SETTLE_INTERVAL = 0.2
+    _TOPIC_SETTLE_ERROR_GRACE = 30.0
+    _TOPIC_SETTLE_HARD_TIMEOUT = 240.0
 
     def _topic_partition_count(self, name: str) -> int | None:
         """Number of partitions ``name`` currently has in the cluster metadata,
@@ -200,20 +232,44 @@ class KafkaTestContext:
         return None
 
     def _wait_for_topic_metadata(self, name: str, predicate, description: str) -> None:
-        deadline = time.monotonic() + self._TOPIC_SETTLE_TIMEOUT
+        start = time.monotonic()
+        deadline = start + self._TOPIC_SETTLE_TIMEOUT
+        hard_deadline = start + self._TOPIC_SETTLE_HARD_TIMEOUT
+        answered = 0
+        failed = 0
+        last_count: int | None = None
+        last_error: KafkaError | None = None
         while True:
             try:
-                count: int | None = self._topic_partition_count(name)
-            except KafkaError:
+                last_count = self._topic_partition_count(name)
+            except KafkaError as error:
                 # Only genuine broker/metadata errors are transient here (the
-                # cluster is still in flux); retry those. Programming errors
-                # (e.g. an unexpected response shape) are NOT swallowed — they
-                # propagate immediately instead of masquerading as a timeout.
-                count = -2  # sentinel: satisfies no predicate, keep polling
-            if count != -2 and predicate(count):
-                return
+                # cluster is still in flux); those polls carry no information
+                # about the topic, so they extend the deadline (see the comment
+                # on the constants above). Programming errors (e.g. an
+                # unexpected response shape) are NOT swallowed — they propagate
+                # immediately instead of masquerading as a timeout.
+                failed += 1
+                last_error = error
+                deadline = max(
+                    deadline,
+                    min(
+                        time.monotonic() + self._TOPIC_SETTLE_ERROR_GRACE,
+                        hard_deadline,
+                    ),
+                )
+            else:
+                answered += 1
+                if predicate(last_count):
+                    return
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"topic {name!r} {description}")
+                elapsed = time.monotonic() - start
+                raise TimeoutError(
+                    f"topic {name!r} {description} after {elapsed:.1f}s: "
+                    f"{answered} metadata poll(s) answered "
+                    f"(last saw partition count {last_count}), "
+                    f"{failed} failed (last error: {last_error!r})"
+                ) from last_error
             time.sleep(self._TOPIC_SETTLE_INTERVAL)
 
     def _create_topic(self, name: str, num_partitions: int = 1) -> None:
@@ -464,12 +520,17 @@ class KinesisTestContext:
     _READY_TIMEOUT = 90.0
     _RETRY_INTERVAL = 0.5
 
-    def __init__(self, stream_name: str | None = None) -> None:
+    def __init__(
+        self,
+        stream_name: str | None = None,
+        endpoint_url: str = KINESIS_ENDPOINT_URL,
+    ) -> None:
         self.stream_name = stream_name or str(uuid4())
+        self.endpoint_url = endpoint_url
         self.kinesis = boto3.client(
             "kinesis",
             region_name="us-east-1",
-            endpoint_url=KINESIS_ENDPOINT_URL,
+            endpoint_url=endpoint_url,
             aws_access_key_id="placeholder",
             aws_secret_access_key="placeholder",
         )
@@ -888,3 +949,463 @@ class RabbitmqTestContext:
         await self._producer.send_wait(
             self.stream_name, amqp_message, timeout=RABBITMQ_SEND_TIMEOUT
         )
+
+
+# The bound past which the broker's admin API is declared broken. A schema is
+# stored in a BookKeeper ledger that the broker closes right after writing it;
+# on a loaded node a read that follows the registration by milliseconds can hit
+# the ledger before the close is recorded and fail with a 500 ("Error while
+# recovering ledger ... Failed to open ledger"), although the very same request
+# succeeds a moment later. The retries cover that window.
+PULSAR_ADMIN_RETRY_TIMEOUT_SECS = 60.0
+PULSAR_ADMIN_RETRY_INTERVAL_SECS = 0.5
+
+
+def pulsar_admin_request(method: str, url: str, **kwargs) -> requests.Response:
+    """A request to the broker's admin API that outlasts its transient 5xx
+    answers and connection blips; the last response is returned (and raised
+    for status by the caller as usual)."""
+    kwargs.setdefault("timeout", 60)
+    deadline = time.monotonic() + PULSAR_ADMIN_RETRY_TIMEOUT_SECS
+    while True:
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.ConnectionError:
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            if response.status_code < 500 or time.monotonic() >= deadline:
+                return response
+        time.sleep(PULSAR_ADMIN_RETRY_INTERVAL_SECS)
+
+
+PULSAR_HOST = os.environ.get("PULSAR_HOST", "pulsar")
+PULSAR_PORT = int(os.environ.get("PULSAR_PORT", "6650"))
+PULSAR_SERVICE_URI = f"pulsar://{PULSAR_HOST}:{PULSAR_PORT}"
+
+# How long a verification consumer waits for a single message before deciding
+# that no further messages arrive.
+PULSAR_RECEIVE_TIMEOUT_MS = 30000
+
+# The bound on a single client operation (a producer or a consumer creation,
+# with the lookup and the reconnections inside it) of the test-side Pulsar
+# client. The client's default is 30s. The CI node runs every suite at once,
+# and a stall of 20-30s of *all* the brokers has been observed there (the
+# RabbitMQ contexts and the Kafka fixtures of the same run took that long to
+# set up as well); a producer created on a fresh topic in such a moment ran
+# straight into the default and failed the test with `Pulsar error: TimeOut`
+# although the broker recovered right after. Like RABBITMQ_READY_TIMEOUT, this
+# is the bound past which the broker is declared gone, not a healthy timing.
+PULSAR_OPERATION_TIMEOUT_SECS = 90
+
+
+def make_pulsar_client(service_uri: str, **kwargs):
+    """The pulsar-client `Client` the tests talk to the brokers with, with
+    the operation timeout of `PULSAR_OPERATION_TIMEOUT_SECS` and a quiet
+    logger. Extra keyword arguments (authentication, ...) are passed on."""
+    import pulsar
+
+    return pulsar.Client(
+        service_uri,
+        operation_timeout_seconds=PULSAR_OPERATION_TIMEOUT_SECS,
+        logger=pulsar.ConsoleLogger(pulsar.LoggerLevel.Warn),
+        **kwargs,
+    )
+
+
+def pulsar_subscribe(client, topic, **kwargs):
+    """`client.subscribe(topic, **kwargs)` that outlasts a transient failure
+    of the broker.
+
+    The client library does not: its C++ core (4.2.0, shipped by pulsar-client
+    3.13.0) attaches a new consumer to the connection before the SUBSCRIBE
+    request is answered and keeps it attached when the broker answers with a
+    retryable error (`BrokerPersistenceError` while the topic's or the
+    cursor's ledger is being created, `ServiceNotReady`, ...). The
+    reconnection it then schedules finds the consumer "already connected" and
+    is skipped, so the request is never repeated: `subscribe` sits out the
+    whole operation timeout and fails with `Pulsar error: TimeOut`, although
+    the broker would have served the very next attempt. Producers are not
+    affected (they are attached only once created), hence no such wrapper for
+    `create_producer`.
+
+    A failed attempt leaves nothing behind on the broker, so the subscription
+    is simply requested once more; a broker that is really gone fails the
+    second attempt the same way.
+    """
+    import pulsar
+
+    try:
+        return client.subscribe(topic, **kwargs)
+    except pulsar.Timeout:
+        return client.subscribe(topic, **kwargs)
+
+
+class PulsarTestContext:
+    """Provides a unique topic and pulsar-client helpers for the tests.
+
+    The topic is not created explicitly: Pulsar auto-creates topics on the
+    first producer or subscription, which is also how the connector under test
+    interacts with the broker.
+    """
+
+    def __init__(self):
+        # The `pulsar` package (pulsar-client) is imported lazily so that the
+        # remaining suites of this directory don't depend on it.
+        import pulsar
+
+        self._pulsar = pulsar
+        self.topic = f"pulsar-{uuid4()}"
+        self.service_uri = PULSAR_SERVICE_URI
+        self._client = make_pulsar_client(self.service_uri)
+
+    def create_partitioned_topic(self, partitions: int) -> str:
+        """Creates a fresh partitioned topic over the admin API and returns
+        its name. Pulsar auto-creates only non-partitioned topics, so the
+        partitioned ones must be created explicitly."""
+        topic = f"pulsar-partitioned-{uuid4()}"
+        response = requests.put(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+            f"{topic}/partitions",
+            json=partitions,
+            timeout=60,
+        )
+        response.raise_for_status()
+        return topic
+
+    def teardown(self):
+        self._client.close()
+
+    def send(
+        self,
+        message: str,
+        topic: str | None = None,
+        properties: Mapping[str, str] | None = None,
+        key: str | None = None,
+    ) -> None:
+        producer = self._client.create_producer(topic or self.topic)
+        try:
+            # `send` waits for the broker's acknowledgement, so the message is
+            # durably accepted (with its publish timestamp assigned) before
+            # the caller proceeds.
+            producer.send(
+                message.encode(),
+                properties=dict(properties) if properties is not None else None,
+                partition_key=key,
+            )
+        finally:
+            producer.close()
+
+    def read_messages(self, expected_count: int, topic: str | None = None) -> list:
+        """Reads `expected_count` messages from the earliest position.
+
+        Returns the raw pulsar-client messages, so the callers can inspect
+        payloads, properties and partition keys. Fails if the expected number
+        of messages doesn't arrive in time.
+        """
+        consumer = pulsar_subscribe(
+            self._client,
+            topic or self.topic,
+            subscription_name=f"verifier-{uuid4()}",
+            initial_position=self._pulsar.InitialPosition.Earliest,
+        )
+        messages: list = []
+        try:
+            while len(messages) < expected_count:
+                message = consumer.receive(timeout_millis=PULSAR_RECEIVE_TIMEOUT_MS)
+                consumer.acknowledge(message)
+                messages.append(message)
+        finally:
+            consumer.close()
+        return messages
+
+
+class BrokerTcpProxy:
+    """A TCP proxy in front of a broker, so that a test can cut every
+    connection to it the way a broker restart does.
+
+    The Pulsar client keeps talking to the address it was configured with
+    whenever the broker a lookup points at differs from it (the protocol's
+    proxy mode), so pointing a connector at this proxy routes all of its
+    traffic through it. While the proxy is cut, the established connections
+    are closed and the new ones are refused, which is what the client sees
+    when the broker goes away; ``restore`` lets it connect again.
+    """
+
+    def __init__(self, upstream_host: str, upstream_port: int):
+        self._upstream = (upstream_host, upstream_port)
+        self._sockets: list[socket.socket] = []
+        self._lock = threading.Lock()
+        self._cut = False
+        self._closed = False
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(128)
+        self.port = self._listener.getsockname()[1]
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+
+    @property
+    def uri(self) -> str:
+        return f"pulsar://127.0.0.1:{self.port}"
+
+    def _accept_loop(self) -> None:
+        while True:
+            try:
+                downstream, _ = self._listener.accept()
+            except OSError:
+                return
+            if self._closed:
+                downstream.close()
+                return
+            if self._cut:
+                downstream.close()
+                continue
+            try:
+                upstream = socket.create_connection(self._upstream, timeout=10)
+            except OSError as e:
+                # Visible in the captured output of a failing test: a client
+                # whose connection the proxy could not complete sees a broker
+                # that refuses it, and retries on its own schedule.
+                print(f"[BrokerTcpProxy] upstream connect failed: {e}", file=sys.stderr)
+                downstream.close()
+                continue
+            upstream.settimeout(None)
+            with self._lock:
+                # Re-checked under the lock: a connection accepted while
+                # ``cut`` was sweeping the registry would otherwise slip past
+                # both the flag check above and the sweep, keeping a live
+                # tunnel to the broker through the simulated outage.
+                cut_meanwhile = self._cut
+                if not cut_meanwhile:
+                    self._sockets += [downstream, upstream]
+            if cut_meanwhile:
+                downstream.close()
+                upstream.close()
+                continue
+            for source, sink in ((downstream, upstream), (upstream, downstream)):
+                threading.Thread(
+                    target=self._pipe, args=(source, sink), daemon=True
+                ).start()
+
+    @staticmethod
+    def _pipe(source: socket.socket, sink: socket.socket) -> None:
+        try:
+            while True:
+                chunk = source.recv(65536)
+                if not chunk:
+                    break
+                sink.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            for endpoint in (source, sink):
+                try:
+                    endpoint.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def cut(self) -> None:
+        """Closes every live connection and starts refusing the new ones."""
+        self._cut = True
+        with self._lock:
+            sockets, self._sockets = self._sockets, []
+        for endpoint in sockets:
+            try:
+                endpoint.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            endpoint.close()
+
+    def restore(self) -> None:
+        self._cut = False
+
+    def close(self) -> None:
+        self._closed = True
+        self.cut()
+        self._listener.close()
+
+
+PULSAR_ADMIN_URL = os.environ.get("PULSAR_ADMIN_URL", "http://pulsar:8080")
+
+PULSAR_AUTH_HOST = os.environ.get("PULSAR_AUTH_HOST", "pulsar-auth")
+PULSAR_AUTH_PORT = int(os.environ.get("PULSAR_AUTH_PORT", "6650"))
+PULSAR_AUTH_SERVICE_URI = f"pulsar://{PULSAR_AUTH_HOST}:{PULSAR_AUTH_PORT}"
+
+# Static test-only JWT for the token-authenticated broker (the `pulsar-auth`
+# service of the docker-compose environment). The broker is configured with
+# the matching secret key; both were generated with `bin/pulsar tokens ...`.
+PULSAR_AUTH_TOKEN = (
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwYXRod2F5LXRlc3QifQ"
+    ".nQ-ly33j_vVTCvmTWoW9AcdLuygrNKXG2-oIrz5OmY8"
+)
+
+
+# --- The shared SIGKILL persistence scenario ------------------------------
+#
+# Used by the MQTT, NATS JetStream and Pulsar persistence tests. Each test
+# provides a broker-specific publisher and an identity-pipeline subprocess
+# (a small pathway program that copies the topic to a JSONL file with
+# persistence enabled); the scenario itself — warm up, publish a stream,
+# SIGKILL mid-flight, publish more while the pipeline is down, restart from
+# the same persistent storage and verify that nothing was lost — is the same
+# for every broker.
+
+SIGKILL_SNAPSHOT_INTERVAL_MS = 1000
+SIGKILL_SUBSCRIPTION_TIMEOUT_SEC = 60
+SIGKILL_COMPLETION_TIMEOUT_SEC = 90
+
+
+class IdentityPipelineRun:
+    """One run of an identity pipeline subprocess.
+
+    The subprocess is expected to accept ``--output``, ``--pstorage`` and
+    ``--snapshot-interval-ms`` (appended here); the broker-specific arguments
+    are passed through ``program_args``.
+    """
+
+    def __init__(self, tmp_path, program_path, program_args, run_index):
+        self.output_path = tmp_path / f"output-{run_index}.jsonl"
+        self._log_path = tmp_path / f"pw-log-{run_index}.txt"
+        env = os.environ.copy()
+        env["RUST_BACKTRACE"] = "1"
+        with open(self._log_path, "wb") as log_file:
+            self._process = subprocess.Popen(
+                [
+                    sys.executable,
+                    program_path,
+                    *program_args,
+                    "--output",
+                    str(self.output_path),
+                    "--pstorage",
+                    str(tmp_path / "pstorage"),
+                    "--snapshot-interval-ms",
+                    str(SIGKILL_SNAPSHOT_INTERVAL_MS),
+                ],
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+
+    def received_payloads(self) -> set[str]:
+        payloads = set()
+        try:
+            with open(self.output_path) as f:
+                for line in f:
+                    if not line.endswith("\n"):
+                        continue  # partially flushed last line
+                    payloads.add(json.loads(line)["data"])
+        except FileNotFoundError:
+            pass
+        return payloads
+
+    def assert_alive(self):
+        exit_code = self._process.poll()
+        assert exit_code is None, (
+            f"the pipeline exited prematurely with code {exit_code}; "
+            f"log tail:\n{self.log_tail()}"
+        )
+
+    def sigkill(self):
+        os.kill(self._process.pid, signal.SIGKILL)
+        self._process.wait(timeout=60)
+
+    def stop(self):
+        if self._process.poll() is None:
+            self._process.kill()
+            self._process.wait(timeout=60)
+
+    def log_tail(self) -> str:
+        try:
+            with open(self._log_path) as f:
+                return "".join(f.readlines()[-30:])
+        except FileNotFoundError:
+            return "<no log file>"
+
+
+def _wait_until_received(run, publish, marker, timeout):
+    """Publish `marker` repeatedly until it shows up in the run's output.
+
+    Publishing repeatedly is the only reliable way to know the reader is
+    subscribed and flowing: a marker published before the subscription was
+    set up may never be delivered.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        run.assert_alive()
+        publish(marker)
+        if marker in run.received_payloads():
+            return
+        time.sleep(0.5)
+    raise AssertionError(
+        f"marker {marker!r} did not reach the output in {timeout} seconds; "
+        f"log tail:\n{run.log_tail()}"
+    )
+
+
+def assert_messages_survive_sigkill_restart(make_run, publish, loss_description):
+    """Drives the shared SIGKILL at-least-once scenario.
+
+    Args:
+        make_run: ``make_run(run_index) -> IdentityPipelineRun`` — starts one
+            run of the identity pipeline; the consecutive runs must share the
+            persistent storage.
+        publish: ``publish(payload: str)`` — durably publishes one message to
+            the topic the pipeline reads; must return only after the broker
+            has accepted the message.
+        loss_description: what to call the lost messages in the failure text,
+            e.g. ``"QoS1 messages"``.
+    """
+    # Run 0: start the pipeline and wait until it demonstrably receives data.
+    run0 = make_run(0)
+    try:
+        _wait_until_received(run0, publish, "warmup", SIGKILL_SUBSCRIPTION_TIMEOUT_SEC)
+
+        # Publish a continuous stream and SIGKILL the pipeline mid-flight, so
+        # that some delivered messages have not made it into a checkpoint yet.
+        for i in range(1500):
+            publish(f"msg-{i:05d}")
+        # Let the pipeline ingest (but not necessarily checkpoint) the tail.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if len(run0.received_payloads()) >= 500:
+                break
+            time.sleep(0.1)
+        run0.assert_alive()
+    except Exception:
+        run0.stop()
+        raise
+    run0.sigkill()
+
+    # While the pipeline is down, the topic continues to receive data. This
+    # window must be covered by the broker-side reading position (a durable
+    # subscription, consumer or session), not by the pipeline's checkpoints.
+    for i in range(1500, 2000):
+        publish(f"msg-{i:05d}")
+
+    # Run 1: restart from the same persistent storage and wait until the
+    # pipeline has caught up with a fresh marker.
+    run1 = make_run(1)
+    try:
+        _wait_until_received(
+            run1, publish, "final-marker", SIGKILL_COMPLETION_TIMEOUT_SEC
+        )
+
+        expected = {f"msg-{i:05d}" for i in range(2000)}
+        received = run0.received_payloads() | run1.received_payloads()
+
+        # Give the late tail a chance: everything the broker still has pending
+        # should be delivered shortly after the final marker.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not expected <= received:
+            time.sleep(0.5)
+            received = run0.received_payloads() | run1.received_payloads()
+
+        missing = sorted(expected - received)
+        assert not missing, (
+            f"{len(missing)} of {len(expected)} {loss_description} were lost "
+            f"across the SIGKILL restart, e.g. {missing[:10]}; "
+            f"log tail:\n{run1.log_tail()}"
+        )
+    finally:
+        run1.stop()

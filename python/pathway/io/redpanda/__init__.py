@@ -60,12 +60,15 @@ def read(
         schema_registry_settings: settings for connecting to the Confluent Schema Registry,
             if this type of registry is used.
         debug_data: Static data replacing original one when debug mode is active.
-        autocommit_duration_ms:the maximum time between two commits. Every
+        autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway Live Data Framework's computation graph.
+            Required for streaming reads: a Redpanda topic never signals completion, so
+            the timer is the only thing that advances time; ``None`` is rejected at
+            construction.
         json_field_paths: If the format is JSON, this field allows to map field names
             into path in the field. For the field which require such mapping, it should be
-            given in the format `<field_name>: <path to be mapped>`, where the path to
+            given in the format ``<field_name>: <path to be mapped>``, where the path to
             be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         parallel_readers: number of copies of the reader to work in parallel. In case

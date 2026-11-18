@@ -1,0 +1,4375 @@
+# Copyright © 2026 Pathway
+
+import base64
+import datetime
+import decimal
+import io
+import json
+import multiprocessing
+import pathlib
+import threading
+import time
+from uuid import uuid4
+
+import pandas as pd
+import pytest
+import requests
+
+import pathway as pw
+from pathway.internals.parse_graph import G
+from pathway.tests.utils import (
+    CsvLinesNumberChecker,
+    FileLinesNumberChecker,
+    wait_result_with_checker,
+)
+
+from .utils import (
+    PULSAR_ADMIN_URL,
+    PULSAR_AUTH_SERVICE_URI,
+    PULSAR_AUTH_TOKEN,
+    PULSAR_HOST,
+    PULSAR_PORT,
+    PULSAR_SERVICE_URI,
+    BrokerTcpProxy,
+    make_pulsar_client,
+    pulsar_admin_request,
+    pulsar_subscribe,
+)
+
+WAIT_TIMEOUT_SECS = 30
+
+# How long the broker stays unreachable in the outage test. The client
+# library gives up reconnecting after its own retry budget (12 attempts with
+# a growing backoff), which this comfortably outlasts.
+BROKER_OUTAGE_SECS = 20
+
+
+# --- Parametrized read/write test ---
+
+
+@pytest.mark.parametrize("format", ["plaintext", "raw", "json"])
+@pytest.mark.parametrize("mode", ["streaming", "static"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_write(pulsar_context, tmp_path, format, mode):
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 3
+
+    class JsonSchema(pw.Schema):
+        name: str
+        age: int
+
+    schema = JsonSchema if format == "json" else None
+
+    if format == "json":
+        payloads = [json.dumps({"name": f"user-{i}", "age": 20 + i}) for i in range(3)]
+    else:
+        payloads = [f"message-{i}" for i in range(3)]
+
+    for payload in payloads:
+        pulsar_context.send(payload)
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format=format,
+        schema=schema,
+        mode=mode,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+
+    if mode == "static":
+        pw.run()
+    else:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+        )
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == n_messages
+    if format == "json":
+        assert {(line["name"], line["age"]) for line in lines} == {
+            (f"user-{i}", 20 + i) for i in range(3)
+        }
+    elif format == "plaintext":
+        expected = {f"message-{i}" for i in range(3)}
+        assert {line["data"] for line in lines} == expected
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_then_read_roundtrip(pulsar_context, tmp_path):
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.txt"
+    entries = ["one", "two", "three", "four"]
+    with open(input_file, "w") as f:
+        f.write("\n".join(entries) + "\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="json")
+
+    class InputSchema(pw.Schema):
+        data: str
+
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=InputSchema,
+        format="json",
+        autocommit_duration_ms=100,
+    )
+    pw.io.csv.write(table_reread, output_file)
+
+    wait_result_with_checker(
+        CsvLinesNumberChecker(output_file, len(entries)), WAIT_TIMEOUT_SECS
+    )
+
+
+def test_pulsar_static_empty_topic(pulsar_context, tmp_path):
+    output_file = tmp_path / "output.jsonl"
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    assert output_file.read_text() == ""
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_headers_and_key(pulsar_context, tmp_path):
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"key": "front-door", "temperature": 21, "note": "ok"},
+        {"key": "back-door", "temperature": 22, "note": "warm"},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        key: str
+        temperature: int
+        note: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        key=table.key,
+        headers=[table.temperature, table.note],
+    )
+    pw.run()
+
+    messages = pulsar_context.read_messages(expected_count=len(rows))
+    received = {}
+    for message in messages:
+        payload = json.loads(message.data())
+        received[payload["key"]] = message
+
+    assert set(received) == {"front-door", "back-door"}
+    for row in rows:
+        message = received[row["key"]]
+        assert message.partition_key() == row["key"]
+        properties = message.properties()
+        assert properties["pathway_diff"] == "1"
+        assert "pathway_time" in properties
+        assert json.loads(properties["temperature"]) == row["temperature"]
+        assert json.loads(properties["note"]) == row["note"]
+
+
+def raw_avro_producer_schema(definition):
+    """A pulsar-client Schema that registers the given Avro schema definition
+    and passes preencoded datums through: the official client cannot express
+    the logical types, so the tests craft the datums themselves."""
+    import pulsar
+
+    class RawAvroSchema(pulsar.schema.Schema):
+        def __init__(self, schema_definition):
+            super().__init__(
+                None, pulsar._pulsar.SchemaType.AVRO, schema_definition, "AVRO"
+            )
+
+        def encode(self, data):
+            return data
+
+        def decode(self, data):
+            return data
+
+    return RawAvroSchema(definition)
+
+
+def publish_avro_datums(pulsar_context, definition, rows, *, topic=None):
+    """Registers the given Avro schema on the topic and publishes each row as
+    a bare Avro datum under it — how a foreign producer fills a typed Pulsar
+    topic. An empty ``rows`` registers the schema without publishing
+    anything."""
+    producer = pulsar_context._client.create_producer(
+        topic or pulsar_context.topic,
+        schema=raw_avro_producer_schema(definition),
+    )
+    try:
+        for row in rows:
+            producer.send(avro_datum(definition, row))
+    finally:
+        producer.close()
+
+
+def avro_datum(definition, row):
+    """The bare Avro binary encoding of one row under the given schema."""
+
+    import fastavro
+
+    buffer = io.BytesIO()
+    fastavro.schemaless_writer(buffer, fastavro.parse_schema(definition), row)
+    return buffer.getvalue()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_dynamic_topics(pulsar_context, tmp_path):
+    input_path = tmp_path / "input.jsonl"
+    output_path_1 = tmp_path / "output_1.jsonl"
+    output_path_2 = tmp_path / "output_2.jsonl"
+    dynamic_topic_1 = f"pulsar-{uuid4()}"
+    dynamic_topic_2 = f"pulsar-{uuid4()}"
+    with open(input_path, "w") as f:
+        f.write(json.dumps({"k": "0", "v": "foo", "t": dynamic_topic_1}) + "\n")
+        f.write(json.dumps({"k": "1", "v": "bar", "t": dynamic_topic_2}) + "\n")
+        f.write(json.dumps({"k": "2", "v": "baz", "t": dynamic_topic_1}) + "\n")
+
+    class InputSchema(pw.Schema):
+        k: str
+        v: str
+        t: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, topic=table.t, format="json")
+    pw.run()
+
+    class OutputSchema(pw.Schema):
+        k: str
+        v: str
+
+    G.clear()
+    table_1 = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        dynamic_topic_1,
+        schema=OutputSchema,
+        format="json",
+        mode="static",
+    )
+    table_2 = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        dynamic_topic_2,
+        schema=OutputSchema,
+        format="json",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_1, output_path_1)
+    pw.io.jsonlines.write(table_2, output_path_2)
+    pw.run()
+
+    lines_1 = [json.loads(line) for line in output_path_1.read_text().splitlines()]
+    lines_2 = [json.loads(line) for line in output_path_2.read_text().splitlines()]
+    assert {(line["k"], line["v"]) for line in lines_1} == {("0", "foo"), ("2", "baz")}
+    assert {(line["k"], line["v"]) for line in lines_2} == {("1", "bar")}
+    # In the "json" format the payload carries every column of the table,
+    # including the topic-name column — the long-standing behavior shared
+    # with the other message-queue connectors. Checked on the raw payloads:
+    # a re-read through a narrower schema would not see extra fields anyway.
+    raw_payloads = [
+        json.loads(message.data())
+        for message in pulsar_context.read_messages(2, topic=dynamic_topic_1)
+    ]
+    assert all(payload["t"] == dynamic_topic_1 for payload in raw_payloads)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_start_from_end(pulsar_context, tmp_path):
+    output_file = tmp_path / "output.jsonl"
+    for i in range(3):
+        pulsar_context.send(f"old-{i}")
+
+    def send_new_messages():
+        # Give the pipeline the time to create the subscription positioned at
+        # the tail of the topic; anything published afterwards must be seen.
+        time.sleep(5.0)
+        for i in range(2):
+            pulsar_context.send(f"new-{i}")
+
+    sender = threading.Thread(target=send_new_messages)
+    sender.start()
+    try:
+        G.clear()
+        table = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="plaintext",
+            start_from="end",
+            autocommit_duration_ms=100,
+        )
+        pw.io.jsonlines.write(table, output_file)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, 2), WAIT_TIMEOUT_SECS
+        )
+    finally:
+        sender.join()
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == {"new-0", "new-1"}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_start_from_timestamp(pulsar_context, tmp_path):
+    output_file = tmp_path / "output.jsonl"
+    for i in range(3):
+        pulsar_context.send(f"old-{i}")
+    time.sleep(2.0)
+    cutoff_timestamp_ms = int(time.time() * 1000)
+    time.sleep(2.0)
+    for i in range(3):
+        pulsar_context.send(f"new-{i}")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        start_from="timestamp",
+        start_from_timestamp_ms=cutoff_timestamp_ms,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == {"new-0", "new-1", "new-2"}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_types_roundtrip(pulsar_context, tmp_path):
+    """All types serializable to JSON survive the write-read roundtrip intact."""
+    output_file = tmp_path / "output.jsonl"
+
+    class TypesSchema(pw.Schema):
+        int_field: int
+        float_field: float
+        bool_field: bool
+        str_field: str
+        list_field: list[int]
+        json_field: pw.Json
+
+    rows = [
+        {
+            "int_field": 42,
+            "float_field": -2.5,
+            "bool_field": True,
+            "str_field": "héllo wörld",
+            "list_field": [1, 2, 3],
+            "json_field": {"nested": {"a": 1}, "arr": [True, None, "x"]},
+        }
+    ]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=TypesSchema, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="json")
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=TypesSchema,
+        format="json",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == len(rows)
+    result = lines[0]
+    for field, expected_value in rows[0].items():
+        assert result[field] == expected_value, field
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_persistence_no_rereading(pulsar_context, tmp_path: pathlib.Path):
+    """Restarts of a persisted pipeline continue after the processed prefix.
+
+    Three consecutive runs against the same growing input file and the same
+    persistent storage: each run must deliver exactly the new entries, so
+    nothing is lost and nothing is duplicated across graceful restarts.
+    """
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.txt"
+    # A short snapshot interval, so the deferred broker acknowledgements
+    # (sent only once a checkpoint covers the messages) go out promptly
+    # after the phase's data is processed.
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
+        snapshot_interval_ms=200,
+    )
+
+    def run_identity_program(new_entries: list[str]) -> None:
+        G.clear()
+        table = pw.io.plaintext.read(input_file, mode="static")
+        pw.io.pulsar.write(
+            table, PULSAR_SERVICE_URI, pulsar_context.topic, format="json"
+        )
+
+        class InputSchema(pw.Schema):
+            data: str
+
+        table_reread = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            schema=InputSchema,
+            format="json",
+            autocommit_duration_ms=100,
+        )
+        pw.io.csv.write(table_reread, output_file)
+
+        # The double check keeps the pipeline alive for a while after the
+        # expected result is reached. This closes an at-least-once race
+        # between the phases: the phase's last messages are acknowledged to
+        # the broker only after a checkpoint covers them, and killing the
+        # pipeline right away could leave them unacknowledged — the broker
+        # would then redeliver them to the next phase, which expects exactly
+        # its own new entries. The extra interval both lets the final
+        # checkpoint's acknowledgements go out and verifies that no duplicate
+        # rows arrive in the meantime.
+        wait_result_with_checker(
+            CsvLinesNumberChecker(output_file, len(new_entries)),
+            WAIT_TIMEOUT_SECS,
+            double_check_interval=2.0,
+            kwargs={"persistence_config": persistence_config},
+        )
+
+    with open(input_file, "w") as f:
+        f.write("one\ntwo\nthree\nfour\n")
+    run_identity_program(["one", "two", "three", "four"])
+
+    with open(input_file, "w") as f:
+        f.write("one\ntwo\nthree\nfour\nfive\nsix\n")
+    run_identity_program(["five", "six"])
+
+    with open(input_file, "w") as f:
+        f.write("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine")
+    run_identity_program(["seven", "eight", "nine"])
+
+
+# --- Authentication tests (the `pulsar-auth` broker: JWT token required) ---
+
+
+def test_pulsar_rejected_credentials_error_names_the_likely_cause():
+    """Connecting with credentials the broker rejects must fail with an error
+    that points at authentication as the likely cause. The client library
+    reports such rejections as a generic fatal connection error, which on its
+    own sends the user hunting for network problems instead of checking the
+    token."""
+    G.clear()
+    auth = pw.io.pulsar.TokenAuthentication("not-a-valid-token")
+    table = pw.io.pulsar.read(
+        PULSAR_AUTH_SERVICE_URI,
+        f"pulsar-{uuid4()}",
+        format="plaintext",
+        mode="static",
+        auth=auth,
+    )
+    pw.io.null.write(table)
+    with pytest.raises(Exception, match="authentication"):
+        pw.run()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_token_authentication(tmp_path):
+    """A token-authenticated broker accepts reads and writes with the token."""
+    topic = f"pulsar-{uuid4()}"
+    auth = pw.io.pulsar.TokenAuthentication(PULSAR_AUTH_TOKEN)
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    entries = ["one", "two", "three"]
+    with open(input_file, "w") as f:
+        f.write("\n".join(entries) + "\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table, PULSAR_AUTH_SERVICE_URI, topic, format="plaintext", auth=auth
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_AUTH_SERVICE_URI,
+        topic,
+        format="plaintext",
+        mode="static",
+        auth=auth,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == set(entries)
+
+
+def test_pulsar_authentication_required(tmp_path):
+    """The token-authenticated broker rejects a connection without a token."""
+    output_file = tmp_path / "output.jsonl"
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_AUTH_SERVICE_URI,
+        f"pulsar-{uuid4()}",
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    with pytest.raises(Exception, match="[Pp]ulsar"):
+        pw.run()
+
+
+@pytest.mark.parametrize(
+    "subscription_type", ["reader", "shared", "key_shared", "exclusive", "failover"]
+)
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_subscription_types(pulsar_context, tmp_path, subscription_type):
+    """Every supported subscription type delivers the full message set."""
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 3
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i}")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        subscription_type=subscription_type,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+    )
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == {f"message-{i}" for i in range(n_messages)}
+
+
+# --- Stabilization tests: previously uncovered paths ---
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_multiple_workers_shared_read(pulsar_context, tmp_path, monkeypatch):
+    """A multi-worker pipeline reads the whole topic through one shared
+    subscription: the broker distributes the messages between the workers and
+    no message is lost or duplicated."""
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 200
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i:04d}")
+
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+    )
+
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert len(payloads) == n_messages
+    assert set(payloads) == {f"message-{i:04d}" for i in range(n_messages)}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_multiple_workers_static_read(pulsar_context, tmp_path, monkeypatch):
+    """A multi-worker pipeline in static mode reads the whole topic. The
+    static read goes through a single exclusive consumer, so only one worker
+    may connect to the broker — the other workers must stay idle instead of
+    joining the subscription and being rejected with ConsumerBusy."""
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 50
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i:02d}")
+
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert len(payloads) == n_messages
+    assert set(payloads) == {f"message-{i:02d}" for i in range(n_messages)}
+
+
+@pytest.mark.parametrize("subscription_type", ["exclusive", "failover"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_multiple_workers_single_consumer_subscription(
+    pulsar_context, tmp_path, subscription_type, monkeypatch
+):
+    """A multi-worker pipeline with a single-consumer subscription type reads
+    the whole topic through one worker. The other workers must stay idle: a
+    second consumer joining an exclusive subscription would be rejected by
+    the broker with ConsumerBusy and fail the pipeline."""
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 50
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i:02d}")
+
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        subscription_type=subscription_type,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+    )
+
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert len(payloads) == n_messages
+    assert set(payloads) == {f"message-{i:02d}" for i in range(n_messages)}
+
+
+@pytest.mark.parametrize("mode", ["streaming", "static"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_partitioned_topic(pulsar_context, tmp_path, mode):
+    """Reading a partitioned topic delivers the messages of every partition;
+    in static mode the per-partition boundaries terminate the read exactly
+    once each partition is drained."""
+    topic = pulsar_context.create_partitioned_topic(partitions=3)
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 30
+    # Distinct keys spread the messages across the partitions.
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i:02d}", topic=topic, key=f"key-{i % 7}")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        mode=mode,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    if mode == "static":
+        pw.run()
+    else:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+        )
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == {f"message-{i:02d}" for i in range(n_messages)}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_streaming_start_from_timestamp(pulsar_context, tmp_path):
+    """The publish-timestamp filter applies in the streaming mode as well:
+    only the messages published at or after the timestamp are delivered."""
+    output_file = tmp_path / "output.jsonl"
+    for i in range(3):
+        pulsar_context.send(f"old-{i}")
+    time.sleep(2.0)
+    cutoff_timestamp_ms = int(time.time() * 1000)
+    time.sleep(2.0)
+    for i in range(3):
+        pulsar_context.send(f"new-{i}")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        start_from="timestamp",
+        start_from_timestamp_ms=cutoff_timestamp_ms,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(FileLinesNumberChecker(output_file, 3), WAIT_TIMEOUT_SECS)
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == {"new-0", "new-1", "new-2"}
+
+
+def test_pulsar_raw_binary_roundtrip(pulsar_context, tmp_path):
+    """Non-UTF8 binary payloads survive the write/read roundtrip untouched."""
+    binary_payloads = [bytes([0, 255, 254, 1, 2, 128]), b"\x89PNG\r\n\x1a\n"]
+    for payload in binary_payloads:
+        producer = pulsar_context._client.create_producer(pulsar_context.topic)
+        producer.send(payload)
+        producer.close()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="raw",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == len(binary_payloads)
+
+
+@pytest.mark.parametrize("disconnection", ["tcp", "topic_unload"])
+def test_pulsar_write_survives_a_broker_disconnection(
+    pulsar_context, tmp_path, disconnection
+):
+    """A dropped broker connection during active writing is a routine event —
+    a failover, a bundle unload, a rolling restart. The writer must ride it
+    out and deliver every row once the broker is reachable again, instead of
+    failing the pipeline within a second of the disconnection. Duplicates are
+    allowed (the delivery is at-least-once); losses and a dead pipeline are
+    not."""
+    proxy = BrokerTcpProxy(PULSAR_HOST, PULSAR_PORT)
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    before = [f"before-{i:03d}" for i in range(10)]
+    during = [f"during-{i:03d}" for i in range(10)]
+    seen: set[str] = set()
+
+    def feed(payloads):
+        for payload in payloads:
+            (input_dir / f"{payload}.txt").write_text(payload + "\n")
+
+    def received() -> set[str]:
+        consumer = pulsar_subscribe(
+            pulsar_context._client,
+            pulsar_context.topic,
+            subscription_name=f"peek-{uuid4()}",
+            initial_position=pulsar_context._pulsar.InitialPosition.Earliest,
+        )
+        got: set[str] = set()
+        try:
+            while True:
+                try:
+                    message = consumer.receive(timeout_millis=1000)
+                except Exception:
+                    break
+                consumer.acknowledge(message)
+                got.add(message.data().decode())
+        finally:
+            consumer.close()
+        return got
+
+    def wait_for(expected: set[str], timeout_sec: float) -> set[str]:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            # Unloading a topic may discard a fully acknowledged ledger. Count
+            # deliveries across polls rather than requiring those messages to
+            # remain available for a second read after the unload.
+            seen.update(received())
+            if expected <= seen:
+                break
+            time.sleep(0.5)
+        return seen
+
+    G.clear()
+    table = pw.io.plaintext.read(
+        str(input_dir), mode="streaming", autocommit_duration_ms=200
+    )
+    pw.io.pulsar.write(table, proxy.uri, pulsar_context.topic, format="plaintext")
+    process = multiprocessing.get_context("fork").Process(target=pw.run, daemon=True)
+    process.start()
+    try:
+        feed(before)
+        assert wait_for(set(before), WAIT_TIMEOUT_SECS) >= set(before)
+        if disconnection == "tcp":
+            proxy.cut()
+        else:
+            # Sends CloseProducer while the connection itself may remain alive.
+            # This exercises the driver's producer recreation path separately
+            # from recovery after a TCP disconnect.
+            requests.put(
+                f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+                f"{pulsar_context.topic}/unload",
+                timeout=60,
+            ).raise_for_status()
+        # The rows arriving while the broker is away must wait out the outage
+        # inside the writer, not kill the pipeline.
+        feed(during)
+        if disconnection == "tcp":
+            time.sleep(BROKER_OUTAGE_SECS)
+            proxy.restore()
+        got = wait_for(set(before) | set(during), WAIT_TIMEOUT_SECS * 3)
+        assert process.is_alive(), "the writer died of the disconnection"
+        assert (
+            set(before) | set(during) <= got
+        ), f"missing: {sorted((set(before) | set(during)) - got)[:5]}"
+    finally:
+        process.terminate()
+        process.join(timeout=15)
+        proxy.close()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_publishes_rows_that_fill_a_batch(pulsar_context, tmp_path):
+    """Rows of a few kilobytes are published normally. The producer groups the
+    messages into batches, and a batch is a single Pulsar message on the wire,
+    so the batching must stay within the broker's message size limit no matter
+    how large the individual rows are — otherwise the broker drops the
+    connection and the whole write is lost."""
+    n_messages = 1200  # x 10 KB: far above the broker's 5 MB default per message
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    with open(input_file, "w") as f:
+        for i in range(n_messages):
+            f.write(f"{i:06d}" + "x" * 10_000 + "\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, pulsar_context.topic, format="plaintext"
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    assert len(output_file.read_text().splitlines()) == n_messages
+
+
+def test_pulsar_write_names_the_size_limit_for_an_oversized_message(pulsar_context):
+    """A single row larger than the broker's per-message size limit cannot be
+    published: the broker drops the connection upon receiving the frame. The
+    write must then fail with an error that names the message size and the
+    ``maxMessageSize`` limit, so the user learns what to fix — not with a
+    bare connection-drop report."""
+
+    class InputSchema(pw.Schema):
+        data: str
+
+    G.clear()
+    table = pw.debug.table_from_rows(
+        InputSchema, [("x" * (6 * 1024 * 1024),)]  # over the 5 MiB default
+    )
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, pulsar_context.topic, format="plaintext"
+    )
+    with pytest.raises(Exception, match="maxMessageSize"):
+        pw.run()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_large_batch_backpressure(pulsar_context, tmp_path):
+    """A minibatch far larger than the writer's in-flight window is delivered
+    completely: the backpressure drain frees the window without stalling the
+    producer batching."""
+    n_messages = 60_000  # exceeds MAX_IN_FLIGHT_SENDS (50k) in one minibatch
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    with open(input_file, "w") as f:
+        for i in range(n_messages):
+            f.write(f"message-{i:05d}\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, pulsar_context.topic, format="plaintext"
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    assert len(output_file.read_text().splitlines()) == n_messages
+
+
+def test_pulsar_invalid_token_rejected(tmp_path):
+    """The token-authenticated broker rejects a syntactically valid but
+    wrongly signed token."""
+    output_file = tmp_path / "output.jsonl"
+    bad_token = PULSAR_AUTH_TOKEN[:-4] + "AAAA"  # break the signature
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_AUTH_SERVICE_URI,
+        f"pulsar-{uuid4()}",
+        format="plaintext",
+        mode="static",
+        auth=pw.io.pulsar.TokenAuthentication(bad_token),
+    )
+    pw.io.jsonlines.write(table, output_file)
+    with pytest.raises(Exception, match="[Pp]ulsar"):
+        pw.run()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_reports_a_taken_producer_name(pulsar_context, tmp_path):
+    """A producer name held by a live producer of another pipeline can never
+    be acquired, and the broker answers every attempt with ProducerBusy. The
+    writer must surface that as an error naming the conflict within a bounded
+    time — not hang forever while the client library retries the same refusal
+    (its default retry budget is unlimited). The bound is a couple of minutes:
+    long enough for the broker to drop a crashed pipeline's lingering
+    producer, so a legitimate restart under the same name still succeeds."""
+    holder = pulsar_context._client.create_producer(
+        pulsar_context.topic, producer_name="name-holder-0"
+    )
+    input_file = tmp_path / "input.txt"
+    input_file.write_text("row\n")
+    try:
+        G.clear()
+        table = pw.io.plaintext.read(input_file, mode="static")
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="plaintext",
+            producer_name="name-holder",
+        )
+        started = time.monotonic()
+        with pytest.raises(Exception, match="ProducerBusy"):
+            pw.run()
+        assert time.monotonic() - started < 300, "the conflict took too long to surface"
+    finally:
+        holder.close()
+
+
+def test_pulsar_write_rejects_non_string_key(pulsar_context, tmp_path):
+    """A key column that is neither a string nor UTF-8 bytes fails the write
+    with a clear error instead of producing a corrupted partition key."""
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        f.write(json.dumps({"num_key": 5, "value": "foo"}) + "\n")
+
+    class InputSchema(pw.Schema):
+        num_key: int
+        value: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    with pytest.raises(Exception):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="json",
+            key=table.num_key,
+        )
+        pw.run()
+
+
+def test_pulsar_write_rejects_non_utf8_key(pulsar_context, tmp_path):
+    """Pulsar stores partition keys as strings, so a binary key column whose
+    bytes are not valid UTF-8 cannot be published. Such a key must fail with an
+    error naming the key and its encoding requirement, rather than with a bare
+    decoding failure that gives no hint about which column is at fault."""
+    input_file = tmp_path / "input.txt"
+    input_file.write_text("one\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    table = table.with_columns(
+        binary_key=pw.apply_with_type(lambda _: b"\xff\xfe", bytes, pw.this.data)
+    )
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.data,
+        key=table.binary_key,
+    )
+    with pytest.raises(Exception) as exception_info:
+        pw.run()
+    message = str(exception_info.value)
+    assert "key" in message.lower(), message
+    assert "utf-8" in message.lower(), message
+
+
+def test_pulsar_rejects_empty_names():
+    """A name that is only ever passed on to the broker — the subscription of a
+    read, the producer name of a write — must be rejected when the connector is
+    created if it is empty. An empty subscription name in particular buys a
+    pipeline that subscribes to nothing and delivers nothing forever, which is
+    indistinguishable from an idle topic; both cases usually come from an
+    unset environment variable, and the earlier they surface the better."""
+    G.clear()
+    with pytest.raises(ValueError, match="subscription_name"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            subscription_name="",
+        )
+
+    G.clear()
+    table = pw.debug.table_from_markdown(
+        """
+        data
+        one
+        """
+    )
+    with pytest.raises(ValueError, match="producer_name"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            producer_name="",
+        )
+
+
+def test_pulsar_start_from_validation():
+    """Contradictory start_from arguments are rejected at graph-build time."""
+    G.clear()
+    with pytest.raises(ValueError, match="start_from_timestamp_ms is required"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            start_from="timestamp",
+        )
+    with pytest.raises(ValueError, match="must not be set"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            start_from="beginning",
+            start_from_timestamp_ms=123,
+        )
+    # -1 is the engine's internal sentinel for start_from="end"; an explicit
+    # negative timestamp must raise instead of silently reading from the end.
+    with pytest.raises(ValueError, match="must be a non-negative"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="plaintext",
+            start_from="timestamp",
+            start_from_timestamp_ms=-1,
+        )
+
+
+# --- Message key tests ---
+
+
+@pytest.mark.parametrize(
+    "reader_kwargs",
+    [
+        {"subscription_type": "reader"},
+        {"subscription_type": "shared", "subscription_name": "unload-durable-sub"},
+    ],
+    ids=["reader_mode", "durable_subscription"],
+)
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_survives_topic_unload_without_duplicates(
+    pulsar_context, tmp_path, reader_kwargs
+):
+    """Unloading a topic is a routine broker operation — it happens on
+    rebalancing, on namespace bundle moves and on broker restarts — and it
+    drops the connections of everyone attached to the topic. The reading
+    mechanisms that track their position durably, the partition reader on the
+    client side and a named subscription on the broker side, must come back
+    from it having delivered every message exactly once."""
+    output_file = tmp_path / "output.jsonl"
+    before = [f"before-{i:03d}" for i in range(20)]
+    after = [f"after-{i:03d}" for i in range(15)]
+    for message in before:
+        pulsar_context.send(message)
+
+    def unload_and_publish_more():
+        deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if output_file.exists() and len(
+                output_file.read_text().splitlines()
+            ) >= len(before):
+                break
+            time.sleep(0.5)
+        response = requests.put(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+            f"{pulsar_context.topic}/unload",
+            timeout=60,
+        )
+        response.raise_for_status()
+        time.sleep(3.0)
+        for message in after:
+            pulsar_context.send(message)
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        **reader_kwargs,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    worker = threading.Thread(target=unload_and_publish_more)
+    worker.start()
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, len(before) + len(after)),
+            WAIT_TIMEOUT_SECS * 2,
+        )
+    finally:
+        worker.join()
+
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert sorted(payloads) == sorted(before + after)
+
+
+@pytest.mark.parametrize(
+    "subscription_type", ["reader", "shared"], ids=["reader_mode", "subscription_mode"]
+)
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_reports_a_topic_expanded_under_it(
+    pulsar_context, tmp_path, subscription_type
+):
+    """A reader is attached to the partitions the topic had when the pipeline
+    started, and neither reading mechanism can pick up the partitions added
+    later. Expanding the topic under a running pipeline must therefore fail
+    it with an error naming the old and the new partition counts, instead of
+    dropping everything published into the new partitions unnoticed."""
+    topic = pulsar_context.create_partitioned_topic(partitions=2)
+    output_file = tmp_path / "output.jsonl"
+    error_file = tmp_path / "error.txt"
+    for i in range(6):
+        pulsar_context.send(f"message-{i}", topic=topic, key=f"key-{i}")
+
+    def expand_once_the_reading_started():
+        deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if output_file.exists() and output_file.read_text().splitlines():
+                break
+            time.sleep(0.5)
+        response = requests.post(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+            f"{topic}/partitions",
+            json=4,
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    def run_and_record_the_failure():
+        try:
+            pw.run()
+        except Exception as error:
+            error_file.write_text(str(error))
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        subscription_type=subscription_type,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    worker = threading.Thread(target=expand_once_the_reading_started)
+    worker.start()
+    try:
+        wait_result_with_checker(
+            lambda: error_file.exists(),
+            WAIT_TIMEOUT_SECS * 3,
+            target=run_and_record_the_failure,
+        )
+    finally:
+        worker.join()
+    assert "expanded from 2 to 4 partitions" in error_file.read_text()
+
+
+@pytest.mark.parametrize(
+    "reader_kwargs",
+    [
+        {"subscription_type": "reader"},
+        {"subscription_type": "shared", "subscription_name": "outage-durable-sub"},
+    ],
+    ids=["reader_mode", "durable_subscription"],
+)
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_resumes_after_an_outage_longer_than_the_client_retries(
+    pulsar_context, tmp_path, reader_kwargs
+):
+    """A broker outage that outlasts the client library's own reconnection
+    budget — a broker restart is the everyday example — leaves the consumers
+    it created for good. The reader must build new ones and go on delivering
+    once the broker is back, rather than staying alive attached to a dead
+    stream and quietly delivering nothing ever again."""
+    proxy = BrokerTcpProxy(PULSAR_HOST, PULSAR_PORT)
+    output_file = tmp_path / "output.jsonl"
+    before = [f"before-{i:03d}" for i in range(10)]
+    after = [f"after-{i:03d}" for i in range(10)]
+    for message in before:
+        pulsar_context.send(message)
+
+    def payloads() -> set[str]:
+        if not output_file.exists():
+            return set()
+        return {
+            json.loads(line)["data"] for line in output_file.read_text().splitlines()
+        }
+
+    def wait_for(expected: int, timeout_sec: float) -> int:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline and len(payloads()) < expected:
+            time.sleep(0.3)
+        return len(payloads())
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        proxy.uri,
+        pulsar_context.topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        **reader_kwargs,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    process = multiprocessing.get_context("fork").Process(target=pw.run, daemon=True)
+    process.start()
+    try:
+        assert wait_for(len(before), WAIT_TIMEOUT_SECS) == len(before)
+        proxy.cut()
+        time.sleep(BROKER_OUTAGE_SECS)
+        proxy.restore()
+        for message in after:
+            pulsar_context.send(message)
+        wait_for(len(before) + len(after), WAIT_TIMEOUT_SECS * 3)
+        assert payloads() == set(before + after)
+    finally:
+        process.terminate()
+        process.join(timeout=15)
+        proxy.close()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_static_read_keeps_its_snapshot_across_a_broker_outage(
+    pulsar_context, tmp_path
+):
+    """A static read is defined by the messages the topic held when it
+    started. An outage long enough to kill the per-partition consumers must
+    not change that set: the resumed read delivers the remaining messages of
+    the snapshot exactly once, ignores everything published while the broker
+    was away, and still terminates."""
+    topic = pulsar_context.create_partitioned_topic(partitions=2)
+    output_file = tmp_path / "output.jsonl"
+    snapshot = {f"before-{i:05d}" for i in range(4000)}
+    for payload in sorted(snapshot):
+        pulsar_context.send(payload, topic=topic, key=payload)
+    proxy = BrokerTcpProxy(PULSAR_HOST, PULSAR_PORT)
+
+    def read_the_snapshot():
+        table = pw.io.pulsar.read(
+            proxy.uri,
+            topic,
+            format="plaintext",
+            mode="static",
+            autogenerate_key=True,
+            autocommit_duration_ms=100,
+            # Paces the reader by the processing, so the outage below lands
+            # in the middle of the read rather than after it.
+            max_backlog_size=50,
+        )
+
+        @pw.udf
+        def slowly(payload: str) -> str:
+            time.sleep(0.004)
+            return payload
+
+        pw.io.jsonlines.write(table.select(data=slowly(pw.this.data)), output_file)
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    G.clear()
+    process = multiprocessing.get_context("fork").Process(
+        target=read_the_snapshot, daemon=True
+    )
+    process.start()
+    try:
+        deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if output_file.exists() and output_file.read_text().splitlines():
+                break
+            time.sleep(0.1)
+        proxy.cut()
+        for i in range(1000):
+            pulsar_context.send(f"during-{i:05d}", topic=topic, key=f"during-{i}")
+        time.sleep(BROKER_OUTAGE_SECS + 5)
+        proxy.restore()
+        process.join(timeout=WAIT_TIMEOUT_SECS * 6)
+        assert not process.is_alive(), "the static read never finished"
+    finally:
+        process.terminate()
+        process.join(timeout=15)
+        proxy.close()
+
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert set(payloads) == snapshot
+    assert len(payloads) == len(snapshot), "the resumed read delivered duplicates"
+
+
+@pytest.mark.parametrize(
+    "subscription_type", ["reader", "shared"], ids=["reader_mode", "subscription_mode"]
+)
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_reports_expansion_while_messages_keep_arriving(
+    pulsar_context, tmp_path, subscription_type
+):
+    """After a topic expansion the old partitions keep receiving their share
+    of the traffic, so an expanded production topic is rarely idle. The
+    expansion must be reported on such a busy topic too — not only when the
+    reader happens to run out of messages to deliver."""
+    topic = pulsar_context.create_partitioned_topic(partitions=2)
+    output_file = tmp_path / "output.jsonl"
+    error_file = tmp_path / "error.txt"
+    stop_publishing = threading.Event()
+
+    def keep_publishing():
+        # A producer created before the expansion keeps its cached partition
+        # list, so all of its messages land in the old partitions and keep
+        # the reader continuously busy.
+        producer = pulsar_context._client.create_producer(topic)
+        sequence_number = 0
+        while not stop_publishing.is_set():
+            producer.send(f"busy-{sequence_number:05d}".encode())
+            sequence_number += 1
+            time.sleep(0.1)
+        producer.close()
+
+    def expand_once_the_reading_started():
+        deadline = time.monotonic() + WAIT_TIMEOUT_SECS
+        while time.monotonic() < deadline:
+            if output_file.exists() and output_file.read_text().splitlines():
+                break
+            time.sleep(0.3)
+        response = requests.post(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+            f"{topic}/partitions",
+            json=4,
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    def run_and_record_the_failure():
+        try:
+            pw.run()
+        except Exception as error:
+            error_file.write_text(str(error))
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        subscription_type=subscription_type,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    # The fork must precede the publisher thread: forking while the pulsar
+    # client library is mid-send would leave the child with locked mutexes.
+    process = multiprocessing.get_context("fork").Process(
+        target=run_and_record_the_failure, daemon=True
+    )
+    process.start()
+    publisher = threading.Thread(target=keep_publishing)
+    expander = threading.Thread(target=expand_once_the_reading_started)
+    publisher.start()
+    expander.start()
+    try:
+        deadline = time.monotonic() + WAIT_TIMEOUT_SECS * 3
+        while time.monotonic() < deadline and not error_file.exists():
+            time.sleep(0.5)
+    finally:
+        stop_publishing.set()
+        publisher.join()
+        expander.join()
+        process.terminate()
+        process.join(timeout=15)
+    assert (
+        output_file.exists() and output_file.read_text().splitlines()
+    ), "the reader was expected to be busy delivering messages"
+    assert error_file.exists(), "the expansion was never reported on a busy topic"
+    assert "expanded from 2 to 4 partitions" in error_file.read_text()
+
+
+@pytest.mark.parametrize("input_format", ["plaintext", "raw"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_message_key(pulsar_context, input_format):
+    """The raw and plaintext formats expose the partition key of every message
+    in the ``key`` column next to the payload in ``data``; a message published
+    without a partition key gets ``None``."""
+    context = [("1", "one"), ("2", "two"), ("3", "three")]
+    for key, value in context:
+        pulsar_context.send(value, key=key)
+    pulsar_context.send("keyless")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format=input_format,
+        mode="static",
+    )
+    pandas_table = pw.debug.table_to_pandas(table)
+
+    assert len(pandas_table) == len(context) + 1
+    for key, value in context:
+        if input_format != "plaintext":
+            key = key.encode("utf-8")  # type: ignore
+            value = value.encode("utf-8")  # type: ignore
+        row = pandas_table.loc[pandas_table["key"] == key, ["data"]].iloc[0]
+        assert (row == pd.Series({"data": value})).all()
+    keyless_payload = "keyless" if input_format == "plaintext" else b"keyless"
+    keyless_rows = pandas_table.loc[pandas_table["data"] == keyless_payload]
+    assert len(keyless_rows) == 1
+    assert keyless_rows.iloc[0]["key"] is None
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_derives_row_keys_from_message_keys(pulsar_context):
+    """The primary key of a row follows the partition key of the message: the
+    messages sharing a partition key land under one primary key, so a topic
+    with repeating keys produces fewer primary keys than messages. With
+    autogenerate_key=True every message becomes a row of its own instead."""
+    pulsar_context.send("a", key="key-0")
+    pulsar_context.send("b", key="shared")
+    pulsar_context.send("c", key="shared")
+
+    def rows_per_primary_key(autogenerate_key: bool) -> list[int]:
+        G.clear()
+        table = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="plaintext",
+            mode="static",
+            autogenerate_key=autogenerate_key,
+        )
+        # Grouping by the row id, rather than reading the table directly,
+        # keeps the check meaningful when several rows share a primary key.
+        counts = table.groupby(pw.this.id).reduce(cnt=pw.reducers.count())
+        return sorted(pw.debug.table_to_pandas(counts)["cnt"].tolist())
+
+    assert rows_per_primary_key(autogenerate_key=False) == [1, 2]
+    assert rows_per_primary_key(autogenerate_key=True) == [1, 1, 1]
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_message_key_write_read_roundtrip(pulsar_context, tmp_path):
+    """The key written by pw.io.pulsar.write's ``key`` parameter comes back in
+    the ``key`` column of pw.io.pulsar.read."""
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"sensor": "front-door", "reading": "21"},
+        {"sensor": "back-door", "reading": "22"},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        sensor: str
+        reading: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        key=table.sensor,
+        value=table.reading,
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+    )
+    pandas_table = pw.debug.table_to_pandas(table_reread)
+    assert {(row["key"], row["data"]) for _, row in pandas_table.iterrows()} == {
+        (row["sensor"], row["reading"]) for row in rows
+    }
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_routes_equal_keys_into_one_partition(
+    pulsar_context, tmp_path, monkeypatch
+):
+    """On a partitioned topic the partition key decides the partition the
+    message is routed to: every message sharing a key lands in the same
+    partition, so the updates of one entity keep their relative order for the
+    consumers, while different keys are still spread over the topic. The
+    partition a key maps to is a function of the key alone, so pipelines of
+    different worker counts writing the same entity agree on it — the table
+    is published twice, by one worker and by four."""
+    topic = pulsar_context.create_partitioned_topic(partitions=3)
+    output_file = tmp_path / "output.jsonl"
+    keys = ["alpha", "beta"]
+    rows = [{"entity": keys[i % len(keys)], "payload": f"value-{i}"} for i in range(12)]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        entity: str
+        payload: str
+
+    for workers in ("1", "4"):
+        monkeypatch.setenv("PATHWAY_THREADS", workers)
+        G.clear()
+        table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            topic,
+            format="plaintext",
+            key=table.entity,
+            value=table.payload,
+        )
+        pw.run()
+
+    monkeypatch.setenv("PATHWAY_THREADS", "1")
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        mode="static",
+        autogenerate_key=True,
+        with_metadata=True,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    partitions_by_key: dict[str, set[int]] = {}
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == 2 * len(rows)
+    for line in lines:
+        partitions_by_key.setdefault(line["key"], set()).add(
+            line["_metadata"]["partition"]
+        )
+    assert set(partitions_by_key) == set(keys)
+    for key, partitions in partitions_by_key.items():
+        assert len(partitions) == 1, f"key {key!r} was scattered over {partitions}"
+    assert len({partitions.pop() for partitions in partitions_by_key.values()}) == len(
+        keys
+    ), "the keys were not spread over the topic"
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_autogenerate_key(pulsar_context):
+    """With autogenerate_key=True every message gets its own autogenerated
+    primary key, so the messages sharing a partition key stay separate rows;
+    the ``key`` column still carries the partition key."""
+    for i in range(3):
+        pulsar_context.send(f"message-{i}", key="shared-key")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        autogenerate_key=True,
+    )
+    pandas_table = pw.debug.table_to_pandas(table)
+    assert len(pandas_table) == 3
+    assert set(pandas_table["key"]) == {"shared-key"}
+    assert set(pandas_table["data"]) == {f"message-{i}" for i in range(3)}
+
+
+def test_pulsar_read_autogenerate_key_with_json_rejected():
+    """``autogenerate_key`` only applies to the ``raw`` and ``plaintext``
+    formats, so passing it with ``format='json'`` must be rejected up front
+    with an error that names the parameter."""
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+
+    G.clear()
+    with pytest.raises(ValueError, match="autogenerate_key"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            "some-topic",
+            format="json",
+            schema=InputSchema,
+            mode="static",
+            autogenerate_key=True,
+        )
+
+
+# --- Undeliverable-message tests (chunked, encrypted) ---
+
+
+def _publish_chunked_message(pulsar_context, topic: str) -> None:
+    """Publishes one message large enough to be split into chunks by a
+    producer with chunking enabled (the way the Java and Python clients
+    transport payloads above the broker's maxMessageSize)."""
+    producer = pulsar_context._client.create_producer(
+        topic,
+        chunking_enabled=True,
+        batching_enabled=False,  # Pulsar requires batching off for chunking
+    )
+    try:
+        producer.send(b"C" * (12 * 1024 * 1024))  # 3 chunks under the 5 MB limit
+    finally:
+        producer.close()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_reports_chunked_messages_instead_of_fragments(
+    pulsar_context, tmp_path
+):
+    """A message published with chunking enabled travels as several ordinary
+    messages carrying fragments of one payload. This reader cannot reassemble
+    them, so it must fail with an error naming the cause — silently
+    delivering the fragments as separate rows would corrupt the data. A
+    ``start_from`` timestamp above the chunked era still skips past it and
+    reads the deliverable tail normally."""
+    _publish_chunked_message(pulsar_context, pulsar_context.topic)
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="raw",
+        mode="static",
+        autogenerate_key=True,
+    )
+    pw.io.null.write(table)
+    with pytest.raises(Exception, match="chunked message"):
+        pw.run()
+
+    # The subscription mechanism must refuse the fragments as well.
+    output_file = tmp_path / "output.jsonl"
+    error_file = tmp_path / "error.txt"
+
+    def run_and_record_the_failure():
+        try:
+            pw.run()
+        except Exception as error:
+            error_file.write_text(str(error))
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="raw",
+        subscription_type="shared",
+        autocommit_duration_ms=100,
+        autogenerate_key=True,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(
+        lambda: error_file.exists(),
+        WAIT_TIMEOUT_SECS,
+        target=run_and_record_the_failure,
+    )
+    assert "chunked message" in error_file.read_text()
+
+    # Skipping the chunked era by its publish time reads the tail normally.
+    time.sleep(1.1)
+    threshold_ms = int(time.time() * 1000)
+    time.sleep(1.1)
+    pulsar_context.send("after-the-chunked-era")
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        autogenerate_key=True,
+        start_from="timestamp",
+        start_from_timestamp_ms=threshold_ms,
+    )
+    pandas_table = pw.debug.table_to_pandas(table)
+    assert list(pandas_table["data"]) == ["after-the-chunked-era"]
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_delivers_the_messages_acknowledged_before_a_poison_one(
+    pulsar_context, tmp_path
+):
+    """A poison (chunked or encrypted) message stops the pipeline, but the
+    messages the subscription consumer acknowledged just ahead of it must
+    reach the output first: the broker's cursor is already past them, so
+    failing without delivering them would lose them for good on a durable
+    subscription."""
+    delivered = [f"payload-{i:02d}" for i in range(5)]
+    for payload in delivered:
+        pulsar_context.send(payload)
+    _publish_chunked_message(pulsar_context, pulsar_context.topic)
+
+    output_file = tmp_path / "output.jsonl"
+    error_file = tmp_path / "error.txt"
+
+    def run_and_record_the_failure():
+        try:
+            pw.run()
+        except Exception as error:
+            error_file.write_text(str(error))
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        subscription_type="shared",
+        subscription_name=f"poison-durable-{uuid4().hex}",
+        autocommit_duration_ms=100,
+        autogenerate_key=True,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(
+        lambda: error_file.exists(),
+        WAIT_TIMEOUT_SECS,
+        target=run_and_record_the_failure,
+    )
+    assert "chunked message" in error_file.read_text()
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == set(delivered)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_reports_encrypted_messages_instead_of_ciphertext(
+    pulsar_context, tmp_path
+):
+    """An end-to-end encrypted message carries ciphertext that only a
+    consumer with the decryption keys can read. This reader has none, so it
+    must fail with an error naming the cause instead of silently delivering
+    the ciphertext as if it were the data."""
+    crypto = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.rsa")
+    from cryptography.hazmat.primitives import serialization
+
+    private_key = crypto.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = tmp_path / "private.pem"
+    public_pem = tmp_path / "public.pem"
+    private_pem.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    public_pem.write_bytes(
+        private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic,
+        encryption_key="app-key",
+        crypto_key_reader=pulsar_context._pulsar.CryptoKeyReader(
+            str(public_pem), str(private_pem)
+        ),
+    )
+    try:
+        producer.send(b"the-secret-payload")
+    finally:
+        producer.close()
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="raw",
+        mode="static",
+        autogenerate_key=True,
+    )
+    pw.io.null.write(table)
+    with pytest.raises(Exception, match="encrypted message"):
+        pw.run()
+
+
+# --- Non-persistent topic tests ---
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_reads_a_non_persistent_topic_through_a_subscription(
+    pulsar_context, tmp_path
+):
+    """A ``non-persistent://`` topic is readable in the streaming mode through
+    the subscription mechanisms: the messages published while the pipeline is
+    attached are delivered like on any other topic."""
+    topic = f"non-persistent://public/default/{pulsar_context.topic}"
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 10
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        subscription_type="shared",
+        autocommit_duration_ms=100,
+        autogenerate_key=True,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    process = multiprocessing.get_context("fork").Process(target=pw.run, daemon=True)
+    process.start()
+    try:
+        # A non-persistent topic drops what nobody listens to, so the
+        # publishing starts only after the subscription is attached.
+        time.sleep(4)
+        for i in range(n_messages):
+            pulsar_context.send(f"message-{i}", topic=topic)
+            time.sleep(0.05)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, n_messages),
+            WAIT_TIMEOUT_SECS,
+            target=None,
+        )
+    finally:
+        process.terminate()
+        process.join(timeout=15)
+    payloads = [
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    ]
+    assert sorted(payloads) == [f"message-{i}" for i in range(n_messages)]
+
+
+def test_pulsar_rejects_a_non_persistent_topic_in_the_partition_reader_mode(tmp_path):
+    """The partition-reader mechanism reads explicit positions out of the
+    topic's storage, and a non-persistent topic stores nothing — so the
+    static mode, the explicit reader mode and a persistent pipeline must all
+    reject such a topic up front with a clear error, rather than spinning in
+    a broker-error loop that delivers nothing."""
+    topic = "non-persistent://public/default/rejected"
+
+    G.clear()
+    with pytest.raises(ValueError, match="non-persistent"):
+        pw.io.pulsar.read(PULSAR_SERVICE_URI, topic, format="plaintext", mode="static")
+
+    G.clear()
+    with pytest.raises(ValueError, match="non-persistent"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            topic,
+            format="plaintext",
+            subscription_type="reader",
+        )
+
+    # The persistence-implied choice of the mechanism is only made when the
+    # graph is built, so this one surfaces at pw.run.
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        name="np_source",
+    )
+    pw.io.null.write(table)
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(str(tmp_path / "pstorage")),
+    )
+    with pytest.raises(Exception, match="non-persistent"):
+        pw.run(persistence_config=persistence_config)
+
+
+# --- Avro / schema registry tests ---
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_write_registers_schema_and_interoperates(pulsar_context, tmp_path):
+    """Writing with format="avro" publishes bare Avro datums and registers the
+    derived schema in the broker's registry, so a schema-aware consumer of the
+    official client decodes the topic without any Pathway-specific knowledge.
+    The registered schema must carry the AVRO type and one field per column."""
+    import pulsar as pulsar_client
+
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"name": "alice", "age": 30, "score": 4.5},
+        {"name": "bob", "age": 41, "score": 3.25},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        name: str
+        age: int
+        score: float
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    # The registry holds an AVRO schema with one field per column.
+    response = pulsar_admin_request(
+        "GET",
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+    )
+    response.raise_for_status()
+    schema_info = response.json()
+    assert schema_info["type"] == "AVRO"
+    registered = json.loads(schema_info["data"])
+    assert [field["name"] for field in registered["fields"]] == [
+        "name",
+        "age",
+        "score",
+    ]
+
+    # The official client decodes the messages through the registered schema.
+    from pulsar.schema import AvroSchema, Double, Long, Record, String
+
+    class User(Record):
+        _avro_namespace = "pathway"
+        name = String()
+        age = Long()
+        score = Double()
+
+    consumer = pulsar_subscribe(
+        pulsar_context._client,
+        pulsar_context.topic,
+        subscription_name=f"avro-verifier-{uuid4()}",
+        initial_position=pulsar_client.InitialPosition.Earliest,
+        schema=AvroSchema(User),
+    )
+    received = {}
+    try:
+        for _ in rows:
+            message = consumer.receive(timeout_millis=30000)
+            consumer.acknowledge(message)
+            record = message.value()
+            received[record.name] = (record.age, record.score)
+    finally:
+        consumer.close()
+    assert received == {row["name"]: (row["age"], row["score"]) for row in rows}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_write_read_roundtrip_types(pulsar_context, tmp_path):
+    """Every supported column type survives the Avro write/read roundtrip: the
+    writer registers the derived schema, and the reader resolves the writer
+    schema of each message through the registry and projects it onto the
+    table schema."""
+    output_file = tmp_path / "output.jsonl"
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {
+            "int_field": 42,
+            "float_field": -2.5,
+            "bool_field": True,
+            "str_field": "héllo wörld",
+            "opt_field": None,
+            "list_field": [1, 2, 3],
+        },
+        {
+            "int_field": -7,
+            "float_field": 0.125,
+            "bool_field": False,
+            "str_field": "",
+            "opt_field": "present",
+            "list_field": [],
+        },
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class TypesSchema(pw.Schema):
+        int_field: int
+        float_field: float
+        bool_field: bool
+        str_field: str
+        opt_field: str | None
+        list_field: list[int]
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=TypesSchema, mode="static")
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=TypesSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == len(rows)
+    received = {line["int_field"]: line for line in lines}
+    for row in rows:
+        line = received[row["int_field"]]
+        for field, expected in row.items():
+            assert line[field] == expected, (field, line)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_read_survives_schema_evolution(pulsar_context, tmp_path):
+    """A topic whose schema evolved stays readable end to end: the messages
+    written under the older schema version are decoded with that version and
+    projected onto the table schema, the missing optional column becoming
+    None — while the newer messages carry the value.
+
+    The evolution happens in a dedicated namespace with the permissive
+    compatibility policy: the official Python client emits no Avro field
+    defaults, so the strict default policy would reject the second version
+    before the reading side gets anything to resolve."""
+    from pulsar.schema import AvroSchema, Long, Record, String
+
+    namespace = f"public/avro-evo-{uuid4().hex[:12]}"
+    requests.put(
+        f"{PULSAR_ADMIN_URL}/admin/v2/namespaces/{namespace}", timeout=60
+    ).raise_for_status()
+    requests.put(
+        f"{PULSAR_ADMIN_URL}/admin/v2/namespaces/{namespace}"
+        "/schemaCompatibilityStrategy",
+        json="ALWAYS_COMPATIBLE",
+        timeout=60,
+    ).raise_for_status()
+    topic = f"persistent://{namespace}/evolving-{uuid4()}"
+    output_file = tmp_path / "output.jsonl"
+
+    try:
+
+        class UserV1(Record):
+            _avro_namespace = "evo"
+            _record_name = "User"
+            name = String(required=True)
+            age = Long(required=True)
+
+        producer = pulsar_context._client.create_producer(
+            topic, schema=AvroSchema(UserV1)
+        )
+        producer.send(UserV1(name="old-alice", age=30))
+        producer.close()
+
+        class UserV2(Record):
+            _avro_namespace = "evo"
+            _record_name = "User"
+            name = String(required=True)
+            age = Long(required=True)
+            email = String()
+
+        producer = pulsar_context._client.create_producer(
+            topic, schema=AvroSchema(UserV2)
+        )
+        producer.send(UserV2(name="new-bob", age=41, email="bob@example.com"))
+        producer.close()
+
+        class ReaderSchema(pw.Schema):
+            name: str
+            age: int
+            email: str | None
+
+        G.clear()
+        table = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            topic,
+            schema=ReaderSchema,
+            format="avro",
+            mode="static",
+        )
+        pw.io.jsonlines.write(table, output_file)
+        pw.run()
+    finally:
+        short_topic = topic.rsplit("/", 1)[1]
+        requests.delete(
+            f"{PULSAR_ADMIN_URL}/admin/v2/schemas/{namespace}/{short_topic}/schema",
+            timeout=60,
+        )
+        requests.delete(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/{namespace}/{short_topic}"
+            "?force=true",
+            timeout=60,
+        )
+        requests.delete(
+            f"{PULSAR_ADMIN_URL}/admin/v2/namespaces/{namespace}", timeout=60
+        )
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["name"]: line for line in lines}
+    assert set(received) == {"old-alice", "new-bob"}
+    assert received["old-alice"]["age"] == 30
+    assert received["old-alice"]["email"] is None
+    assert received["new-bob"]["email"] == "bob@example.com"
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_payload_excludes_service_columns(pulsar_context, tmp_path):
+    """The Avro schema registered for the topic is a public, versioned
+    contract, so the service columns — the dynamic topic name, the partition
+    and ordering keys, the headers — must not leak into it or into the
+    payloads: an external consumer must see only the data columns."""
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"k": "a", "v": 1, "hdr": "x", "t": pulsar_context.topic},
+        {"k": "b", "v": 2, "hdr": "y", "t": pulsar_context.topic},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        k: str
+        v: int
+        hdr: str
+        t: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        topic=table.t,
+        format="avro",
+        key=table.k,
+        headers=[table.hdr],
+    )
+    pw.run()
+
+    # The registered schema describes only the payload column.
+    response = pulsar_admin_request(
+        "GET",
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+    )
+    response.raise_for_status()
+    registered = json.loads(response.json()["data"])
+    assert [field["name"] for field in registered["fields"]] == ["v"]
+
+    # And the payloads decode into exactly that column, with the key and the
+    # header still delivered through their native channels.
+    messages = pulsar_context.read_messages(len(rows))
+    by_key = {message.partition_key(): message for message in messages}
+    assert set(by_key) == {"a", "b"}
+    assert by_key["a"].properties()["hdr"] == '"x"'
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    assert set(table_reread.schema.column_names()) == {"v"}
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {line["v"] for line in lines} == {1, 2}
+
+
+def test_pulsar_avro_pointer_column_survives_the_roundtrip(pulsar_context, tmp_path):
+    """A Pointer column travels as its string form and must read back into
+    the same pointers: the write side serializes it, so the read side is
+    obliged to parse it."""
+
+    class InputSchema(pw.Schema):
+        label: str
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, [("a",), ("b",)])
+    table = table.select(pw.this.label, ptr=table.id)
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    class ReaderSchema(pw.Schema):
+        label: str
+        ptr: pw.Pointer
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    pointers = {line["label"]: line["ptr"] for line in lines}
+    assert set(pointers) == {"a", "b"}
+    assert all(pointer.startswith("^") for pointer in pointers.values())
+    assert pointers["a"] != pointers["b"]
+
+
+def test_pulsar_avro_read_converts_foreign_logical_types(pulsar_context, tmp_path):
+    """A topic written by a foreign client with the Avro logical types is
+    deduced and read according to the documented conversion table:
+    timestamp-millis becomes a UTC datetime, date a naive datetime, enum and
+    uuid strings, fixed bytes, decimal its exact string form, and a nested
+    record a Json column — end to end, with the exact values preserved."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Reading",
+        "namespace": "foreign",
+        "fields": [
+            {"name": "sensor", "type": "string"},
+            {"name": "ts", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+            {"name": "day", "type": {"type": "int", "logicalType": "date"}},
+            {
+                "name": "kind",
+                "type": {"type": "enum", "name": "Kind", "symbols": ["A", "B"]},
+            },
+            {"name": "token", "type": {"type": "string", "logicalType": "uuid"}},
+            {"name": "blob", "type": {"type": "fixed", "name": "Blob", "size": 4}},
+            {
+                "name": "price",
+                "type": {
+                    "type": "bytes",
+                    "logicalType": "decimal",
+                    "precision": 10,
+                    "scale": 2,
+                },
+            },
+            {
+                "name": "nested",
+                "type": {
+                    "type": "record",
+                    "name": "Inner",
+                    "fields": [{"name": "a", "type": "long"}],
+                },
+            },
+        ],
+    }
+
+    publish_avro_datums(
+        pulsar_context,
+        schema_definition,
+        [
+            {
+                "sensor": "s1",
+                "ts": datetime.datetime(
+                    2024, 3, 1, 12, 0, 0, tzinfo=datetime.timezone.utc
+                ),
+                "day": datetime.date(2024, 3, 1),
+                "kind": "B",
+                "token": "0f2c9f4e-9a1b-4c56-8d1e-1a2b3c4d5e6f",
+                "blob": b"\x01\x02\x03\x04",
+                "price": decimal.Decimal("123.45"),
+                "nested": {"a": 7},
+            }
+        ],
+    )
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    deduced = {name: table.schema[name].dtype for name in table.schema.column_names()}
+    assert str(deduced["ts"]) == "DATE_TIME_UTC"
+    assert str(deduced["day"]) == "DATE_TIME_NAIVE"
+    assert str(deduced["kind"]) == "STR"
+    assert str(deduced["token"]) == "STR"
+    assert str(deduced["blob"]) == "BYTES"
+    assert str(deduced["price"]) == "STR"
+    assert str(deduced["nested"]) == "Json"
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    [line] = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert line["sensor"] == "s1"
+    assert line["ts"].startswith("2024-03-01T12:00:00")
+    assert line["day"].startswith("2024-03-01T00:00:00")
+    assert line["kind"] == "B"
+    assert line["token"] == "0f2c9f4e-9a1b-4c56-8d1e-1a2b3c4d5e6f"
+    assert line["price"] == "123.45"
+    assert line["nested"] == {"a": 7}
+
+
+def test_pulsar_avro_read_skips_schemaless_messages(pulsar_context, tmp_path):
+    """A message produced without a schema cannot be decoded by an Avro
+    reader — its layout is unknowable. Such a message must not take the
+    pipeline down: it is reported as a per-row parse error, and the decodable
+    messages of the topic are still delivered."""
+    from pulsar.schema import AvroSchema, Long, Record, String
+
+    class User(Record):
+        _avro_namespace = "mixed"
+        name = String(required=True)
+        age = Long(required=True)
+
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=AvroSchema(User)
+    )
+    producer.send(User(name="ok", age=1))
+    producer.close()
+    producer = pulsar_context._client.create_producer(pulsar_context.topic)
+    producer.send(b"garbage-without-a-schema")
+    producer.close()
+
+    class ReaderSchema(pw.Schema):
+        name: str
+        age: int
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert [(line["name"], line["age"]) for line in lines] == [("ok", 1)]
+
+
+@pytest.mark.parametrize("registry_format", ["avro", "json"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_deduces_schema_from_registry(
+    pulsar_context, tmp_path, registry_format
+):
+    """With schema=None the columns of the table are deduced from the schema
+    the topic carries in the broker's registry, for both the AVRO and the
+    JSON registry types — and the read then proceeds as if the schema had
+    been written by hand."""
+    from pulsar.schema import AvroSchema, Double, JsonSchema, Long, Record, String
+
+    class Measurement(Record):
+        _avro_namespace = "deduce"
+        sensor = String(required=True)
+        reading = Double(required=True)
+        count = Long(required=True)
+
+    schema_class = AvroSchema if registry_format == "avro" else JsonSchema
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=schema_class(Measurement)
+    )
+    producer.send(Measurement(sensor="front", reading=21.5, count=3))
+    producer.send(Measurement(sensor="back", reading=-1.25, count=8))
+    producer.close()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format=registry_format,
+        mode="static",
+    )
+    assert set(table.schema.column_names()) == {"sensor", "reading", "count"}
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["sensor"]: line for line in lines}
+    assert received["front"]["reading"] == 21.5
+    assert received["front"]["count"] == 3
+    assert received["back"]["reading"] == -1.25
+    assert received["back"]["count"] == 8
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_avro_read_and_deduction_work_on_a_partitioned_topic(
+    pulsar_context, tmp_path
+):
+    """On a partitioned topic the client expands the subscription into
+    per-partition consumers, and the schema lookups must keep working through
+    them: both the deduction of the table columns (schema=None) and the
+    per-version writer schema resolution during the read itself. Partitioned
+    topics are the production norm, so the whole avro flow must deliver every
+    row exactly as on a single-partition topic."""
+    from pulsar.schema import AvroSchema, Long, Record, String
+
+    class Event(Record):
+        _avro_namespace = "partitioned"
+        label = String(required=True)
+        value = Long(required=True)
+
+    topic = pulsar_context.create_partitioned_topic(partitions=3)
+    producer = pulsar_context._client.create_producer(topic, schema=AvroSchema(Event))
+    n_messages = 12
+    for i in range(n_messages):
+        # No partition key: the messages are spread over the partitions.
+        producer.send(Event(label=f"row-{i:02d}", value=i))
+    producer.close()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="avro",
+        mode="static",
+    )
+    assert set(table.schema.column_names()) == {"label", "value"}
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {line["label"] for line in lines} == {
+        f"row-{i:02d}" for i in range(n_messages)
+    }
+    assert {line["value"] for line in lines} == set(range(n_messages))
+
+
+def test_pulsar_read_schema_deduction_requires_a_registered_schema(pulsar_context):
+    """When the topic has no schema in the registry, schema=None has nothing
+    to deduce the columns from and must fail up front with an error that
+    points at passing an explicit schema."""
+    pulsar_context.send("just-bytes")
+
+    G.clear()
+    with pytest.raises(Exception, match="[Ee]xplicit schema"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_read_schema_deduction_rejects_format_mismatch(pulsar_context):
+    """format="json" on an AVRO-typed topic (and the other way around) would
+    fail on every message, and the registry knows the topic's type up front —
+    so the deduction must reject the mismatch at graph construction with an
+    error naming both the registry type and the requested format."""
+    from pulsar.schema import AvroSchema, Record, String
+
+    class Message(Record):
+        _avro_namespace = "mismatch"
+        data = String(required=True)
+
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=AvroSchema(Message)
+    )
+    producer.send(Message(data="x"))
+    producer.close()
+
+    G.clear()
+    with pytest.raises(Exception, match="registry schema has the AVRO type"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="json",
+            mode="static",
+        )
+
+
+def test_pulsar_json_deduction_null_defaults_survive_schema_evolution(
+    pulsar_context, tmp_path
+):
+    """A JSON-typed topic evolves by adding a nullable field with a null
+    default. The deduced schema must carry that default through, so the
+    messages published before the evolution — the ones without the field —
+    read as None instead of failing row by row."""
+    schema_json = json.dumps(
+        {
+            "type": "record",
+            "name": "User",
+            "namespace": "evo",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "email", "type": ["null", "string"], "default": None},
+            ],
+        }
+    )
+    # The old-style message predates the schema: it lacks the added field.
+    pulsar_context.send(json.dumps({"name": "old"}))
+    pulsar_context.send(json.dumps({"name": "new", "email": "new@example.com"}))
+    response = pulsar_admin_request(
+        "POST",
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        json={"type": "JSON", "schema": schema_json, "properties": {}},
+    )
+    response.raise_for_status()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        mode="static",
+    )
+    assert set(table.schema.column_names()) == {"name", "email"}
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["name"]: line["email"] for line in lines}
+    assert received == {"old": None, "new": "new@example.com"}
+
+
+def test_pulsar_json_deduction_keeps_logical_time_numbers_raw(pulsar_context, tmp_path):
+    """A JSON-typed topic whose registry schema uses the Avro logical time
+    types deduces them as plain integer columns: the JSON payloads carry raw
+    numbers, and reading them through the engine time types would misapply
+    the Avro units (milliseconds taken for nanoseconds, or numbers rejected
+    where a formatted datetime string is expected)."""
+    schema_json = json.dumps(
+        {
+            "type": "record",
+            "name": "Event",
+            "namespace": "jsontime",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {
+                    "name": "ts",
+                    "type": {"type": "long", "logicalType": "timestamp-millis"},
+                },
+                {
+                    "name": "elapsed",
+                    "type": {"type": "int", "logicalType": "time-millis"},
+                },
+            ],
+        }
+    )
+    pulsar_context.send(
+        json.dumps({"name": "noon", "ts": 1700000000000, "elapsed": 43200000})
+    )
+    pulsar_admin_request(
+        "POST",
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+        json={"type": "JSON", "schema": schema_json, "properties": {}},
+    ).raise_for_status()
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        mode="static",
+    )
+    assert str(table.schema["ts"].dtype) == "INT"
+    assert str(table.schema["elapsed"].dtype) == "INT"
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    [line] = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert line["ts"] == 1700000000000
+    assert line["elapsed"] == 43200000
+
+
+def test_pulsar_schema_deduction_requires_explicit_schema_in_multiprocess(
+    monkeypatch,
+):
+    """Every process of a multi-process run constructs its own graph, so each
+    would query the registry independently — and a schema version change
+    between their starts would build diverging graphs, failing later with an
+    obscure cross-worker mismatch. The deduction must refuse up front and ask
+    for an explicit schema."""
+    monkeypatch.setenv("PATHWAY_PROCESSES", "2")
+    G.clear()
+    with pytest.raises(ValueError, match="multi-process"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            f"pulsar-{uuid4()}",
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_avro_duration_column_survives_write_deduce_roundtrip(
+    pulsar_context, tmp_path
+):
+    """A Duration column travels as a plain long of microseconds, so the
+    generated Avro schema must document the unit for the external consumers
+    and mark the field, and the schema deduction must restore the column as
+    a Duration — the write→deduce→read roundtrip preserves both the type and
+    the values."""
+
+    class InputSchema(pw.Schema):
+        label: str
+        d: pw.Duration
+
+    G.clear()
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [
+            ("a", datetime.timedelta(seconds=90)),
+            ("b", datetime.timedelta(milliseconds=-1500)),
+        ],
+    )
+    pw.io.pulsar.write(table, PULSAR_SERVICE_URI, pulsar_context.topic, format="avro")
+    pw.run()
+
+    response = pulsar_admin_request(
+        "GET",
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+    )
+    response.raise_for_status()
+    registered = json.loads(response.json()["data"])
+    duration_field = next(
+        field for field in registered["fields"] if field["name"] == "d"
+    )
+    assert duration_field["pathwayType"] == "Duration"
+    assert "microseconds" in duration_field["doc"]
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    assert str(table_reread.schema["d"].dtype) == "DURATION"
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    durations_ns = {line["label"]: line["d"] for line in lines}
+    assert durations_ns == {"a": 90_000_000_000, "b": -1_500_000_000}
+
+
+def test_pulsar_schema_deduction_requires_explicit_schema_with_persistence(
+    tmp_path,
+):
+    """schema=None re-deduces the schema at every start, while the snapshot
+    stores the rows of the schema the previous run deduced: a topic evolution
+    between the runs would corrupt or fail the replay. Persistence must
+    therefore require an explicit schema, up front and clearly."""
+    from pulsar.schema import AvroSchema, Record, String
+
+    class Message(Record):
+        _avro_namespace = "pers"
+        data = String(required=True)
+
+    topic = f"pulsar-{uuid4()}"
+    client = make_pulsar_client(PULSAR_SERVICE_URI)
+    producer = client.create_producer(topic, schema=AvroSchema(Message))
+    producer.send(Message(data="x"))
+    client.close()
+
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+    )
+    G.clear()
+    table = pw.io.pulsar.read(PULSAR_SERVICE_URI, topic, format="avro", mode="static")
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
+    with pytest.raises(Exception, match="cannot be used with persistence"):
+        pw.run(persistence_config=persistence_config)
+
+
+def test_pulsar_avro_explicit_schema_reads_bare_datums(pulsar_context, tmp_path):
+    """A topic filled with bare Avro datums but no registered schema is
+    readable with an explicit table schema: the user vouches for the layout,
+    so the schema doubles as the decoding schema for the messages that carry
+    no schema version."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "pathway",
+        "fields": [
+            {"name": "name", "type": "string"},
+            {"name": "age", "type": "long"},
+        ],
+    }
+
+    # A plain producer: no schema is registered, no version is stamped.
+    producer = pulsar_context._client.create_producer(pulsar_context.topic)
+    try:
+        producer.send(avro_datum(schema_definition, {"name": "alice", "age": 30}))
+        producer.send(avro_datum(schema_definition, {"name": "bob", "age": 41}))
+    finally:
+        producer.close()
+
+    class ReaderSchema(pw.Schema):
+        name: str
+        age: int
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {(line["name"], line["age"]) for line in lines} == {
+        ("alice", 30),
+        ("bob", 41),
+    }
+
+
+def test_pulsar_avro_deduction_preserves_composite_defaults(pulsar_context, tmp_path):
+    """A schema evolution that adds an array field with an empty-list default
+    keeps the pre-evolution messages readable: the deduced schema must carry
+    the composite default through, so the old rows read it instead of
+    failing with a missing field."""
+
+    v1_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "compdef",
+        "fields": [{"name": "name", "type": "string"}],
+    }
+    v2_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "compdef",
+        "fields": [
+            {"name": "name", "type": "string"},
+            {
+                "name": "tags",
+                "type": {"type": "array", "items": "string"},
+                "default": [],
+            },
+        ],
+    }
+
+    publish_avro_datums(pulsar_context, v1_definition, [{"name": "old"}])
+    publish_avro_datums(
+        pulsar_context, v2_definition, [{"name": "new", "tags": ["a", "b"]}]
+    )
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["name"]: line["tags"] for line in lines}
+    assert received == {"old": [], "new": ["a", "b"]}
+
+
+def test_pulsar_avro_promotes_integers_to_float_columns(pulsar_context, tmp_path):
+    """A long-typed field read into a Float column is promoted, the way the
+    Avro schema resolution would promote it: a foreign topic with integer
+    readings must be consumable into a float table."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "promo",
+        "fields": [
+            {"name": "label", "type": "string"},
+            {"name": "ratio", "type": "long"},
+        ],
+    }
+
+    publish_avro_datums(
+        pulsar_context, schema_definition, [{"label": "a", "ratio": 42}]
+    )
+
+    class ReaderSchema(pw.Schema):
+        label: str
+        ratio: float
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        schema=ReaderSchema,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    [line] = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert line["ratio"] == 42.0
+
+
+def test_pulsar_avro_deduction_rejects_primitive_schemas(pulsar_context):
+    """An AVRO registry schema that is not a record cannot describe table
+    columns, and the parser reads record datums only — so the deduction must
+    reject it up front instead of building a table no message can enter."""
+
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, schema=raw_avro_producer_schema("string")
+    )
+    producer.send(b"\x06abc")  # an Avro-encoded string datum
+    producer.close()
+
+    G.clear()
+    with pytest.raises(Exception, match="not an Avro record"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_avro_reads_nested_decimals_and_union_strings(pulsar_context, tmp_path):
+    """The decimals nested inside composite fields are rendered into their
+    exact string form just like the top-level ones, and a plain-string
+    variant of a multi-branch union lands in the Json column as a JSON
+    string — neither may fail the row."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "nested",
+        "fields": [
+            {"name": "label", "type": "string"},
+            {
+                "name": "prices",
+                "type": {
+                    "type": "array",
+                    "items": {
+                        "type": "bytes",
+                        "logicalType": "decimal",
+                        "precision": 10,
+                        "scale": 2,
+                    },
+                },
+            },
+            {"name": "mixed", "type": ["string", "long"]},
+        ],
+    }
+
+    publish_avro_datums(
+        pulsar_context,
+        schema_definition,
+        [
+            {
+                "label": "a",
+                "prices": [decimal.Decimal("1.25"), decimal.Decimal("-0.50")],
+                "mixed": "hello",
+            },
+            {"label": "b", "prices": [], "mixed": 7},
+            # A string that happens to be valid JSON text must keep its
+            # string identity: the producer chose the union's string branch.
+            {"label": "c", "prices": [], "mixed": "42"},
+        ],
+    )
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["label"]: line for line in lines}
+    assert received["a"]["prices"] == ["1.25", "-0.50"]
+    assert received["a"]["mixed"] == "hello"
+    assert received["b"]["prices"] == []
+    assert received["b"]["mixed"] == 7
+    assert received["c"]["mixed"] == "42"
+
+
+def test_pulsar_schema_deduction_rejects_reserved_column_names(pulsar_context):
+    """A registry schema whose field is named after a reserved Pathway column
+    (`id` resolves to the row key and would silently shadow the field) must
+    fail the deduction loudly, with advice that is actually actionable —
+    the deduction cannot rename fields."""
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "reserved",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {"name": "value", "type": "long"},
+        ],
+    }
+    publish_avro_datums(pulsar_context, schema_definition, [])
+
+    G.clear()
+    with pytest.raises(ValueError, match="reserved Pathway column name"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+def test_pulsar_avro_deduction_names_the_unresolved_type_reference(pulsar_context):
+    """A schema that reuses a named type by reference is not supported by the
+    deduction, and the error must name the referenced type instead of
+    pointing at an empty field."""
+
+    schema_definition = {
+        "type": "record",
+        "name": "Row",
+        "namespace": "refs",
+        "fields": [
+            {
+                "name": "first",
+                "type": {
+                    "type": "record",
+                    "name": "Point",
+                    "fields": [{"name": "x", "type": "long"}],
+                },
+            },
+            {"name": "second", "type": "Point"},
+        ],
+    }
+
+    publish_avro_datums(pulsar_context, schema_definition, [])
+
+    G.clear()
+    with pytest.raises(Exception, match="named type .*Point.* by reference"):
+        pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="avro",
+            mode="static",
+        )
+
+
+# --- Metadata tests ---
+
+
+@pytest.mark.parametrize("mode", ["streaming", "static"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_with_metadata(pulsar_context, tmp_path, mode):
+    """with_metadata=True adds a _metadata column describing the message: the
+    topic, the partition, the message id components, the publish and event
+    timestamps, the producer name, the ordering key and the properties —
+    through both reading mechanisms."""
+
+    output_file = tmp_path / "output.jsonl"
+    event_ts_ms = 1_700_000_000_000
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic, producer_name="external-producer"
+    )
+    try:
+        producer.send(
+            b"payload-0",
+            partition_key="k0",
+            ordering_key="entity-7",
+            properties={"origin": "external"},
+            event_timestamp=event_ts_ms,
+        )
+    finally:
+        producer.close()
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode=mode,
+        with_metadata=True,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    if mode == "static":
+        pw.run()
+    else:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, 1), WAIT_TIMEOUT_SECS
+        )
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == 1
+    row = lines[0]
+    assert row["key"] == "k0"
+    assert row["data"] == "payload-0"
+    metadata = row["_metadata"]
+    assert pulsar_context.topic in metadata["topic"]
+    assert metadata["partition"] == -1
+    assert metadata["batch_index"] == -1
+    assert metadata["ledger_id"] >= 0 and metadata["entry_id"] >= 0
+    assert metadata["publish_time_millis"] > 0
+    assert metadata["event_time_millis"] == event_ts_ms
+    assert metadata["producer_name"] == "external-producer"
+    assert metadata["ordering_key"] == base64.b64encode(b"entity-7").decode()
+    assert metadata["properties"] == {"origin": "external"}
+
+
+@pytest.mark.parametrize("mode", ["streaming", "static"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_with_metadata_reports_real_partition(
+    pulsar_context, tmp_path, mode
+):
+    """On a partitioned topic the ``partition`` field of the metadata carries
+    the index of the partition the message was read from — the ``-1`` of the
+    non-partitioned case is not reported instead. The index is checked against
+    the physical topic name of the same metadata entry, so the assertion holds
+    whichever partitions the keys happen to hash into."""
+    topic = pulsar_context.create_partitioned_topic(partitions=3)
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 30
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i:02d}", topic=topic, key=f"key-{i}")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        topic,
+        format="plaintext",
+        mode=mode,
+        with_metadata=True,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    if mode == "static":
+        pw.run()
+    else:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+        )
+
+    partitions = set()
+    for line in output_file.read_text().splitlines():
+        metadata = json.loads(line)["_metadata"]
+        partition_from_topic = int(metadata["topic"].rsplit("-partition-", 1)[1])
+        assert metadata["partition"] == partition_from_topic, metadata
+        partitions.add(metadata["partition"])
+    assert partitions, "no messages were read"
+    assert -1 not in partitions
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_read_roundtrip_metadata(pulsar_context, tmp_path):
+    """The metadata of the messages produced by pw.io.pulsar.write is visible
+    to a metadata-enabled reader: the producer name carries the per-worker
+    suffix and the headers arrive as properties alongside pathway_time and
+    pathway_diff."""
+    input_file = tmp_path / "input.jsonl"
+    output_file = tmp_path / "output.jsonl"
+    with open(input_file, "w") as f:
+        f.write(json.dumps({"word": "hello", "note": "greeting"}) + "\n")
+
+    class InputSchema(pw.Schema):
+        word: str
+        note: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.word,
+        headers=[table.note],
+        producer_name="metadata-writer",
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        with_metadata=True,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == 1
+    metadata = lines[0]["_metadata"]
+    assert metadata["producer_name"] == "metadata-writer-0"
+    assert json.loads(metadata["properties"]["note"]) == "greeting"
+    assert metadata["properties"]["pathway_diff"] == "1"
+    assert "pathway_time" in metadata["properties"]
+
+
+# --- Event-time tests ---
+
+
+@pytest.mark.parametrize("column_kind", ["int", "datetime_utc"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_event_time_from_column(pulsar_context, tmp_path, column_kind):
+    """The event_time column of pw.io.pulsar.write becomes the native
+    event_time of the produced messages, for both supported column types:
+    integer milliseconds and UTC datetimes."""
+    input_file = tmp_path / "input.jsonl"
+    output_file = tmp_path / "output.jsonl"
+    rows = [
+        {"name": "first", "ts_ms": 1_700_000_000_000},
+        {"name": "second", "ts_ms": 1_700_000_060_000},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        name: str
+        ts_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    if column_kind == "datetime_utc":
+        table = table.with_columns(
+            event_ts=table.ts_ms.dt.utc_from_timestamp(unit="ms")
+        )
+        event_time_column = table.event_ts
+    else:
+        event_time_column = table.ts_ms
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.name,
+        event_time=event_time_column,
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        with_metadata=True,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    received = {line["data"]: line["_metadata"]["event_time_millis"] for line in lines}
+    assert received == {row["name"]: row["ts_ms"] for row in rows}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_event_time_from_engine(pulsar_context, tmp_path):
+    """pw.io.ENGINE_TIME sets the native event_time of the messages to the
+    engine (minibatch) time of the update — exactly the value the messages
+    carry in the pathway_time property."""
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    input_file.write_text("one\ntwo\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        event_time=pw.io.ENGINE_TIME,
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+        with_metadata=True,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == 2
+    for line in lines:
+        metadata = line["_metadata"]
+        assert metadata["event_time_millis"] == int(
+            metadata["properties"]["pathway_time"]
+        )
+        # The engine time of pw.io.* data is a wall-clock UNIX timestamp.
+        assert metadata["event_time_millis"] > 1_500_000_000_000
+
+
+def test_pulsar_write_rejects_naive_event_time(pulsar_context, tmp_path):
+    """A timezone-naive datetime column is rejected as the event time with an
+    error suggesting an explicit UTC conversion, instead of silently assuming
+    a timezone."""
+    input_file = tmp_path / "input.jsonl"
+    input_file.write_text(json.dumps({"name": "x", "ts_ms": 1}) + "\n")
+
+    class InputSchema(pw.Schema):
+        name: str
+        ts_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    table = table.with_columns(
+        naive_ts=table.ts_ms.dt.from_timestamp(unit="ms"),
+    )
+    with pytest.raises(ValueError, match="naive"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="plaintext",
+            value=table.name,
+            event_time=table.naive_ts,
+        )
+
+
+def test_pulsar_write_rejects_negative_event_time(pulsar_context, tmp_path):
+    """A negative event-time value fails the write with a clear error instead
+    of silently producing a message with a bogus timestamp."""
+    input_file = tmp_path / "input.jsonl"
+    input_file.write_text(json.dumps({"name": "x", "ts_ms": -5}) + "\n")
+
+    class InputSchema(pw.Schema):
+        name: str
+        ts_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.name,
+        event_time=table.ts_ms,
+    )
+    with pytest.raises(Exception, match="event time"):
+        pw.run()
+
+
+# --- Delayed delivery tests ---
+
+# The delay the scheduled messages are published with. Long enough for the
+# checks that a message is not delivered early to have a window under load,
+# short enough to keep the suite fast.
+DELIVERY_DELAY_SECS = 8
+
+# The horizon the absolute delivery times are scheduled at: far enough for
+# the pipeline to publish the messages before it comes even on a loaded
+# machine, which the checks below rely on.
+DELIVER_AT_HORIZON_SECS = 20
+
+# The broker's delayed-delivery tracker ticks once a second
+# (delayedDeliveryTickTimeMillis) and, in its default non-strict mode
+# (isDelayedDeliveryDeliverAtTimeStrict=false), releases the messages due
+# within the next tick — so a scheduled message may arrive up to a second
+# before its delivery time, and up to a second after it. The tolerance below
+# covers that, together with the small gap between the moment the writer
+# computes a relative delivery time and the moment the broker stamps the
+# publish time.
+DELIVERY_TOLERANCE_SECS = 1.0
+
+
+class SharedSubscriber:
+    """A consumer of a shared subscription — the subscription type that honors
+    the delivery schedule — recording the wall-clock arrival time of every
+    message it receives."""
+
+    def __init__(self, pulsar_context, topic: str | None = None):
+        self._pulsar = pulsar_context._pulsar
+        self._consumer = pulsar_subscribe(
+            pulsar_context._client,
+            topic or pulsar_context.topic,
+            subscription_name=f"delayed-{uuid4()}",
+            consumer_type=self._pulsar.ConsumerType.Shared,
+            initial_position=self._pulsar.InitialPosition.Earliest,
+        )
+
+    def receive(self, timeout_secs: float):
+        """Returns ``(payload, publish_time, arrival_time)`` of the next
+        message, the times in seconds since the UNIX epoch, or ``None`` if
+        nothing arrives within the timeout."""
+        try:
+            message = self._consumer.receive(timeout_millis=int(timeout_secs * 1000))
+        except self._pulsar.Timeout:
+            return None
+        arrival = time.time()
+        self._consumer.acknowledge(message)
+        return (
+            message.data().decode(),
+            message.publish_timestamp() / 1000,
+            arrival,
+        )
+
+    def receive_all(self, expected_count: int, timeout_secs: float) -> list:
+        received: list[tuple[str, float, float]] = []
+        deadline = time.time() + timeout_secs
+        while len(received) < expected_count:
+            item = self.receive(max(deadline - time.time(), 0.001))
+            assert item is not None, (
+                f"only {len(received)} of {expected_count} messages arrived "
+                f"within {timeout_secs}s"
+            )
+            received.append(item)
+        return received
+
+    def assert_nothing_arrives_before(self, deadline: float) -> None:
+        """Verifies that no message is delivered before the ``deadline``
+        (seconds since the UNIX epoch), as long as the deadline is still far
+        enough ahead for the check to be meaningful."""
+        window = deadline - DELIVERY_TOLERANCE_SECS - time.time()
+        if window > 0:
+            assert self.receive(window) is None, "a scheduled message arrived early"
+
+    def close(self) -> None:
+        self._consumer.close()
+
+
+def _write_jsonl(path: pathlib.Path, rows: list[dict]) -> None:
+    with open(path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+
+@pytest.mark.parametrize("column_kind", ["int", "datetime_utc"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_deliver_at_from_column(pulsar_context, tmp_path, column_kind):
+    """The deliver_at column of pw.io.pulsar.write schedules each message
+    for its own delivery time: the broker accepts the message right away but
+    hands it to a shared subscription only once that time comes. A delivery
+    time in the past means an immediate delivery. Both supported column types
+    work: integer milliseconds and UTC datetimes."""
+    input_file = tmp_path / "input.jsonl"
+    now_ms = int(time.time() * 1000)
+    delayed_at_ms = now_ms + DELIVER_AT_HORIZON_SECS * 1000
+    rows = [
+        {"name": "immediate", "at_ms": now_ms - 60_000},
+        {"name": "delayed", "at_ms": delayed_at_ms},
+    ]
+    _write_jsonl(input_file, rows)
+
+    class InputSchema(pw.Schema):
+        name: str
+        at_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    if column_kind == "datetime_utc":
+        table = table.with_columns(at=table.at_ms.dt.utc_from_timestamp(unit="ms"))
+        deliver_at = table.at
+    else:
+        deliver_at = table.at_ms
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.name,
+        deliver_at=deliver_at,
+    )
+    pw.run()
+
+    delayed_at = delayed_at_ms / 1000
+    subscriber = SharedSubscriber(pulsar_context)
+    try:
+        first = subscriber.receive(WAIT_TIMEOUT_SECS)
+        assert first is not None
+        payload, publish_time, arrival = first
+        assert payload == "immediate"
+        assert arrival < delayed_at - DELIVERY_TOLERANCE_SECS
+
+        subscriber.assert_nothing_arrives_before(delayed_at)
+        second = subscriber.receive(WAIT_TIMEOUT_SECS)
+        assert second is not None
+        payload, publish_time, arrival = second
+        assert payload == "delayed"
+        # Published well before its delivery time, delivered no earlier than
+        # the broker's precision allows.
+        assert publish_time < delayed_at - DELIVERY_TOLERANCE_SECS
+        assert arrival >= delayed_at - DELIVERY_TOLERANCE_SECS
+        assert subscriber.receive(1.0) is None
+    finally:
+        subscriber.close()
+
+
+@pytest.mark.parametrize("delay_kind", ["int", "duration", "constant"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_deliver_after(pulsar_context, tmp_path, delay_kind):
+    """deliver_after delays every message by the given amount counted from
+    the moment it is published — a per-row delay from an integer or a
+    duration column, or a constant timedelta for the whole table. A shared
+    subscription receives the message once the delay elapses, not before."""
+    input_file = tmp_path / "input.jsonl"
+    delay_ms = DELIVERY_DELAY_SECS * 1000
+    if delay_kind == "constant":
+        rows = [{"name": "delayed", "delay_ms": delay_ms}]
+    else:
+        rows = [
+            {"name": "immediate", "delay_ms": 0},
+            {"name": "delayed", "delay_ms": delay_ms},
+        ]
+    _write_jsonl(input_file, rows)
+
+    class InputSchema(pw.Schema):
+        name: str
+        delay_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    deliver_after: pw.ColumnReference | datetime.timedelta
+    if delay_kind == "int":
+        deliver_after = table.delay_ms
+    elif delay_kind == "duration":
+        table = table.with_columns(
+            delay=pw.this.delay_ms * datetime.timedelta(milliseconds=1)
+        )
+        deliver_after = table.delay
+    else:
+        deliver_after = datetime.timedelta(milliseconds=delay_ms)
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.name,
+        deliver_after=deliver_after,
+    )
+    pw.run()
+
+    subscriber = SharedSubscriber(pulsar_context)
+    try:
+        if delay_kind != "constant":
+            first = subscriber.receive(WAIT_TIMEOUT_SECS)
+            assert first is not None
+            payload, publish_time, arrival = first
+            assert payload == "immediate"
+            assert (
+                arrival - publish_time < DELIVERY_DELAY_SECS - DELIVERY_TOLERANCE_SECS
+            )
+            # The delayed message was published in the same run, so its
+            # delivery is due no earlier than the delay after this one.
+            subscriber.assert_nothing_arrives_before(publish_time + DELIVERY_DELAY_SECS)
+        delayed = subscriber.receive(WAIT_TIMEOUT_SECS)
+        assert delayed is not None
+        payload, publish_time, arrival = delayed
+        assert payload == "delayed"
+        assert arrival - publish_time >= DELIVERY_DELAY_SECS - DELIVERY_TOLERANCE_SECS
+        assert subscriber.receive(1.0) is None
+    finally:
+        subscriber.close()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_delivers_every_scheduled_message_of_a_large_batch(
+    pulsar_context, tmp_path
+):
+    """Scheduling does not lose messages under volume: every row of a batch
+    far larger than the producer's batching and in-flight limits is
+    delivered, each one no earlier than its delay allows."""
+    input_file = tmp_path / "input.jsonl"
+    n_rows = 3000
+    _write_jsonl(input_file, [{"name": f"row-{i}"} for i in range(n_rows)])
+
+    class InputSchema(pw.Schema):
+        name: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        deliver_after=datetime.timedelta(seconds=DELIVERY_DELAY_SECS),
+    )
+    pw.run()
+
+    subscriber = SharedSubscriber(pulsar_context)
+    try:
+        received = subscriber.receive_all(n_rows, WAIT_TIMEOUT_SECS * 2)
+        assert {payload for payload, _, _ in received} == {
+            f"row-{i}" for i in range(n_rows)
+        }
+        assert all(
+            arrival - publish_time >= DELIVERY_DELAY_SECS - DELIVERY_TOLERANCE_SECS
+            for _, publish_time, arrival in received
+        )
+    finally:
+        subscriber.close()
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_schedule_is_honored_by_shared_subscription_reader(
+    pulsar_context, tmp_path
+):
+    """pw.io.pulsar.read observes the delivery schedule of the messages
+    produced by pw.io.pulsar.write when it reads through a shared
+    subscription: the row appears in the pipeline only after the delay."""
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    input_file.write_text("scheduled\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        deliver_after=datetime.timedelta(seconds=DELIVERY_DELAY_SECS),
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        subscription_type="shared",
+        with_metadata=True,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_file, 1), WAIT_TIMEOUT_SECS * 2
+    )
+    arrival = time.time()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["data"] == "scheduled"
+    publish_time = lines[0]["_metadata"]["publish_time_millis"] / 1000
+    assert arrival - publish_time >= DELIVERY_DELAY_SECS - DELIVERY_TOLERANCE_SECS
+
+
+def test_pulsar_write_scheduled_messages_are_visible_to_partition_readers(
+    pulsar_context, tmp_path
+):
+    """The delivery schedule is a property of the shared subscriptions: the
+    partition readers — the mechanism of the static mode — see a scheduled
+    message as soon as it is stored, with its payload intact, and in the
+    record formats the schedule column stays a part of the payload."""
+    input_file = tmp_path / "input.jsonl"
+    output_file = tmp_path / "output.jsonl"
+    far_future_ms = int(time.time() * 1000) + 3_600_000
+    _write_jsonl(input_file, [{"name": "later", "at_ms": far_future_ms}])
+
+    class InputSchema(pw.Schema):
+        name: str
+        at_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, pulsar_context.topic, deliver_at=table.at_ms
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert [(line["name"], line["at_ms"]) for line in lines] == [
+        ("later", far_future_ms)
+    ]
+
+
+def test_pulsar_avro_payload_excludes_schedule_columns(pulsar_context, tmp_path):
+    """In the "avro" format the deliver_at / deliver_after columns are
+    service inputs like the keys and the event time: they stay out of the
+    registered schema and of the payloads."""
+    input_file = tmp_path / "input.jsonl"
+    _write_jsonl(input_file, [{"v": 1, "delay_ms": 0}, {"v": 2, "delay_ms": 0}])
+
+    class InputSchema(pw.Schema):
+        v: int
+        delay_ms: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="avro",
+        deliver_after=table.delay_ms,
+    )
+    pw.run()
+
+    response = pulsar_admin_request(
+        "GET",
+        f"{PULSAR_ADMIN_URL}/admin/v2/schemas/public/default/"
+        f"{pulsar_context.topic}/schema",
+    )
+    response.raise_for_status()
+    registered = json.loads(response.json()["data"])
+    assert [field["name"] for field in registered["fields"]] == ["v"]
+
+    output_file = tmp_path / "output.jsonl"
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI, pulsar_context.topic, format="avro", mode="static"
+    )
+    assert set(table_reread.schema.column_names()) == {"v"}
+    pw.io.jsonlines.write(table_reread, output_file)
+    pw.run()
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {line["v"] for line in lines} == {1, 2}
+
+
+def _scheduling_table(tmp_path):
+    input_file = tmp_path / "input.jsonl"
+    _write_jsonl(input_file, [{"name": "x", "ts_ms": 1, "label": "a"}])
+
+    class InputSchema(pw.Schema):
+        name: str
+        ts_ms: int
+        label: str
+
+    G.clear()
+    return pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+
+
+def test_pulsar_write_rejects_deliver_at_together_with_deliver_after(
+    pulsar_context, tmp_path
+):
+    """A message has a single delivery time, so specifying both the absolute
+    deliver_at and the relative deliver_after is a configuration error
+    reported at construction."""
+    table = _scheduling_table(tmp_path)
+    with pytest.raises(ValueError, match="cannot be set at the same time"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            deliver_at=table.ts_ms,
+            deliver_after=datetime.timedelta(seconds=1),
+        )
+    with pytest.raises(ValueError, match="cannot be set at the same time"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            deliver_at=table.ts_ms,
+            deliver_after=table.ts_ms,
+        )
+
+
+def test_pulsar_write_rejects_naive_deliver_at(pulsar_context, tmp_path):
+    """A timezone-naive datetime column is rejected as the delivery time with
+    an error suggesting an explicit UTC conversion, instead of silently
+    assuming a timezone."""
+    table = _scheduling_table(tmp_path)
+    table = table.with_columns(naive_ts=table.ts_ms.dt.from_timestamp(unit="ms"))
+    with pytest.raises(ValueError, match="naive"):
+        pw.io.pulsar.write(
+            table, PULSAR_SERVICE_URI, pulsar_context.topic, deliver_at=table.naive_ts
+        )
+
+
+def test_pulsar_write_rejects_mistyped_schedule_columns(pulsar_context, tmp_path):
+    """A column of a type that cannot carry a delivery time or a delay (a
+    string here) is rejected at construction, naming the accepted types."""
+    table = _scheduling_table(tmp_path)
+    with pytest.raises(ValueError, match="delivery time column must be"):
+        pw.io.pulsar.write(
+            table, PULSAR_SERVICE_URI, pulsar_context.topic, deliver_at=table.label
+        )
+    with pytest.raises(ValueError, match="delivery delay column must be"):
+        pw.io.pulsar.write(
+            table, PULSAR_SERVICE_URI, pulsar_context.topic, deliver_after=table.label
+        )
+
+
+def test_pulsar_write_rejects_negative_constant_delay(pulsar_context, tmp_path):
+    """A negative constant deliver_after is a configuration error reported at
+    construction rather than a silently immediate delivery."""
+    table = _scheduling_table(tmp_path)
+    with pytest.raises(ValueError, match="must not be negative"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            deliver_after=datetime.timedelta(seconds=-1),
+        )
+
+
+@pytest.mark.parametrize("parameter", ["deliver_at", "deliver_after"])
+def test_pulsar_write_rejects_negative_schedule_values(
+    pulsar_context, tmp_path, parameter
+):
+    """A negative delivery time or delay in the data fails the write with a
+    clear error instead of silently producing an immediately delivered
+    message."""
+    input_file = tmp_path / "input.jsonl"
+    _write_jsonl(input_file, [{"name": "x", "value": -5}])
+
+    class InputSchema(pw.Schema):
+        name: str
+        value: int
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        value=table.name,
+        **{parameter: table.value},
+    )
+    expected = "delivery time" if parameter == "deliver_at" else "delivery delay"
+    with pytest.raises(Exception, match=expected):
+        pw.run()
+
+
+def test_pulsar_write_rejects_schedule_on_a_non_persistent_topic(
+    pulsar_context, tmp_path
+):
+    """A non-persistent topic dispatches every message immediately, ignoring
+    the schedule, so scheduling messages into one is an error: at
+    construction for a static topic name, and when the row is written for a
+    topic column."""
+    topic = f"non-persistent://public/default/{pulsar_context.topic}"
+    table = _scheduling_table(tmp_path)
+    with pytest.raises(ValueError, match="non-persistent"):
+        pw.io.pulsar.write(table, PULSAR_SERVICE_URI, topic, deliver_after=table.ts_ms)
+
+    table = table.with_columns(topic=topic)
+    pw.io.pulsar.write(
+        table, PULSAR_SERVICE_URI, topic=table.topic, deliver_after=table.ts_ms
+    )
+    with pytest.raises(Exception, match="non-persistent"):
+        pw.run()
+
+
+# --- Ordering-key tests ---
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_ordering_key(pulsar_context, tmp_path):
+    """The ordering_key column of pw.io.pulsar.write becomes the ordering key
+    of the produced messages, independent of the partition key; rows without
+    it configured leave the ordering key unset."""
+    input_file = tmp_path / "input.jsonl"
+    rows = [
+        {"tenant": "acme", "user": "alice", "action": "login"},
+        {"tenant": "acme", "user": "bob", "action": "logout"},
+    ]
+    with open(input_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    class InputSchema(pw.Schema):
+        tenant: str
+        user: str
+        action: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        key=table.tenant,
+        ordering_key=table.user,
+    )
+    pw.run()
+
+    messages = pulsar_context.read_messages(expected_count=len(rows))
+    received = {}
+    for message in messages:
+        payload = json.loads(message.data())
+        received[payload["user"]] = message
+    assert set(received) == {"alice", "bob"}
+    for row in rows:
+        message = received[row["user"]]
+        assert message.partition_key() == row["tenant"]
+        assert message.ordering_key() == row["user"]
+
+
+def test_pulsar_write_sort_by_orders_the_messages(pulsar_context, tmp_path):
+    """``pw.io.pulsar.write`` honors its documented ``sort_by`` parameter: the
+    column reference is taken against the table passed to ``write``, and the
+    messages of a minibatch are published in that order. Internally ``write``
+    rebuilds the table with ``table.select(...)`` to lay out the service
+    columns, so the ``sort_by`` references have to be remapped onto the
+    rebuilt table."""
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        a: int
+
+    G.clear()
+    table = pw.debug.table_from_markdown(
+        """
+        k | a
+        1 | 30
+        2 | 10
+        3 | 20
+        """,
+        schema=InputSchema,
+    )
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="json",
+        sort_by=[table.a],
+    )
+    pw.run()
+
+    messages = pulsar_context.read_messages(expected_count=3)
+    values = [json.loads(message.data())["a"] for message in messages]
+    assert values == sorted(values), values
+
+
+def test_pulsar_write_rejects_a_foreign_sort_by_column(pulsar_context, tmp_path):
+    """A ``sort_by`` column that belongs to another table cannot order the
+    output, and is rejected with an error naming the connector instead of a
+    confusing report about a table the user never built."""
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        a: int
+
+    G.clear()
+    table = pw.debug.table_from_markdown(
+        """
+        k | a
+        1 | 30
+        """,
+        schema=InputSchema,
+    )
+    other = pw.debug.table_from_markdown(
+        """
+        k | a
+        1 | 30
+        """,
+        schema=InputSchema,
+    )
+    with pytest.raises(ValueError, match="pw.io.pulsar.write"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="json",
+            sort_by=[other.a],
+        )
+
+
+def test_pulsar_write_rejects_non_string_ordering_key(pulsar_context, tmp_path):
+    """An ordering_key column that is neither a string nor bytes is rejected
+    with a clear error instead of producing a corrupted ordering key."""
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        f.write(json.dumps({"num_key": 5, "value": "foo"}) + "\n")
+
+    class InputSchema(pw.Schema):
+        num_key: int
+        value: str
+
+    G.clear()
+    table = pw.io.jsonlines.read(input_file, schema=InputSchema, mode="static")
+    with pytest.raises(ValueError, match="ordering key"):
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="json",
+            ordering_key=table.num_key,
+        )
+
+
+# --- Compacted-topic and producer-name tests ---
+
+
+def _compact_topic_and_wait(topic: str, timeout_sec: float = 60.0) -> None:
+    """Triggers compaction of the topic over the admin API and waits until it
+    completes."""
+    compaction_url = (
+        f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/{topic}/compaction"
+    )
+    response = requests.put(compaction_url, timeout=60)
+    response.raise_for_status()
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        status = requests.get(compaction_url, timeout=60).json()["status"]
+        if status == "SUCCESS":
+            return
+        assert status in ("NOT_RUN", "RUNNING"), f"compaction failed: {status}"
+        assert time.monotonic() < deadline, "compaction did not finish in time"
+        time.sleep(0.5)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_compacted_returns_latest_state_per_key(pulsar_context, tmp_path):
+    """With read_compacted=True the compacted part of the topic delivers only
+    the latest message of every partition key, not the full history."""
+    output_file = tmp_path / "output.jsonl"
+    pulsar_context.send("stale-front", key="front-door")
+    pulsar_context.send("fresh-front", key="front-door")
+    pulsar_context.send("fresh-back", key="back-door")
+    _compact_topic_and_wait(pulsar_context.topic)
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        subscription_type="exclusive",
+        read_compacted=True,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    # The double check keeps the pipeline running after two lines arrive and
+    # verifies that the compacted-away message never shows up as a third.
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_file, 2),
+        WAIT_TIMEOUT_SECS,
+        double_check_interval=2.0,
+    )
+
+    lines = [json.loads(line) for line in output_file.read_text().splitlines()]
+    assert {(line["key"], line["data"]) for line in lines} == {
+        ("front-door", "fresh-front"),
+        ("back-door", "fresh-back"),
+    }
+
+
+def test_pulsar_read_compacted_validation():
+    """read_compacted is limited to the streaming single-consumer
+    subscriptions; every other combination is rejected at graph-build time
+    with a clear error."""
+    G.clear()
+    for kwargs in [
+        {},  # the default subscription type is "shared"
+        {"subscription_type": "key_shared"},
+        {"subscription_type": "reader"},
+        {"subscription_type": "exclusive", "mode": "static"},
+    ]:
+        with pytest.raises(ValueError, match="read_compacted"):
+            pw.io.pulsar.read(
+                PULSAR_SERVICE_URI,
+                "some-topic",
+                format="plaintext",
+                read_compacted=True,
+                **kwargs,
+            )
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_write_producer_name_visible_to_broker(pulsar_context, tmp_path):
+    """The producer_name parameter names the producers on the broker: the
+    messages carry the producer name (with the per-worker suffix), which the
+    admin API reports."""
+    input_file = tmp_path / "input.txt"
+    input_file.write_text("one\n")
+    # A durable subscription to peek through, created before the write so it
+    # covers the written message.
+    consumer = pulsar_subscribe(
+        pulsar_context._client,
+        pulsar_context.topic,
+        subscription_name="peek-sub",
+        initial_position=pulsar_context._pulsar.InitialPosition.Earliest,
+    )
+    consumer.close()
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        producer_name="pathway-test-writer",
+    )
+    pw.run()
+
+    response = requests.get(
+        f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/"
+        f"{pulsar_context.topic}/subscription/peek-sub/position/1",
+        timeout=60,
+    )
+    response.raise_for_status()
+    assert response.headers["X-Pulsar-producer-name"] == "pathway-test-writer-0"
+
+
+# --- Compression tests ---
+
+
+@pytest.mark.parametrize("compression", ["lz4", "zlib", "zstd"])
+@pytest.mark.parametrize("mode", ["streaming", "static"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_compressed_write_read_roundtrip(
+    pulsar_context, tmp_path, compression, mode
+):
+    """Messages written with every supported compression codec are read back
+    intact, through both reading mechanisms (the static mode reads through the
+    partition readers, the streaming mode through a shared subscription), and
+    the official Pulsar client decompresses them as well."""
+    input_file = tmp_path / "input.txt"
+    output_file = tmp_path / "output.jsonl"
+    entries = [f"payload-{i}-{'x' * 100}" for i in range(5)]
+    with open(input_file, "w") as f:
+        f.write("\n".join(entries) + "\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    pw.io.pulsar.write(
+        table,
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        compression=compression,
+    )
+    pw.run()
+
+    G.clear()
+    table_reread = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode=mode,
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table_reread, output_file)
+    if mode == "static":
+        pw.run()
+    else:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_file, len(entries)), WAIT_TIMEOUT_SECS
+        )
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == set(entries)
+
+    # Interoperability: the official client decodes our compressed messages.
+    messages = pulsar_context.read_messages(expected_count=len(entries))
+    assert {message.data().decode() for message in messages} == set(entries)
+
+
+@pytest.mark.parametrize("codec_name", ["LZ4", "ZLib", "ZSTD"])
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_read_externally_compressed_messages(
+    pulsar_context, tmp_path, codec_name
+):
+    """Messages compressed by a foreign producer (the official Pulsar client)
+    are decompressed transparently by the connector."""
+    import pulsar as pulsar_client
+
+    output_file = tmp_path / "output.jsonl"
+    entries = [f"external-{i}-{'y' * 100}" for i in range(5)]
+    producer = pulsar_context._client.create_producer(
+        pulsar_context.topic,
+        compression_type=getattr(pulsar_client.CompressionType, codec_name),
+    )
+    try:
+        for entry in entries:
+            producer.send(entry.encode())
+    finally:
+        producer.close()
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    pw.run()
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == set(entries)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_compression_reduces_stored_size(pulsar_context, tmp_path):
+    """Compression is applied on the wire, not just accepted as a parameter:
+    the broker-side storage size of a topic with highly compressible payloads
+    is a fraction of the size of the same payloads sent uncompressed."""
+    input_file = tmp_path / "input.txt"
+    n_messages = 200
+    payload_size = 10_000
+    entries = [f"{i:06d}-" + "z" * payload_size for i in range(n_messages)]
+    with open(input_file, "w") as f:
+        f.write("\n".join(entries) + "\n")
+    uncompressed_topic = f"pulsar-{uuid4()}"
+    compressed_topic = f"pulsar-{uuid4()}"
+
+    for topic, compression in (
+        (uncompressed_topic, None),
+        (compressed_topic, "zstd"),
+    ):
+        G.clear()
+        table = pw.io.plaintext.read(input_file, mode="static")
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            topic,
+            format="plaintext",
+            compression=compression,
+        )
+        pw.run()
+
+    def topic_storage_size(topic: str) -> int:
+        response = requests.get(
+            f"{PULSAR_ADMIN_URL}/admin/v2/persistent/public/default/{topic}/stats",
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.json()["storageSize"]
+
+    uncompressed_size = topic_storage_size(uncompressed_topic)
+    compressed_size = topic_storage_size(compressed_topic)
+    total_payload_size = sum(len(entry) for entry in entries)
+    assert uncompressed_size >= total_payload_size // 2
+    assert compressed_size < total_payload_size // 5
+    assert compressed_size < uncompressed_size // 5
+
+
+@pytest.mark.parametrize("codec", ["gzip", "snappy"])
+def test_pulsar_write_rejects_unsupported_compression(pulsar_context, tmp_path, codec):
+    """A compression codec the connector does not support — an unknown one, or
+    snappy, whose framing in the client library is incompatible with the other
+    Pulsar clients — is rejected when the sink is created, with an error naming
+    the supported codecs, instead of silently sending the messages
+    uncompressed."""
+    input_file = tmp_path / "input.txt"
+    input_file.write_text("one\n")
+
+    G.clear()
+    table = pw.io.plaintext.read(input_file, mode="static")
+    with pytest.raises(Exception) as exception_info:
+        pw.io.pulsar.write(
+            table,
+            PULSAR_SERVICE_URI,
+            pulsar_context.topic,
+            format="plaintext",
+            compression=codec,
+        )
+    message = str(exception_info.value)
+    assert "compression" in message, message
+    for supported_codec in ("lz4", "zlib", "zstd"):
+        assert supported_codec in message, message
+
+
+# --- Partition-reader (Kafka-like) persistence tests ---
+
+
+def test_pulsar_persistence_rejects_subscription_modes(tmp_path):
+    """Persistence requires the partition-reader mode: a broker-side
+    subscription cannot replay the messages a restarted pipeline needs."""
+    output_file = tmp_path / "output.jsonl"
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+    )
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        f"pulsar-{uuid4()}",
+        format="plaintext",
+        subscription_type="shared",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    with pytest.raises(Exception, match="cannot be used with persistence"):
+        pw.run(persistence_config=persistence_config)
+
+
+def test_pulsar_persistence_rejects_start_from_end(tmp_path):
+    """Persistence rejects start_from="end": the "end" position would be
+    re-resolved at every restart, so the messages published into a partition
+    without a checkpointed position while the pipeline was down would be
+    silently lost. An explicit start_from="timestamp" identifies the same
+    starting point deterministically and must be used instead."""
+    output_file = tmp_path / "output.jsonl"
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage")
+    )
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        f"pulsar-{uuid4()}",
+        format="plaintext",
+        start_from="end",
+    )
+    pw.io.jsonlines.write(table, output_file)
+    with pytest.raises(Exception, match="cannot be used with persistence"):
+        pw.run(persistence_config=persistence_config)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_reader_mode_streaming_roundtrip(pulsar_context, tmp_path):
+    """The explicit partition-reader mode works for plain streaming reads."""
+    output_file = tmp_path / "output.jsonl"
+    n_messages = 5
+    for i in range(n_messages):
+        pulsar_context.send(f"message-{i}")
+
+    G.clear()
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI,
+        pulsar_context.topic,
+        format="plaintext",
+        subscription_type="reader",
+        autocommit_duration_ms=100,
+    )
+    pw.io.jsonlines.write(table, output_file)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_file, n_messages), WAIT_TIMEOUT_SECS
+    )
+
+    payloads = {
+        json.loads(line)["data"] for line in output_file.read_text().splitlines()
+    }
+    assert payloads == {f"message-{i}" for i in range(n_messages)}
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_persistence_partitioned_topic(pulsar_context, tmp_path):
+    """Persistent reading of a partitioned topic resumes every partition from
+    its own checkpointed position: restarts deliver exactly the new messages
+    of each partition."""
+    topic = pulsar_context.create_partitioned_topic(partitions=3)
+    output_file = tmp_path / "output.txt"
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
+        snapshot_interval_ms=200,
+    )
+
+    def run_phase(new_messages: list[str]) -> None:
+        for i, message in enumerate(new_messages):
+            pulsar_context.send(message, topic=topic, key=f"key-{i % 5}")
+
+        G.clear()
+        table = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            topic,
+            format="plaintext",
+            autocommit_duration_ms=100,
+        )
+        pw.io.csv.write(table, output_file)
+        wait_result_with_checker(
+            CsvLinesNumberChecker(output_file, len(new_messages)),
+            WAIT_TIMEOUT_SECS,
+            double_check_interval=2.0,
+            kwargs={"persistence_config": persistence_config},
+        )
+
+    run_phase([f"first-{i:02d}" for i in range(10)])
+    run_phase([f"second-{i:02d}" for i in range(7)])
+    run_phase([f"third-{i:02d}" for i in range(4)])
+
+
+@pytest.mark.flaky(reruns=3)
+def test_pulsar_persistence_multiple_workers(pulsar_context, tmp_path, monkeypatch):
+    """Persistence with several workers: every worker resumes its partitions
+    from the checkpoint, and restarts deliver exactly the new messages."""
+    topic = pulsar_context.create_partitioned_topic(partitions=4)
+    output_file = tmp_path / "output.txt"
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
+        snapshot_interval_ms=200,
+    )
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+
+    def run_phase(new_messages: list[str]) -> None:
+        for i, message in enumerate(new_messages):
+            pulsar_context.send(message, topic=topic, key=f"key-{i % 11}")
+
+        G.clear()
+        table = pw.io.pulsar.read(
+            PULSAR_SERVICE_URI,
+            topic,
+            format="plaintext",
+            autocommit_duration_ms=100,
+        )
+        pw.io.csv.write(table, output_file)
+        wait_result_with_checker(
+            CsvLinesNumberChecker(output_file, len(new_messages)),
+            WAIT_TIMEOUT_SECS,
+            double_check_interval=2.0,
+            kwargs={"persistence_config": persistence_config},
+        )
+
+    run_phase([f"first-{i:02d}" for i in range(20)])
+    run_phase([f"second-{i:02d}" for i in range(12)])

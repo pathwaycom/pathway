@@ -30,6 +30,11 @@ JETSTREAM_SERVER_URI = "nats://nats-js:4222/"
 NATS_READY_TIMEOUT = 90.0
 NATS_RETRY_INTERVAL = 0.2
 
+# How long to wait for a torn-down reader's pull request to disappear from the
+# server. Exceeds the consumers' `ack_wait` (30 s by default), so that a message
+# already handed to a dead reader is released back to the stream within it.
+CONSUMER_IDLE_TIMEOUT = 60.0
+
 # Transient NATS errors that clear on retry at startup / under load:
 #   * OSError              — TCP connection refused/reset before the server is up;
 #   * nats.errors.Error    — base of NoServersError, TimeoutError,
@@ -160,6 +165,50 @@ class JetStreamManager:
         fut.result()
         return durable_name
 
+    def message_count(self) -> int:
+        async def _inner() -> int:
+            info = await self._jetstream.stream_info(self.stream_name)
+            return info.state.messages
+
+        fut = asyncio.run_coroutine_threadsafe(_inner(), self._loop)
+        return fut.result()
+
+    def wait_until_consumers_idle(self, timeout: float = CONSUMER_IDLE_TIMEOUT) -> None:
+        """Wait until no consumer of the stream can swallow the next publish.
+
+        A reader process that has just been torn down leaves its pull request
+        registered on the server until the disconnect is noticed. A message
+        published in that window is handed to the dead reader and, as nobody
+        acknowledges it, stays invisible to every other consumer until the
+        consumer's ``ack_wait`` (30 s by default) elapses.
+        """
+
+        async def _inner() -> None:
+            deadline = time.monotonic() + timeout
+            while True:
+                consumers = await self._jetstream.consumers_info(self.stream_name)
+                busy = [
+                    c
+                    for c in consumers
+                    if (c.num_waiting or 0) > 0 or (c.num_ack_pending or 0) > 0
+                ]
+                if not busy:
+                    return
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        "JetStream consumers did not become idle in "
+                        f"{timeout} seconds: "
+                        + ", ".join(
+                            f"{c.name}(waiting={c.num_waiting}, "
+                            f"ack_pending={c.num_ack_pending})"
+                            for c in busy
+                        )
+                    )
+                await asyncio.sleep(NATS_RETRY_INTERVAL)
+
+        fut = asyncio.run_coroutine_threadsafe(_inner(), self._loop)
+        fut.result()
+
 
 def run_identity_program(
     input_file: pathlib.Path,
@@ -202,7 +251,10 @@ def run_identity_program(
         stream_name = f"stream-{nats_topic}"
         with JetStreamManager(
             JETSTREAM_SERVER_URI, stream=stream_name, subjects=[nats_topic]
-        ):
+        ) as js:
+            # A previous run's reader may still hold a pull request on the
+            # server, which would swallow the messages this run publishes.
+            js.wait_until_consumers_idle()
             inner(JETSTREAM_SERVER_URI, stream_name)
     else:
         inner(NATS_SERVER_URI, None)
@@ -352,6 +404,43 @@ def test_nats_dynamic_topics(
         inner(NATS_SERVER_URI)
 
 
+@pytest.mark.flaky(reruns=3)
+def test_jetstream_bulk_write_preserves_all_messages_with_many_workers(
+    tmp_path: pathlib.Path, monkeypatch
+):
+    # A large minibatch published by several workers to the same JetStream
+    # stream must not lose any messages: the writer bounds the number of
+    # un-acknowledged publishes in flight so the server never rejects them with
+    # a "too many requests" (429) error, and retries transient failures with
+    # backoff. Without this, most of the batch is dropped once many workers
+    # publish concurrently.
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+    n_messages = 50000
+    subject = f"nats-{uuid4()}"
+    stream_name = f"stream-{subject}"
+
+    input_file = tmp_path / "input.txt"
+    with open(input_file, "w") as f:
+        for i in range(n_messages):
+            f.write(f"{i}\n")
+
+    with JetStreamManager(
+        JETSTREAM_SERVER_URI, stream=stream_name, subjects=[subject]
+    ) as js:
+        G.clear()
+        table = pw.io.plaintext.read(input_file, mode="static")
+        pw.io.nats.write(
+            table,
+            uri=JETSTREAM_SERVER_URI,
+            topic=subject,
+            format="json",
+            jetstream_stream_name=stream_name,
+        )
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+        assert js.message_count() == n_messages
+
+
 @pytest.mark.parametrize("with_external_consumer", [False, True])
 def test_jetstream_reader(with_external_consumer: bool, tmp_path: pathlib.Path):
     output_path = tmp_path / "output.jsonl"
@@ -380,6 +469,10 @@ def test_jetstream_reader(with_external_consumer: bool, tmp_path: pathlib.Path):
             for row in f:
                 row_id = int(json.loads(row)["data"])
                 assert interval_start <= row_id <= interval_finish
+        # The reader process is gone, but its pull request may still be
+        # registered on the server: whatever is published next must not be
+        # handed to it.
+        js.wait_until_consumers_idle()
 
     with JetStreamManager(
         JETSTREAM_SERVER_URI,
@@ -401,3 +494,38 @@ def test_jetstream_reader(with_external_consumer: bool, tmp_path: pathlib.Path):
         # it reads everything
         new_consumer_name = js.create_consumer(subject_name)
         run_simple_read(new_consumer_name, 0, 15)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_jetstream_reader_returns_only_the_requested_topic(tmp_path: pathlib.Path):
+    # A JetStream stream can carry several subjects at once. Reading a single
+    # topic must deliver only that topic's messages; the messages published to
+    # the other subjects of the same stream must not leak into the table.
+    output_path = tmp_path / "output.jsonl"
+    stream_name = str(uuid4())
+    subject_wanted = f"NatsTopic.{stream_name}.wanted"
+    subject_other = f"NatsTopic.{stream_name}.other"
+
+    with JetStreamManager(
+        JETSTREAM_SERVER_URI,
+        stream=stream_name,
+        subjects=[subject_wanted, subject_other],
+    ) as js:
+        for i in range(5):
+            js.send(subject_wanted, f"wanted-{i}")
+        for i in range(5):
+            js.send(subject_other, f"other-{i}")
+
+        G.clear()
+        table = pw.io.nats.read(
+            uri=JETSTREAM_SERVER_URI,
+            topic=subject_wanted,
+            format="plaintext",
+            jetstream_stream_name=stream_name,
+        )
+        pw.io.jsonlines.write(table, output_path)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 5), 30)
+
+        with open(output_path, "r") as f:
+            values = {json.loads(row)["data"] for row in f}
+        assert values == {f"wanted-{i}" for i in range(5)}

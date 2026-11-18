@@ -11,9 +11,15 @@ import pandas as pd
 import pytest
 from utils import (
     MYSQL_CONNECTION_STRING,
+    MYSQL_DB_HOST,
     MYSQL_DB_NAME,
+    MYSQL_DB_PASSWORD,
+    MYSQL_DB_PORT,
+    MYSQL_DB_USER,
+    MYSQL_LOCAL_INFILE_DB_HOST,
     MySQLContext,
     SimpleObject,
+    TcpBlackholeProxy,
     binlog_purge_access,
     binlog_reader_access,
     check_write_quotes_reserved_word_column_name,
@@ -380,8 +386,8 @@ def test_mysql_composite_snapshot_key(mysql):
     ]
 
 
-@pytest.mark.parametrize("malfomed_primary_key", [None, []])
-def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
+@pytest.mark.parametrize("malformed_primary_key", [None, []])
+def test_mysql_no_snapshot_key(malformed_primary_key, mysql):
     table_name = mysql.random_table_name()
 
     class InputSchema(pw.Schema):
@@ -408,7 +414,7 @@ def test_mysql_no_snapshot_key(malfomed_primary_key, mysql):
             table_name=table_name,
             init_mode="create_if_not_exists",
             output_table_type="snapshot",
-            primary_key=malfomed_primary_key,
+            primary_key=malformed_primary_key,
         )
         pw.run()
 
@@ -848,6 +854,96 @@ def test_mysql_read_streaming_reflects_inserts_updates_deletes(mysql):
         mutate_thread.join()
 
 
+def test_mysql_streaming_recovers_after_stalled_connections(tcp_port, mysql):
+    """A streaming pipeline keeps delivering changes after a network stall
+    freezes its established server connections.
+
+    The pipeline talks to MySQL through a proxy that mid-run stops forwarding
+    on every open connection while keeping the sockets alive — what a
+    half-open connection or a dropped NAT/conntrack entry looks like on a
+    loaded host (the server itself stays healthy and reachable). The
+    connector's socket guards must detect the dead flows in bounded time and
+    reconnect, so a row inserted after the stall still reaches the output —
+    the pipeline must not freeze silently and must not duplicate the rows it
+    had already delivered.
+    """
+    _skip_if_no_binlog(mysql)
+    mysql.grant_replication_privileges()
+
+    input_table = mysql.random_table_name()
+    output_table = mysql.random_table_name()
+    mysql.cursor.execute(
+        f"CREATE TABLE {input_table} (id BIGINT PRIMARY KEY, name VARCHAR(255))"
+    )
+    for identity, name in [(1, "a"), (2, "b")]:
+        mysql.insert_row(input_table, {"id": identity, "name": name})
+
+    proxy = TcpBlackholeProxy(
+        listen_port=tcp_port, target_host=MYSQL_DB_HOST, target_port=MYSQL_DB_PORT
+    )
+    proxy.start()
+    proxied_connection_string = (
+        f"mysql://{MYSQL_DB_USER}:{MYSQL_DB_PASSWORD}"
+        f"@127.0.0.1:{tcp_port}/{MYSQL_DB_NAME}"
+    )
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    def stall_and_insert():
+        # A separate connection (direct, not proxied) so this thread does not
+        # race the main thread's checker and is immune to the stall itself.
+        thread_mysql = MySQLContext()
+        try:
+            # Wait for the snapshot to be mirrored: at that point the writer's
+            # connection has delivered data and is among the ones stalled.
+            wait_result_with_checker(
+                _MysqlRowCountChecker(thread_mysql, output_table, 2),
+                60,
+                target=None,
+            )
+            proxy.blackhole_current()
+            thread_mysql.insert_row(input_table, {"id": 3, "name": "c"})
+        finally:
+            thread_mysql.close()
+
+    try:
+        # Hold the binlog reader lock for the tailing phase so a concurrent
+        # PURGE BINARY LOGS (persistence-purge test) cannot delete this
+        # reader's log file (see ``binlog_reader_access`` in utils.py).
+        with binlog_reader_access():
+            stall_thread = ExceptionAwareThread(target=stall_and_insert, daemon=True)
+            stall_thread.start()
+
+            G.clear()
+            table = pw.io.mysql.read(
+                proxied_connection_string, input_table, InputSchema, mode="streaming"
+            )
+            pw.io.mysql.write(
+                table,
+                proxied_connection_string,
+                table_name=output_table,
+                init_mode="create_if_not_exists",
+            )
+            # Recovery budget: one writer socket timeout plus retry backoff
+            # and delivery, with headroom for a loaded machine.
+            wait_result_with_checker(
+                _MysqlRowCountChecker(mysql, output_table, 3),
+                150,
+            )
+            stall_thread.join()
+
+        rows = mysql.get_table_contents(output_table, ["id", "name"], sort_by="id")
+        assert rows == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+            {"id": 3, "name": "c"},
+        ]
+    finally:
+        proxy.close()
+
+
 def test_mysql_read_streaming_delivers_entire_large_single_statement(mysql):
     """A single statement that changes more rows than the per-block cap must be
     delivered in full.
@@ -1251,3 +1347,254 @@ def test_mysql_read_persistence_errors_when_binlog_purged(tmp_path, mysql):
         log_text = log_2.read_text()
         assert returncode != 0, f"worker should have failed; log:\n{log_text}"
         assert "no longer present" in log_text or "purged" in log_text, log_text
+
+
+# ---------------------------------------------------------------------------
+# Both write strategies: the connector probes at startup and uses LOAD DATA
+# LOCAL INFILE when the server permits it (the `mysql-local-infile` host), else
+# falls back to multi-row INSERT (the default `mysql` host with
+# `local_infile=OFF`). The `mysql_either_strategy` fixture runs each test below
+# once per server, so both code paths are covered end to end.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("output_table_type", ["snapshot", "stream_of_changes"])
+def test_mysql_write_all_types_roundtrip_both_strategies(
+    output_table_type, mysql_either_strategy
+):
+    """Every supported value type — including the ones whose LOAD DATA text
+    encoding is non-trivial (binary BLOBs via hex, microsecond datetimes,
+    durations, JSON, NULLs, and strings carrying tabs/newlines/backslashes/NUL/
+    Ctrl-Z/Unicode) — must round-trip identically through both write strategies
+    and both output modes."""
+    ctx = mysql_either_strategy
+    table_name = ctx.random_table_name()
+
+    class InputSchema(pw.Schema):
+        row_id: int = pw.column_definition(primary_key=True)
+        s: str
+        b: bytes
+        j: pw.Json
+        dt: str  # converted to a DateTimeNaive column below
+        dur: pw.Duration
+        f: float
+        opt: int | None
+
+    rows = [
+        (
+            1,
+            'tab\tnl\nbsl\\quote"nul\x00ctrlz\x1aend',
+            bytes(range(256)),
+            {"k": [1, 2, "x\ty"], "n": None, "u": "ю"},
+            "2021-03-04T05:06:07.123456",
+            pd.Timedelta("2 days 3 hours 4 minutes 5 seconds 6 us"),
+            3.5,
+            10,
+        ),
+        (
+            2,
+            "юникод текст",
+            b"",
+            {},
+            "1999-12-31T23:59:59.000000",
+            -pd.Timedelta("90 seconds"),
+            -0.0,
+            None,
+        ),
+        (
+            3,
+            "",
+            bytes([0x00, 0x09, 0x0A, 0x0D, 0x5C, 0xFF]),
+            [1, "a\tb", None],
+            "2000-01-01T00:00:00.000000",
+            pd.Timedelta(0),
+            1.5,
+            30,
+        ),
+    ]
+
+    table = pw.debug.table_from_rows(InputSchema, rows).with_columns(
+        dt=pw.this.dt.dt.strptime("%Y-%m-%dT%H:%M:%S.%f", contains_timezone=False),
+    )
+
+    extra_kwargs = {}
+    if output_table_type == "snapshot":
+        extra_kwargs["primary_key"] = [table.row_id]
+    pw.io.mysql.write(
+        table,
+        ctx.connection_string,
+        table_name=table_name,
+        init_mode="replace",
+        output_table_type=output_table_type,
+        **extra_kwargs,
+    )
+    pw.run()
+
+    columns = ["row_id", "s", "b", "j", "dt", "dur", "f", "opt"]
+    result = ctx.get_table_contents(table_name, columns, sort_by="row_id")
+    assert len(result) == len(rows)
+
+    expected = {
+        1: {
+            "s": 'tab\tnl\nbsl\\quote"nul\x00ctrlz\x1aend',
+            "b": bytes(range(256)),
+            "j": {"k": [1, 2, "x\ty"], "n": None, "u": "ю"},
+            "dt": datetime.datetime(2021, 3, 4, 5, 6, 7, 123456),
+            "dur": pd.Timedelta("2 days 3 hours 4 minutes 5 seconds 6 us"),
+            "f": 3.5,
+            "opt": 10,
+        },
+        2: {
+            "s": "юникод текст",
+            "b": b"",
+            "j": {},
+            "dt": datetime.datetime(1999, 12, 31, 23, 59, 59),
+            "dur": -pd.Timedelta("90 seconds"),
+            "f": 0.0,
+            "opt": None,
+        },
+        3: {
+            "s": "",
+            "b": bytes([0x00, 0x09, 0x0A, 0x0D, 0x5C, 0xFF]),
+            "j": [1, "a\tb", None],
+            "dt": datetime.datetime(2000, 1, 1, 0, 0, 0),
+            "dur": pd.Timedelta(0),
+            "f": 1.5,
+            "opt": 30,
+        },
+    }
+    for row in result:
+        rid = row["row_id"]
+        exp = expected[rid]
+        assert row["s"] == exp["s"], rid
+        assert bytes(row["b"]) == exp["b"], rid
+        loaded_json = row["j"]
+        if isinstance(loaded_json, (bytes, bytearray)):
+            loaded_json = loaded_json.decode()
+        assert json.loads(loaded_json) == exp["j"], rid
+        assert row["dt"] == exp["dt"], rid
+        assert pd.Timedelta(row["dur"]) == exp["dur"], rid
+        assert row["f"] == exp["f"], rid
+        assert row["opt"] == exp["opt"], rid
+
+
+@pytest.mark.parametrize("composite_key", [False, True])
+def test_mysql_write_snapshot_updates_and_deletes_both_strategies(
+    composite_key, mysql_either_strategy
+):
+    """A snapshot batch that mixes additions, updates (a key whose value changes)
+    and deletions must converge to the correct final state under both strategies.
+    Exercises the writer's retraction path (the tuple-`IN` DELETE, single- and
+    composite-key forms) followed by the upsert merge."""
+    ctx = mysql_either_strategy
+
+    # A keyed counter: each key's running count is updated as more rows arrive,
+    # which the snapshot writer receives as retraction + re-insertion of the key.
+    # Integer keys keep the connector-created PRIMARY KEY valid (a TEXT key would
+    # need a length); the focus here is the retraction/upsert batching, not types.
+    n_rows = 12
+
+    def category(index: int) -> int:
+        return index % 3
+
+    def subcategory(index: int) -> int:
+        return index % 2
+
+    class InputSchema(pw.Schema):
+        category: int
+        subcategory: int
+
+    table = pw.demo.generate_custom_stream(
+        value_generators={"category": category, "subcategory": subcategory},
+        schema=InputSchema,
+        nb_rows=n_rows,
+        autocommit_duration_ms=10,
+    )
+    if composite_key:
+        result = table.groupby(table.category, table.subcategory).reduce(
+            table.category, table.subcategory, count=pw.reducers.count()
+        )
+        primary_key = [result.category, result.subcategory]
+        key_columns = ["category", "subcategory"]
+        expected: dict = {}
+        for i in range(n_rows):
+            k = (category(i), subcategory(i))
+            expected[k] = expected.get(k, 0) + 1
+    else:
+        result = table.groupby(table.category).reduce(
+            table.category, count=pw.reducers.count()
+        )
+        primary_key = [result.category]
+        key_columns = ["category"]
+        expected = {}
+        for i in range(n_rows):
+            key = category(i)
+            expected[key] = expected.get(key, 0) + 1
+
+    table_name = ctx.random_table_name()
+    pw.io.mysql.write(
+        result,
+        ctx.connection_string,
+        table_name=table_name,
+        init_mode="replace",
+        output_table_type="snapshot",
+        primary_key=primary_key,
+    )
+    pw.run()
+
+    contents = ctx.get_table_contents(table_name, key_columns + ["count"])
+    if composite_key:
+        got = {(row["category"], row["subcategory"]): row["count"] for row in contents}
+    else:
+        got = {row["category"]: row["count"] for row in contents}
+    assert got == expected
+
+
+def test_mysql_write_selects_expected_strategy(mysql_either_strategy):
+    """The startup probe must pick LOAD DATA LOCAL INFILE on a server that allows
+    it and the multi-row INSERT fallback on one that does not. The writer logs the
+    chosen strategy; assert the expected line appears (and the run succeeds)."""
+    ctx = mysql_either_strategy
+    if ctx.host == MYSQL_LOCAL_INFILE_DB_HOST:
+        expected = "using LOAD DATA LOCAL INFILE fast path"
+        forbidden = "using multi-row INSERT"
+    else:
+        expected = "using multi-row INSERT"
+        forbidden = "using LOAD DATA LOCAL INFILE fast path"
+
+    table_name = ctx.random_table_name()
+    script = textwrap.dedent(
+        f"""
+        import pathway as pw
+
+        class S(pw.Schema):
+            row_id: int = pw.column_definition(primary_key=True)
+            v: int
+
+        t = pw.debug.table_from_rows(S, [(1, 10), (2, 20)])
+        pw.io.mysql.write(
+            t,
+            {ctx.connection_string!r},
+            table_name={table_name!r},
+            init_mode="replace",
+            output_table_type="snapshot",
+            primary_key=[t.row_id],
+        )
+        pw.run()
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    logs = proc.stdout + proc.stderr
+    assert proc.returncode == 0, logs
+    assert expected in logs, logs
+    assert forbidden not in logs, logs
+
+    # The data still lands regardless of the strategy.
+    contents = ctx.get_table_contents(table_name, ["row_id", "v"], sort_by="row_id")
+    assert contents == [{"row_id": 1, "v": 10}, {"row_id": 2, "v": 20}]

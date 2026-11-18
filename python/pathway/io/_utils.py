@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
 import functools
 import inspect
+import json
+import keyword
+import logging
+import math
+import os
 import warnings
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Iterable
@@ -19,7 +25,7 @@ from pathway.internals._io_helpers import (
 )
 from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
 from pathway.internals.expression import ColumnReference
-from pathway.internals.schema import Schema
+from pathway.internals.schema import Schema, schema_from_dict
 from pathway.internals.table import Table
 
 if TYPE_CHECKING:
@@ -33,6 +39,20 @@ SNAPSHOT_OUTPUT_TABLE_TYPE = "snapshot"
 
 METADATA_COLUMN_NAME = "_metadata"
 MESSAGE_QUEUE_KEY_COLUMN_NAME = "key"
+
+
+class EngineTimeMarker:
+    """The type of the ``pw.io.ENGINE_TIME`` marker. Do not instantiate it:
+    pass the ``pw.io.ENGINE_TIME`` singleton where a connector accepts it."""
+
+    def __repr__(self) -> str:
+        return "pathway.io.ENGINE_TIME"
+
+
+#: A marker selecting the engine (minibatch) time of an update — the UNIX
+#: timestamp in milliseconds that the message-queue connectors also attach as
+#: the ``pathway_time`` property — instead of a column of the table.
+ENGINE_TIME = EngineTimeMarker()
 
 STATUS_SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
 STATUS_DOWNLOADED = "downloaded"
@@ -53,6 +73,7 @@ _DATA_FORMAT_MAPPING = {
     "plaintext_by_file": "identity",
     "plaintext_by_object": "identity",
     "only_metadata": "identity",
+    "avro": "avro",
 }
 
 _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
@@ -79,7 +100,54 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "plaintext_by_file",
     "plaintext_by_object",
     "only_metadata",
+    "avro",
 }
+
+
+DurationLike = int | float | datetime.timedelta
+"""Type of duration parameters accepted by connectors: a number of seconds
+(``int`` or ``float``) or a ``datetime.timedelta`` (including its subclasses
+``pd.Timedelta`` and ``pw.Duration``)."""
+
+
+def as_duration_seconds(
+    value: DurationLike,
+    param_name: str,
+    *,
+    allow_zero: bool = True,
+) -> float:
+    """Coerces a duration-like parameter value to a float number of seconds.
+
+    ``int`` and ``float`` values are interpreted as seconds. ``datetime.timedelta``
+    values (including ``pd.Timedelta`` and ``pw.Duration``, which subclass it) are
+    converted with ``total_seconds()``.
+
+    Args:
+        value: The value of the parameter to be coerced.
+        param_name: The name of the parameter, used in error messages.
+        allow_zero: If ``True`` (the default), a zero duration is accepted: for
+            polling-type intervals it is a legitimate way to ask for updates as
+            often as possible, at the price of a busy-wait loop. Set to ``False``
+            for parameters where zero can never be meaningful (e.g. timeouts).
+
+    Returns:
+        The duration expressed as a float number of seconds.
+    """
+    if isinstance(value, datetime.timedelta):
+        seconds = value.total_seconds()
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = float(value)
+    else:
+        raise TypeError(
+            f"'{param_name}' must be a number of seconds (int or float) or a "
+            f"datetime.timedelta, got {type(value).__name__}"
+        )
+    if not math.isfinite(seconds):
+        raise ValueError(f"'{param_name}' must be finite, got {value!r}")
+    if seconds < 0 or (seconds == 0 and not allow_zero):
+        constraint = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"'{param_name}' must be {constraint}, got {value!r}")
+    return seconds
 
 
 class RawDataSchema(pw.Schema):
@@ -247,6 +315,15 @@ def construct_schema_and_data_format(
     _stacklevel: int = 1,
 ) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
+    # The key generation only has a meaning for the formats that produce a
+    # single payload column; the record formats derive the columns from the
+    # schema and would silently ignore the flag.
+    if autogenerate_key and data_format_type != "identity":
+        raise ValueError(
+            f"'autogenerate_key' is only meaningful for 'raw' or "
+            f"'plaintext' formats and would have no effect with "
+            f"{format!r}. Drop it or pick a compatible format."
+        )
 
     if data_format_type == "identity":
         kwargs = locals()
@@ -319,12 +396,6 @@ def construct_schema_and_data_format(
     elif data_format_type == "jsonlines":
         if csv_settings is not None:
             raise ValueError("Unexpected argument for json format: csv_settings")
-        if autogenerate_key:
-            raise ValueError(
-                f"'autogenerate_key' is only meaningful for 'raw' or "
-                f"'plaintext' formats and would have no effect with "
-                f"{format!r}. Drop it or pick a compatible format."
-            )
         if json_field_paths is not None:
             schema_columns = set(schema.column_names())
             for field_name, path in json_field_paths.items():
@@ -355,6 +426,22 @@ def construct_schema_and_data_format(
                 schema_registry_settings
             ),
         )
+    elif data_format_type == "avro":
+        if csv_settings is not None:
+            raise ValueError("Unexpected argument for avro format: csv_settings")
+        if json_field_paths is not None:
+            raise ValueError("Unexpected argument for avro format: json_field_paths")
+        if schema_registry_settings is not None:
+            raise ValueError(
+                "'schema_registry_settings' configures the Confluent schema "
+                "registry and has no effect with the 'avro' format, which "
+                "reads the schemas from the message broker's own registry. "
+                "Drop the argument."
+            )
+        return schema, api.DataFormat(
+            **api_schema,
+            format_type=data_format_type,
+        )
     else:
         raise ValueError(f"data format `{format}` not supported")
 
@@ -381,6 +468,10 @@ class MessageQueueOutputFormat:
     _: KW_ONLY
     table: Table
     key_field_index: int | None
+    ordering_key_field_index: int | None
+    event_time_field_index: int | None
+    deliver_at_field_index: int | None
+    deliver_after_field_index: int | None
     header_fields: dict[str, int]
     data_format: api.DataFormat
     topic_name_index: int | None
@@ -393,6 +484,10 @@ class MessageQueueOutputFormat:
         format: str = "json",
         delimiter: str = ",",
         key: ColumnReference | None = None,
+        ordering_key: ColumnReference | None = None,
+        event_time: ColumnReference | None = None,
+        deliver_at: ColumnReference | None = None,
+        deliver_after: ColumnReference | None = None,
         value: ColumnReference | None = None,
         headers: Iterable[ColumnReference] | None = None,
         topic_name: ColumnReference | None = None,
@@ -463,6 +558,49 @@ class MessageQueueOutputFormat:
             key_field_index = cls.add_column_reference_to_extract(
                 key, columns_to_extract, extracted_field_indices
             )
+        ordering_key_field_index = None
+        if ordering_key is not None:
+            if (
+                allowed_key_types is not None
+                and table[ordering_key._name]._column.dtype not in allowed_key_types
+            ):
+                raise ValueError(
+                    f"The ordering key column must have one of the following "
+                    f"types: {allowed_key_types}"
+                )
+            ordering_key_field_index = cls.add_column_reference_to_extract(
+                ordering_key, columns_to_extract, extracted_field_indices
+            )
+        event_time_field_index = None
+        if event_time is not None:
+            cls.check_timestamp_column(table, event_time, "event time")
+            event_time_field_index = cls.add_column_reference_to_extract(
+                event_time, columns_to_extract, extracted_field_indices
+            )
+        if deliver_at is not None and deliver_after is not None:
+            raise ValueError(
+                "'deliver_at' and 'deliver_after' cannot be set at the same "
+                "time: a message has a single delivery time, given either as "
+                "an absolute timestamp or as a delay from the publishing."
+            )
+        deliver_at_field_index = None
+        if deliver_at is not None:
+            cls.check_timestamp_column(table, deliver_at, "delivery time")
+            deliver_at_field_index = cls.add_column_reference_to_extract(
+                deliver_at, columns_to_extract, extracted_field_indices
+            )
+        deliver_after_field_index = None
+        if deliver_after is not None:
+            deliver_after_dtype = table[deliver_after._name]._column.dtype
+            if deliver_after_dtype not in (dt.INT, dt.DURATION, dt.ANY):
+                raise ValueError(
+                    "The delivery delay column must be an integer (milliseconds) "
+                    "or a duration, however "
+                    f"{deliver_after_dtype.typehint} is used"
+                )
+            deliver_after_field_index = cls.add_column_reference_to_extract(
+                deliver_after, columns_to_extract, extracted_field_indices
+            )
         if headers is not None:
             reserved_header_names = {"pathway_time", "pathway_diff"}
             for header in headers:
@@ -484,8 +622,10 @@ class MessageQueueOutputFormat:
                     header, columns_to_extract, extracted_field_indices
                 )
 
-        # Format-dependent parts: handle json and dsv separately
-        if format == "json" or format == "dsv":
+        # Format-dependent parts: the record formats (json, dsv, avro) share
+        # the whole-table extraction; the avro specifics are reduced to the
+        # payload subset.
+        if format in ("json", "dsv", "avro"):
             if value is not None:
                 raise ValueError(
                     f"'value' and format='{format}' cannot be set at the same time"
@@ -507,16 +647,54 @@ class MessageQueueOutputFormat:
                     table[column_name], columns_to_extract, extracted_field_indices
                 )
             table = table.select(*columns_to_extract)
-            data_format = api.DataFormat(
-                format_type="jsonlines" if format == "json" else "dsv",
-                key_field_names=[],
-                value_fields=_format_output_value_fields(table),
-                delimiter=delimiter,
-                schema_registry_settings=maybe_schema_registry_settings(
-                    schema_registry_settings
-                ),
-                subject=subject,
-            )
+            if format == "avro":
+                # The registered Avro schema is a public, versioned contract
+                # of the topic, so the service columns — the dynamic topic,
+                # the keys, the event time, the delivery schedule and the
+                # headers — stay out of the
+                # payload. A column needed both as a service input and in the
+                # payload can be duplicated under another name with
+                # `table.select(...)`.
+                service_field_indices = {
+                    topic_name_index,
+                    key_field_index,
+                    ordering_key_field_index,
+                    event_time_field_index,
+                    deliver_at_field_index,
+                    deliver_after_field_index,
+                    *header_fields.values(),
+                }
+                payload_field_indices = [
+                    index
+                    for index in range(len(table._columns))
+                    if index not in service_field_indices
+                ]
+                if not payload_field_indices:
+                    raise ValueError(
+                        "format='avro' needs at least one payload column, but "
+                        "every column of the table is used as a service column "
+                        "(topic/key/ordering_key/event_time/deliver_at/"
+                        "deliver_after/headers). Duplicate "
+                        "a column under another name with `table.select(...)` if "
+                        "it must serve both purposes."
+                    )
+                data_format = api.DataFormat(
+                    format_type="avro",
+                    key_field_names=[],
+                    value_fields=_format_output_value_fields(table),
+                    payload_field_indices=payload_field_indices,
+                )
+            else:
+                data_format = api.DataFormat(
+                    format_type="jsonlines" if format == "json" else "dsv",
+                    key_field_names=[],
+                    value_fields=_format_output_value_fields(table),
+                    delimiter=delimiter,
+                    schema_registry_settings=maybe_schema_registry_settings(
+                        schema_registry_settings
+                    ),
+                    subject=subject,
+                )
         elif format == "raw" or format == "plaintext":
             value_field_index = None
             if key is not None and value is None:
@@ -562,10 +740,35 @@ class MessageQueueOutputFormat:
         return cls(
             table=table,
             key_field_index=key_field_index,
+            ordering_key_field_index=ordering_key_field_index,
+            event_time_field_index=event_time_field_index,
+            deliver_at_field_index=deliver_at_field_index,
+            deliver_after_field_index=deliver_after_field_index,
             header_fields=header_fields,
             data_format=data_format,
             topic_name_index=topic_name_index,
         )
+
+    @staticmethod
+    def check_timestamp_column(
+        table: Table, column: ColumnReference, purpose: str
+    ) -> None:
+        """Checks that the column can carry a message timestamp: an integer
+        (milliseconds since the UNIX epoch) or a UTC datetime."""
+        dtype = table[column._name]._column.dtype
+        if dtype == dt.DATE_TIME_NAIVE:
+            raise ValueError(
+                f"The {purpose} column must not be a timezone-naive "
+                "datetime: its UTC interpretation would be a silent "
+                "assumption. Convert it explicitly, e.g. with "
+                "`.dt.to_utc(...)`."
+            )
+        if dtype not in (dt.INT, dt.DATE_TIME_UTC, dt.ANY):
+            raise ValueError(
+                f"The {purpose} column must be an integer (milliseconds "
+                "since the UNIX epoch) or a UTC datetime, however "
+                f"{dtype.typehint} is used"
+            )
 
     @staticmethod
     def add_column_reference_to_extract(
@@ -615,6 +818,145 @@ def maybe_schema_registry_settings(
     if schema_registry_settings is not None:
         return schema_registry_settings.to_engine
     return None
+
+
+def explore_schema(
+    data_storage: api.DataStorage,
+    *,
+    source_description: str,
+    format: str | None = None,
+    schema_name: str | None = None,
+) -> type[Schema]:
+    """Deduces a ``pw.Schema`` from the schema the data source itself
+    declares (e.g. the topic's schema in the Pulsar registry).
+
+    The deduction happens at pipeline construction time, so the resulting
+    table is statically typed as usual. The returned value is an ordinary
+    schema class: a caller unhappy with any deduced column can adjust it with
+    the standard schema utilities, or write a schema by hand instead — an
+    explicit schema always wins over the deduction.
+
+    Internal for now; connectors call it when their ``schema`` parameter is
+    omitted for a format that supports the deduction.
+    """
+    # In a multi-process run every process constructs its own graph, so each
+    # would query the source independently — and a schema change between
+    # their starts would make the processes build diverging graphs, failing
+    # later with an obscure cross-worker mismatch instead of a schema error.
+    if int(os.environ.get("PATHWAY_PROCESSES", "1")) > 1:
+        raise ValueError(
+            f"The schema of {source_description} cannot be deduced in a "
+            "multi-process run: every process would query the source "
+            "independently, and a schema change between their starts would "
+            "make the processes construct diverging computation graphs. Pass "
+            "an explicit schema instead."
+        )
+    fields = api.explore_schema(data_storage, format)
+    # `id` resolves to the row key and would silently shadow the column;
+    # `_metadata` is claimed by the metadata machinery. Neither can be
+    # renamed by the deduction, so such fields must fail loudly.
+    reserved_column_names = {"id", METADATA_COLUMN_NAME}
+    columns: dict[str, Any] = {}
+    for name, type_descriptor_json, has_default, default, doc in fields:
+        if name in reserved_column_names:
+            raise ValueError(
+                f"The deduced schema of {source_description} contains the field "
+                f"{name!r}, which is a reserved Pathway column name. Pass an "
+                f"explicit schema that omits this field (for the 'json' format, "
+                f"json_field_paths can map it onto a different column name)."
+            )
+        if not name.isidentifier() or keyword.iskeyword(name):
+            raise ValueError(
+                f"The deduced schema of {source_description} contains the field "
+                f"{name!r}, which is not usable as a Pathway column name. Pass "
+                f"an explicit schema instead."
+            )
+        entry: dict[str, Any] = {"dtype": json.loads(type_descriptor_json)}
+        # The presence flag distinguishes "no default" from a default that
+        # is legitimately None (e.g. an optional Avro field with
+        # "default": null).
+        if has_default:
+            entry["default_value"] = default
+        if doc:
+            entry["description"] = doc
+        columns[name] = entry
+    if not columns:
+        raise ValueError(
+            f"The deduced schema of {source_description} has no columns. Pass "
+            f"an explicit schema instead."
+        )
+    schema = schema_from_dict(columns, name=schema_name)
+    # The deduced contract is implicit, so make it visible: with an explicit
+    # schema a typo fails loudly, while here the pipeline just runs with
+    # whatever the source declared.
+    logging.info("Deduced the schema of %s: %s", source_description, schema)
+    return schema
+
+
+def remap_sort_by(
+    sort_by: Iterable[ColumnReference] | None,
+    original_table: Table,
+    output_table: Table,
+    connector_name: str,
+) -> list[ColumnReference] | None:
+    """Rewrites the ``sort_by`` columns onto the table the sink is attached to.
+
+    The message-queue writers rebuild their input with ``table.select(...)`` to
+    lay the service columns out for the engine, so the references the caller
+    passed — taken against the table they called ``write`` on — belong to a
+    different table and the sink would reject them.
+    """
+    if sort_by is None:
+        return None
+    remapped: list[ColumnReference] = []
+    for column in sort_by:
+        if column._table is output_table:
+            remapped.append(column)
+            continue
+        if column._table is not original_table:
+            raise ValueError(
+                f"The sort_by column {column} doesn't belong to the table "
+                f"passed to {connector_name}."
+            )
+        if column.name not in output_table._columns:
+            raise ValueError(
+                f"The sort_by column {column.name!r} is not part of the "
+                "data being written. For 'raw' or 'plaintext' format, only "
+                "the columns forwarded to the message (the payload, the keys, "
+                "the topic name and the headers) are."
+            )
+        remapped.append(output_table[column.name])
+    return remapped
+
+
+def resolve_start_from_timestamp_ms(
+    start_from: str,
+    start_from_timestamp_ms: int | None,
+) -> int | None:
+    """Validates a (``start_from``, ``start_from_timestamp_ms``) pair and encodes
+    it into the single ``start_from_timestamp_ms`` field understood by the engine.
+
+    The engine reserves ``-1`` in this field as an internal sentinel for
+    ``start_from="end"``, so an explicit timestamp must be non-negative —
+    otherwise a user-provided ``-1`` would silently turn into "start from
+    the end of the stream" instead of raising an error.
+    """
+    if start_from == "timestamp":
+        if start_from_timestamp_ms is None:
+            raise ValueError(
+                "start_from_timestamp_ms is required when start_from='timestamp'"
+            )
+        if start_from_timestamp_ms < 0:
+            raise ValueError(
+                "start_from_timestamp_ms must be a non-negative number of"
+                f" milliseconds since the UNIX epoch; got {start_from_timestamp_ms}"
+            )
+        return start_from_timestamp_ms
+    if start_from_timestamp_ms is not None:
+        raise ValueError(
+            f"start_from_timestamp_ms must not be set when start_from='{start_from}'"
+        )
+    return -1 if start_from == "end" else None
 
 
 def _get_unique_name(

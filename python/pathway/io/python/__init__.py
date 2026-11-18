@@ -58,6 +58,15 @@ class ConnectorSubject(ABC):
 
     In order to send a message :py:meth:`next` method can be used.
 
+    By default the subject runs a **native** session: every ``next`` call is an
+    insertion of a new row, and sending two rows with the same primary key is an
+    error. A subject that periodically re-reads an external source and re-sends
+    everything it sees - the typical shape of a polling connector - should be
+    constructed with ``session_type="upsert"`` instead: a row sent with an
+    already-present primary key then **replaces** the previous row, and
+    :py:meth:`delete` removes a row. Upsert sessions require the schema passed
+    to :py:func:`~pathway.io.python.read` to define a primary key.
+
     If the subject won't delete records, set the class property ``deletions_enabled``
     to ``False`` as it may help to improve the performance.
 
@@ -74,13 +83,28 @@ class ConnectorSubject(ABC):
     _pw_format: str
     _datasource_name: str
 
-    def __init__(self, datasource_name: str = "python") -> None:
+    def __init__(
+        self,
+        datasource_name: str = "python",
+        *,
+        session_type: Literal["native", "upsert"] = "native",
+    ) -> None:
         self._buffer = Queue()
         self._thread = None
         self._exception = None
         self._already_used = False
         self._started = False
         self._datasource_name = datasource_name
+        match session_type:
+            case "native":
+                self._session_type_value = SessionType.NATIVE
+            case "upsert":
+                self._session_type_value = SessionType.UPSERT
+            case _:
+                raise ValueError(
+                    f"invalid session_type {session_type!r}: "
+                    "expected 'native' or 'upsert'"
+                )
 
     @abstractmethod
     def run(self) -> None: ...
@@ -107,7 +131,7 @@ class ConnectorSubject(ABC):
 
     def _is_finite(self) -> bool:
         """
-        Denotes if the connector teminates after the code inside run() routine
+        Denotes if the connector terminates after the code inside run() routine
         is completed.
         """
         return True
@@ -186,6 +210,38 @@ class ConnectorSubject(ABC):
     def commit(self) -> None:
         """Sends a commit message."""
         self._send_special_message(COMMIT_LITERAL)
+
+    def delete(self, **kwargs) -> None:
+        """Deletes a row previously sent with :py:meth:`next`.
+
+        The arguments should carry the same values as the row being deleted -
+        in particular the primary key columns, from which the row's identity
+        is derived. Requires deletions to be possible for this subject: either
+        construct it with ``session_type="upsert"``, or make sure the row
+        being deleted was inserted exactly once (the ``"native"`` session
+        applies the deletion as an exact retraction).
+
+        Example:
+
+        >>> import pathway as pw
+        >>> class InputSchema(pw.Schema):
+        ...     key: int = pw.column_definition(primary_key=True)
+        ...     value: str
+        ...
+        >>> class InputSubject(pw.io.python.ConnectorSubject):
+        ...     def __init__(self):
+        ...         super().__init__(session_type="upsert")
+        ...     def run(self):
+        ...         self.next(key=1, value="one")
+        ...         self.next(key=2, value="two")
+        ...         self.delete(key=1, value="one")
+        ...
+        >>> t = pw.io.python.read(InputSubject(), schema=InputSchema)
+        >>> pw.debug.compute_and_print(t, include_id=False)
+        key | value
+        2   | two
+        """
+        self._remove_inner(None, kwargs)
 
     def _enable_commits(self) -> None:
         """Enables autocommits."""
@@ -319,7 +375,9 @@ class ConnectorSubject(ABC):
 
     @property
     def _session_type(self) -> SessionType:
-        return SessionType.NATIVE
+        # subclasses may override this property; the attribute may be absent
+        # if a subclass replaced __init__ without delegating to this class
+        return getattr(self, "_session_type_value", SessionType.NATIVE)
 
     @cached_property
     def _deletions_enabled(self) -> bool:
@@ -339,6 +397,22 @@ def _create_python_datasource(
     **kwargs,
 ) -> datasource.GenericDataSource:
     schema, api_schema = read_schema(schema)
+    # Only the public constructor path is validated: rows sent with `next` /
+    # `delete` carry no explicit key, so their identity must come from the
+    # schema's primary key. Subjects that override the `_session_type`
+    # property (the internal connectors) pass explicit keys instead and work
+    # without one.
+    if (
+        getattr(subject, "_session_type_value", SessionType.NATIVE)
+        == SessionType.UPSERT
+        and not schema.primary_key_columns()
+    ):
+        raise ValueError(
+            "session_type='upsert' requires a schema with at least one "
+            "primary_key column: upserts replace the previous row with the "
+            "same primary key, so without one every entry would get an "
+            "autogenerated, unique key and nothing would ever be replaced."
+        )
     data_format = api.DataFormat(
         **api_schema,
         format_type="transparent",
@@ -379,11 +453,13 @@ def _are_deletions_reachable(subject) -> bool:
     false-negatives, but should suffice for the most common cases.
 
     If the user wants to override the behavior, it's still possible with a manual
-    override of `_deletions_enabled` method.
+    override of ``_deletions_enabled`` method.
 
     Limitations:
     - Only detects direct calls: self._buffer.put((PythonConnectorEventType.DELETE, ...))
     - May miss aliased or dynamic calls
+    - Attributes are resolved statically, so a method reached through a property is
+      not followed
     - Returns False on parsing errors
     """
 
@@ -496,13 +572,22 @@ def _are_deletions_reachable(subject) -> bool:
         if name == "_deletions_enabled":
             continue
         try:
-            subject_method = getattr(subject, name)
+            # The attribute is resolved statically on purpose: a plain ``getattr``
+            # evaluates properties, and a connector's property may well perform I/O.
+            # The SharePoint subject, for instance, authenticates against the site
+            # and queries it in ``_context``, so a plain ``getattr`` turned this
+            # inspection into a network round trip that ran while the computation
+            # graph was still being built - outside of any of the connector's own
+            # error handling. Inspecting a subject must have no side effects.
+            subject_method = inspect.getattr_static(subject, name)
             if callable(subject_method):
                 methods[name] = subject_method
         except AttributeError:
             continue
 
-    return is_removal_api_found(subject.run, methods, visited=set())
+    return is_removal_api_found(
+        inspect.getattr_static(subject, "run"), methods, visited=set()
+    )
 
 
 @check_arg_types
@@ -697,7 +782,7 @@ class _BaseConnectorObserver:
 
 class ConnectorObserver(_BaseConnectorObserver, ABC):
     """An abstract class for creating custom Python writers.
-    At least `on_change` method must be implemented.
+    At least ``on_change`` method must be implemented.
     Use with :py:func:`~pathway.io.python.write`.
     """
 
@@ -724,7 +809,7 @@ class ConnectorObserver(_BaseConnectorObserver, ABC):
 
 class AsyncConnectorObserver(_BaseConnectorObserver, ABC):
     """An abstract class for creating custom Python async writers.
-    At least `on_change` method must be implemented.
+    At least ``on_change`` method must be implemented.
     Use with :py:func:`~pathway.io.python.write`.
     """
 

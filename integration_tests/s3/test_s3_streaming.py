@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import pathway as pw
@@ -89,3 +91,46 @@ def test_object_deleted(tmp_path, s3_path, storage_type):
     t.start()
     wait_result_with_checker(FileLinesNumberChecker(output_path, 6), 90)
     t.join()
+
+
+@pytest.mark.parametrize("storage_type", ["s3", "minio"])
+def test_only_metadata_tracks_changes(tmp_path, s3_path, storage_type):
+    input_path = f"{s3_path}/input.txt"
+    put_object_into_storage(storage_type, input_path, "one")
+
+    output_path = tmp_path / "output.json"
+
+    def stream_data():
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 30, target=None
+        )
+
+        # Modify the object: a retraction of the old metadata row and an
+        # insertion of the new one are expected (two extra output lines).
+        put_object_into_storage(storage_type, input_path, "one-two-three")
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), 30, target=None
+        )
+
+        # Delete the object: the metadata row is retracted.
+        delete_object_from_storage(storage_type, input_path)
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 4), 30, target=None
+        )
+
+    table = create_table_for_storage(
+        storage_type, s3_path, "only_metadata", mode="streaming"
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    t = ExceptionAwareThread(target=stream_data)
+    t.start()
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 4), 90)
+    t.join()
+
+    with open(output_path) as f:
+        for row in f:
+            data = json.loads(row)
+            # No object contents are ever downloaded in this mode.
+            assert data.keys() == {"_metadata", "time", "diff"}
+            assert data["_metadata"]["path"] == input_path

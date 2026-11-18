@@ -488,7 +488,10 @@ fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering>
 fn unwrap(val: Value) -> DynResult<Value> {
     match val {
         Value::None => Err(DynError::from(DataError::ValueError(
-            "cannot unwrap if there is None value".into(),
+            "cannot unwrap a None value: pw.unwrap() requires a non-None value. Use \
+            pw.coalesce() to supply a default, or filter out the rows with None before \
+            unwrapping."
+                .into(),
         ))),
         _ => Ok(val),
     }
@@ -607,6 +610,23 @@ where
 impl AnyExpression {
     #[allow(clippy::too_many_lines)]
     pub fn eval(&self, values: &[&[Value]]) -> Vec<DynResult<Value>> {
+        if let Self::Apply(f, Expressions::Arguments(range)) = self {
+            // Fast path for the common case: arguments come directly from the
+            // input columns and contain no error values, so they can be passed
+            // to the function as borrowed slices, without the per-row masks
+            // and intermediate buffers of the generic path below.
+            if !values
+                .iter()
+                .any(|row| row[range.clone()].contains(&Value::Error))
+            {
+                let args: Vec<&[Value]> = values.iter().map(|row| &row[range.clone()]).collect();
+                let res = f(&args);
+                for entry in res.iter().flatten() {
+                    debug_assert!(!matches!(entry, Value::Error));
+                }
+                return res;
+            }
+        }
         let res = match self {
             Self::Argument(i) => values
                 .iter()
@@ -1475,6 +1495,26 @@ impl Expression {
     }
 }
 
+/// Reads argument `index` of every row through a typed accessor, without
+/// cloning the `Value` first. Keeps the error order of the generic path:
+/// a missing column, then an error value, then a type mismatch.
+fn argument_as<T>(
+    index: usize,
+    values: &[&[Value]],
+    f: impl Fn(&Value) -> DynResult<T>,
+) -> Vec<DynResult<T>> {
+    values
+        .iter()
+        .map(|row| {
+            let value = row.get(index).ok_or(DataError::IndexOutOfBounds)?;
+            if matches!(value, Value::Error) {
+                return Err(DataError::ErrorInValue.into());
+            }
+            f(value)
+        })
+        .collect()
+}
+
 trait EvalAs<T> {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<T>>;
 }
@@ -1499,6 +1539,9 @@ impl EvalAs<bool> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<bool>> {
         match self {
             Self::Bool(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, Value::as_bool)
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_bool()),
             _ => values
                 .iter()
@@ -1512,6 +1555,7 @@ impl EvalAs<i64> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<i64>> {
         match self {
             Self::Int(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => argument_as(*index, values, Value::as_int),
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_int()),
             _ => values.iter().map(|_| Err(self.type_error("int"))).collect(),
         }
@@ -1522,6 +1566,9 @@ impl EvalAs<f64> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<f64>> {
         match self {
             Self::Float(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, Value::as_float)
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_float()),
             _ => values
                 .iter()
@@ -1535,6 +1582,9 @@ impl EvalAs<ArcStr> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<ArcStr>> {
         match self {
             Self::String(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, |v| v.as_string().cloned())
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_string().cloned()),
             _ => values
                 .iter()
@@ -1548,6 +1598,9 @@ impl EvalAs<Key> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Key>> {
         match self {
             Self::Pointer(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, Value::as_pointer)
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_pointer()),
             _ => values
                 .iter()
@@ -1561,6 +1614,9 @@ impl EvalAs<DateTimeNaive> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<DateTimeNaive>> {
         match self {
             Self::DateTimeNaive(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, Value::as_date_time_naive)
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_date_time_naive()),
             _ => values
                 .iter()
@@ -1574,6 +1630,9 @@ impl EvalAs<DateTimeUtc> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<DateTimeUtc>> {
         match self {
             Self::DateTimeUtc(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, Value::as_date_time_utc)
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_date_time_utc()),
             _ => values
                 .iter()
@@ -1587,6 +1646,9 @@ impl EvalAs<Duration> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Duration>> {
         match self {
             Self::Duration(expr) => expr.eval(values),
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, Value::as_duration)
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| v.as_duration()),
             _ => values
                 .iter()
@@ -1599,6 +1661,9 @@ impl EvalAs<Duration> for Expression {
 impl EvalAs<Arc<[Value]>> for Expression {
     fn eval_as(&self, values: &[&[Value]]) -> Vec<DynResult<Arc<[Value]>>> {
         match self {
+            Self::Any(AnyExpression::Argument(index)) => {
+                argument_as(*index, values, |v| Ok(v.as_tuple()?.clone()))
+            }
             Self::Any(_) => unary_expr_err(self, values, &|v: Value| Ok(v.as_tuple()?.clone())),
             _ => values
                 .iter()

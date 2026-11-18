@@ -8,7 +8,7 @@ use crate::connectors::ReaderContext::{
 };
 use crate::connectors::{DataEventType, ReaderContext, SessionType};
 use crate::engine::error::DynResult;
-use crate::engine::{Key, Result, Timestamp, Value};
+use crate::engine::{Result, Value};
 
 use serde_json::Value as JsonValue;
 
@@ -139,8 +139,10 @@ impl Parser for IdentityParser {
     }
 
     fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
-        let metadata_serialized: JsonValue = metadata.serialize();
-        self.metadata_column_value = metadata_serialized.into();
+        if self.metadata_field_index.is_some() {
+            let metadata_serialized: JsonValue = metadata.serialize();
+            self.metadata_column_value = metadata_serialized.into();
+        }
     }
 
     fn column_count(&self) -> usize {
@@ -166,30 +168,17 @@ impl IdentityFormatter {
 }
 
 impl Formatter for IdentityFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        let prepared_diff =
-            if let Some(external_diff_column_index) = self.external_diff_column_index {
-                let value = &values[external_diff_column_index];
-                match value {
-                    Value::Int(inner) if *inner == 1 => 1,
-                    Value::Int(inner) if *inner == -1 => -1,
-                    _ => return Err(FormatterError::IncorrectDiffColumnValue(value.clone())),
-                }
-            } else {
-                diff
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
+        if let Some(external_diff_column_index) = self.external_diff_column_index {
+            let value = &context.values[external_diff_column_index];
+            context.diff = match value {
+                Value::Int(inner) if *inner == 1 => 1,
+                Value::Int(inner) if *inner == -1 => -1,
+                _ => return Err(FormatterError::IncorrectDiffColumnValue(value.clone())),
             };
-        Ok(FormatterContext::new_single_payload(
-            Vec::new(),
-            *key,
-            values.to_vec(),
-            time,
-            prepared_diff,
-        ))
+        }
+        // An empty payload: the writers of this format work from the values.
+        context.payload_buffer();
+        Ok(())
     }
 }

@@ -19,6 +19,8 @@ from pathway.io._utils import (
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
     internal_connector_mode,
+    remap_sort_by,
+    resolve_start_from_timestamp_ms,
 )
 
 
@@ -78,6 +80,9 @@ def read(
             ``"streaming"`` mode, the connector reads messages continuously. In
             ``"static"`` mode, it reads all existing messages and then stops.
         autocommit_duration_ms: The time interval (in milliseconds) between commits.
+            Required for streaming reads: a RabbitMQ queue never signals completion, so
+            the timer is the only thing that advances time; ``None`` is rejected at
+            construction.
             After this time, the updates received by the connector are committed and
             added to Pathway Live Data Framework's computation graph.
         json_field_paths: For the ``"json"`` format, this allows mapping field names to
@@ -196,23 +201,9 @@ def read(
     ... )
     """
     _check_entitlements("rabbitmq")
-    effective_timestamp: int | None
-    if start_from == "timestamp":
-        if start_from_timestamp_ms is None:
-            raise ValueError(
-                "start_from_timestamp_ms is required when start_from='timestamp'"
-            )
-        effective_timestamp = start_from_timestamp_ms
-    else:
-        if start_from_timestamp_ms is not None:
-            raise ValueError(
-                "start_from_timestamp_ms must not be set when"
-                f" start_from='{start_from}'"
-            )
-        # Encode start_from as a sentinel in start_from_timestamp_ms:
-        # None → beginning (OffsetSpecification::First)
-        # -1   → end (OffsetSpecification::Next)
-        effective_timestamp = -1 if start_from == "end" else None
+    effective_timestamp = resolve_start_from_timestamp_ms(
+        start_from, start_from_timestamp_ms
+    )
 
     data_storage = api.DataStorage(
         storage_type="rabbitmq",
@@ -365,6 +356,9 @@ def write(
         headers=headers,
         topic_name=stream_name if isinstance(stream_name, ColumnReference) else None,
     )
+    # The sink is attached to the table `construct` rebuilt, so the
+    # sort_by references taken against the original one are remapped.
+    sort_by = remap_sort_by(sort_by, table, output_format.table, "pw.io.rabbitmq.write")
     table = output_format.table
 
     data_storage = api.DataStorage(

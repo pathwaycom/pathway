@@ -439,17 +439,22 @@ def test_kafka_simple_wrapper_bytes_io(
     pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
-    # check that reread will have all these messages again
+    # check that reread will have all these messages again. The second run
+    # writes into a file of its own: the first run's output already holds the
+    # two expected lines, so a checker pointed at it would report success
+    # before the second pipeline has read anything.
     G.clear()
     table = pw.io.kafka.simple_read(
         kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
     )
-    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
-    wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
+    pw.io.jsonlines.write(table, tmp_path / "output_reread.jsonl")
+    wait_result_with_checker(
+        FileLinesNumberChecker(tmp_path / "output_reread.jsonl", 2), 10
+    )
 
     # Check output type, bytes should be rendered as an array
-    with open(tmp_path / "output.jsonl", "r") as f:
+    with open(tmp_path / "output_reread.jsonl", "r") as f:
         for row in f:
             row_parsed = json.loads(row)
             assert isinstance(row_parsed["data"], str)
@@ -471,18 +476,23 @@ def test_kafka_simple_wrapper_plaintext_io(
     pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
-    # check that reread will have all these messages again
+    # check that reread will have all these messages again. The second run
+    # writes into a file of its own: the first run's output already holds the
+    # two expected lines, so a checker pointed at it would report success
+    # before the second pipeline has read anything.
     G.clear()
     table = pw.io.kafka.simple_read(
         kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
         format="plaintext",
     )
-    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
-    wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
+    pw.io.jsonlines.write(table, tmp_path / "output_reread.jsonl")
+    wait_result_with_checker(
+        FileLinesNumberChecker(tmp_path / "output_reread.jsonl", 2), 10
+    )
 
     # Check output type, parsed plaintext should be a string
-    with open(tmp_path / "output.jsonl", "r") as f:
+    with open(tmp_path / "output_reread.jsonl", "r") as f:
         for row in f:
             row_parsed = json.loads(row)
             assert isinstance(row_parsed["data"], str)
@@ -2611,3 +2621,127 @@ def test_kafka_write_subject_empty_string_rejected(
             ),
             subject="",
         )
+
+
+def test_kafka_unreachable_broker_error_names_bootstrap_servers():
+    # A broker that cannot be reached at all must be reported in terms the
+    # user can act on - the bootstrap.servers value and what to check - not
+    # as librdkafka's bare "BrokerTransportFailure".
+    table = pw.io.kafka.read(
+        rdkafka_settings={
+            "bootstrap.servers": "localhost:1",
+            "group.id": "unreachable",
+        },
+        topic="topic",
+        format="raw",
+    )
+    pw.io.null.write(table)
+    with pytest.raises(OSError, match=r"bootstrap\.servers=localhost:1"):
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+@pytest.mark.flaky(reruns=3)
+def test_kafka_streaming_read_delivers_every_message_in_partition_order(
+    tmp_path, kafka_context
+):
+    """The reader takes the fetched messages off its queue in batches. Every
+    message must still arrive exactly once, and within a partition no message
+    may be committed before the one preceding it."""
+    kafka_context.set_input_topic_partitions(3)
+    n_messages = 3000
+    kafka_context.fill([f"message_{i}" for i in range(n_messages)])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=20,
+        with_metadata=True,
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, n_messages), 60)
+
+    expected = {
+        message.value.decode("utf-8") for message in kafka_context.read_input_topic()
+    }
+    rows = []
+    with open(output_path) as f:
+        for line in f:
+            row = json.loads(line)
+            rows.append(
+                (
+                    row["_metadata"]["partition"],
+                    row["_metadata"]["offset"],
+                    row["time"],
+                    row["data"],
+                )
+            )
+    assert len(rows) == len(expected)
+    assert {data for *_, data in rows} == expected
+
+    by_partition: dict[int, list[tuple[int, int]]] = {}
+    for partition, offset, time_, _ in rows:
+        by_partition.setdefault(partition, []).append((offset, time_))
+    assert len(by_partition) == 3
+    for offsets_and_times in by_partition.values():
+        offsets_and_times.sort()
+        offsets = [offset for offset, _ in offsets_and_times]
+        assert offsets == list(range(len(offsets)))
+        times = [time_ for _, time_ in offsets_and_times]
+        assert times == sorted(times)
+
+
+def test_kafka_static_read_delivers_every_message_across_partitions(
+    tmp_path, kafka_context
+):
+    """A static read of a topic holding more messages than one fetch batch must
+    deliver all of them, from every partition."""
+    kafka_context.set_input_topic_partitions(4)
+    kafka_context.fill([f"message_{i}" for i in range(2000)])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        mode="static",
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    expected = {
+        message.value.decode("utf-8") for message in kafka_context.read_input_topic()
+    }
+    assert len(expected) > 1900, "most produced messages should be in the topic"
+    seen = set()
+    with open(output_path) as f:
+        for row in f:
+            seen.add(json.loads(row)["data"])
+    assert seen == expected
+
+
+def test_kafka_output_without_pathway_headers(
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    """With ``with_pathway_headers=False`` the written messages carry no
+    ``pathway_time``/``pathway_diff`` headers, and every row still arrives."""
+    input_path = tmp_path / "input"
+    with open(input_path, "w") as f:
+        f.write("\n".join(f"line_{i}" for i in range(1500)) + "\n")
+
+    table = pw.io.plaintext.read(str(input_path), mode="static")
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.output_topic,
+        with_pathway_headers=False,
+    )
+    pw.run()
+
+    messages = kafka_context.read_output_topic(expected_headers=())
+    assert len(messages) == 1500
+    for message in messages:
+        assert message.headers == []
+    payloads = {json.loads(message.value)["data"] for message in messages}
+    assert payloads == {f"line_{i}" for i in range(1500)}

@@ -103,6 +103,121 @@ def test_write_large_batch(milvus):
     assert len(milvus.query_all(collection_name, ["id"])) == n
 
 
+def test_write_batch_size_chunks_requests(milvus, monkeypatch):
+    """A mini-batch larger than ``batch_size`` is split into several upsert
+    requests, each no larger than ``batch_size`` rows, and every row still lands.
+
+    Milvus caps a single gRPC message at 64 MiB by default, so a large commit
+    sent as one upsert is rejected with ``RESOURCE_EXHAUSTED``. ``batch_size``
+    keeps each request bounded regardless of how large the commit is.
+    """
+    from pymilvus import MilvusClient
+
+    collection_name = milvus.generate_collection_name()
+    milvus.create_collection(collection_name)
+
+    upsert_sizes: list[int] = []
+    original_upsert = MilvusClient.upsert
+
+    def spy_upsert(self, *args, **kwargs):
+        upsert_sizes.append(len(kwargs["data"]))
+        return original_upsert(self, *args, **kwargs)
+
+    monkeypatch.setattr(MilvusClient, "upsert", spy_upsert)
+
+    n = 1000
+    batch_size = 128
+    rows = [(i, [float(i), float(i + 1), float(i + 2)]) for i in range(n)]
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, rows)
+    pw.io.milvus.write(
+        table,
+        uri=milvus.uri,
+        collection_name=collection_name,
+        primary_key=table.id,
+        batch_size=batch_size,
+    )
+    run()
+
+    assert len(milvus.query_all(collection_name, ["id"])) == n
+    assert upsert_sizes, "no upsert request was issued"
+    assert max(upsert_sizes) <= batch_size
+    assert sum(upsert_sizes) == n
+
+
+def test_write_batch_size_must_be_positive(milvus):
+    """A non-positive ``batch_size`` is rejected up front with a clear error."""
+    collection_name = milvus.generate_collection_name()
+    milvus.create_collection(collection_name)
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, [(1, [1.0, 2.0, 3.0])])
+    with pytest.raises(ValueError, match="batch_size must be a positive integer"):
+        pw.io.milvus.write(
+            table,
+            uri=milvus.uri,
+            collection_name=collection_name,
+            primary_key=table.id,
+            batch_size=0,
+        )
+
+
+@pytest.mark.parametrize(
+    "rows", [[(1, [1.0, 2.0, 3.0])], []], ids=["nonempty", "empty"]
+)
+def test_write_missing_collection_raises(milvus, rows):
+    """Pointing the connector at a collection that does not exist fails fast with
+    a clear error at pipeline construction, rather than surfacing deep inside the
+    run — or, for an empty table, silently doing nothing."""
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, rows)
+    with pytest.raises(Exception, match="does not exist"):
+        pw.io.milvus.write(
+            table,
+            uri=milvus.uri,
+            collection_name="no_such_collection_xyz",
+            primary_key=table.id,
+        )
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_write_non_finite_vector_raises(milvus, bad):
+    """A vector containing NaN or infinity is rejected with a clear error rather
+    than silently stored, since a non-finite component corrupts the index and
+    makes similarity search meaningless."""
+    collection_name = milvus.generate_collection_name()
+    milvus.create_collection(collection_name)
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        vector: list[float]
+
+    G.clear()
+    table = pw.debug.table_from_rows(InputSchema, [(1, [bad, 1.0, 2.0])])
+    pw.io.milvus.write(
+        table, uri=milvus.uri, collection_name=collection_name, primary_key=table.id
+    )
+    with pytest.raises(Exception, match="non-finite"):
+        run()
+
+    # Nothing was written: the row was rejected before reaching Milvus.
+    assert milvus.query_all(collection_name, ["id"]) == []
+
+
 def test_write_incompatible_type_raises(milvus):
     """Writing a string to a FLOAT_VECTOR field should raise a clear type error."""
     collection_name = milvus.generate_collection_name()

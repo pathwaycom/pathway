@@ -15,10 +15,12 @@ import pytest
 from utils import (
     MSSQL_CONNECTION_STRING,
     MSSQL_DB_HOST,
+    MSSQL_DB_NAME,
     MSSQL_DB_PASSWORD,
     MSSQL_DB_PORT,
     MSSQL_DB_USER,
     SimpleObject,
+    TcpBlackholeProxy,
     check_write_quotes_reserved_word_column_name,
     check_write_quotes_table_name_with_special_characters,
 )
@@ -29,10 +31,94 @@ from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     FileLinesNumberChecker,
     read_jsonlines,
+    terminate_process,
     wait_result_with_checker,
 )
 
 pytestmark = pytest.mark.xdist_group("mssql")
+
+
+@pytest.mark.parametrize("encrypt", [None, "false", "true"])
+def test_mssql_connection_encryption_roundtrip(encrypt, mssql, tmp_path):
+    class Schema(pw.Schema):
+        value: int = pw.column_definition(primary_key=True)
+
+    connection_string = MSSQL_CONNECTION_STRING
+    if encrypt is not None:
+        connection_string += f";Encrypt={encrypt}"
+    table_name = mssql.create_table(Schema, add_special_fields=True)
+    mssql.execute_sql(f"ALTER TABLE [dbo].[{table_name}] ADD encrypted NVARCHAR(10)")
+    mssql.execute_sql(
+        f"CREATE TRIGGER [transport_{table_name}] ON [dbo].[{table_name}] "
+        f"AFTER INSERT AS UPDATE [dbo].[{table_name}] SET encrypted = "
+        "(SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID)"
+    )
+    table = pw.debug.table_from_rows(Schema, [(42,)])
+    pw.io.mssql.write(
+        table,
+        connection_string,
+        table_name=table_name,
+        init_mode="create_if_not_exists",
+    )
+    pw.run()
+    expected_encryption = "TRUE" if encrypt == "true" else "FALSE"
+    assert mssql.get_table_contents(table_name, ["encrypted"]) == [
+        {"encrypted": expected_encryption}
+    ]
+
+    G.clear()
+    table = pw.io.mssql.read(
+        connection_string, table_name=table_name, schema=Schema, mode="static"
+    )
+    output_path = tmp_path / "output.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+    assert [row["value"] for row in read_jsonlines(output_path)] == [42]
+
+
+@pytest.mark.parametrize("direction", ["read", "write"])
+def test_mssql_explicit_encryption_checks_certificate(direction, mssql):
+    class Schema(pw.Schema):
+        value: int = pw.column_definition(primary_key=True)
+
+    table_name = mssql.create_table(Schema, add_special_fields=True)
+    # The test server has a self-signed certificate. An explicit Encrypt=true
+    # must override the connector's compatibility default in both directions.
+    connection_string = (
+        MSSQL_CONNECTION_STRING.replace(
+            "TrustServerCertificate=true", "TrustServerCertificate=false"
+        )
+        + ";Encrypt=true"
+    )
+    with pytest.raises(
+        (ValueError, OSError, pw.engine.EngineError), match="(?i)tls|certificate"
+    ):
+        if direction == "read":
+            table = pw.io.mssql.read(
+                connection_string, table_name=table_name, schema=Schema, mode="static"
+            )
+            pw.io.null.write(table)
+        else:
+            table = pw.debug.table_from_rows(Schema, [(42,)])
+            pw.io.mssql.write(table, connection_string, table_name=table_name)
+        pw.run()
+
+
+def test_mssql_write_command_longer_than_driver_default(mssql):
+    class Schema(pw.Schema):
+        value: int
+
+    table_name = mssql.create_table(Schema, add_special_fields=True)
+    mssql.execute_sql(
+        f"CREATE TRIGGER [slow_{table_name}] ON [dbo].[{table_name}] "
+        "AFTER INSERT AS BEGIN SET NOCOUNT ON; WAITFOR DELAY '00:00:35'; END"
+    )
+    table = pw.debug.table_from_rows(Schema, [(42,)])
+    pw.io.mssql.write(table, MSSQL_CONNECTION_STRING, table_name=table_name)
+    # Tiberius 0.13's default command deadline is 30s, but the connector's
+    # existing writer silence guard permits 45s. The insert must finish once.
+    pw.run()
+    assert mssql.get_table_contents(table_name, ["value"]) == [{"value": 42}]
 
 
 @pytest.mark.parametrize("output_table_type", ["stream_of_changes", "snapshot"])
@@ -561,6 +647,7 @@ def _start_mssql_cdc_streaming_reader(
     table_name: str,
     schema: type[pw.Schema],
     output_path: pathlib.Path,
+    connection_string: str = MSSQL_CONNECTION_STRING,
 ) -> multiprocessing.Process:
     """Start ``pw.io.mssql.read(mode='streaming') -> jsonlines.write`` in a
     forked process.
@@ -582,7 +669,7 @@ def _start_mssql_cdc_streaming_reader(
     def worker():
         G.clear()
         table = pw.io.mssql.read(
-            connection_string=MSSQL_CONNECTION_STRING,
+            connection_string=connection_string,
             table_name=table_name,
             schema=schema,
             mode="streaming",
@@ -640,6 +727,69 @@ def test_mssql_cdc_read_inserts(mssql, tmp_path):
         assert "Charlie" in names
     finally:
         _stop_mssql_cdc_streaming_reader(proc)
+
+
+def test_mssql_streaming_recovers_after_stalled_connections(tcp_port, mssql, tmp_path):
+    """A streaming CDC pipeline keeps delivering changes after a network
+    stall freezes its established server connections.
+
+    The reader talks to SQL Server through a proxy that mid-run stops
+    forwarding on every open connection while keeping the sockets alive —
+    what a half-open connection or a dropped NAT/conntrack entry looks like
+    on a loaded host (the server itself stays healthy and reachable). The
+    shared socket guards must detect the dead flows in bounded time and
+    reconnect, so a row inserted after the stall still reaches the output —
+    the pipeline must not freeze silently.
+    """
+    table_name = mssql.random_table_name()
+    mssql.execute_sql(
+        f"CREATE TABLE {table_name} ("
+        f"  id INT PRIMARY KEY,"
+        f"  name NVARCHAR(100) NOT NULL"
+        f")"
+    )
+    mssql.enable_cdc(table_name)
+    mssql.insert_row(table_name, {"id": 1, "name": "Alice"})
+    mssql.insert_row(table_name, {"id": 2, "name": "Bob"})
+
+    class TestSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    proxy = TcpBlackholeProxy(
+        listen_port=tcp_port, target_host=MSSQL_DB_HOST, target_port=MSSQL_DB_PORT
+    )
+    proxy.start()
+    proxied_connection_string = (
+        f"Server=tcp:127.0.0.1,{tcp_port};"
+        f"Database={MSSQL_DB_NAME};"
+        f"User Id={MSSQL_DB_USER};"
+        f"Password={MSSQL_DB_PASSWORD};"
+        "TrustServerCertificate=true"
+    )
+
+    output_path = tmp_path / "cdc_stall_output.jsonl"
+    proc = _start_mssql_cdc_streaming_reader(
+        table_name, TestSchema, output_path, proxied_connection_string
+    )
+    try:
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), timeout_sec=60, target=None
+        )
+        stalled = proxy.blackhole_current()
+        assert stalled > 0, "the reader should hold at least one live connection"
+        mssql.insert_row(table_name, {"id": 3, "name": "Charlie"})
+        # Recovery budget: one reader silence timeout plus reconnect, retry
+        # backoff and CDC poll latency, with headroom for a loaded machine.
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), timeout_sec=150, target=None
+        )
+        records = [json.loads(line) for line in output_path.read_text().splitlines()]
+        names = sorted(r["name"] for r in records)
+        assert names == ["Alice", "Bob", "Charlie"]
+    finally:
+        _stop_mssql_cdc_streaming_reader(proc)
+        proxy.close()
 
 
 def test_mssql_cdc_read_updates(mssql, tmp_path):
@@ -734,6 +884,83 @@ def test_mssql_read_static_rejects_missing_table(mssql, tmp_path):
         match=r"does not exist",
     ):
         pw.run()
+
+
+def _live_connector_threads() -> list[str]:
+    """Describe the native reader threads alive in this process.
+
+    The engine names every reader thread ``pathway:connector-...``; the kernel
+    truncates thread names to 15 characters in ``comm``, so match on the
+    truncated prefix.  Each entry carries the tid plus the kernel's view of
+    where the thread is blocked (``wchan``/``syscall``), which is the only
+    identification available — the full engine thread name doesn't survive the
+    15-character limit.
+    """
+    threads = []
+    for task in pathlib.Path("/proc/self/task").iterdir():
+        try:
+            comm = (task / "comm").read_text().strip()
+            if not comm.startswith("pathway:connect"):
+                continue
+            wchan = (task / "wchan").read_text().strip()
+            try:
+                syscall = (task / "syscall").read_text().split()[0]
+            except (OSError, IndexError):
+                syscall = "?"
+            threads.append(f"tid={task.name} wchan={wchan} syscall={syscall}")
+        except OSError:
+            # The thread exited between iterdir() and the reads.
+            continue
+    return threads
+
+
+def test_mssql_failed_run_terminates_reader_thread(mssql, tmp_path):
+    """A run that fails because the reader keeps erroring must not leak the
+    reader thread past ``pw.run()``.
+
+    The error path of a run does not join connector threads, so the reader
+    itself must stop once it has reported the fatal error. A leaked reader
+    retries and logs the same error forever in the host process and, worse,
+    poisons every later ``multiprocessing`` fork made from it — the child
+    inherits mutexes that the phantom thread held at fork time and hangs or
+    dies without a traceback.
+    """
+    table_name = mssql.random_table_name()
+    # Don't create the table: every read attempt fails with TableNotFound,
+    # which (after the allowed retries) is reported as the fatal run error.
+
+    # Compare against a pre-run snapshot instead of asserting an empty set:
+    # under xdist this worker process may have run other tests before this
+    # one, and this test's contract covers only the threads its own failing
+    # run creates.
+    threads_before = {t.split()[0] for t in _live_connector_threads()}
+
+    class InputSchema(pw.Schema):
+        id: int = pw.column_definition(primary_key=True)
+        name: str
+
+    G.clear()
+    table = pw.io.mssql.read(
+        connection_string=MSSQL_CONNECTION_STRING,
+        table_name=table_name,
+        schema=InputSchema,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, str(tmp_path / "output.jsonl"))
+    with pytest.raises(pw.engine.EngineError, match=r"does not exist"):
+        pw.run()
+
+    def leaked() -> list[str]:
+        return [
+            t for t in _live_connector_threads() if t.split()[0] not in threads_before
+        ]
+
+    # pw.run() raises as soon as the error is reported; give the reader thread
+    # a moment to observe the failure and exit before asserting it is gone.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and leaked():
+        time.sleep(0.25)
+    assert leaked() == []
 
 
 def test_mssql_read_numeric_overflow_int_drops_row(mssql, tmp_path):
@@ -1059,8 +1286,7 @@ def test_mssql_read_streaming_rejects_column_added_after_cdc_enable(mssql, tmp_p
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0)
     error_text = error_path.read_text() if error_path.exists() else ""
@@ -1245,8 +1471,7 @@ def test_mssql_streaming_requires_cdc_on_table(tmp_path, mssql):
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0)
     error_text = error_path.read_text() if error_path.exists() else ""
@@ -1315,8 +1540,7 @@ def test_mssql_streaming_requires_cdc_on_database(tmp_path, mssql):
         p.start()
         p.join(timeout=60)
         if p.is_alive():
-            p.terminate()
-            p.join()
+            terminate_process(p)
             raise AssertionError("worker should have failed fast, not hung")
         assert p.exitcode not in (None, 0)
         error_text = error_path.read_text() if error_path.exists() else ""
@@ -1703,8 +1927,7 @@ def _run_mssql_static_pipeline(
     # to trip the previous tighter bound.
     p.join(timeout=120)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("static-mode worker did not terminate within 120 s")
     assert p.exitcode == 0, f"static-mode worker exited with code {p.exitcode}"
 
@@ -1833,8 +2056,7 @@ def test_mssql_static_persistence_without_cdc_errors(tmp_path, mssql):
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0), "persistence-without-CDC must fail"
     error_text = error_path.read_text() if error_path.exists() else ""
@@ -2486,8 +2708,7 @@ def test_mssql_read_rejects_multiple_capture_instances(mssql, tmp_path):
     p.start()
     p.join(timeout=60)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        terminate_process(p)
         raise AssertionError("worker should have failed fast, not hung")
     assert p.exitcode not in (None, 0)
     error_text = error_path.read_text() if error_path.exists() else ""

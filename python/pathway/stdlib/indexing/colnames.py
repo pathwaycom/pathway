@@ -5,7 +5,7 @@
 # added (and later used) silently in code
 
 # TODO: replace with some dedicated mechanism that allows extracting and renaming
-# those colunms (at least those that are meant as output, maybe all of them)
+# those columns (at least those that are meant as output, maybe all of them)
 
 
 _INDEX_REPLY = "_pw_index_reply"

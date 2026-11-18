@@ -42,10 +42,14 @@ class _RunThread(threading.Thread):
     def __init__(self, coroutine):
         self.coroutine = coroutine
         self.result = None
+        self.exception: BaseException | None = None
         super().__init__()
 
     def run(self):
-        self.result = asyncio.run(self.coroutine)
+        try:
+            self.result = asyncio.run(self.coroutine)
+        except BaseException as e:  # reraised in `_run_async` after `join`
+            self.exception = e
 
 
 def _run_async(coroutine):
@@ -57,6 +61,8 @@ def _run_async(coroutine):
         thread = _RunThread(coroutine)
         thread.start()
         thread.join()
+        if thread.exception is not None:
+            raise thread.exception
         return thread.result
     else:
         return asyncio.run(coroutine)

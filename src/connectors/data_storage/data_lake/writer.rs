@@ -32,8 +32,8 @@ impl LakeWriter {
 }
 
 impl Writer for LakeWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        self.buffer.add_event(data)
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
+        self.buffer.add_event(data.clone())
     }
 
     fn flush(&mut self, forced: bool) -> Result<(), WriteError> {

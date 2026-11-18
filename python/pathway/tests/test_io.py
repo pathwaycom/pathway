@@ -6,13 +6,13 @@ import copy
 import datetime
 import json
 import logging
-import multiprocessing
 import os
 import pathlib
 import pickle
 import random
 import re
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -30,7 +30,8 @@ from pathway.engine import DebeziumDBType
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
-from pathway.io.airbyte.logic import _PathwayAirbyteDestination
+from pathway.io._utils import as_duration_seconds
+from pathway.io.airbyte.logic import _PathwayAirbyteDestination, _PathwayAirbyteSubject
 from pathway.io.http._server import RestServerSubject
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
@@ -42,6 +43,7 @@ from pathway.tests.utils import (
     assert_sets_equality_from_path,
     assert_table_equality,
     assert_table_equality_wo_index,
+    mp_fork,
     needs_multiprocessing_fork,
     only_with_license_key,
     run,
@@ -54,6 +56,7 @@ from pathway.tests.utils import (
 from pathway.third_party.airbyte_serverless.sources import (
     DockerAirbyteSource,
     VenvAirbyteSource,
+    find_connector_python,
 )
 
 MESSAGE_QUEUE_WRITE_KWARGS = {
@@ -638,6 +641,93 @@ def test_subscribe():
     )
 
 
+def test_python_connector_upsert_replaces_rows():
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def __init__(self):
+            super().__init__(session_type="upsert")
+
+        def run(self):
+            # the polling pattern: the same primary keys are re-sent
+            self.next(key=1, value="one")
+            self.next(key=2, value="two")
+            self.commit()
+            self.next(key=1, value="uno")
+            self.next(key=2, value="two")
+
+    table = pw.io.python.read(TestSubject(), schema=InputSchema)
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+            key | value
+            1   | uno
+            2   | two
+            """
+        ),
+    )
+
+
+def test_python_connector_upsert_delete():
+    class InputSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def __init__(self):
+            super().__init__(session_type="upsert")
+
+        def run(self):
+            self.next(key=1, value="one")
+            self.next(key=2, value="two")
+            self.commit()
+            self.delete(key=1, value="one")
+
+    table = pw.io.python.read(TestSubject(), schema=InputSchema)
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+            key | value
+            2   | two
+            """
+        ),
+    )
+
+
+def test_python_connector_upsert_requires_primary_key():
+    class InputSchema(pw.Schema):
+        key: int
+        value: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def __init__(self):
+            super().__init__(session_type="upsert")
+
+        def run(self):
+            pass
+
+    with pytest.raises(
+        ValueError,
+        match="session_type='upsert' requires a schema with at least one primary_key",
+    ):
+        pw.io.python.read(TestSubject(), schema=InputSchema)
+
+
+def test_python_connector_invalid_session_type():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            pass
+
+    with pytest.raises(ValueError, match="invalid session_type"):
+        TestSubject(session_type="odd")
+
+
 def test_python_write():
     class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
@@ -1144,7 +1234,9 @@ def test_no_pstorage(tmp_path: pathlib.Path):
     pw.io.csv.write(table, output_path)
     with pytest.raises(
         api.EngineError,
-        match="persistence backend failed: target object should be a directory",
+        # the backend error carries the offending path between the prefix
+        # and the reason
+        match="persistence backend failed: .*target object should be a directory",
     ):
         run(
             persistence_config=pw.persistence.Config(
@@ -1156,7 +1248,7 @@ def test_no_pstorage(tmp_path: pathlib.Path):
 def test_name_not_assigned_autogenerate(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     write_lines(input_path, "test_data")
-    pstorage_path = tmp_path / "PStrorage"
+    pstorage_path = tmp_path / "PStorage"
 
     write_lines(input_path, "test_data")
 
@@ -2893,6 +2985,36 @@ def test_pyfilesystem_simple(tmp_path: pathlib.Path):
     assert paths == set(["projects/a.txt", "projects/b.txt"])
 
 
+def test_pyfilesystem_only_metadata(tmp_path: pathlib.Path):
+    zip_path = (
+        pathlib.Path("/".join(__file__.split("/")[:-1])) / "data" / "pyfs-testdata.zip"
+    )
+    output_path = tmp_path / "output.txt"
+
+    with open_fs("zip://" + str(zip_path)) as source:
+        table = pw.io.pyfilesystem.read(
+            source,
+            mode="static",
+            format="only_metadata",
+        )
+        pw.io.jsonlines.write(table, output_path)
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    paths = set()
+    names = set()
+    with open(output_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            # Only the metadata is reported; the file contents are never read.
+            assert data.keys() == {"_metadata", "time", "diff"}
+            metadata = data["_metadata"]
+            paths.add(metadata["path"])
+            names.add(metadata["name"])
+
+    assert names == set(["a.txt", "b.txt"])
+    assert paths == set(["projects/a.txt", "projects/b.txt"])
+
+
 @needs_multiprocessing_fork
 def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs"
@@ -2933,6 +3055,84 @@ def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
         wait_result_with_checker(FileLinesNumberChecker(output_path, 7), 30)
 
     t.join()
+
+
+def _make_pyfilesystem_subject(source):
+    from pathway.io.pyfilesystem import _PyFilesystemSubject
+
+    return _PyFilesystemSubject(
+        source,
+        path="",
+        mode="streaming",
+        refresh_interval=0.1,
+        with_metadata=False,
+    )
+
+
+def test_pyfilesystem_scan_survives_deletion_between_listing_and_stat(
+    tmp_path: pathlib.Path,
+):
+    from fs.errors import ResourceNotFound
+
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    write_lines(inputs_path / "input1.jsonlines", json.dumps({"key": 1}))
+    write_lines(inputs_path / "input2.jsonlines", json.dumps({"key": 2}))
+
+    with open_fs(os.fspath(inputs_path)) as source:
+        subject = _make_pyfilesystem_subject(source)
+        update = subject._get_snapshot_update()
+        assert len(update.changed_paths) == 2
+        assert update.deleted_paths == []
+
+        # Simulate a file deleted between the directory listing and the stat
+        # call: it is still returned by the walker, but stat fails. The scan
+        # must survive and report the file as deleted.
+        original_getmodified = source.getmodified
+
+        def racy_getmodified(path):
+            if path.endswith("input1.jsonlines"):
+                raise ResourceNotFound(path)
+            return original_getmodified(path)
+
+        source.getmodified = racy_getmodified
+        update = subject._get_snapshot_update()
+        assert update.changed_paths == []
+        assert len(update.deleted_paths) == 1
+        assert update.deleted_paths[0].endswith("input1.jsonlines")
+
+
+def test_pyfilesystem_scan_interrupted_by_dir_deletion_reports_no_false_deletions(
+    tmp_path: pathlib.Path,
+):
+    from fs.errors import ResourceNotFound
+
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    os.mkdir(inputs_path / "sub")
+    write_lines(inputs_path / "input1.jsonlines", json.dumps({"key": 1}))
+    write_lines(inputs_path / "sub" / "input2.jsonlines", json.dumps({"key": 2}))
+
+    with open_fs(os.fspath(inputs_path)) as source:
+        subject = _make_pyfilesystem_subject(source)
+        update = subject._get_snapshot_update()
+        assert len(update.changed_paths) == 2
+        assert update.deleted_paths == []
+
+        # Simulate a directory deleted in the middle of the traversal: the
+        # walk is interrupted, so the files that were not reached must not be
+        # falsely reported as deleted.
+        original_scandir = source.scandir
+
+        def racy_scandir(path, *args, **kwargs):
+            if path.rstrip("/").endswith("sub"):
+                raise ResourceNotFound(path)
+            return original_scandir(path, *args, **kwargs)
+
+        source.scandir = racy_scandir
+        update = subject._get_snapshot_update()
+        assert update.changed_paths == []
+        assert update.deleted_paths == []
 
 
 def test_airbyte_stream_state():
@@ -3308,6 +3508,48 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
     assert total_lines == 500
 
 
+def test_airbyte_venv_connector_install_is_bounded_in_time(monkeypatch):
+    """A stalled ``pip install`` of the connector package must not hang the
+    pipeline: every attempt runs with a timeout, is retried, and after the last
+    attempt a clear error is raised."""
+    from pathway.third_party.airbyte_serverless import sources
+
+    # The interpreter probe also goes through subprocess.run, which this
+    # test replaces — pin the choice to the running interpreter upfront.
+    monkeypatch.setattr(sources, "find_connector_python", lambda: sys.executable)
+    monkeypatch.setattr(sources.venv, "create", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sources, "PIP_INSTALL_RETRY_DELAY", 0.0)
+    attempts = []
+
+    def stalled_pip_run(cmd, *args, **kwargs):
+        assert kwargs.get("timeout") is not None
+        attempts.append(cmd)
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(sources.subprocess, "run", stalled_pip_run)
+    with pytest.raises(RuntimeError, match="Failed to install package"):
+        VenvAirbyteSource("source-faker", config={}, streams=["users"])
+    assert len(attempts) == sources.MAX_PIP_INSTALL_ATTEMPTS
+
+
+def test_airbyte_venv_connector_install_runs_pip_once_on_success(monkeypatch):
+    from pathway.third_party.airbyte_serverless import sources
+
+    # The interpreter probe also goes through subprocess.run, which this
+    # test replaces — pin the choice to the running interpreter upfront.
+    monkeypatch.setattr(sources, "find_connector_python", lambda: sys.executable)
+    monkeypatch.setattr(sources.venv, "create", lambda *args, **kwargs: None)
+    successful_runs = []
+
+    def successful_pip_run(cmd, *args, **kwargs):
+        successful_runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(sources.subprocess, "run", successful_pip_run)
+    VenvAirbyteSource("source-faker", config={}, streams=["users"])
+    assert len(successful_runs) == 1
+
+
 @needs_multiprocessing_fork
 @pytest.mark.parametrize("enforce_method", ["venv", "docker"])
 @pytest.mark.xfail(reason="fails randomly")
@@ -3344,6 +3586,10 @@ def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
 
 @needs_multiprocessing_fork
 @xfail_on_python_3_10
+@pytest.mark.skipif(
+    find_connector_python() is None,
+    reason="no CPython supported by the Airbyte connector packages is available",
+)
 def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
     output_path = tmp_path_with_airbyte_config / "table.jsonl"
     pstorage_path = tmp_path_with_airbyte_config / "PStorage"
@@ -4238,10 +4484,12 @@ def test_fs_metadata_only(tmp_path, scenario):
     pw.io.jsonlines.write(table, output_path)
 
     stream_thread = ExceptionAwareThread(target=stream_inputs, daemon=True)
-    stream_thread.start()
-    pathway_process = multiprocessing.Process(target=run)
+    pathway_process = mp_fork.Process(target=run)
     try:
+        # Fork the Pathway process before starting the writer thread so the
+        # child is not forked mid-write (see test_streaming_from_deltalake).
         pathway_process.start()
+        stream_thread.start()
 
         # Wait for the scenario to complete
         stream_thread.join()
@@ -4546,6 +4794,51 @@ def test_python_subject_deletions_enabled_defaults():
     assert not pw.io.python._are_deletions_reachable(str)
 
 
+def test_python_subject_inspection_leaves_properties_unevaluated():
+    # Building the computation graph inspects the subject's attributes to find out
+    # whether the connector can produce deletions. A property may do arbitrary work -
+    # the SharePoint connector opens an authenticated session in one of them - so the
+    # inspection has to resolve attributes without evaluating them. Otherwise the
+    # graph construction performs the property's side effects, outside of any error
+    # handling the connector itself has.
+    evaluations = 0
+
+    class SubjectWithExpensiveProperty(pw.io.python.ConnectorSubject):
+        @property
+        def _session(self):
+            nonlocal evaluations
+            evaluations += 1
+            raise RuntimeError("this property has side effects")
+
+        def run(self):
+            self.next_bytes(b"data")
+
+    subject = SubjectWithExpensiveProperty()
+    assert not subject._deletions_enabled
+    assert evaluations == 0
+
+    pw.io.python.read(subject, format="binary")
+    assert evaluations == 0
+
+
+def test_python_subject_with_properties_still_reports_deletions():
+    # Resolving attributes statically must not blind the inspection to deletions
+    # performed by the subject's regular methods.
+    class SubjectWithPropertyAndRemovals(pw.io.python.ConnectorSubject):
+        @property
+        def _session(self):
+            raise RuntimeError("this property has side effects")
+
+        def run(self):
+            self.next_bytes(b"data")
+            self.drop_entry()
+
+        def drop_entry(self):
+            self._remove(None, b"data")
+
+    assert SubjectWithPropertyAndRemovals()._deletions_enabled
+
+
 def test_worker_count_scaling_error(tmp_path):
     table = pw.io.plaintext.read(tmp_path)
     pw.io.null.write(table)
@@ -4753,6 +5046,24 @@ def test_rabbitmq_read_requires_timestamp_with_timestamp_start_from():
         )
 
 
+@pytest.mark.parametrize("timestamp_ms", [-1, -1000])
+def test_rabbitmq_read_rejects_negative_timestamp(timestamp_ms):
+    # The engine reserves -1 in the timestamp field as the internal sentinel
+    # for start_from="end". An explicit negative timestamp must be rejected:
+    # otherwise a user-provided -1 would silently start reading from the end
+    # of the stream instead of from the requested moment.
+    with pytest.raises(
+        ValueError,
+        match="start_from_timestamp_ms must be a non-negative",
+    ):
+        pw.io.rabbitmq.read(
+            uri="rabbitmq-stream://guest:guest@localhost:5552",
+            stream_name="test",
+            start_from="timestamp",
+            start_from_timestamp_ms=timestamp_ms,
+        )
+
+
 @pytest.mark.parametrize("bad_max_batch_size", [0, -1, -100])
 def test_output_rejects_nonpositive_max_batch_size(bad_max_batch_size):
     # ``max_batch_size`` is the buffer threshold at which the size-based
@@ -4765,3 +5076,264 @@ def test_output_rejects_nonpositive_max_batch_size(bad_max_batch_size):
     # conversion error.
     with pytest.raises(ValueError, match="max_batch_size must be a positive integer"):
         api.DataStorage(storage_type="postgres", max_batch_size=bad_max_batch_size)
+
+
+DURATION_30S_FORMS = [
+    30,
+    30.0,
+    datetime.timedelta(seconds=30),
+    pw.Duration("30s"),
+    pd.Timedelta("30s"),
+]
+
+
+@pytest.mark.parametrize("value", DURATION_30S_FORMS)
+def test_as_duration_seconds_accepts_all_duration_forms(value):
+    assert as_duration_seconds(value, "param") == 30.0
+
+
+def test_as_duration_seconds_keeps_fractional_seconds():
+    assert as_duration_seconds(datetime.timedelta(milliseconds=1500), "param") == 1.5
+    assert as_duration_seconds(0.25, "param") == 0.25
+
+
+@pytest.mark.parametrize("value", [0, 0.0, datetime.timedelta(0)])
+def test_as_duration_seconds_accepts_zero_by_default(value):
+    # A zero polling interval is legitimate: it means "poll as fast as
+    # possible", at the price of a busy-wait loop.
+    assert as_duration_seconds(value, "param") == 0.0
+
+
+@pytest.mark.parametrize("value", [-1, -0.5, datetime.timedelta(seconds=-1)])
+def test_as_duration_seconds_rejects_negative_values(value):
+    with pytest.raises(ValueError, match="'param' must be non-negative"):
+        as_duration_seconds(value, "param")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_as_duration_seconds_rejects_non_finite_values(value):
+    with pytest.raises(ValueError, match="'param' must be finite"):
+        as_duration_seconds(value, "param")
+
+
+@pytest.mark.parametrize("value", ["30", None, True, [30]])
+def test_as_duration_seconds_rejects_wrong_types(value):
+    with pytest.raises(TypeError, match="'param' must be a number of seconds"):
+        as_duration_seconds(value, "param")
+
+
+def test_as_duration_seconds_can_require_positive_values():
+    # Timeout-like parameters opt out of the zero allowance.
+    with pytest.raises(ValueError, match="'param' must be positive"):
+        as_duration_seconds(0, "param", allow_zero=False)
+    with pytest.raises(ValueError, match="'param' must be positive"):
+        as_duration_seconds(datetime.timedelta(0), "param", allow_zero=False)
+    assert as_duration_seconds(1, "param", allow_zero=False) == 1.0
+
+
+@pytest.mark.parametrize("refresh_interval", DURATION_30S_FORMS)
+def test_pyfilesystem_read_accepts_all_duration_forms(refresh_interval):
+    # In particular, a plain int (refresh_interval=30) must be accepted: the
+    # parameter used to be annotated as float only, so the runtime type check
+    # rejected integer values.
+    with open_fs("mem://") as source:
+        table = pw.io.pyfilesystem.read(source, refresh_interval=refresh_interval)
+        assert table is not None
+
+
+def test_pyfilesystem_read_accepts_zero_refresh_interval():
+    # Zero means "poll as fast as possible" (busy-wait) and must stay allowed.
+    with open_fs("mem://") as source:
+        table = pw.io.pyfilesystem.read(source, refresh_interval=0)
+        assert table is not None
+
+
+def test_pyfilesystem_read_rejects_invalid_refresh_interval():
+    with open_fs("mem://") as source:
+        with pytest.raises(ValueError, match="'refresh_interval' must be non-negative"):
+            pw.io.pyfilesystem.read(source, refresh_interval=-1)
+        with pytest.raises(TypeError):
+            pw.io.pyfilesystem.read(source, refresh_interval="30")
+
+
+@pytest.mark.parametrize("refresh_interval", DURATION_30S_FORMS)
+def test_gdrive_read_accepts_all_duration_forms(refresh_interval):
+    # The credentials file is only opened when the pipeline runs, so building
+    # the table is enough to exercise the parameter validation.
+    table = pw.io.gdrive.read(
+        object_id="fake-object-id",
+        service_user_credentials_file="credentials.json",
+        refresh_interval=refresh_interval,
+    )
+    assert table is not None
+
+
+def test_gdrive_read_rejects_invalid_refresh_interval():
+    with pytest.raises(ValueError, match="'refresh_interval' must be non-negative"):
+        pw.io.gdrive.read(
+            object_id="fake-object-id",
+            service_user_credentials_file="credentials.json",
+            refresh_interval=datetime.timedelta(seconds=-1),
+        )
+
+
+@pytest.mark.parametrize(
+    "passed_ms,expected_suggestion",
+    [
+        (
+            60000,
+            "Use refresh_interval=60 (or timedelta(seconds=60)) "
+            "instead of refresh_interval_ms=60000.",
+        ),
+        (
+            90000,
+            "Use refresh_interval=90 (or timedelta(seconds=90)) "
+            "instead of refresh_interval_ms=90000.",
+        ),
+        (
+            500,
+            "Use refresh_interval=0.5 (or timedelta(seconds=0.5)) "
+            "instead of refresh_interval_ms=500.",
+        ),
+    ],
+)
+def test_airbyte_refresh_interval_ms_raises_migration_error(
+    passed_ms, expected_suggestion
+):
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "`refresh_interval_ms` was replaced by `refresh_interval`, which takes "
+            "seconds or a timedelta. " + expected_suggestion
+        ),
+    ):
+        pw.io.airbyte.read(
+            "connection.yaml",
+            streams=["users"],
+            refresh_interval_ms=passed_ms,
+        )
+
+
+def test_airbyte_read_rejects_invalid_refresh_interval():
+    with pytest.raises(ValueError, match="'refresh_interval' must be non-negative"):
+        pw.io.airbyte.read("connection.yaml", streams=["users"], refresh_interval=-1)
+
+
+def test_airbyte_subject_refresh_interval_matches_old_ms_default():
+    class FakeSource:
+        configured_catalog = {
+            "streams": [{"stream": {"name": "users"}, "sync_mode": "incremental"}]
+        }
+
+    # refresh_interval=60 (seconds) must configure the same polling period as
+    # the previous refresh_interval_ms=60000 default.
+    subject = _PathwayAirbyteSubject(
+        source=FakeSource(),
+        mode="streaming",
+        refresh_interval=as_duration_seconds(60, "refresh_interval"),
+        streams=["users"],
+    )
+    assert subject.refresh_interval == 60.0
+
+
+def test_deltalake_table_optimizer_accepts_all_duration_forms():
+    table = pw.debug.table_from_markdown(
+        """
+        day_utc
+        2025-01-01
+        """
+    )
+    for compression_frequency in (
+        86400,
+        86400.0,
+        datetime.timedelta(days=1),
+        pw.Duration("1d"),
+    ):
+        optimizer = pw.io.deltalake.TableOptimizer(
+            tracked_column=table.day_utc,
+            time_format="%Y-%m-%d",
+            quick_access_window=datetime.timedelta(days=7),
+            compression_frequency=compression_frequency,
+        )
+        assert optimizer.compression_frequency == datetime.timedelta(days=1)
+
+
+def test_deltalake_table_optimizer_rejects_invalid_durations():
+    table = pw.debug.table_from_markdown(
+        """
+        day_utc
+        2025-01-01
+        """
+    )
+    with pytest.raises(
+        ValueError, match="'compression_frequency' must be non-negative"
+    ):
+        pw.io.deltalake.TableOptimizer(
+            tracked_column=table.day_utc,
+            time_format="%Y-%m-%d",
+            quick_access_window=datetime.timedelta(days=7),
+            compression_frequency=-1,
+        )
+    with pytest.raises(ValueError, match="'retention_period' must be non-negative"):
+        pw.io.deltalake.TableOptimizer(
+            tracked_column=table.day_utc,
+            time_format="%Y-%m-%d",
+            quick_access_window=datetime.timedelta(days=7),
+            compression_frequency=datetime.timedelta(days=1),
+            retention_period=-1,
+        )
+
+
+def test_streaming_queue_reader_requires_commit_timer(tmp_path):
+    # A message-queue reader never signals that its source is exhausted, so
+    # without an auto-commit timer nothing would ever be committed and the
+    # pipeline would run forever without emitting a row. It must fail at
+    # construction instead of starting.
+    settings = {"bootstrap.servers": "localhost:9092", "group.id": "group"}
+    with pytest.raises(ValueError, match="autocommit_duration_ms=None"):
+        pw.io.kafka.read(
+            settings, topic="topic", format="raw", autocommit_duration_ms=None
+        )
+    # a file source finishes on its own, so it may run without the timer
+    pw.io.fs.read(tmp_path, format="plaintext", autocommit_duration_ms=None)
+
+
+def test_rest_connector_reports_port_already_in_use():
+    from pathway.io.http._server import PathwayWebserver
+
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen()
+        port = blocker.getsockname()[1]
+        server = PathwayWebserver("127.0.0.1", port)
+        with pytest.raises(OSError, match=f"127.0.0.1:{port}.*already in use"):
+            server._run()
+
+
+def test_rows_released_at_end_of_stream_are_written_with_end_of_stream_time(tmp_path):
+    # A windowby with a delay keeps rows in a buffer and releases the ones it
+    # still holds when the input ends, at the engine's maximal timestamp. That
+    # timestamp does not fit the signed `time` column of the output; the
+    # writer must record it as i64::MAX rather than fail the pipeline.
+    t = pw.debug.table_from_markdown(
+        """
+        k | t | v
+        1 | 1 | 10
+        1 | 2 | 20
+        1 | 9 | 30
+        """
+    )
+    res = t.windowby(
+        t.t,
+        window=pw.temporal.tumbling(duration=4),
+        behavior=pw.temporal.common_behavior(delay=3, cutoff=100, keep_results=True),
+        instance=t.k,
+    ).reduce(k=pw.this._pw_instance, s=pw.reducers.sum(pw.this.v))
+    output_path = tmp_path / "delta"
+    pw.io.deltalake.write(res, output_path)
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    from deltalake import DeltaTable
+
+    times = set(DeltaTable(str(output_path)).to_pandas()["time"])
+    assert 2**63 - 1 in times

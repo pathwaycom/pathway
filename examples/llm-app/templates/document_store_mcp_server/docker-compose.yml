@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  pathway_mcp_server:
+    build:
+      context: .
+    ports:
+      - "8068:8068"
+    environment:
+      PATHWAY_LICENSE_KEY: $PATHWAY_LICENSE_KEY
+    volumes:
+      - "./files-for-indexing:/app/files-for-indexing"

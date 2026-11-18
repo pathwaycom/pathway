@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,7 +13,7 @@ from pathway.internals import api
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import STATIC_MODE_NAME
+from pathway.io._utils import STATIC_MODE_NAME, DurationLike, as_duration_seconds
 from pathway.io.python import ConnectorSubject, read as python_connector_read
 from pathway.optional_import import optional_imports
 
@@ -26,7 +27,15 @@ class _PyFilesystemUpdate:
 class _PyFilesystemSubject(ConnectorSubject):
 
     def __init__(
-        self, source, *, path, mode, refresh_interval, with_metadata, **kwargs
+        self,
+        source,
+        *,
+        path,
+        mode,
+        refresh_interval,
+        with_metadata,
+        only_metadata=False,
+        **kwargs,
     ):
         super().__init__(datasource_name="pyfilesystem", **kwargs)
         self.source = source
@@ -34,6 +43,7 @@ class _PyFilesystemSubject(ConnectorSubject):
         self.mode = mode
         self.refresh_interval = refresh_interval
         self.with_metadata = with_metadata
+        self.only_metadata = only_metadata
         self.stored_modify_times = {}
 
     def run(self):
@@ -45,19 +55,22 @@ class _PyFilesystemSubject(ConnectorSubject):
 
             update = self._get_snapshot_update()
             for changed_path in update.changed_paths:
-                try:
-                    with self.source.open(changed_path) as file:
-                        data = file.read()
-                except FileNotFoundError:
-                    logging.exception(
-                        f"Failed to read file from {changed_path}. "
-                        "Most likely it was deleted between the change "
-                        "tracking and file read"
-                    )
-                    update.deleted_paths.append(changed_path)
-                    continue
-
-                data = data.encode("utf-8")
+                if self.only_metadata:
+                    # The contents are never read: a synthetic payload is used
+                    # only to trigger a change inside the UpsertSession.
+                    data = uuid.uuid4().bytes
+                else:
+                    try:
+                        with self.source.open(changed_path) as file:
+                            data = file.read().encode("utf-8")
+                    except (FileNotFoundError, FSResourceNotFound):
+                        logging.exception(
+                            f"Failed to read file from {changed_path}. "
+                            "Most likely it was deleted between the change "
+                            "tracking and file read"
+                        )
+                        update.deleted_paths.append(changed_path)
+                        continue
 
                 provided_metadata = None
                 if self.with_metadata:
@@ -120,20 +133,44 @@ class _PyFilesystemSubject(ConnectorSubject):
         existing_paths = set()
 
         with optional_imports("pyfilesystem"):
+            from fs.errors import ResourceNotFound as FSResourceNotFound
             from fs.walk import Walker
 
         walker = Walker()
-        for path in walker.files(self.source, path=self.path):
-            existing_paths.add(path)
-            modified_at = self.source.getmodified(path)
-            stored_modified_at = self.stored_modify_times.get(path)
-            if modified_at != stored_modified_at:
-                self.stored_modify_times[path] = modified_at
-                changed_paths.append(path)
+        scan_completed = True
+        try:
+            for path in walker.files(self.source, path=self.path):
+                try:
+                    modified_at = self.source.getmodified(path)
+                except FSResourceNotFound:
+                    # The file was deleted between the directory listing and
+                    # the stat call. Don't mark it as existing: if it was seen
+                    # before, its deletion is reported below.
+                    logging.info(
+                        f"Failed to get modification time for {path}. "
+                        "Most likely it was deleted during the scan"
+                    )
+                    continue
+                existing_paths.add(path)
+                stored_modified_at = self.stored_modify_times.get(path)
+                if modified_at != stored_modified_at:
+                    self.stored_modify_times[path] = modified_at
+                    changed_paths.append(path)
+        except FSResourceNotFound:
+            # A directory was deleted in the middle of the traversal, so the
+            # listing is incomplete. The files that were reached are processed
+            # normally, but deletion detection must be skipped for this scan:
+            # unvisited files would be falsely reported as deleted.
+            logging.info(
+                "The filesystem scan was interrupted by a concurrent deletion, "
+                "postponing deletion detection until the next scan"
+            )
+            scan_completed = False
 
-        for path in self.stored_modify_times:
-            if path not in existing_paths:
-                deleted_paths.append(path)
+        if scan_completed:
+            for path in self.stored_modify_times:
+                if path not in existing_paths:
+                    deleted_paths.append(path)
 
         return _PyFilesystemUpdate(
             changed_paths=changed_paths,
@@ -147,8 +184,9 @@ def read(
     source,
     *,
     path: str = "",
-    refresh_interval: float = 30,
+    refresh_interval: DurationLike = 30,
     mode: Literal["streaming", "static"] = "streaming",
+    format: Literal["binary", "only_metadata"] = "binary",
     with_metadata: bool = False,
     name: str | None = None,
     max_backlog_size: int | None = None,
@@ -160,18 +198,28 @@ def read(
     format. If the ``with_metadata`` option is specified, it also attaches a column
     ``_metadata`` containing the metadata of the objects read.
 
+    Note that if you only need to monitor changes in the given source, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only the ``_metadata``
+    column, and no time or resources will be spent on reading the files' contents.
+
     Args:
         source: PyFilesystem source.
         path: Path inside the PyFilesystem source to process. All files within this
             path will be processed recursively. If unspecified, the root of the source is taken.
         mode: denotes how the engine polls the new data from the source. Currently
-            "streaming" and "static" are supported. If set to "streaming", it will check for
-            updates, deletions, and new files every ``refresh_interval`` seconds. "static" mode will
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"``, it will check for
+            updates, deletions, and new files every ``refresh_interval`` seconds. ``"static"`` mode will
             only consider the available data and ingest all of it in one commit.
-            The default value is "streaming".
-        refresh_interval: time in seconds between scans. Applicable if the mode is
-            set to "streaming".
-        with_metadata: when set to True, the connector will add column
+            The default value is ``"streaming"``.
+        format: the format of the resulting table. Can be either ``"binary"``, which
+            corresponds to a table with a ``data`` column containing each file's contents,
+            or ``"only_metadata"``, which corresponds to a table that has only the
+            ``_metadata`` column with the objects' metadata, without reading the objects
+            themselves.
+        refresh_interval: time between scans, given as a number of seconds or a
+            ``datetime.timedelta`` / ``pw.Duration``. Applicable if the mode is
+            set to ``"streaming"``.
+        with_metadata: when set to ``True``, the connector will add column
             named ``_metadata`` to the table. This column will contain file metadata, such as:
             ``path``, ``name``, ``owner``, ``created_at``, ``modified_at``, ``accessed_at``,
             ``size``.
@@ -189,7 +237,7 @@ def read(
     Example:
 
     Suppose that you want to read a file from a ZIP archive ``projects.zip`` with the
-    usage of PyFilesystem. To do that, you first need to import the `fs` library or just
+    usage of PyFilesystem. To do that, you first need to import the ``fs`` library or just
     the ``open_fs`` method and to create the data source. It can be done as follows:
 
     >>> from fs import open_fs
@@ -219,15 +267,17 @@ def read(
     >>> table = pw.io.pyfilesystem.read(source)  # doctest: +SKIP
     """
 
+    only_provide_metadata = format == "only_metadata"
     subject = _PyFilesystemSubject(
         source=source,
         path=path,
         mode=mode,
-        refresh_interval=refresh_interval,
-        with_metadata=with_metadata,
+        refresh_interval=as_duration_seconds(refresh_interval, "refresh_interval"),
+        with_metadata=with_metadata or only_provide_metadata,
+        only_metadata=only_provide_metadata,
     )
 
-    return python_connector_read(
+    table = python_connector_read(
         subject,
         format="binary",
         autocommit_duration_ms=None,
@@ -235,3 +285,6 @@ def read(
         max_backlog_size=max_backlog_size,
         _stacklevel=5,
     )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table

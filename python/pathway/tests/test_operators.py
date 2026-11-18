@@ -952,6 +952,9 @@ def test_duration_and_int(op_fun: Any, dtype: Any) -> None:
         [pd.Timedelta(weeks=1), 10],
         [pd.Timedelta(weeks=-2), -45],
     ]
+    # Pathway durations use nanoseconds. Pandas 3 preserves the input unit,
+    # so normalize before division to avoid rounding the reference to microseconds.
+    pairs = [[a.as_unit("ns"), b] for a, b in pairs]
     if op_fun in {operator.floordiv, operator.truediv}:
         pairs = [[a, b if b != 0 else 1] for a, b in pairs]
     expected = table_from_pandas(

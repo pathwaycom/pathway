@@ -837,7 +837,7 @@ impl SqliteReader {
     pub fn data_version(&self) -> i64 {
         loop {
             let version: ::rusqlite::Result<i64> = self.connection.pragma_query_value(
-                Some(::rusqlite::DatabaseName::Main),
+                Some("main"),
                 SQLITE_DATA_VERSION_PRAGMA,
                 |row| row.get(0),
             );
@@ -1616,11 +1616,11 @@ impl SqliteWriter {
 }
 
 impl Writer for SqliteWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         // Stream mode records every event, including deletions, with
         // their time/diff metadata. Snapshot mode handles +1 as an UPSERT
         // and -1 as a DELETE; other diffs are not emitted by the engine.
-        self.buffer.push(data);
+        self.buffer.push(data.clone());
         if let Some(max) = self.max_batch_size {
             if self.buffer.len() >= max {
                 self.flush(true)?;
@@ -1656,9 +1656,7 @@ impl Writer for SqliteWriter {
                 }
             } else {
                 let mut params = storage;
-                params.push(SqliteOwnedValue::Integer(ctx.time.0.try_into().map_err(
-                    |_| WriteError::IntOutOfRange(ctx.time.0.try_into().unwrap_or(i64::MAX)),
-                )?));
+                params.push(SqliteOwnedValue::Integer(ctx.time.as_i64_saturating()));
                 params.push(SqliteOwnedValue::Integer(ctx.diff.try_into().map_err(
                     |_| WriteError::IntOutOfRange(ctx.diff.try_into().unwrap_or(i64::MAX)),
                 )?));

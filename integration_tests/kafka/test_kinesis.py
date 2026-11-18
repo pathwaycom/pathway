@@ -3,8 +3,10 @@ import os
 import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+import requests
 
 import pathway as pw
 from pathway.internals.parse_graph import G
@@ -35,7 +37,6 @@ from .utils import KinesisRecord, KinesisTestContext
     ],
 )
 def test_persistence(scenario, kinesis_context, tmp_path):
-    output_path = tmp_path / "output.jsonl"
     persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(tmp_path / "PStorage")
     )
@@ -44,16 +45,28 @@ def test_persistence(scenario, kinesis_context, tmp_path):
     # to be sure that at least some have landed into every active shard
     n_records_per_run = 30
     next_counter_value = 0
+    n_runs = 0
 
     class InputSchema(pw.Schema):
         key: int = pw.column_definition(primary_key=True)
         value: str
 
     def run():
+        nonlocal n_runs, next_counter_value
         G.clear()
+        # Every run writes into an output file of its own. With a shared file
+        # the checker's first poll (0.1s in, before the restarted pipeline has
+        # even opened its sink) finds the previous run's output there, still
+        # holding exactly `n_records_per_run` lines, and reports success at
+        # once. The run is then bounded not by the checker's timeout but by
+        # the few seconds `wait_result_with_checker` leaves for the state to
+        # be persisted, and on a loaded node the pipeline is stopped before
+        # it has delivered anything: the file, truncated at the start, is
+        # then read back empty.
+        output_path = tmp_path / f"output-{n_runs}.jsonl"
+        n_runs += 1
         expected_keys = set()
         for _ in range(n_records_per_run):
-            nonlocal next_counter_value
             message = json.dumps(
                 {
                     "key": next_counter_value,
@@ -193,9 +206,24 @@ def test_kinesis_output_custom_topic(kinesis_context):
     ]
 
 
-def test_kinesis_io_much_data(kinesis_context, tmp_path):
-    # The whole round-trip takes ~120 seconds. The main problem is the speed of the
-    # emulator, as the get-records request may take up to 1.5s
+# The bound past which the read-back of the million records is declared stuck.
+# The reader fetches the shards one GetRecords call (10,000 records) at a time,
+# so the read-back is ~100 sequential calls, and their latency is set by the
+# single-threaded kinesalite emulator: 0.5s each on a quiet run, 0.7s and more
+# when the other Kinesis tests of the suite hit the emulator at the same time or
+# its LevelDB compacts the just-written million records. That is 50-70s and
+# more, so the previous 60s bound sat right on the emulator's speed margin and
+# tripped on the slow runs (20,000 lines per ~1.4s observed, timing out at
+# ~850,000). The test checks completeness, not the emulator's throughput.
+MUCH_DATA_READ_TIMEOUT_SECS = 180
+
+
+def test_kinesis_io_much_data(kinesis_bulk_context, tmp_path):
+    # The whole round-trip takes ~150 seconds. The main problem is the speed of the
+    # emulator, as the get-records request may take up to 1.5s. The test runs
+    # against an emulator of its own (`kinesis_bulk_context`), so its minutes of
+    # traffic don't starve the other Kinesis tests of the suite.
+    kinesis_context = kinesis_bulk_context
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
     kinesis_context.recreate(shard_count=32)
@@ -214,7 +242,63 @@ def test_kinesis_io_much_data(kinesis_context, tmp_path):
     G.clear()
     table = pw.io.kinesis.read(kinesis_context.stream_name)
     pw.io.jsonlines.write(table, output_path)
-    wait_result_with_checker(FileLinesNumberChecker(output_path, n_total_entries), 60)
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path, n_total_entries),
+        MUCH_DATA_READ_TIMEOUT_SECS,
+    )
+
+
+@pytest.mark.parametrize("omit_partition_key", [False, True])
+def test_kinesis_reads_records_with_optional_keys_and_binary_headers(
+    omit_partition_key, kinesis_context, tmp_path, monkeypatch, tcp_port
+):
+    # Kinesalite does not implement AUTO distribution yet. Forward its real
+    # responses, removing PartitionKey to exercise the new service response
+    # shape, and adding a legal non-UTF-8 header that the SDK must ignore.
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            response = requests.post(
+                kinesis_context.endpoint_url,
+                data=self.rfile.read(int(self.headers["Content-Length"])),
+                headers={
+                    name: value
+                    for name, value in self.headers.items()
+                    if name.lower() not in {"host", "content-length", "connection"}
+                },
+                timeout=30,
+            )
+            body = response.json()
+            if omit_partition_key:
+                for record in body.get("Records", []):
+                    record.pop("PartitionKey", None)
+            payload = json.dumps(body).encode()
+            self.send_response(response.status_code)
+            self.send_header("Content-Type", "application/x-amz-json-1.1")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("X-Unmodeled-Binary-Header", "\xff")
+            self.end_headers()
+            self.wfile.write(payload)
+
+    expected = ["first", "second", "third"]
+    for value in expected:
+        kinesis_context.send_record(KinesisRecord(key=value, value=value.encode()))
+
+    with ThreadingHTTPServer(("127.0.0.1", tcp_port), ProxyHandler) as proxy:
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("AWS_ENDPOINT_URL", f"http://127.0.0.1:{tcp_port}")
+            table = pw.io.kinesis.read(kinesis_context.stream_name, format="plaintext")
+            output = tmp_path / "output.jsonl"
+            pw.io.jsonlines.write(table, output)
+            wait_result_with_checker(FileLinesNumberChecker(output, len(expected)), 30)
+            actual = [
+                json.loads(line)["data"] for line in output.read_text().splitlines()
+            ]
+            assert sorted(actual) == expected
+        finally:
+            proxy.shutdown()
+            thread.join()
 
 
 @pytest.mark.parametrize("shard_count", [1, 4])

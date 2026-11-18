@@ -284,7 +284,11 @@ class Array(DType):
 
     @property
     def typehint(self) -> type[np.ndarray]:
-        return npt.NDArray[self.wrapped.typehint]  # type: ignore[name-defined]
+        # spelled out instead of npt.NDArray[...] so that the repr (visible in
+        # schema doctests) does not depend on the numpy version
+        return np.ndarray[
+            tuple[int, ...], np.dtype[self.wrapped.typehint]  # type: ignore[name-defined]
+        ]
 
     def strip_dimension(self) -> DType:
         if self.n_dim is None:
@@ -709,13 +713,23 @@ def wrap(input_type) -> DType:
             return List(wrap(arg))
         else:
             return Tuple(*[wrap(arg) for arg in args])
+    elif input_type is npt.NDArray:
+        # numpy >= 2.5 makes NDArray a lazy alias: it no longer resolves to
+        # np.ndarray[...] and typing.get_origin returns the alias itself
+        return ANY_ARRAY
+    elif typing.get_origin(input_type) is npt.NDArray:
+        (wrapped,) = typing.get_args(input_type)
+        return Array(n_dim=None, wrapped=wrap(wrapped))
     elif input_type == np.ndarray:
         return ANY_ARRAY
     elif typing.get_origin(input_type) == np.ndarray:
         dims, wrapped = typing.get_args(input_type)
-        if dims == typing.Any:
+        dims_args = typing.get_args(dims)
+        if dims == typing.Any or (dims_args and dims_args[-1] is ...):
+            # tuple[X, ...] shapes (used by NDArray on numpy >= 2.1) leave the
+            # number of dimensions unspecified, same as the older Any shape
             return Array(n_dim=None, wrapped=wrap(wrapped))
-        return Array(n_dim=len(typing.get_args(dims)), wrapped=wrap(wrapped))
+        return Array(n_dim=len(dims_args), wrapped=wrap(wrapped))
     elif input_type == api.PyObjectWrapper:
         return ANY_PY_OBJECT_WRAPPER
     elif typing.get_origin(input_type) == api.PyObjectWrapper:

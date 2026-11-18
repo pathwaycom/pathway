@@ -1,8 +1,10 @@
 import base64
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from google.oauth2.service_account import Credentials as ServiceCredentials
+from httplib2 import Http
 
 import pathway as pw
 from pathway.io.gdrive import _ListObjectsStrategy
@@ -167,6 +169,40 @@ def test_name_pattern_single_filter(
         assert (
             rows_count == NUM_TXT_FILES + NUM_CSV_FILES + NUM_MD_FILES + NUM_PDF_FILES
         )
+
+
+@pytest.mark.parametrize("request_kind", ["metadata", "listing", "download"])
+def test_static_read_recovers_after_connection_timeout(
+    request_kind, monkeypatch, credentials_dir, tmp_path
+):
+    original_request = Http.request
+    injected = False
+
+    def request_with_timeout(self, uri, *args, **kwargs):
+        nonlocal injected
+        url = urlsplit(uri)
+        if url.path.startswith("/drive/v3/files"):
+            if url.path.endswith("/files"):
+                kind = "listing"
+            elif parse_qs(url.query).get("alt") == ["media"]:
+                kind = "download"
+            else:
+                kind = "metadata"
+            if kind == request_kind and not injected:
+                injected = True
+                raise TimeoutError("Connection timed out")
+        return original_request(self, uri, *args, **kwargs)
+
+    monkeypatch.setattr(Http, "request", request_with_timeout)
+    test_name_pattern_single_filter(
+        list_objects_strategy=None,
+        format="binary",
+        with_metadata=False,
+        name_pattern=["*.txt", "*.pdf", "*.xlsx", "non_existent.txt"],
+        tmp_path=tmp_path,
+        credentials_dir=credentials_dir,
+    )
+    assert injected
 
 
 def test_gdrive_tree_traversal(credentials_dir, tmp_path):

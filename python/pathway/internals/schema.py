@@ -92,7 +92,7 @@ def _type_converter(series: pd.Series) -> dt.DType:
         ret_type = dt.BOOL
     elif pd.api.types.is_string_dtype(series.dtype):
         ret_type = dt.STR
-    elif pd.api.types.is_datetime64_ns_dtype(series.dtype):
+    elif pd.api.types.is_datetime64_any_dtype(series.dtype):
         if series.dt.tz is None:
             ret_type = dt.DATE_TIME_NAIVE
         else:

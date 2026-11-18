@@ -1,0 +1,93 @@
+# This YAML configuration file is used to set up and configure the Document indexing RAG template.
+# It defines various components such as data sources, embedders, splitters, parsers, and retrievers.
+# Each section is configured to specify how the template should process and handle data for answering the queries.
+# You can learn more about the YAML syntax here: https://pathway.com/developers/templates/configure-yaml
+
+
+# $sources defines the data sources used to read the data which will be indexed in the RAG.
+# You can learn more how to configure data sources here:
+# https://pathway.com/developers/templates/yaml-examples/data-sources-examples
+
+$sources:
+  # File System connector, reading data locally.
+  - !pw.io.fs.read
+    path: files-for-indexing
+    format: binary
+    with_metadata: true
+
+  # Uncomment to use the SharePoint connector
+  # - !pw.xpacks.connectors.sharepoint.read 
+  #   url: $SHAREPOINT_URL
+  #   tenant: $SHAREPOINT_TENANT
+  #   client_id: $SHAREPOINT_CLIENT_ID
+  #   cert_path: sharepointcert.pem
+  #   thumbprint: $SHAREPOINT_THUMBPRINT
+  #   root_path: $SHAREPOINT_ROOT
+  #   with_metadata: true
+  #   refresh_interval: 30
+
+  # Uncomment to use the Google Drive connector
+  # - !pw.io.gdrive.read
+  #   object_id: $DRIVE_ID
+  #   service_user_credentials_file: gdrive_indexer.json
+  #   file_name_pattern:
+  #     - "*.pdf"
+  #     - "*.pptx"
+  #   object_size_limit: null
+  #   with_metadata: true
+  #   refresh_interval: 30
+
+# Model used for embedding
+$embedding_model: "mixedbread-ai/mxbai-embed-large-v1"
+
+# Specifies the embedder model for converting text into embeddings.
+$embedder: !pw.xpacks.llm.embedders.SentenceTransformerEmbedder
+  model: $embedding_model
+  call_kwargs: 
+    show_progress_bar: False
+
+# Defines the splitter settings for dividing text into smaller chunks.
+$splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
+  max_tokens: 400
+
+# Configures the parser for processing and extracting information from documents.
+$parser: !pw.xpacks.llm.parsers.DoclingParser
+  async_mode: "fully_async"
+  chunk: false
+  cache_strategy: !pw.udfs.DefaultCache {}
+
+# Sets up the retriever factory for indexing and retrieving documents.
+$retriever_factory: !pw.indexing.UsearchKnnFactory
+  reserved_space: 1000
+  embedder: $embedder
+  metric: !pw.indexing.USearchMetricKind.COS
+
+# Manages the storage and retrieval of documents for the RAG template.
+$document_store: !pw.xpacks.llm.document_store.DocumentStore
+  docs: $sources
+  parser: $parser
+  splitter: $splitter
+  retriever_factory: $retriever_factory
+
+# Streamable MCP server, can be proxied
+mcp_http: !pw.xpacks.llm.mcp_server.PathwayMcp
+  name: "Streamable MCP Server"
+  transport: "streamable-http"
+  host: "0.0.0.0"
+  port: 8068
+  serve:
+    - $document_store
+
+# By default, caching is enabled for UDFs with cache_strategy set.
+# You can disable it by uncommenting the following line.
+# persistence_mode: null
+# You can also set persistence_mode to !pw.PersistenceMode.PERSISTING to enable persistence
+# across restarts.
+# By default, when enabled, Cache is stored in .Cache directory.
+# You can customize the location by uncommenting and modifying the following lines:
+# persistence_backend: !pw.persistence.Backend.filesystem
+#   path: ".Cache"
+
+# If `terminate_on_error` is true then the program will terminate whenever any error is encountered.
+# Defaults to false, uncomment the following line if you want to set it to true
+# terminate_on_error: true

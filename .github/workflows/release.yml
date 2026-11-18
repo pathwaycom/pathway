@@ -8,6 +8,11 @@ on:
     - cron: "0 2 * * *"
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+env:
+  # Print the Python-level traceback when a native extension crashes the
+  # interpreter, so CI failures like segfaults on import are diagnosable.
+  PYTHONFAULTHANDLER: "1"
+
 jobs:
   start-runner:
     name: Start self-hosted EC2 runner
@@ -18,14 +23,14 @@ jobs:
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}
           aws-region: ${{ secrets.EC2_AWS_REGION }}
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-runner@v2.3.6
+        uses: machulav/ec2-github-runner@v2.6.1
         with:
           mode: start
           github-token: ${{ secrets.EC2_GH_PERSONAL_TOKEN }}
@@ -51,7 +56,7 @@ jobs:
           - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 270
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
@@ -128,6 +133,15 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+          # numkong's SME feature probes pass on Apple clang 16, but compiling
+          # the actual SME kernels crashes its frontend; NEON kernels stay on.
+          # Drop once the runner's CommandLineTools are upgraded past clang 16.
+          NK_TARGET_SME: "0"
+          NK_TARGET_SME2: "0"
+          NK_TARGET_SMEF64: "0"
+          NK_TARGET_SMEHALF: "0"
+          NK_TARGET_SMEBI32: "0"
+          NK_TARGET_SMELUT2: "0"
         with:
           command: build
           args: --release --strip -i python3.10
@@ -199,13 +213,17 @@ jobs:
 
   Verify_Linux:
     needs: Build_packages
-    name: Verify packages
+    name: Verify packages (${{ matrix.test-config.python-version }}, ${{ matrix.test-config.extra }})
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11"]
+        test-config:
+          - {python-version: "3.10", extra: tests-core}
+          - {python-version: "3.15", extra: tests-core}
+          - {python-version: "3.10", extra: tests}
+          - {python-version: "3.14", extra: tests}
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
@@ -214,11 +232,6 @@ jobs:
           rm -rf ./* || true
           rm -rf ./.??* || true
           ls -la ./
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Create dir for wheels
         run: |
           mkdir -p wheels
@@ -228,19 +241,54 @@ jobs:
           name: pathway-x86-x64
           path: ./wheels/
 
+      - name: Provision uv
+        # Same uv provisioning as the monorepo verify jobs: uv's standalone
+        # CPython builds work uniformly on hosted and self-hosted runners.
+        run: |
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          # The installer picks its directory from its own idea of the home
+          # directory, which does not always match $HOME inside the step (on
+          # containerized runners they diverge) — locate the binary instead.
+          UV_BIN=$(command -v uv || true)
+          if [ -z "$UV_BIN" ]; then
+            for d in "$HOME/.local/bin" /root/.local/bin "$HOME/.cargo/bin"; do
+              if [ -x "$d/uv" ]; then UV_BIN="$d/uv"; break; fi
+            done
+          fi
+          if [ -z "$UV_BIN" ]; then echo "uv not found after install" >&2; exit 1; fi
+          UV_DIR=$(dirname "$UV_BIN")
+          export PATH="$UV_DIR:$PATH"
+          echo "$UV_DIR" >> "$GITHUB_PATH"
+          # Make sure a *stable* interpreter of the requested minor version is
+          # present: a stale uv cache on a runner may only hold a pre-release
+          # (e.g. 3.14.0a4), whose ABI differs from the final release and
+          # crashes extensions built for the stable cp314 ABI.
+          uv python install "${{ matrix.test-config.python-version }}"
+          # Airbyte connectors run in an isolated, supported interpreter.
+          uv python install "3.10"
+
       - name: Install and verify Linux package
         run: |
           set -ex
-          ENV_NAME="testenv_${{ matrix.python-version }}"
+          ENV_NAME="testenv_${{ matrix.test-config.python-version }}_${{ matrix.test-config.extra }}"
           rm -rf "${ENV_NAME}"
-          python -m venv "${ENV_NAME}"
+          uv venv --seed --python "${{ matrix.test-config.python-version }}" "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
-          pip install -U "pip==25.0.1"
+          export PATHWAY_AIRBYTE_PYTHON=$(uv python find "3.10")
           WHEEL=(./wheels/pathway-*.whl)
-          pip install --no-cache-dir --prefer-binary "${WHEEL}[tests]"
+          # install with uv: pip backtracks for hours on the boto/google/openapi
+          # dependency lattices that uv solves in seconds
+          uv pip install --no-cache "${WHEEL}[${{ matrix.test-config.extra }}]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
-          export PYTEST_ADDOPTS="--dist worksteal -n auto"
-          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+          export PYTEST_ADDOPTS="--dist worksteal -n auto --timeout=900"
+          PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+          TEST_ARGS=()
+          if [[ "${{ matrix.test-config.extra }}" == "tests-core" ]]; then
+            TEST_ARGS+=(--ignore "${PACKAGE_DIR}/xpacks")
+          fi
+          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules "${PACKAGE_DIR}" "${TEST_ARGS[@]}"
         env:
           PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
 
@@ -248,16 +296,20 @@ jobs:
     needs:
       - start-runner
       - Build_packages
-    name: Verify macOS and Linux
+    name: Verify ${{ matrix.os }} (${{ matrix.test-config.python-version }}, ${{ matrix.test-config.extra }})
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11"]
+        test-config:
+          - {python-version: "3.10", extra: tests-core}
+          - {python-version: "3.15", extra: tests-core}
+          - {python-version: "3.10", extra: tests}
+          - {python-version: "3.14", extra: tests}
         os:
           - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       # This will ensure we have clean workspace
       - name: Cleanup build folder
@@ -282,31 +334,70 @@ jobs:
           name: pathway-arch64
           path: ./wheels/
 
+      - name: Provision uv
+        # These self-hosted runners have no actions/setup-python, and the
+        # system pythons only cover the versions preinstalled on the runner.
+        # uv's standalone CPython builds work uniformly on all of them.
+        run: |
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          # The installer picks its directory from its own idea of the home
+          # directory, which does not always match $HOME inside the step (on
+          # containerized runners they diverge) — locate the binary instead.
+          UV_BIN=$(command -v uv || true)
+          if [ -z "$UV_BIN" ]; then
+            for d in "$HOME/.local/bin" /root/.local/bin "$HOME/.cargo/bin"; do
+              if [ -x "$d/uv" ]; then UV_BIN="$d/uv"; break; fi
+            done
+          fi
+          if [ -z "$UV_BIN" ]; then echo "uv not found after install" >&2; exit 1; fi
+          UV_DIR=$(dirname "$UV_BIN")
+          export PATH="$UV_DIR:$PATH"
+          echo "$UV_DIR" >> "$GITHUB_PATH"
+          # Make sure a *stable* interpreter of the requested minor version is
+          # present: a stale uv cache on a runner may only hold a pre-release
+          # (e.g. 3.14.0a4), whose ABI differs from the final release and
+          # crashes extensions built for the stable cp314 ABI.
+          uv python install "${{ matrix.test-config.python-version }}"
+          # Airbyte connectors run in an isolated, supported interpreter.
+          uv python install "3.10"
+
       - name: Install and verify ${{ matrix.os }} package
         run: |
           set -ex
-          ENV_NAME="testenv_${{ matrix.python-version }}"
+          ENV_NAME="testenv_${{ matrix.test-config.python-version }}_${{ matrix.test-config.extra }}"
           rm -rf "${ENV_NAME}"
-          python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
+          uv venv --seed --python "${{ matrix.test-config.python-version }}" "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
+          export PATHWAY_AIRBYTE_PYTHON=$(uv python find "3.10")
           if [[ "${{ matrix.os }}" == 'selfhosted-macOS' ]]; then
             WHEEL=(./wheels/pathway-*arm64.whl)
           else
             WHEEL=(./wheels/pathway-*aarch64.whl)
           fi
-          pip install -U "pip==25.0.1"
           export PATHWAY_MONITORING_HTTP_PORT=20099
           export LLAMA_READER_PORT=8799
-          pip install --no-cache-dir --prefer-binary "${WHEEL}[tests]"
-          pip install llama_index
+          # install with uv: pip backtracks for hours on the boto/google/openapi
+          # dependency lattices that uv solves in seconds
+          uv pip install --no-cache "${WHEEL}[${{ matrix.test-config.extra }}]"
+          if [[ "${{ matrix.test-config.extra }}" == "tests" ]]; then
+            uv pip install llama_index
+          fi
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           if [[ "$RUNNER_NAME" == *mac* ]]; then
             export PYTEST_XDIST_AUTO_NUM_WORKERS=2
           fi
-          export PYTEST_ADDOPTS="--dist worksteal -n auto"
-          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+          export PYTEST_ADDOPTS="--dist worksteal -n auto --timeout=900"
+          PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+          TEST_ARGS=()
+          if [[ "${{ matrix.test-config.extra }}" == "tests-core" ]]; then
+            TEST_ARGS+=(--ignore "${PACKAGE_DIR}/xpacks")
+          fi
+          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules "${PACKAGE_DIR}" "${TEST_ARGS[@]}"
         env:
-          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          # Dependency source wheels need a valid arm64 platform tag (macOS 11+).
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
           PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
@@ -326,7 +417,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
@@ -366,7 +457,6 @@ jobs:
           artifacts: "./wheels/*.whl"
           artifactContentType: "raw"
           allowUpdates: true
-          bodyFile: "CHANGELOG.md"
 
       - name: Publish package distributions to PyPI
         if: startsWith(github.ref, 'refs/tags/v')
@@ -397,7 +487,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
@@ -432,13 +522,13 @@ jobs:
     if: ${{ always() }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}
           aws-region: ${{ secrets.EC2_AWS_REGION }}
       - name: Stop EC2 runner
-        uses: machulav/ec2-github-runner@v2.3.6
+        uses: machulav/ec2-github-runner@v2.6.1
         with:
           mode: stop
           github-token: ${{ secrets.EC2_GH_PERSONAL_TOKEN }}

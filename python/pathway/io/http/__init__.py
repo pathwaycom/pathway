@@ -36,7 +36,7 @@ def read(
     format: Literal["json", "raw"] = "json",
     delimiter: str | bytes | None = None,
     n_retries: int = 0,
-    retry_policy: RetryPolicy = RetryPolicy.default(),
+    retry_policy: RetryPolicy | None = None,
     connect_timeout_ms: int | None = None,
     request_timeout_ms: int | None = None,
     allow_redirects: bool = True,
@@ -47,6 +47,9 @@ def read(
     max_backlog_size: int | None = None,
 ):
     """Reads a table from an HTTP stream.
+
+    A final HTTP 4xx or 5xx response raises an error after any retries configured
+    by ``n_retries`` and ``retry_codes``. Its body is not read as input data.
 
     Args:
         url: the full URL of streaming endpoint to fetch data from.
@@ -63,7 +66,8 @@ def read(
           encoded json is expected.
         delimiter: delimiter used to split stream into messages.
         n_retries: how many times to retry the failed request.
-        retry_policy: policy of delays or backoffs for the retries.
+        retry_policy: policy of delays or backoffs for the retries. The backoff
+          starts anew for each request.
         connect_timeout_ms: connection timeout, specified in milliseconds. In case
           it's None, no restrictions on connection duration will be applied.
         request_timeout_ms: request timeout, specified in milliseconds. In case
@@ -120,7 +124,9 @@ def read(
     sender = Sender(
         request_method=method,
         n_retries=n_retries,
-        retry_policy=retry_policy,
+        retry_policy=(
+            retry_policy if retry_policy is not None else RetryPolicy.default()
+        ),
         connect_timeout_ms=connect_timeout_ms,
         request_timeout_ms=request_timeout_ms,
         allow_redirects=allow_redirects,
@@ -156,7 +162,7 @@ def write(
     format: Literal["json", "custom"] = "json",
     request_payload_template: str | None = None,
     n_retries: int = 0,
-    retry_policy: RetryPolicy = RetryPolicy.default(),
+    retry_policy: RetryPolicy | None = None,
     connect_timeout_ms: int | None = None,
     request_timeout_ms: int | None = None,
     content_type: str | None = None,
@@ -166,6 +172,9 @@ def write(
     name: str | None = None,
 ) -> None:
     """Sends the stream of updates from the table to the specified HTTP API.
+
+    A final HTTP 4xx or 5xx response raises an error after any retries configured
+    by ``n_retries`` and ``retry_codes``.
 
     Args:
         table: table to be tracked.
@@ -178,7 +187,8 @@ def write(
         request_payload_template: the template to format and send in case "custom" was
           specified in the format field. Can include wildcards.
         n_retries: how many times to retry the failed request.
-        retry_policy: policy of delays or backoffs for the retries.
+        retry_policy: policy of delays or backoffs for the retries. The backoff
+          starts anew for each request.
         connect_timeout_ms: connection timeout, specified in milliseconds. In case
           it's None, no restrictions on connection duration will be applied.
         request_timeout_ms: request timeout, specified in milliseconds. In case it's
@@ -254,7 +264,9 @@ def write(
     sender = Sender(
         request_method=method,
         n_retries=n_retries,
-        retry_policy=retry_policy,
+        retry_policy=(
+            retry_policy if retry_policy is not None else RetryPolicy.default()
+        ),
         connect_timeout_ms=connect_timeout_ms,
         request_timeout_ms=request_timeout_ms,
         allow_redirects=allow_redirects,
@@ -282,9 +294,9 @@ def write(
             url=unescape(url, row, time, is_addition),
             headers=patched_headers,
             data=payload,
-        )
+        ).close()
 
-    subscribe(table, callback, name=name)
+    subscribe(table, callback, on_end=sender.close, name=name)
 
 
 __all__ = [

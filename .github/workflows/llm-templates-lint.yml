@@ -1,0 +1,40 @@
+name: LLM templates lint
+on:
+  pull_request:
+    paths:
+      - examples/llm-app/**
+      - .github/workflows/llm-templates-lint.yml
+  push:
+    branches:
+      - main
+    paths:
+      - examples/llm-app/**
+      - .github/workflows/llm-templates-lint.yml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main'}}
+jobs:
+  linter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/llm-app
+    steps:
+    - name: Git checkout
+      uses: actions/checkout@v6
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: 3.11
+    - name: Install poetry
+      uses: abatilo/actions-poetry@v4
+    - name: Install linters
+      run: poetry install --no-root --only linters
+    - name: Run black
+      run: poetry run black --check .
+    - name: Run Flake8
+      run: poetry run flake8 .
+    - name: Run mypy
+      run: poetry run mypy .
+    - name: Run isort
+      run: poetry run isort --check .

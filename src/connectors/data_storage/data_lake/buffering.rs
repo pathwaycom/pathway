@@ -50,7 +50,7 @@ impl ColumnBuffer for AppendOnlyColumnBuffer {
         }
         let time_column_idx = self.buffered_columns.len() - 2;
         let diff_column_idx = self.buffered_columns.len() - 1;
-        self.buffered_columns[time_column_idx].push(Value::Int(data.time.0.try_into().unwrap()));
+        self.buffered_columns[time_column_idx].push(Value::Int(data.time.as_i64_saturating()));
         self.buffered_columns[diff_column_idx].push(Value::Int(data.diff.try_into().unwrap()));
         Ok(())
     }

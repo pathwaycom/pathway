@@ -16,6 +16,7 @@ from pathway.io._utils import (
     _get_unique_name,
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
+    remap_sort_by,
 )
 
 
@@ -66,6 +67,9 @@ def read(
         format: The input data format, which can be ``"raw"``, ``"plaintext"``, or
             ``"json"``.
         autocommit_duration_ms: The time interval (in milliseconds) between commits.
+            Required for streaming reads: a NATS subject never signals completion, so the
+            timer is the only thing that advances time; ``None`` is rejected at
+            construction.
             After this time, the updates received by the connector are committed and
             added to Pathway Live Data Framework's computation graph.
         json_field_paths: For the ``"json"`` format, this allows mapping field names to
@@ -88,8 +92,12 @@ def read(
             will be used as the name for the snapshot that stores the connector's progress.
         max_backlog_size: Limit on the number of entries read from the input source and kept
             in processing at any moment. Reading pauses when the limit is reached and resumes
-            as processing of some entries completes. Useful with large sources that
-            emit an initial burst of data to avoid memory spikes.
+            as processing of some entries completes. Set this whenever the source can deliver
+            data faster than the graph processes it — most importantly when a pipeline restarts
+            against a source that has accumulated a backlog (a stream replayed from the start,
+            a catch-up after downtime): without a limit the whole backlog is pulled into memory
+            at once and the process can be OOM-killed before it catches up. A few thousand to a
+            few tens of thousands is a reasonable starting point.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -109,6 +117,18 @@ def read(
 
     Keep in mind that NATS doesn't normally store messages. So, make sure to start your
     The Pathway Live Data Framework program before sending any messages.
+
+    Message delivery guarantees depend on the mode. With JetStream
+    (``jetstream_stream_name`` is set) and persistence enabled, the connector
+    acknowledges each message to the server only after a durable checkpoint covers it,
+    which gives at-least-once delivery across restarts: no acknowledged-but-unprocessed
+    message is ever lost, while the messages between the last checkpoint and a crash may
+    be delivered again. The auto-created durable consumer is configured for this
+    automatically; if you pass your own ``durable_consumer_name``, make sure its
+    ``ack_wait`` exceeds the checkpoint interval and its ``max_ack_pending`` can
+    accommodate a checkpoint window of messages. Without JetStream the server gives no
+    delivery guarantees, and messages that arrive while the pipeline is down or shortly
+    before a crash are lost even with persistence enabled.
 
     You can also parse messages as UTF-8 during reading by using the ``"format"`` parameter.
     Here's how the reading process would look:
@@ -352,6 +372,9 @@ def write(
         headers=headers,
         topic_name=topic if isinstance(topic, ColumnReference) else None,
     )
+    # The sink is attached to the table `construct` rebuilt, so the
+    # sort_by references taken against the original one are remapped.
+    sort_by = remap_sort_by(sort_by, table, output_format.table, "pw.io.nats.write")
     table = output_format.table
 
     data_storage = api.DataStorage(

@@ -216,8 +216,10 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         return reduced.select(**output_expressions)
 
     def _maybe_warn(self, expression: expr.ColumnExpression) -> None:
-        if self._is_window and isinstance(expression, expr.ReducerExpression):
-            expression._reducer.maybe_warn_in_windowby()
+        if isinstance(expression, expr.ReducerExpression):
+            if self._is_window:
+                expression._reducer.maybe_warn_in_windowby()
+            expression._reducer.maybe_warn_if_input_not_append_only(expression)
 
     @contextualized_operator
     def _reduce(self, **kwargs: expr.ColumnExpression) -> table.Table:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 
 import pathway as pw
 from pathway.internals import api
@@ -15,15 +16,58 @@ from pathway.io._utils import (
     STATIC_MODE_NAME,
     STATUS_DOWNLOADED,
     STATUS_SIZE_LIMIT_EXCEEDED,
+    DurationLike,
+    as_duration_seconds,
 )
 from pathway.io.python import ConnectorSubject
 from pathway.optional_import import optional_imports
 
 with optional_imports("xpack-sharepoint"):
     from office365.sharepoint.client_context import ClientContext
+    from requests.exceptions import RequestException
 
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlparse
+
+QUERY_MAX_ATTEMPTS = 5
+QUERY_RETRY_INTERVAL_SECONDS = 5
+
+
+def _execute_with_retries(query):
+    """Runs a prepared SharePoint query, retrying transient failures.
+
+    ``execute_query_retry`` only retries ``ClientRequestException`` by default, so a
+    connection-level problem - an unreachable network, a DNS hiccup, a reset socket -
+    propagates from the very first attempt, even though the next one would most likely
+    succeed. ``RequestException`` is the base class of both, hence widening the tuple
+    covers HTTP errors and connection errors alike.
+
+    The library also swallows the last failure instead of re-raising it, which would
+    leave the caller with a silently incomplete result. The failure callback is what
+    tells "gave up" apart from "succeeded", so that the error can be surfaced.
+    """
+    last_error: Exception | None = None
+    failed_attempts = 0
+
+    def on_failure(attempt: int, error: Exception) -> None:
+        nonlocal last_error, failed_attempts
+        last_error = error
+        failed_attempts = attempt
+        logging.warning(
+            f"SharePoint query failed (attempt {attempt} of {QUERY_MAX_ATTEMPTS}): "
+            f"{error}. Retrying in {QUERY_RETRY_INTERVAL_SECONDS} seconds..."
+        )
+
+    query.execute_query_retry(
+        max_retry=QUERY_MAX_ATTEMPTS,
+        timeout_secs=QUERY_RETRY_INTERVAL_SECONDS,
+        failure_callback=on_failure,
+        exceptions=(RequestException,),
+    )
+    if failed_attempts == QUERY_MAX_ATTEMPTS:
+        assert last_error is not None
+        raise last_error
+    return query
 
 
 class _SharePointEntryMeta:
@@ -90,6 +134,7 @@ class _SharePointScanner:
         stored_metadata: dict[str, _SharePointEntryMeta],
         object_size_limit: int | None = None,
         common_metadata: dict[str, Any] = {},
+        only_metadata: bool = False,
     ):
         self._context = context
         self._root_path = root_path
@@ -97,6 +142,7 @@ class _SharePointScanner:
         self._stored_metadata = stored_metadata
         self._object_size_limit = object_size_limit
         self.common_metadata = common_metadata
+        self._only_metadata = only_metadata
 
     def _is_changed(self, metadata):
         return self._stored_metadata.get(metadata.path) != metadata
@@ -105,7 +151,7 @@ class _SharePointScanner:
         root_folder = self._context.web.get_folder_by_server_relative_path(
             self._root_path
         )
-        files = root_folder.get_files(self._recursive).execute_query_retry()
+        files = _execute_with_retries(root_folder.get_files(self._recursive))
 
         updated_entries = []
         deleted_entries = []
@@ -125,10 +171,14 @@ class _SharePointScanner:
                     f"{metadata.size} exceeds the limit {self._object_size_limit}"
                 )
             if self._is_changed(metadata):
-                if size_limit_exceeded:
+                if self._only_metadata:
+                    # The contents are never fetched: a synthetic payload is used
+                    # only to trigger a change inside the UpsertSession.
+                    content = uuid.uuid4().bytes
+                elif size_limit_exceeded:
                     content = b""
                 else:
-                    content = file.get_content().execute_query_retry().value
+                    content = _execute_with_retries(file.get_content()).value
                 updated_entries.append((content, metadata))
                 self._stored_metadata[metadata.path] = metadata
             seen_objects.add(metadata.path)
@@ -154,6 +204,7 @@ class _SharePointSubject(ConnectorSubject):
         recursive,
         object_size_limit,
         max_failed_attempts_in_row,
+        only_metadata=False,
     ):
         _check_entitlements("xpack-sharepoint")
         super().__init__(datasource_name="sharepoint")
@@ -166,6 +217,7 @@ class _SharePointSubject(ConnectorSubject):
         self._object_size_limit = object_size_limit
         self._stored_metadata = {}
         self._max_failed_attempts_in_row = max_failed_attempts_in_row
+        self._only_metadata = only_metadata
 
     @property
     def _session_type(self) -> api.SessionType:
@@ -195,6 +247,7 @@ class _SharePointSubject(ConnectorSubject):
                     self._stored_metadata,
                     self._object_size_limit,
                     common_metadata={"base_url": f"{_url.scheme}://{_url.netloc}"},
+                    only_metadata=self._only_metadata,
                 )
                 diff = scanner.get_snapshot_diff()
                 n_failed_attempts_in_row = 0
@@ -247,7 +300,7 @@ class _ContextWrapper:
         )
         current_web = context.web
         context.load(current_web)
-        context.execute_query_retry()
+        _execute_with_retries(context)
         return context
 
 
@@ -261,16 +314,22 @@ def read(
     thumbprint: str,
     root_path: str,
     mode: str = "streaming",
+    format: Literal["binary", "only_metadata"] = "binary",
     recursive: bool = True,
     object_size_limit: int | None = None,
     with_metadata: bool = False,
-    refresh_interval: int = 30,
+    refresh_interval: DurationLike = 30,
     max_failed_attempts_in_row: int | None = 8,
+    max_backlog_size: int | None = None,
 ) -> Table:
     """Reads a table from a directory or a file in Microsoft SharePoint site.
     Requires a valid Pathway Live Data Framework Scale license key.
 
-    It will return a table with single column `data` containing each file in a binary format.
+    It will return a table with single column ``data`` containing each file in a binary format.
+
+    Note that if you only need to monitor changes in the given directory, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only the ``_metadata``
+    column, and no time or traffic will be spent on downloading the files' contents.
 
     Args:
         url: URL of the SharePoint site including the path to the site. For example: \
@@ -284,23 +343,31 @@ specified above and used to authenticate;
         root_path: The path for a directory or a file within the SharePoint space to be\
 read;
         mode: Denotes how the engine polls the new data from the source. Currently \
-"streaming" and "static" are supported. If set to "streaming", it will check for \
-updates, deletions and new files every `refresh_interval` seconds. "static" mode will \
+``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"``, it will check for \
+updates, deletions and new files every ``refresh_interval`` seconds. ``"static"`` mode will \
 only consider the available data and ingest all of it in one commit. The default value \
-is "streaming";
-        recursive: If set to True, the connector will scan the nested directories. \
+is ``"streaming"``;
+        format: The format of the resulting table. Can be either ``"binary"``, which \
+corresponds to a table with a ``data`` column containing each file's contents, or \
+``"only_metadata"``, which corresponds to a table that has only the ``_metadata`` column \
+with the objects' metadata, without downloading the objects themselves;
+        recursive: If set to ``True``, the connector will scan the nested directories. \
 Otherwise it will only process files that are placed in the specified directory;
         object_size_limit: Maximum size (in bytes) of a file that will be processed by \
-this connector or `None` if no filtering by size should be made;
-        with_metadata: when set to True, the connector will add an additional column \
-named `_metadata` to the table. This column will contain file metadata, such as:  \
-`path`, `modified_at`, `created_at`. The creation and modification times will be given \
+this connector or ``None`` if no filtering by size should be made;
+        with_metadata: when set to ``True``, the connector will add an additional column \
+named ``_metadata`` to the table. This column will contain file metadata, such as: \
+``path``, ``modified_at``, ``created_at``. The creation and modification times will be given \
 as UNIX timestamps;
-        refresh_interval: Time in seconds between scans. Applicable if mode is set to\
-'streaming'.
+        refresh_interval: Time between scans, given as a number of seconds or a\
+ ``datetime.timedelta`` / ``pw.Duration``. Applicable if mode is set to ``"streaming"``.
         max_failed_attempts_in_row: The maximum number of consecutive read errors before\
 the connector terminates with an error. If set to ``None``, the connector tries to read\
 data indefinitely, regardless of possible errors in the provided credentials.
+        max_backlog_size: Limit on the number of entries read from the input source and kept\
+ in processing at any moment. Reading pauses when the limit is reached and resumes as\
+ processing of some entries completes. Useful with large sources that emit an initial\
+ burst of data to avoid memory spikes.
 
     Returns:
         The table read.
@@ -308,7 +375,7 @@ data indefinitely, regardless of possible errors in the provided credentials.
     Example:
 
     Let's consider that there is a dataset stored in SharePoint site Datasets. Below we \
-give an example for reading this dataset in the steaming mode. Please note that you can\
+give an example for reading this dataset in the streaming mode. Please note that you can\
 use this example for the reference of how the parameters should look:
 
 
@@ -322,11 +389,11 @@ use this example for the reference of how the parameters should look:
     ... )
 
     In the example above we also consider that this dataset is located by the path \
-`Shared Documents/Data`. This code will also recursively scan the subdirectories of the\
+``Shared Documents/Data``. This code will also recursively scan the subdirectories of the\
 given directory.
 
     We can change it a little. Let's suppose that we need to take the dataset from the \
-directory `Datasets/Animals/2023` and not take the nested subdirectories into consideration. \
+directory ``Datasets/Animals/2023`` and not take the nested subdirectories into consideration. \
 That leads us to the following snippet:
 
     >>> t = pw.xpacks.connectors.sharepoint.read(  # doctest: +SKIP
@@ -341,7 +408,7 @@ That leads us to the following snippet:
 
     SharePoint sites are often used with the subsites. The Pathway Live Data Framework supports the data reads \
 from the subsites as well. To read the data from the subsite, you need to specify its' \
-URL in the `url` parameter. For example, if you read the dataset from `vendor` subspace, \
+URL in the ``url`` parameter. For example, if you read the dataset from ``vendor`` subspace, \
 you can configure the connector this way:
 
     >>> t = pw.xpacks.connectors.sharepoint.read(  # doctest: +SKIP
@@ -362,15 +429,22 @@ you can configure the connector this way:
         cert_path=cert_path,
     )
 
+    only_provide_metadata = format == "only_metadata"
     subject = _SharePointSubject(
         context_wrapper=context_wrapper,
         root_path=root_path,
-        refresh_interval=refresh_interval,
+        refresh_interval=as_duration_seconds(refresh_interval, "refresh_interval"),
         mode=mode,
-        with_metadata=with_metadata,
+        with_metadata=with_metadata or only_provide_metadata,
         recursive=recursive,
         object_size_limit=object_size_limit,
         max_failed_attempts_in_row=max_failed_attempts_in_row,
+        only_metadata=only_provide_metadata,
     )
 
-    return pw.io.python.read(subject, format="binary")
+    table = pw.io.python.read(
+        subject, format="binary", max_backlog_size=max_backlog_size
+    )
+    if only_provide_metadata:
+        table = table.select(_metadata=table._metadata)
+    return table

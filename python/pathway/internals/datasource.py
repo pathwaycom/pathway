@@ -93,6 +93,24 @@ class GenericDataSource(DataSource):
     datasource_name: str
     append_only: bool = False
 
+    def __post_init__(self):
+        # Time advances either on the auto-commit timer or when the reader
+        # reports that its source is exhausted. Queue readers never report
+        # that in streaming mode, so without a timer nothing would ever be
+        # committed and the pipeline would run forever without emitting a row.
+        if (
+            self.data_source_options.commit_duration_ms is None
+            and self.datastorage.mode == api.ConnectorMode.STREAMING
+            and not self.datastorage.emits_source_completion()
+        ):
+            raise ValueError(
+                f"autocommit_duration_ms=None is not supported by the "
+                f"{self.datasource_name} connector in the streaming mode: the source "
+                "never signals completion, so no commit would ever happen and the "
+                "pipeline would never emit any rows. Set autocommit_duration_ms to a "
+                "positive number of milliseconds."
+            )
+
     def is_bounded(self) -> bool:
         return self.datastorage.mode == api.ConnectorMode.STATIC
 

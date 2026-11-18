@@ -3,7 +3,9 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::async_runtime::create_async_tokio_runtime;
+use crate::async_runtime::{
+    create_async_tokio_runtime, create_async_tokio_runtime_with_background_worker,
+};
 use crate::connectors::data_storage::postgres::{
     create_psql_client, PsqlConnectionConfig, ReplicationSettings as PsqlInnerReplicationSettings,
     SslMode,
@@ -23,11 +25,12 @@ use async_nats::connect as nats_connect;
 use async_nats::jetstream;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sdk_dynamodb::Client as DynamoDBClient;
 use aws_sdk_kinesis::Client as KinesisClient;
-use azure_storage::StorageCredentials as AzureStorageCredentials;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use deltalake::arrow::datatypes::TimeUnit as ArrowTimeUnit;
+use derivative::Derivative;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
     http::{
@@ -44,25 +47,34 @@ use itertools::Itertools;
 use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
 use mongodb::Namespace as MongoNamespace;
-use mysql::{
-    Opts as MysqlOpts, OptsBuilder as MysqlOptsBuilder, Pool as MysqlConnectionPool,
-    PoolConstraints as MysqlPoolConstraints, PoolOpts as MysqlPoolOpts,
-};
+use mysql::Opts as MysqlOpts;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
+use pulsar::authentication::oauth2::{
+    OAuth2Authentication as PulsarOAuth2Authentication, OAuth2Params as PulsarOAuth2Params,
+};
+use pulsar::compression::{
+    Compression as PulsarCompression, CompressionLz4 as PulsarCompressionLz4,
+    CompressionZlib as PulsarCompressionZlib, CompressionZstd as PulsarCompressionZstd,
+};
+use pulsar::consumer::InitialPosition as PulsarInitialPosition;
+use pulsar::{
+    Authentication as PulsarAuthentication, ConsumerOptions as PulsarConsumerOptions,
+    OperationRetryOptions as PulsarOperationRetryOptions, Pulsar, SubType as PulsarSubType,
+    TokioExecutor,
+};
 use pyo3::exceptions::{
     PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
     PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
 };
 use pyo3::pyclass::CompareOp;
-use pyo3::sync::{GILOnceCell, GILProtected};
+use pyo3::sync::{MutexExt, PyOnceLock};
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
 use pyo3::{intern, PyTypeInfo};
 use pyo3::{prelude::*, IntoPyObjectExt};
 use pyo3_log::ResetHandle;
 use questdb::ingress::Sender as QuestDBSender;
-use rdkafka::consumer::BaseConsumer;
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
 use rdkafka::ClientConfig;
 use rumqttc::{
@@ -79,7 +91,6 @@ use scopeguard::defer;
 use send_wrapper::SendWrapper;
 use serde_json::Value as JsonValue;
 use std::borrow::Borrow;
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -88,6 +99,7 @@ use std::future::Future;
 use std::io::{BufWriter, Read};
 use std::mem::take;
 use std::os::unix::prelude::*;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
@@ -98,6 +110,7 @@ use self::external_index_wrappers::{
 };
 use self::threads::PythonThreadState;
 
+use crate::connectors::data_format::avro::{AvroFormatter, AvroParser, AvroSchemaProvider};
 use crate::connectors::data_format::bson::BsonFormatter;
 use crate::connectors::data_format::{
     BsonParser, DebeziumDBType, DebeziumMessageParser, DsvSettings, FieldSource, Formatter,
@@ -116,19 +129,25 @@ use crate::connectors::data_storage::data_lake::{
     DeltaBatchWriter, MaintenanceMode, PathwayStorageFactory,
 };
 use crate::connectors::data_storage::elasticsearch::build_elasticsearch_reader;
-use crate::connectors::data_storage::mssql::MssqlWriter;
+use crate::connectors::data_storage::mssql::{self, MssqlWriter};
 use crate::connectors::data_storage::mysql::{MysqlReader, MysqlWriter};
 use crate::connectors::data_storage::nats;
+use crate::connectors::data_storage::pinecone::PineconeWriter;
+use crate::connectors::data_storage::pulsar::{
+    PulsarConnectionFactory, PulsarSchemaProvider, PulsarSubscriptionSpec, SchemaLookupError,
+};
+use crate::connectors::data_storage::qdrant::QdrantWriteError;
 use crate::connectors::data_storage::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::data_storage::sharding::ShardSelector;
 use crate::connectors::data_storage::{
-    ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, ElasticSearchWriter, FileWriter,
-    IcebergReader, KafkaReader, KafkaWriter, LakeWriter, MessageQueueTopic, MongoReader,
-    MongoWriter, MqttReader, MqttWriter, MssqlReader, NatsReader, NatsWriter, NullWriter,
-    ObjectDownloader, PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
-    QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader, RabbitmqWriter, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, SqliteWriter, TableContext, TableWriterInitMode, WriteError,
-    Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
+    ChromaWriter, ClickHouseWriter, ConnectorMode, DeltaError, DeltaTableReader, DuckDbWriter,
+    ElasticSearchWriter, FileWriter, IcebergReader, KafkaConsumer, KafkaReader, KafkaWriter,
+    LakeWriter, MessageQueueTopic, MongoReader, MongoWriter, MqttReader, MqttWriter, MssqlReader,
+    NatsReader, NatsWriter, NullWriter, ObjectDownloader, PathwayConsumerContext, PsqlReader,
+    PsqlWriter, PulsarDeliverySchedule, PulsarReader, PulsarWriter, PythonConnectorEventType,
+    PythonReaderBuilder, QdrantWriter, QuestDBAtColumnPolicy, QuestDBWriter, RabbitmqReader,
+    RabbitmqWriter, ReadError, ReadMethod, ReaderBuilder, SqliteReader, SqliteWriter, TableContext,
+    TableWriterInitMode, WeaviateWriter, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
 use crate::connectors::posix_like::PosixLikeReader;
@@ -170,15 +189,17 @@ mod external_index_wrappers;
 mod logging;
 pub mod threads;
 
-/// Parse a `RabbitMQ` Streams URI and build an Environment.
-/// URI format: `rabbitmq-stream://user:pass@host:port/vhost`
-async fn build_rabbitmq_environment(
+/// Parses a `RabbitMQ` Streams URI (`rabbitmq-stream://user:pass@host:port/vhost`)
+/// and assembles the (cheap, connection-less) builder of an Environment from
+/// it and the TLS settings.
+fn rabbitmq_environment_builder(
     uri: &str,
     tls: &TlsSettings,
-) -> PyResult<rabbitmq_stream_client::Environment> {
+) -> PyResult<rabbitmq_stream_client::EnvironmentBuilder> {
     // Parse URI: rabbitmq-stream://user:pass@host:port/vhost
     let uri_str = uri.strip_prefix("rabbitmq-stream://").unwrap_or(uri);
-    let mut builder = rabbitmq_stream_client::Environment::builder();
+    let mut builder = rabbitmq_stream_client::Environment::builder()
+        .heartbeat(crate::connectors::data_storage::rabbitmq::heartbeat_secs());
 
     // Split userinfo from host
     if let Some((userinfo, rest)) = uri_str.split_once('@') {
@@ -234,15 +255,43 @@ async fn build_rabbitmq_environment(
         builder = builder.tls(tls_config);
     }
 
-    builder
-        .build()
-        .await
-        .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
+    Ok(builder)
 }
 
-use crate::connectors::data_storage::rabbitmq::probe_last_offset;
+/// Connects to `RabbitMQ`: the connection attempts are bounded in time and
+/// the transient failures are retried, see `connect_with_retries`.
+async fn build_rabbitmq_environment(
+    uri: &str,
+    tls: &TlsSettings,
+) -> PyResult<rabbitmq_stream_client::Environment> {
+    // Surfaces the configuration errors (a bad TLS setup) before any attempt.
+    rabbitmq_environment_builder(uri, tls)?;
+    // The credentials of the URI are not for the logs.
+    let uri_for_display = uri
+        .split_once('@')
+        .map_or(uri, |(_, rest)| rest)
+        .to_string();
+    connect_with_retries(
+        &format!("connecting to RabbitMQ at {uri_for_display}"),
+        || async {
+            // The builder is consumed by `build`, so every attempt assembles a
+            // new one; the assembly was validated above and cannot fail here.
+            let builder = rabbitmq_environment_builder(uri, tls).map_err(|e| {
+                rabbitmq_stream_client::error::ClientError::GenericError(e.to_string().into())
+            })?;
+            builder.build().await
+        },
+    )
+    .await
+    .map_err(|e| PyIOError::new_err(format!("Failed to connect to RabbitMQ: {e}")))
+}
 
-static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+use crate::connectors::data_storage::rabbitmq::{
+    build_consumer, connect_with_retries, probe_last_offset,
+};
+use crate::external_integration::qdrant_integration::build_qdrant_client;
+
+static CONVERT: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
 fn get_convert_python_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     CONVERT
@@ -264,8 +313,10 @@ macro_rules! pytodo {
     };
 }
 
-impl<'py> FromPyObject<'py> for Key {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Key {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<Pointer>>()?.0)
     }
 }
@@ -322,7 +373,7 @@ fn value_from_pandas_timedelta(ob: &Bound<PyAny>) -> PyResult<Value> {
 fn value_json_from_py_any(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let json_str = get_convert_python_module(py).call_method1(intern!(py, "_json_dumps"), (ob,))?;
-    let json_str = json_str.downcast::<PyString>()?.to_str()?;
+    let json_str = json_str.cast::<PyString>()?.to_str()?;
     let json: JsonValue = serde_json::from_str(json_str)
         .map_err(|e| PyValueError::new_err(format!("malformed json: {e}")))?;
     Ok(Value::from(json))
@@ -440,7 +491,26 @@ fn py_type_error(ob: &Bound<PyAny>, type_: &Type) -> PyErr {
     ))
 }
 
+/// Fast paths for the most common scalar types: avoid the `Error`
+/// isinstance check on the hot path. An `Error` instance can never be
+/// extracted as one of these primitives, so the semantics are unchanged.
+fn extract_scalar_fast(ob: &Bound<PyAny>, type_: &Type) -> Option<Value> {
+    match type_ {
+        Type::Int => ob.extract::<i64>().ok().map(Value::Int),
+        Type::Float => ob.extract::<f64>().ok().map(|f| Value::Float(f.into())),
+        Type::Bool => ob.extract::<bool>().ok().map(Value::from),
+        Type::String => ob
+            .cast::<PyString>()
+            .ok()
+            .and_then(|s| s.to_str().ok().map(Value::from)),
+        _ => None,
+    }
+}
+
 pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
+    if let Some(value) = extract_scalar_fast(ob, type_) {
+        return Ok(value);
+    }
     if ob.is_instance_of::<Error>() {
         return Ok(Value::Error);
     }
@@ -458,14 +528,11 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
         Type::Float => ob.extract::<f64>().ok().map(Value::from),
         Type::Pointer => ob.extract::<Key>().ok().map(Value::from),
         Type::String => ob
-            .downcast::<PyString>()
+            .cast::<PyString>()
             .ok()
             .and_then(|s| s.to_str().ok())
             .map(Value::from),
-        Type::Bytes => ob
-            .downcast::<PyBytes>()
-            .ok()
-            .map(|b| Value::from(b.as_bytes())),
+        Type::Bytes => ob.cast::<PyBytes>().ok().map(|b| Value::from(b.as_bytes())),
         Type::DateTimeNaive | Type::DateTimeUtc => Some(extract_datetime(ob, type_)?),
         Type::Duration => {
             // XXX: check types, not names
@@ -518,7 +585,7 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
             Some(Value::from(values.as_slice()))
         }
         Type::PyObjectWrapper => {
-            let value = if let Ok(ob) = ob.downcast::<PyObjectWrapper>() {
+            let value = if let Ok(ob) = ob.cast::<PyObjectWrapper>() {
                 ob.get().as_internal(ob.py())
             } else {
                 PyObjectWrapper::new(ob.clone().unbind()).as_internal(ob.py())
@@ -536,8 +603,10 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
     extracted.ok_or_else(|| py_type_error(ob, type_))
 }
 
-impl<'py> FromPyObject<'py> for Value {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Value {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let py = ob.py();
         if ob.is_none() {
             Ok(Value::None)
@@ -545,9 +614,9 @@ impl<'py> FromPyObject<'py> for Value {
             Ok(Value::Error)
         } else if ob.is_exact_instance_of::<Pending>() {
             Ok(Value::Pending)
-        } else if let Ok(s) = ob.downcast_exact::<PyString>() {
+        } else if let Ok(s) = ob.cast_exact::<PyString>() {
             Ok(Value::from(s.to_str()?))
-        } else if let Ok(b) = ob.downcast_exact::<PyBytes>() {
+        } else if let Ok(b) = ob.cast_exact::<PyBytes>() {
             Ok(Value::from(b.as_bytes()))
         } else if ob.is_exact_instance_of::<PyInt>() {
             Ok(Value::Int(
@@ -560,14 +629,14 @@ impl<'py> FromPyObject<'py> for Value {
                     .expect("type conversion should work for float")
                     .into(),
             ))
-        } else if let Ok(b) = ob.downcast_exact::<PyBool>() {
+        } else if let Ok(b) = ob.cast_exact::<PyBool>() {
             Ok(Value::Bool(b.is_true()))
         } else if ob.is_exact_instance_of::<Pointer>() {
             Ok(Value::Pointer(
                 ob.extract::<Key>()
                     .expect("type conversion should work for Key"),
             ))
-        } else if is_pathway_json(ob)? {
+        } else if is_pathway_json(&ob)? {
             value_json_from_py_any(&ob.getattr(intern!(py, "value"))?)
         } else if let Ok(b) = ob.extract::<bool>() {
             // Fallback checks from now on
@@ -590,28 +659,28 @@ impl<'py> FromPyObject<'py> for Value {
             Ok(Value::Float(f.into()))
         } else if let Ok(k) = ob.extract::<Key>() {
             Ok(Value::Pointer(k))
-        } else if let Ok(s) = ob.downcast::<PyString>() {
+        } else if let Ok(s) = ob.cast::<PyString>() {
             Ok(s.to_str()?.into())
-        } else if let Ok(bytes) = ob.downcast::<PyBytes>() {
+        } else if let Ok(bytes) = ob.cast::<PyBytes>() {
             Ok(Value::Bytes(bytes.as_bytes().into()))
         } else if let Ok(t) = ob.extract::<Vec<Self>>() {
             Ok(Value::from(t.as_slice()))
-        } else if let Ok(dict) = ob.downcast::<PyDict>() {
-            value_json_from_py_any(dict)
-        } else if let Ok(ob) = ob.downcast::<PyObjectWrapper>() {
+        } else if let Ok(dict) = ob.cast::<PyDict>() {
+            value_json_from_py_any(dict.as_any())
+        } else if let Ok(ob) = ob.cast::<PyObjectWrapper>() {
             Ok(Value::from(ob.get().as_internal(ob.py())))
         } else {
             // XXX: check types, not names
             let type_name_bound = ob.get_type().qualname()?;
             let type_name = type_name_bound.to_str()?;
             if type_name == "datetime" {
-                return value_from_python_datetime(ob);
+                return value_from_python_datetime(&ob);
             } else if type_name == "timedelta" {
-                return value_from_python_timedelta(ob);
+                return value_from_python_timedelta(&ob);
             } else if matches!(type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
-                return value_from_pandas_timestamp(ob);
+                return value_from_pandas_timestamp(&ob);
             } else if matches!(type_name, "Timedelta" | "Duration") {
-                return value_from_pandas_timedelta(ob);
+                return value_from_pandas_timedelta(&ob);
             }
 
             if let Ok(vec) = ob.extract::<Vec<Bound<PyAny>>>() {
@@ -671,8 +740,10 @@ impl<'py> IntoPyObject<'py> for Value {
     }
 }
 
-impl<'py> FromPyObject<'py> for Reducer {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Reducer {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReducer>>()?.0.clone())
     }
 }
@@ -686,8 +757,10 @@ impl<'py> IntoPyObject<'py> for Reducer {
     }
 }
 
-impl<'py> FromPyObject<'py> for Type {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for Type {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PathwayType>>()?.0.clone())
     }
 }
@@ -701,8 +774,10 @@ impl<'py> IntoPyObject<'py> for Type {
     }
 }
 
-impl<'py> FromPyObject<'py> for ReadMethod {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ReadMethod {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReadMethod>>()?.0)
     }
 }
@@ -716,8 +791,10 @@ impl<'py> IntoPyObject<'py> for ReadMethod {
     }
 }
 
-impl<'py> FromPyObject<'py> for ConnectorMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ConnectorMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyConnectorMode>>()?.0)
     }
 }
@@ -731,8 +808,10 @@ impl<'py> IntoPyObject<'py> for ConnectorMode {
     }
 }
 
-impl<'py> FromPyObject<'py> for SslMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SslMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySslMode>>()?.0)
     }
 }
@@ -746,8 +825,10 @@ impl<'py> IntoPyObject<'py> for SslMode {
     }
 }
 
-impl<'py> FromPyObject<'py> for SessionType {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SessionType {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySessionType>>()?.0)
     }
 }
@@ -761,8 +842,10 @@ impl<'py> IntoPyObject<'py> for SessionType {
     }
 }
 
-impl<'py> FromPyObject<'py> for PythonConnectorEventType {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for PythonConnectorEventType {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyPythonConnectorEventType>>()?.0)
     }
 }
@@ -776,8 +859,10 @@ impl<'py> IntoPyObject<'py> for PythonConnectorEventType {
     }
 }
 
-impl<'py> FromPyObject<'py> for DebeziumDBType {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for DebeziumDBType {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyDebeziumDBType>>()?.0)
     }
 }
@@ -791,8 +876,10 @@ impl<'py> IntoPyObject<'py> for DebeziumDBType {
     }
 }
 
-impl<'py> FromPyObject<'py> for KeyGenerationPolicy {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for KeyGenerationPolicy {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyKeyGenerationPolicy>>()?.0)
     }
 }
@@ -806,8 +893,10 @@ impl<'py> IntoPyObject<'py> for KeyGenerationPolicy {
     }
 }
 
-impl<'py> FromPyObject<'py> for MonitoringLevel {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for MonitoringLevel {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyMonitoringLevel>>()?.0)
     }
 }
@@ -821,8 +910,10 @@ impl<'py> IntoPyObject<'py> for MonitoringLevel {
     }
 }
 
-impl<'py> FromPyObject<'py> for TableWriterInitMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for TableWriterInitMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyTableWriterInitMode>>()?.0)
     }
 }
@@ -842,7 +933,7 @@ impl From<EngineError> for PyErr {
             Ok(error) => return error,
             Err(other) => error = other,
         }
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if let EngineError::WithTrace { inner, trace } = error {
                 let inner = PyErr::from(EngineError::from(inner));
                 let args = (inner, trace);
@@ -893,9 +984,12 @@ fn check_identity<T>(a: &Py<T>, b: &Py<T>, msg: &'static str) -> PyResult<()> {
 
 fn from_py_iterable<'py, T>(iterable: &Bound<'py, PyAny>) -> PyResult<Vec<T>>
 where
-    T: FromPyObject<'py>,
+    T: FromPyObjectOwned<'py>,
 {
-    iterable.try_iter()?.map(|obj| obj?.extract()).collect()
+    iterable
+        .try_iter()?
+        .map(|obj| obj?.extract().map_err(Into::into))
+        .collect()
 }
 
 fn engine_tables_from_py_iterable(iterable: &Bound<PyAny>) -> PyResult<Vec<EngineLegacyTable>> {
@@ -912,7 +1006,7 @@ pub fn generic_alias_class_getitem<'py>(
     cls: &Bound<'py, PyType>,
     item: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+    static GENERIC_ALIAS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     let py = cls.py();
     GENERIC_ALIAS
@@ -937,11 +1031,11 @@ impl Pointer {
     }
 
     pub fn __hash__(&self) -> usize {
-        self.0 .0 as usize
+        self.0.as_impl() as usize
     }
 
     pub fn __int__(&self) -> KeyImpl {
-        self.0 .0
+        self.0.as_impl()
     }
 
     pub fn __richcmp__(&self, other: &Bound<PyAny>, op: CompareOp) -> Py<PyAny> {
@@ -973,15 +1067,15 @@ impl Pointer {
 #[pyclass(module = "pathway.engine", frozen)]
 struct PyObjectWrapper {
     #[pyo3(get)]
-    value: PyObject,
-    serializer: Option<PyObject>,
+    value: Py<PyAny>,
+    serializer: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl PyObjectWrapper {
     #[new]
     #[pyo3(signature = (value))]
-    fn new(value: PyObject) -> Self {
+    fn new(value: Py<PyAny>) -> Self {
         Self {
             value,
             serializer: None,
@@ -990,7 +1084,7 @@ impl PyObjectWrapper {
 
     #[staticmethod]
     #[pyo3(signature = (value, *, serializer=None), name="_create_with_serializer")]
-    fn create_with_serializer(value: PyObject, serializer: Option<PyObject>) -> Self {
+    fn create_with_serializer(value: Py<PyAny>, serializer: Option<Py<PyAny>>) -> Self {
         Self { value, serializer }
     }
 
@@ -1006,7 +1100,7 @@ impl PyObjectWrapper {
         generic_alias_class_getitem(cls, item)
     }
 
-    fn __getnewargs__(&self, py: Python<'_>) -> (PyObject,) {
+    fn __getnewargs__(&self, py: Python<'_>) -> (Py<PyAny>,) {
         (self.value.clone_ref(py),)
     }
 }
@@ -1045,8 +1139,10 @@ impl PyWindow {
     }
 }
 
-impl<'py> FromPyObject<'py> for WindowProperties {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for WindowProperties {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyWindow>>()?.inner.clone())
     }
 }
@@ -1124,7 +1220,7 @@ impl PyReducer {
 
 fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {
     Arc::new(move |state, values| {
-        Python::with_gil(|py| Ok(combine.bind(py).call1((state, values))?.extract()?))
+        Python::attach(|py| Ok(combine.bind(py).call1((state, values))?.extract()?))
     })
 }
 
@@ -1151,8 +1247,10 @@ impl PyConnectorGroupDescriptor {
     }
 }
 
-impl<'py> FromPyObject<'py> for ConnectorGroupDescriptor {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ConnectorGroupDescriptor {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyConnectorGroupDescriptor>>()?.0.clone())
     }
 }
@@ -1190,8 +1288,10 @@ impl PyReducerData {
     }
 }
 
-impl<'py> FromPyObject<'py> for ReducerData {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ReducerData {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReducerData>>()?.0.clone())
     }
 }
@@ -1218,8 +1318,10 @@ impl PyExpressionData {
     }
 }
 
-impl<'py> FromPyObject<'py> for ExpressionData {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ExpressionData {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyExpressionData>>()?.0.clone())
     }
 }
@@ -1264,8 +1366,10 @@ impl PyUnaryOperator {
     pub const NEG: UnaryOperator = UnaryOperator::Neg;
 }
 
-impl<'py> FromPyObject<'py> for UnaryOperator {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for UnaryOperator {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyUnaryOperator>>()?.0)
     }
 }
@@ -1323,8 +1427,10 @@ impl PyBinaryOperator {
     pub const MATMUL: BinaryOperator = BinaryOperator::MatMul;
 }
 
-impl<'py> FromPyObject<'py> for BinaryOperator {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for BinaryOperator {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyBinaryOperator>>()?.0)
     }
 }
@@ -1394,6 +1500,48 @@ macro_rules! binary_expr {
             }
         }
     };
+}
+
+/// Calls a Python UDF with the given row of `Value`s.
+///
+/// When the interpreter API allows it, uses `PyObject_Vectorcall`, which
+/// skips the intermediate args tuple allocation and lets CPython use the
+/// fastest calling convention for the callee.
+#[cfg(any(Py_3_12, all(Py_3_11, not(Py_LIMITED_API))))]
+fn call_python_udf<'py>(
+    py: Python<'py>,
+    function: &Py<PyAny>,
+    args: &[Value],
+) -> PyResult<Bound<'py, PyAny>> {
+    use smallvec::SmallVec;
+    let converted: SmallVec<[Bound<'py, PyAny>; 4]> = args
+        .iter()
+        .map(|v| v.into_pyobject(py))
+        .collect::<PyResult<_>>()?;
+    // One extra leading slot for PY_VECTORCALL_ARGUMENTS_OFFSET.
+    let mut ptrs: SmallVec<[*mut pyo3::ffi::PyObject; 5]> =
+        SmallVec::with_capacity(converted.len() + 1);
+    ptrs.push(std::ptr::null_mut());
+    ptrs.extend(converted.iter().map(Bound::as_ptr));
+    unsafe {
+        let result = pyo3::ffi::PyObject_Vectorcall(
+            function.as_ptr(),
+            ptrs.as_ptr().add(1),
+            converted.len() | pyo3::ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+            std::ptr::null_mut(),
+        );
+        Bound::from_owned_ptr_or_err(py, result)
+    }
+}
+
+#[cfg(not(any(Py_3_12, all(Py_3_11, not(Py_LIMITED_API)))))]
+fn call_python_udf<'py>(
+    py: Python<'py>,
+    function: &Py<PyAny>,
+    args: &[Value],
+) -> PyResult<Bound<'py, PyAny>> {
+    let args = PyTuple::new(py, args)?;
+    function.bind(py).call1(args)
 }
 
 fn batch_apply(
@@ -1471,7 +1619,7 @@ fn start_async_task(
     event_loop: &Py<PyAny>,
     function: &Py<PyAny>,
     args: Bound<'_, PyTuple>,
-) -> PyResult<impl Future<Output = PyResult<PyObject>> + Send> {
+) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send> {
     let py = args.py();
     let event_loop = event_loop.clone_ref(py);
     let awaitable = function.call1(py, args)?;
@@ -1513,7 +1661,7 @@ impl PyExpression {
         let n_args = args.len();
         let expression = if let Some(max_batch_size) = max_batch_size {
             let logic = move |batches: Vec<Vec<Vec<Value>>>| {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     batches
                         .into_iter()
                         .map(|batch| {
@@ -1538,16 +1686,15 @@ impl PyExpression {
             AnyExpression::Apply(func, args.into())
         } else {
             let func = Box::new(move |input: &[&[Value]]| {
-                Python::with_gil(|py| -> Vec<DynResult<Value>> {
+                Python::attach(|py| -> Vec<DynResult<Value>> {
                     input
                         .iter()
                         .map(|input_i| {
                             if propagate_none && input_i.iter().any(|a| matches!(a, Value::None)) {
                                 Ok(Value::None)
                             } else {
-                                let args = PyTuple::new(py, *input_i)?;
-                                let result = function.call1(py, args)?;
-                                Ok(extract_value(result.bind(py), &dtype)?)
+                                let result = call_python_udf(py, &function, input_i)?;
+                                Ok(extract_value(&result, &dtype)?)
                             }
                         })
                         .collect()
@@ -1581,7 +1728,7 @@ impl PyExpression {
                 let future = if !input.is_empty() && input[0].is_empty() {
                     None
                 } else {
-                    Some(Python::with_gil(|py| {
+                    Some(Python::attach(|py| {
                         start_async_task(&event_loop, &function, PyTuple::new(py, input)?)
                     }))
                 };
@@ -1589,7 +1736,7 @@ impl PyExpression {
                 Box::pin(async {
                     if let Some(future) = future {
                         let results = future?.await?;
-                        Python::with_gil(|py| {
+                        Python::attach(|py| {
                             Ok(results
                                 .extract::<Vec<Bound<PyAny>>>(py)?
                                 .into_iter()
@@ -1628,7 +1775,7 @@ impl PyExpression {
                     // Thanks to that only a single future type is returned and there's no need to Box the closure.
                     None
                 } else {
-                    Some(Python::with_gil(|py| {
+                    Some(Python::attach(|py| {
                         start_async_task(&event_loop, &function, PyTuple::new(py, input_i)?)
                     }))
                 };
@@ -1637,7 +1784,7 @@ impl PyExpression {
                 Box::pin(async {
                     if let Some(future) = future {
                         let result = future?.await?;
-                        Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
+                        Python::attach(move |py| Ok(extract_value(result.bind(py), &dtype)?))
                     } else {
                         Ok(Value::None)
                     }
@@ -2204,8 +2351,10 @@ impl PyFieldSource {
     pub const PAYLOAD: FieldSource = FieldSource::Payload;
 }
 
-impl<'py> FromPyObject<'py> for FieldSource {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for FieldSource {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyFieldSource>>()?.0)
     }
 }
@@ -2265,7 +2414,7 @@ impl PySslMode {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct TlsSettings {
     #[pyo3(get)]
     mode: SslMode,
@@ -2399,7 +2548,13 @@ pub struct Universe {
 impl Universe {
     fn new<'py>(scope: &Bound<'py, Scope>, handle: UniverseHandle) -> PyResult<Bound<'py, Self>> {
         let py = scope.py();
-        if let Some(universe) = scope.borrow().universes.get(py).borrow().get(&handle) {
+        if let Some(universe) = scope
+            .borrow()
+            .universes
+            .lock_py_attached(py)
+            .unwrap()
+            .get(&handle)
+        {
             return Ok(universe.bind(py).clone());
         }
         let res = Bound::new(
@@ -2412,8 +2567,8 @@ impl Universe {
         scope
             .borrow()
             .universes
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone().unbind());
         Ok(res)
     }
@@ -2431,9 +2586,9 @@ pub struct ComplexColumn;
 
 impl ComplexColumn {
     fn output_universe(self_: &Bound<Self>) -> Option<Py<Universe>> {
-        if let Ok(_column) = self_.downcast_exact::<Column>() {
+        if let Ok(_column) = self_.cast_exact::<Column>() {
             None
-        } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
+        } else if let Ok(computer) = self_.cast_exact::<Computer>() {
             let py = computer.py();
             let computer = computer.get();
             computer.is_output.then(|| computer.universe.clone_ref(py))
@@ -2443,9 +2598,9 @@ impl ComplexColumn {
     }
 
     fn to_engine(self_: &Bound<Self>) -> EngineComplexColumn {
-        if let Ok(column) = self_.downcast_exact::<Column>() {
+        if let Ok(column) = self_.cast_exact::<Column>() {
             EngineComplexColumn::Column(column.borrow().handle)
-        } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
+        } else if let Ok(computer) = self_.cast_exact::<Computer>() {
             Computer::to_engine(computer)
         } else {
             unreachable!("Unknown ComplexColumn subclass");
@@ -2468,7 +2623,7 @@ impl Column {
         let py = universe.py();
         let universe_ref = universe.borrow();
         let scope = universe_ref.scope.borrow(py);
-        if let Some(column) = scope.columns.get(py).borrow().get(&handle) {
+        if let Some(column) = scope.columns.lock_py_attached(py).unwrap().get(&handle) {
             let column = column.bind(py).clone();
             assert!(column.get().universe.is(universe));
             return Ok(column);
@@ -2485,8 +2640,8 @@ impl Column {
         )?;
         scope
             .columns
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone().unbind());
         Ok(res)
     }
@@ -2583,7 +2738,13 @@ pub struct Table {
 impl Table {
     fn new(scope: &Bound<Scope>, handle: TableHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
-        if let Some(table) = scope.borrow().tables.get(py).borrow().get(&handle) {
+        if let Some(table) = scope
+            .borrow()
+            .tables
+            .lock_py_attached(py)
+            .unwrap()
+            .get(&handle)
+        {
             return Ok(table.clone_ref(py));
         }
         let res = Py::new(
@@ -2596,8 +2757,8 @@ impl Table {
         scope
             .borrow()
             .tables
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone_ref(py));
         Ok(res)
     }
@@ -2612,7 +2773,13 @@ pub struct ErrorLog {
 impl ErrorLog {
     fn new(scope: &Bound<Scope>, handle: ErrorLogHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
-        if let Some(error_log) = scope.borrow().error_logs.get(py).borrow().get(&handle) {
+        if let Some(error_log) = scope
+            .borrow()
+            .error_logs
+            .lock_py_attached(py)
+            .unwrap()
+            .get(&handle)
+        {
             return Ok(error_log.clone_ref(py));
         }
         let res = Py::new(
@@ -2625,8 +2792,8 @@ impl ErrorLog {
         scope
             .borrow()
             .error_logs
-            .get(py)
-            .borrow_mut()
+            .lock_py_attached(py)
+            .unwrap()
             .insert(handle, res.clone_ref(py));
         Ok(res)
     }
@@ -2650,9 +2817,7 @@ mod error {
     }
 
     pub static ERROR: Lazy<Py<Error>> = Lazy::new(|| {
-        Python::with_gil(|py| {
-            Py::new(py, Error(InnerError)).expect("creating ERROR should not fail")
-        })
+        Python::attach(|py| Py::new(py, Error(InnerError)).expect("creating ERROR should not fail"))
     });
 }
 use error::{Error, ERROR};
@@ -2674,15 +2839,17 @@ mod pending {
     }
 
     pub static PENDING: Lazy<Py<Pending>> = Lazy::new(|| {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             Py::new(py, Pending(InnerPending)).expect("creating PENDING should not fail")
         })
     });
 }
 use pending::{Pending, PENDING};
 
-impl<'py> FromPyObject<'py> for ColumnPath {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for ColumnPath {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let py = ob.py();
         if ob.getattr(intern!(py, "is_key")).is_ok_and(|is_key| {
             is_key
@@ -2705,7 +2872,7 @@ impl<'py> FromPyObject<'py> for ColumnPath {
 }
 
 static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.MissingValueError").unwrap(),
@@ -2718,7 +2885,7 @@ static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 });
 
 static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.EngineError").unwrap(),
@@ -2731,7 +2898,7 @@ static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 });
 
 static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.EngineErrorWithTrace").unwrap(),
@@ -2744,7 +2911,7 @@ static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 });
 
 static OTHER_WORKER_ERROR: Lazy<Py<PyType>> = Lazy::new(|| {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         PyErr::new_type(
             py,
             &CString::new("pathway.engine.OtherWorkerError").unwrap(),
@@ -2890,7 +3057,7 @@ impl Computer {
             EngineComputer::Method {
                 logic: Box::new(move |engine_context, args| {
                     let engine_context = SendWrapper::new(engine_context);
-                    Ok(Python::with_gil(|py| {
+                    Ok(Python::attach(|py| {
                         let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, args)
                     })?)
@@ -2906,7 +3073,7 @@ impl Computer {
             EngineComputer::Attribute {
                 logic: Box::new(move |engine_context| {
                     let engine_context = SendWrapper::new(engine_context);
-                    Ok(Python::with_gil(|py| {
+                    Ok(Python::attach(|py| {
                         let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, &[])
                     })?)
@@ -2929,47 +3096,53 @@ pub struct Scope {
     license: Option<License>,
     graph: SendWrapper<ScopedGraph>,
     is_persisted: bool,
+    // Whether the persistence mode actually snapshots the inputs: the
+    // UDF-caching mode does not, so the restrictions protecting the input
+    // snapshots (e.g. the deduced-schema guard) do not apply under it.
+    is_input_persisted: bool,
     timestamp_at_start: Timestamp,
 
     // empty_universe: Lazy<Py<Universe>>,
-    universes: GILProtected<RefCell<HashMap<UniverseHandle, Py<Universe>>>>,
-    columns: GILProtected<RefCell<HashMap<ColumnHandle, Py<Column>>>>,
-    tables: GILProtected<RefCell<HashMap<TableHandle, Py<Table>>>>,
-    error_logs: GILProtected<RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>>,
-    unique_names: GILProtected<RefCell<HashSet<UniqueName>>>,
-    event_loop: PyObject,
-    total_connectors: GILProtected<RefCell<usize>>,
+    universes: Mutex<HashMap<UniverseHandle, Py<Universe>>>,
+    columns: Mutex<HashMap<ColumnHandle, Py<Column>>>,
+    tables: Mutex<HashMap<TableHandle, Py<Table>>>,
+    error_logs: Mutex<HashMap<ErrorLogHandle, Py<ErrorLog>>>,
+    unique_names: Mutex<HashSet<UniqueName>>,
+    event_loop: Py<PyAny>,
+    total_connectors: Mutex<usize>,
 }
 
 impl Scope {
     fn new(
         parent: Option<Py<Self>>,
-        event_loop: PyObject,
+        event_loop: Py<PyAny>,
         license: Option<License>,
         is_persisted: bool,
+        is_input_persisted: bool,
         timestamp_at_start: Timestamp,
     ) -> Self {
         Scope {
             parent,
             license,
             is_persisted,
+            is_input_persisted,
             graph: SendWrapper::new(ScopedGraph::new()),
-            universes: GILProtected::new(RefCell::new(HashMap::new())),
-            columns: GILProtected::new(RefCell::new(HashMap::new())),
-            tables: GILProtected::new(RefCell::new(HashMap::new())),
-            error_logs: GILProtected::new(RefCell::new(HashMap::new())),
-            unique_names: GILProtected::new(RefCell::new(HashSet::new())),
+            universes: Mutex::new(HashMap::new()),
+            columns: Mutex::new(HashMap::new()),
+            tables: Mutex::new(HashMap::new()),
+            error_logs: Mutex::new(HashMap::new()),
+            unique_names: Mutex::new(HashSet::new()),
             event_loop,
-            total_connectors: GILProtected::new(RefCell::new(0)),
+            total_connectors: Mutex::new(0),
             timestamp_at_start,
         }
     }
 
     fn clear_caches(&self, py: Python<'_>) {
-        self.universes.get(py).borrow_mut().clear();
-        self.columns.get(py).borrow_mut().clear();
-        self.tables.get(py).borrow_mut().clear();
-        self.error_logs.get(py).borrow_mut().clear();
+        self.universes.lock_py_attached(py).unwrap().clear();
+        self.columns.lock_py_attached(py).unwrap().clear();
+        self.tables.lock_py_attached(py).unwrap().clear();
+        self.error_logs.lock_py_attached(py).unwrap().clear();
     }
 
     fn register_unique_name(
@@ -2980,8 +3153,8 @@ impl Scope {
         if let Some(unique_name) = &unique_name {
             let is_unique_id = self
                 .unique_names
-                .get(py)
-                .borrow_mut()
+                .lock_py_attached(py)
+                .unwrap()
                 .insert((*unique_name).clone());
             if !is_unique_id {
                 return Err(PyValueError::new_err(format!(
@@ -3016,7 +3189,7 @@ impl Scope {
     }
 
     #[getter]
-    pub fn event_loop(&self, py: Python<'_>) -> PyObject {
+    pub fn event_loop(&self, py: Python<'_>) -> Py<PyAny> {
         self.event_loop.clone_ref(py)
     }
 
@@ -3080,15 +3253,26 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
-        *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
+        *self_
+            .borrow()
+            .total_connectors
+            .lock_py_attached(py)
+            .unwrap() += 1;
+        // The parser is built first: it is the one that knows whether the
+        // source metadata is a part of its input (see
+        // `Parser::needs_source_metadata`), and its construction is cheap
+        // and connectionless, unlike the reader's.
+        let parser_impl = data_format
+            .borrow()
+            .construct_parser_for_storage(py, &data_source.borrow())?;
+
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
             &self_.borrow(),
             &properties.borrow(),
+            parser_impl.needs_source_metadata(),
         )?;
-
-        let parser_impl = data_format.borrow().construct_parser(py)?;
 
         let column_properties = properties.borrow().column_properties();
         let table_handle = self_.borrow().graph.connector_table(
@@ -3133,6 +3317,7 @@ impl Scope {
                         Some(self_.clone().unbind()),
                         self_.borrow().event_loop.clone_ref(py),
                         None,
+                        false,
                         false,
                         Timestamp::new_from_current_time(),
                     ),
@@ -3197,7 +3382,7 @@ impl Scope {
             BatchWrapper::WithGil,
             Arc::new(Expression::Any(AnyExpression::Apply(
                 Box::new(move |input| {
-                    Python::with_gil(|py| -> Vec<DynResult<_>> {
+                    Python::attach(|py| -> Vec<DynResult<_>> {
                         input
                             .iter()
                             .map(|input_i| {
@@ -3599,7 +3784,7 @@ impl Scope {
             .try_iter()?
             .map(|column| {
                 let column = column?;
-                let column = column.downcast()?;
+                let column = column.cast()?;
                 let restricted = Self::restrict_column(self_, universe, column)?;
                 Ok(restricted.unbind())
             })
@@ -3785,12 +3970,24 @@ impl Scope {
         self_
             .borrow()
             .register_unique_name(unique_name.as_ref(), py)?;
+        let worker_index = self_.borrow().worker_index();
+        // Whether the output requests a global within-minibatch order. A writer
+        // that needs a single worker to honor that order (e.g. MongoDB) reads
+        // this when deciding `single_threaded()`; writers that don't care ignore it.
+        let sorted_output = sort_by_indices.is_some();
+        // The formatter is built first: it is the one that knows the schema
+        // of the payloads it produces (see `Formatter::wire_schema`), which
+        // the sinks with a schema registry declare to their target.
+        let format_impl = data_format.borrow().construct_formatter(py)?;
+
         let sink_impl = data_sink.borrow().construct_writer(
             py,
             &data_format.borrow(),
             self_.borrow().license.as_ref(),
+            worker_index,
+            sorted_output,
+            format_impl.wire_schema(),
         )?;
-        let format_impl = data_format.borrow().construct_formatter(py)?;
 
         self_.borrow().graph.output_table(
             sink_impl,
@@ -3951,12 +4148,17 @@ impl Scope {
         let py = self_.py();
 
         let callbacks = build_subscribe_callback(on_change, on_time_end, on_end, None);
-        *self_.borrow().total_connectors.get(py).borrow_mut() += 1;
+        *self_
+            .borrow()
+            .total_connectors
+            .lock_py_attached(py)
+            .unwrap() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
             py,
             &data_format.borrow(),
             &self_.borrow(),
             &properties,
+            false,
         )?;
         assert_eq!(parallel_readers, 1); // python connector that has parallel_readers == 1 has to be used
 
@@ -4056,7 +4258,7 @@ fn build_subscribe_callback(
 
     let builder = if let Some(event_loop) = event_loop {
         builder.on_data_async(Box::new(move |key, values, time, diff| {
-            let future = Python::with_gil(|py| {
+            let future = Python::attach(|py| {
                 let args = (key, PyTuple::new(py, values)?, time, diff).into_pyobject(py)?;
                 start_async_task(&event_loop, &on_change, args)
             });
@@ -4070,7 +4272,7 @@ fn build_subscribe_callback(
         builder
             .wrapper(BatchWrapper::WithGil)
             .on_data(Box::new(move |key, values, time, diff| {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     on_change.call1(py, (key, PyTuple::new(py, values)?, time, diff))?;
                     Ok(())
                 })
@@ -4079,13 +4281,13 @@ fn build_subscribe_callback(
 
     builder
         .on_time_end(Box::new(move |new_time| {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 on_time_end.call1(py, (new_time,))?;
                 Ok(())
             })
         }))
         .on_end(Box::new(move || {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 on_end.call0(py)?;
                 Ok(())
             })
@@ -4161,12 +4363,13 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> Vec<DataRow> {
     telemetry_config = TelemetryConfig::default(),
     terminate_on_error = true,
     max_expression_batch_size = 1024,
+    udf_cache_directory = None,
 ))]
 pub fn run_with_new_graph(
     py: Python,
-    logic: PyObject,
-    event_loop: PyObject,
-    stats_monitor: Option<PyObject>,
+    logic: Py<PyAny>,
+    event_loop: Py<PyAny>,
+    stats_monitor: Option<Py<PyAny>>,
     ignore_asserts: bool,
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
@@ -4175,6 +4378,7 @@ pub fn run_with_new_graph(
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
     max_expression_batch_size: usize,
+    udf_cache_directory: Option<PathBuf>,
 ) -> PyResult<Vec<Vec<DataRow>>> {
     LOGGING_RESET_HANDLE.reset();
     defer! {
@@ -4183,16 +4387,6 @@ pub fn run_with_new_graph(
     let config = Config::from_env()
         .map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.bind(py).clone(), msg.to_string()))?;
     let license = License::new(license_key)?;
-    let persistence_config = {
-        if let Some(persistence_config) = persistence_config {
-            let persistence_config = persistence_config.prepare()?;
-            persistence_config.validate(&license)?;
-            Some(persistence_config)
-        } else {
-            None
-        }
-    };
-    let is_persisted = persistence_config.is_some();
     // All workers must agree on the timestamp of the initial ("start-up") batch.
     // Within one process this is naturally shared, but separate processes of the
     // same run each call `run` on their own, so the launcher (`pathway spawn`, the
@@ -4204,6 +4398,21 @@ pub fn run_with_new_graph(
         .map_or_else(Timestamp::new_from_current_time, |ms| {
             Timestamp((ms / 2) * 2)
         });
+    let persistence_config = {
+        if let Some(persistence_config) = persistence_config {
+            let persistence_config = persistence_config
+                .prepare()?
+                .with_run_start_timestamp(timestamp_at_start);
+            persistence_config.validate(&license)?;
+            Some(persistence_config)
+        } else {
+            None
+        }
+    };
+    let is_persisted = persistence_config.is_some();
+    let is_input_persisted = persistence_config
+        .as_ref()
+        .is_some_and(|config| !matches!(config.persistence_mode(), PersistenceMode::UdfCaching));
 
     let telemetry_config = EngineTelemetryConfig::create(
         &license,
@@ -4217,12 +4426,12 @@ pub fn run_with_new_graph(
 
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         let scope_license = license.clone();
-        py.allow_threads(|| {
+        py.detach(|| {
             run_with_new_dataflow_graph(
                 move |graph| {
                     let thread_state = PythonThreadState::new();
 
-                    let captured_tables = Python::with_gil(|py| {
+                    let captured_tables = Python::attach(|py| {
                         let our_scope = &Bound::new(
                             py,
                             Scope::new(
@@ -4230,6 +4439,7 @@ pub fn run_with_new_graph(
                                 event_loop.clone_ref(py),
                                 Some(scope_license.clone()),
                                 is_persisted,
+                                is_input_persisted,
                                 timestamp_at_start,
                             ),
                         )?;
@@ -4257,6 +4467,7 @@ pub fn run_with_new_graph(
                 telemetry_config,
                 terminate_on_error,
                 max_expression_batch_size,
+                udf_cache_directory,
             )
         })
     })??;
@@ -4301,7 +4512,7 @@ pub fn ref_scalar_with_instance(
 
 #[pyfunction]
 pub fn unsafe_make_pointer(value: KeyImpl) -> Key {
-    Key(value)
+    Key::from_impl(value)
 }
 
 #[pyfunction]
@@ -4320,10 +4531,53 @@ pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
     Ok(value)
 }
 
-#[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyfunction]
+#[pyo3(signature = (profile = None))]
+pub fn resolve_aws_credentials(
+    py: Python,
+    profile: Option<String>,
+) -> PyResult<Option<(String, String, Option<String>)>> {
+    py.detach(|| {
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let credentials = runtime.block_on(async {
+            // Environment credentials are deliberately not consulted here: the
+            // Python caller handles them from its own env snapshot, while the
+            // ambient process env may hold keys leaked by delta-rs
+            // (S3StorageOptions::from_map) for previously opened tables.
+            let profile_provider = ::aws_config::profile::ProfileFileCredentialsProvider::builder()
+                .profile_name(profile.as_deref().unwrap_or("default"))
+                .build();
+            let chain = ::aws_config::meta::credentials::CredentialsProviderChain::first_try(
+                "Profile",
+                profile_provider,
+            )
+            .or_else(
+                "Ecs",
+                ::aws_config::ecs::EcsCredentialsProvider::builder().build(),
+            )
+            .or_else(
+                "Imds",
+                ::aws_config::imds::credentials::ImdsCredentialsProvider::builder().build(),
+            );
+            chain.provide_credentials().await.ok()
+        });
+        Ok(credentials.map(|credentials| {
+            (
+                credentials.access_key_id().to_string(),
+                credentials.secret_access_key().to_string(),
+                credentials.session_token().map(ToString::to_string),
+            )
+        }))
+    })
+}
+
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct AzureBlobStorageSettings {
     account: String,
+    #[derivative(Debug = "ignore")]
     password: String,
     container: String,
 }
@@ -4341,13 +4595,7 @@ impl AzureBlobStorageSettings {
     }
 }
 
-impl AzureBlobStorageSettings {
-    fn credentials(&self) -> AzureStorageCredentials {
-        AzureStorageCredentials::access_key(self.account.clone(), self.password.clone())
-    }
-}
-
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone, Debug)]
 pub struct AwsS3Settings {
     bucket_name: Option<String>,
@@ -4442,7 +4690,7 @@ impl AwsS3Settings {
                     ))?,
             ),
             None,
-            None,
+            self.session_token.as_deref(),
             None,
         )
         .map_err(|err| {
@@ -4462,6 +4710,7 @@ impl AwsS3Settings {
             self.region.clone(),
             credentials,
         )
+        .map(|bucket| *bucket)
         .map_err(|err| {
             PyRuntimeError::new_err(format!("Failed to connect to private AWS bucket: {err}"))
         })
@@ -4495,7 +4744,10 @@ impl AwsS3Settings {
                                 .as_deref(),
                         )
                     })
-                    .or_else(|_| AwsCredentials::from_instance_metadata());
+                    .or_else(|_| AwsCredentials::from_container_credentials_provider())
+                    // `true` skips the crate's new is-this-EC2 heuristic and attempts
+                    // the instance metadata endpoint unconditionally, as before.
+                    .or_else(|_| AwsCredentials::from_instance_metadata(true));
 
                 // first, try to deduce credentials from various sources
                 if let Ok(credentials) = aws_credentials {
@@ -4508,7 +4760,7 @@ impl AwsS3Settings {
         };
 
         if self.with_path_style {
-            bucket = bucket.with_path_style();
+            bucket = *bucket.with_path_style();
         }
 
         Ok(bucket)
@@ -4587,6 +4839,124 @@ impl ElasticSearchAuth {
     }
 }
 
+/// Connection parameters for the Qdrant output connector. Carried as one
+/// [`DataStorage`] field so the giant storage constructor stays untouched:
+/// the URL and (optional) API key locate the instance, `collection_name` names
+/// the target, and `batch_size` bounds the number of points sent per
+/// upsert/delete request. Which columns are written as vectors is not
+/// configured here: the writer introspects the collection's named vector slots
+/// and binds them to same-named table columns.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct QdrantParams {
+    url: String,
+    collection_name: String,
+    api_key: Option<String>,
+    batch_size: usize,
+}
+
+#[pymethods]
+impl QdrantParams {
+    #[new]
+    #[pyo3(signature = (url, collection_name, api_key = None, batch_size = 256))]
+    fn new(
+        url: String,
+        collection_name: String,
+        api_key: Option<String>,
+        batch_size: usize,
+    ) -> Self {
+        QdrantParams {
+            url,
+            collection_name,
+            api_key,
+            batch_size,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct PineconeParams {
+    api_key: String,
+    control_host: Option<String>,
+    index_name: String,
+    namespace: String,
+    vector_index: usize,
+    metadata_indices: Vec<usize>,
+}
+
+#[pymethods]
+impl PineconeParams {
+    #[new]
+    #[pyo3(signature = (api_key, index_name, vector_index, metadata_indices, namespace=String::new(), control_host=None))]
+    fn new(
+        api_key: String,
+        index_name: String,
+        vector_index: usize,
+        metadata_indices: Vec<usize>,
+        namespace: String,
+        control_host: Option<String>,
+    ) -> Self {
+        PineconeParams {
+            api_key,
+            control_host,
+            index_name,
+            namespace,
+            vector_index,
+            metadata_indices,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct WeaviateParams {
+    url: String,
+    collection_name: String,
+    pk_field: Option<String>,
+    vector_field: Option<String>,
+    api_key: Option<String>,
+    headers: HashMap<String, String>,
+    batch_size: usize,
+    concurrency: usize,
+}
+
+#[pymethods]
+impl WeaviateParams {
+    #[new]
+    #[pyo3(signature = (
+        url,
+        collection_name,
+        pk_field = None,
+        vector_field = None,
+        api_key = None,
+        headers = None,
+        batch_size = 100,
+        concurrency = 8,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        url: String,
+        collection_name: String,
+        pk_field: Option<String>,
+        vector_field: Option<String>,
+        api_key: Option<String>,
+        headers: Option<HashMap<String, String>>,
+        batch_size: usize,
+        concurrency: usize,
+    ) -> Self {
+        WeaviateParams {
+            url,
+            collection_name,
+            pk_field,
+            vector_field,
+            api_key,
+            headers: headers.unwrap_or_default(),
+            batch_size,
+            concurrency,
+        }
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Debug)]
 pub struct ElasticSearchParams {
@@ -4618,6 +4988,10 @@ impl ElasticSearchParams {
         let transport = TransportBuilder::new(conn_pool)
             .auth(creds)
             .disable_proxy()
+            // Whole-request cap from the shared socket-guard policy: without
+            // it a server whose TCP stays alive but which never answers
+            // (wedged process, stuck balancer) hangs the request forever.
+            .timeout(crate::connectors::socket_guard::HTTP_REQUEST_TIMEOUT)
             .build()
             .map_err(|e| {
                 PyValueError::new_err(format!(
@@ -4626,6 +5000,58 @@ impl ElasticSearchParams {
             })?;
 
         Ok(Elasticsearch::new(transport))
+    }
+}
+
+/// Connection and column-mapping parameters for the Chroma output connector.
+/// The role fields are column *names*; the writer resolves them to indices
+/// against the data format's value fields when it is constructed.
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug)]
+pub struct ChromaParams {
+    host: String,
+    port: u16,
+    ssl: bool,
+    headers: Option<HashMap<String, String>>,
+    tenant: String,
+    database: String,
+    collection_name: String,
+    primary_key_field: Option<String>,
+    embedding_field: String,
+    document_field: Option<String>,
+    metadata_fields: Vec<String>,
+}
+
+#[pymethods]
+impl ChromaParams {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        host: String,
+        port: u16,
+        ssl: bool,
+        headers: Option<HashMap<String, String>>,
+        tenant: String,
+        database: String,
+        collection_name: String,
+        primary_key_field: Option<String>,
+        embedding_field: String,
+        document_field: Option<String>,
+        metadata_fields: Vec<String>,
+    ) -> Self {
+        ChromaParams {
+            host,
+            port,
+            ssl,
+            headers,
+            tenant,
+            database,
+            collection_name,
+            primary_key_field,
+            embedding_field,
+            document_field,
+            metadata_fields,
+        }
     }
 }
 
@@ -4663,7 +5089,12 @@ impl ElasticSearchReaderParams {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, name = "DeltaOptimizerRule")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "DeltaOptimizerRule"
+)]
 pub struct PyDeltaOptimizerRule {
     field_name: String,
     time_format: String,
@@ -4713,8 +5144,40 @@ impl PyDeltaOptimizerRule {
     }
 }
 
+// The maximum size of an MQTT control packet allowed by the protocol
+// (`268_435_455` bytes, i.e. 256 MiB - 1). `rumqttc` defaults both the incoming
+// and outgoing packet size limits to a mere 10 KiB, which fails the pipeline on
+// perfectly valid larger payloads.
+const MQTT_MAX_PACKET_SIZE_BYTES: usize = 268_435_455;
+
+// The `ack_wait` of the auto-created JetStream consumer when persistence is
+// enabled. With deferred acknowledgements a message stays unacknowledged for
+// up to one checkpoint interval after delivery, and an expired `ack_wait`
+// makes the server redeliver it to a perfectly healthy pipeline - so the value
+// must comfortably exceed the checkpoint interval. It also bounds how soon the
+// server redelivers the genuinely unacknowledged tail after a crash, so it
+// shouldn't be excessive either.
+const NATS_PERSISTED_CONSUMER_ACK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+// Raise `rumqttc`'s 10 KiB incoming/outgoing packet size limits to the MQTT
+// protocol maximum, so that ordinary payloads larger than 10 KiB are transported
+// instead of crashing the connector. If the user pinned a packet size explicitly
+// in the connection URI, their choice is respected and left untouched.
+fn relax_mqtt_packet_size_limits(options: &mut MqttOptions, uri: &str) {
+    if !uri.contains("max_incoming_packet_size_bytes")
+        && !uri.contains("max_outgoing_packet_size_bytes")
+    {
+        options.set_max_packet_size(MQTT_MAX_PACKET_SIZE_BYTES, MQTT_MAX_PACKET_SIZE_BYTES);
+    }
+}
+
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, name = "MqttSettings")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "MqttSettings"
+)]
 pub struct MqttSettings {
     qos: MqttQoS,
     retain: bool,
@@ -4743,7 +5206,376 @@ impl MqttSettings {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "PulsarSettings"
+)]
+pub struct PulsarSettings {
+    auth_token: Option<String>,
+    oauth2_issuer_url: Option<String>,
+    oauth2_credentials_url: Option<String>,
+    oauth2_audience: Option<String>,
+    oauth2_scope: Option<String>,
+    subscription_type: Option<String>,
+    compression: Option<String>,
+    read_compacted: bool,
+    producer_name: Option<String>,
+    event_time_from_engine: bool,
+    deliver_after_millis: Option<u64>,
+}
+
+#[pymethods]
+impl PulsarSettings {
+    #[new]
+    #[pyo3(signature = (
+        auth_token = None,
+        oauth2_issuer_url = None,
+        oauth2_credentials_url = None,
+        oauth2_audience = None,
+        oauth2_scope = None,
+        subscription_type = None,
+        compression = None,
+        read_compacted = false,
+        producer_name = None,
+        event_time_from_engine = false,
+        deliver_after_millis = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        auth_token: Option<String>,
+        oauth2_issuer_url: Option<String>,
+        oauth2_credentials_url: Option<String>,
+        oauth2_audience: Option<String>,
+        oauth2_scope: Option<String>,
+        subscription_type: Option<String>,
+        compression: Option<String>,
+        read_compacted: bool,
+        producer_name: Option<String>,
+        event_time_from_engine: bool,
+        deliver_after_millis: Option<u64>,
+    ) -> Self {
+        Self {
+            auth_token,
+            oauth2_issuer_url,
+            oauth2_credentials_url,
+            oauth2_audience,
+            oauth2_scope,
+            subscription_type,
+            compression,
+            read_compacted,
+            producer_name,
+            event_time_from_engine,
+            deliver_after_millis,
+        }
+    }
+}
+
+/// Parses the producer-side compression codec from the Pulsar settings.
+/// Consumers need no counterpart: the client library recognizes the codec
+/// from the message metadata and decompresses transparently.
+fn parse_pulsar_compression(
+    settings: Option<&PulsarSettings>,
+) -> PyResult<Option<PulsarCompression>> {
+    let Some(requested) = settings.and_then(|settings| settings.compression.as_deref()) else {
+        return Ok(None);
+    };
+    match requested {
+        "lz4" => Ok(Some(
+            PulsarCompression::Lz4(PulsarCompressionLz4::default()),
+        )),
+        "zlib" => Ok(Some(PulsarCompression::Zlib(
+            PulsarCompressionZlib::default(),
+        ))),
+        "zstd" => Ok(Some(PulsarCompression::Zstd(
+            PulsarCompressionZstd::default(),
+        ))),
+        // Snappy is deliberately unsupported: the client library compresses
+        // it in the snappy *frame* format, while the other Pulsar clients use
+        // the *raw block* format — the messages would be unreadable for every
+        // non-Rust consumer of the topic.
+        "snappy" => Err(PyValueError::new_err(
+            "The \"snappy\" compression codec is not supported by the Pulsar \
+             connector: the underlying client library uses a snappy framing \
+             incompatible with the other Pulsar clients. Use \"lz4\", \"zlib\" \
+             or \"zstd\" instead",
+        )),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown Pulsar compression codec: {other:?}. Only \"lz4\", \"zlib\" \
+             and \"zstd\" are supported"
+        ))),
+    }
+}
+
+/// Builds a Pulsar reader in the partition-reader (Kafka-like) mode: the
+/// partitions of the topic are deterministically split between the workers
+/// (partition position modulo the effective reader count — the assignment the
+/// Kafka reader uses in static mode), and every partition is later consumed
+/// from an explicit position by its own pump task. Workers with an index at
+/// or above the returned parallelism do not construct a reader at all.
+#[allow(clippy::too_many_arguments)]
+fn construct_pulsar_partition_reader(
+    runtime: TokioRuntime,
+    client: Pulsar<TokioExecutor>,
+    topic: &str,
+    is_static: bool,
+    start_from_end: bool,
+    min_publish_timestamp_ms: Option<u64>,
+    with_metadata: bool,
+    reader_count: usize,
+    worker_index: usize,
+    connector_index: usize,
+) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    let num_partitions = runtime
+        .block_on(client.lookup_partitioned_topic_number(topic))
+        .map_err(|e| PyIOError::new_err(format!("Failed to look up the Pulsar topic: {e}")))?;
+    // 0 partitions means a non-partitioned topic: a single log,
+    // conventionally labeled as partition -1.
+    let all_partitions: Vec<i32> = if num_partitions == 0 {
+        vec![-1]
+    } else {
+        (0..i32::try_from(num_partitions).expect("partition count must fit i32")).collect()
+    };
+    let effective_readers = reader_count.min(all_partitions.len());
+    let my_partitions: Vec<i32> = all_partitions
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| position % effective_readers == worker_index)
+        .map(|(_, partition)| *partition)
+        .collect();
+    let mut reader = PulsarReader::new_with_partition_readers(
+        runtime,
+        client,
+        arcstr::ArcStr::from(topic),
+        my_partitions,
+        is_static,
+        start_from_end,
+        worker_index,
+        connector_index,
+        min_publish_timestamp_ms,
+        with_metadata,
+    );
+    if !is_static {
+        // A static read is defined by the snapshot taken at its start, so
+        // the partitions added later are outside of its message set anyway.
+        reader.watch_partition_count(num_partitions);
+    }
+    Ok((Box::new(reader), effective_readers))
+}
+
+/// Parses the streaming-mode subscription type from the Pulsar settings.
+///
+/// With "shared" (the default) and "`key_shared`" the broker distributes the
+/// topic between the workers (the equivalent of a Kafka consumer group),
+/// while "exclusive" and "failover" permit one active consumer, so the
+/// reader must be limited to a single worker — the second element of the
+/// returned pair. Static mode ignores this setting: it always reads through
+/// a one-shot non-durable exclusive subscription.
+fn parse_pulsar_subscription_type(
+    settings: Option<&PulsarSettings>,
+) -> PyResult<(PulsarSubType, bool)> {
+    let requested = settings
+        .and_then(|settings| settings.subscription_type.as_deref())
+        .unwrap_or("shared");
+    match requested {
+        "shared" => Ok((PulsarSubType::Shared, false)),
+        "key_shared" => Ok((PulsarSubType::KeyShared, false)),
+        "exclusive" => Ok((PulsarSubType::Exclusive, true)),
+        "failover" => Ok((PulsarSubType::Failover, true)),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown Pulsar subscription type: {other:?}. Only \"shared\", \
+             \"key_shared\", \"exclusive\" and \"failover\" are supported"
+        ))),
+    }
+}
+
+/// The automatically generated subscription name carries a per-run
+/// component: a fully deterministic name would make independent deployments
+/// reading one topic join a single shared subscription and silently split
+/// the stream between themselves, and a rerun of the pipeline would continue
+/// from the previous run's cursor instead of honoring `start_from`. The
+/// run's start timestamp is used instead of a random value because it is
+/// shared by all the workers of one process group, and the workers of a
+/// shared subscription must join under one name. It is NOT guaranteed to be
+/// shared across separately launched processes — which is why multi-process
+/// runs of the shared subscription types require an explicit
+/// `subscription_name` instead. Persistent pipelines never reach this path:
+/// they read through the partition-reader mechanism, which creates no
+/// broker-side subscriptions at all.
+fn auto_pulsar_subscription_name(scope: &Scope, connector_index: usize) -> String {
+    let run_nonce = scope.timestamp_at_start.0;
+    format!("pathway-reader-{connector_index}-{run_nonce}")
+}
+
+/// The auto-generated subscription name carries a per-run component that is
+/// only guaranteed to be shared within one process group: separate launchers
+/// (e.g. `pathway spawn` on several machines) stamp their own run
+/// timestamps, so each process group would sit on its own subscription and
+/// read the whole topic independently, silently duplicating every row. The
+/// same reason Kafka requires an explicit `group.id`.
+/// An idle reader for the workers that must not connect to the broker (see
+/// [`PulsarReader::new_idle`]).
+fn idle_pulsar_reader(
+    runtime: TokioRuntime,
+    topic: &str,
+    worker_index: usize,
+    connector_index: usize,
+) -> Box<dyn ReaderBuilder> {
+    Box::new(PulsarReader::new_idle(
+        runtime,
+        arcstr::ArcStr::from(topic),
+        worker_index,
+        connector_index,
+    ))
+}
+
+fn multiprocess_auto_subscription_error(settings: Option<&PulsarSettings>) -> PyErr {
+    PyValueError::new_err(format!(
+        "The {:?} Pulsar subscription type requires an explicit subscription_name in a \
+         multi-process run: every process of the pipeline must attach to one shared \
+         subscription, and the automatically generated name is not guaranteed to be \
+         the same across processes",
+        settings
+            .and_then(|settings| settings.subscription_type.as_deref())
+            .unwrap_or("shared"),
+    ))
+}
+
+/// Decides the reading mechanism. The partition-reader (Kafka-like) mode is
+/// the only one whose restart recovery replays each partition from the
+/// positions saved in the checkpoint, independently of broker-side cursors —
+/// so it is the only mode allowed with persistence (and the implicit choice
+/// when persistence is on). The static mode uses the same mechanism: its
+/// snapshot semantics are position-based too.
+fn pulsar_partition_readers_requested(
+    settings: Option<&PulsarSettings>,
+    is_static: bool,
+    is_persisted: bool,
+    start_from_end: bool,
+) -> PyResult<bool> {
+    let requested = settings.and_then(|settings| settings.subscription_type.as_deref());
+    let use_partition_readers =
+        is_static || matches!(requested, Some("reader")) || (is_persisted && requested.is_none());
+    if use_partition_readers && settings.is_some_and(|settings| settings.read_compacted) {
+        // Normally rejected in Python before the graph is built; kept as a
+        // defense so the flag is never silently dropped: the partition
+        // readers track explicit per-partition positions, which the compacted
+        // view of a topic does not preserve.
+        return Err(PyValueError::new_err(
+            "read_compacted cannot be used with the partition-reader mode",
+        ));
+    }
+    if is_persisted && !use_partition_readers {
+        return Err(PyValueError::new_err(format!(
+            "Pulsar subscription type {:?} cannot be used with persistence: broker-side \
+             subscriptions advance by acknowledgements and cannot replay the messages a \
+             restarted pipeline needs. Use subscription_type=\"reader\" (or leave it unset) \
+             so that every partition is read from the positions saved in the checkpoint",
+            requested.unwrap_or("shared"),
+        )));
+    }
+    if is_persisted && start_from_end {
+        // "end" is resolved into concrete positions when the pumps start,
+        // and nothing anchors it to the *first* run: a partition that had
+        // delivered nothing before a restart would resolve "end" anew,
+        // silently dropping everything published into it during the
+        // downtime.
+        return Err(PyValueError::new_err(
+            "start_from=\"end\" cannot be used with persistence: the \"end\" position \
+             would be re-resolved at every restart, losing the messages published while \
+             the pipeline was down. Use start_from=\"timestamp\" with an explicit \
+             timestamp instead — it identifies the same starting point \
+             deterministically across restarts",
+        ));
+    }
+    Ok(use_partition_readers)
+}
+
+/// Builds a Pulsar client from the connection URI, TLS settings and the
+/// authentication section. TLS encryption itself is chosen by the URI scheme
+/// (`pulsar+ssl://`); `TlsSettings` only supplies the trust configuration.
+/// Mutual TLS (client certificate) authentication is not supported by the
+/// underlying client library, so client certificate paths are rejected.
+fn build_pulsar_client(
+    runtime: &TokioRuntime,
+    uri: &str,
+    tls: &TlsSettings,
+    settings: Option<&PulsarSettings>,
+) -> PyResult<Pulsar<TokioExecutor>> {
+    let mut builder = Pulsar::builder(uri, TokioExecutor);
+    // The client library retries the broker's "busy"/"not ready" answers
+    // (ProducerBusy, ConsumerBusy, ServiceNotReady) inside every operation,
+    // and its default budget is unlimited: a producer name held by another
+    // pipeline, or a second consumer of an exclusive subscription, would
+    // hang the pipeline forever with nothing but client-level warnings. A
+    // bounded budget turns a conflict that persists into a loud error
+    // (~2 minutes at the client's 5-second retry delay: enough for the
+    // broker to drop a crashed pipeline's lingering producer or consumer
+    // and for a broker restart to finish, in line with the writer's
+    // send-recovery budget).
+    builder = builder.with_operation_retry_options(PulsarOperationRetryOptions {
+        max_retries: Some(24),
+        ..PulsarOperationRetryOptions::default()
+    });
+    if tls.client_cert_path.is_some() || tls.client_key_path.is_some() {
+        return Err(PyValueError::new_err(
+            "Mutual TLS (client certificate) authentication is not supported \
+             by the Pulsar connector",
+        ));
+    }
+    if let Some(root_cert_path) = &tls.root_cert_path {
+        builder = builder
+            .with_certificate_chain_file(root_cert_path)
+            .map_err(|e| {
+                PyValueError::new_err(format!("Failed to read the certificate chain file: {e}"))
+            })?;
+    }
+    if tls.trust_certificates {
+        builder = builder.with_allow_insecure_connection(true);
+    }
+    if let Some(settings) = settings {
+        if let Some(token) = &settings.auth_token {
+            builder = builder.with_auth(PulsarAuthentication {
+                name: "token".to_string(),
+                data: token.as_bytes().to_vec(),
+            });
+        } else if let (Some(issuer_url), Some(credentials_url)) = (
+            &settings.oauth2_issuer_url,
+            &settings.oauth2_credentials_url,
+        ) {
+            builder = builder.with_auth_provider(PulsarOAuth2Authentication::client_credentials(
+                PulsarOAuth2Params {
+                    issuer_url: issuer_url.clone(),
+                    credentials_url: credentials_url.clone(),
+                    audience: settings.oauth2_audience.clone(),
+                    scope: settings.oauth2_scope.clone(),
+                },
+            ));
+        }
+    }
+    runtime.block_on(builder.build()).map_err(|e| {
+        let mut message = format!("Failed to connect to Pulsar: {e}");
+        // The client library collapses every non-retryable connection
+        // failure — most commonly a broker rejecting the authentication
+        // credentials — into this one opaque phrase, logging the broker's
+        // actual reply at the error level instead of returning it. Point
+        // the user at the usual causes so the error is actionable.
+        if e.to_string()
+            .contains("fatal error when connecting to the Pulsar server")
+        {
+            message.push_str(
+                ". The broker's exact reply is in the error log above; the usual causes \
+                 are rejected authentication credentials (a missing or invalid token) or \
+                 a TLS/plaintext mismatch between the URI scheme and the broker port",
+            );
+        }
+        PyIOError::new_err(message)
+    })
+}
+
+#[derive(Clone, Debug)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct PsqlReplicationSettings {
     connection_string: String,
     publication_name: String,
@@ -4777,7 +5609,7 @@ impl PsqlReplicationSettings {
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct DataStorage {
     storage_type: String,
     path: Option<String>,
@@ -4792,6 +5624,8 @@ pub struct DataStorage {
     aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
     elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
     elasticsearch_reader_params: Option<Arc<Py<ElasticSearchReaderParams>>>,
+    chroma_params: Option<Arc<Py<ChromaParams>>>,
+    weaviate_params: Option<Arc<Py<WeaviateParams>>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Arc<Py<PythonSubject>>>,
     unique_name: Option<UniqueName>,
@@ -4801,6 +5635,10 @@ pub struct DataStorage {
     table_name: Option<String>,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    ordering_key_field_index: Option<usize>,
+    event_time_field_index: Option<usize>,
+    deliver_at_field_index: Option<usize>,
+    deliver_after_field_index: Option<usize>,
     min_commit_frequency: Option<u64>,
     downloader_threads_count: Option<usize>,
     database: Option<String>,
@@ -4823,7 +5661,17 @@ pub struct DataStorage {
     psql_replication: Option<PsqlReplicationSettings>,
     schema_name: Option<String>,
     with_metadata: bool,
+    with_pathway_headers: bool,
     mysql_server_id: Option<i64>,
+    qdrant_params: Option<Arc<Py<QdrantParams>>>,
+    pinecone_params: Option<Arc<Py<PineconeParams>>>,
+    detach_between_batches: bool,
+    pulsar_settings: Option<PulsarSettings>,
+    // Whether the table schema of this source was deduced from the source's
+    // own schema (schema=None) rather than written by the user. The deduced
+    // schemas are re-deduced at every start, which restricts what they can
+    // be combined with (e.g. persistence).
+    deduced_schema: bool,
 }
 
 #[allow(clippy::doc_markdown)]
@@ -4866,8 +5714,10 @@ impl PyPersistenceMode {
     pub const OPERATOR_PERSISTING: PersistenceMode = PersistenceMode::OperatorPersisting;
 }
 
-impl<'py> FromPyObject<'py> for PersistenceMode {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for PersistenceMode {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyPersistenceMode>>()?.0)
     }
 }
@@ -4896,8 +5746,10 @@ impl PySnapshotAccess {
     pub const OFFSETS_ONLY: SnapshotAccess = SnapshotAccess::OffsetsOnly;
 }
 
-impl<'py> FromPyObject<'py> for SnapshotAccess {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SnapshotAccess {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySnapshotAccess>>()?.0)
     }
 }
@@ -4911,7 +5763,7 @@ impl<'py> IntoPyObject<'py> for SnapshotAccess {
     }
 }
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct PersistenceConfig {
     snapshot_interval: ::std::time::Duration,
     backend: DataStorage,
@@ -4984,7 +5836,7 @@ impl PersistenceConfig {
 }
 
 #[derive(Clone, Debug, Default)]
-#[pyclass(module = "pathway.engine", frozen, get_all)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, get_all)]
 pub struct TelemetryConfig {
     monitoring_server: Option<String>,
     detailed_metrics_dir: Option<String>,
@@ -5067,8 +5919,10 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
     }
 }
 
-impl<'py> FromPyObject<'py> for SnapshotEvent {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for SnapshotEvent {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySnapshotEvent>>()?.0.clone())
     }
 }
@@ -5139,7 +5993,7 @@ impl PythonSubject {
     }
 }
 
-#[pyclass(module = "pathway.engine")]
+#[pyclass(from_py_object, module = "pathway.engine")]
 #[derive(Clone)]
 pub struct ValueField {
     #[pyo3(get)]
@@ -5192,7 +6046,7 @@ impl ValueField {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, get_all)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, get_all)]
 pub struct BackfillingThreshold {
     pub field: String,
     pub threshold: Value,
@@ -5217,7 +6071,12 @@ impl BackfillingThreshold {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen, name = "SchemaRegistrySettings")]
+#[pyclass(
+    from_py_object,
+    module = "pathway.engine",
+    frozen,
+    name = "SchemaRegistrySettings"
+)]
 pub struct PySchemaRegistrySettings {
     urls: Vec<String>,
     token_authorization: Option<String>,
@@ -5338,6 +6197,12 @@ pub struct DataFormat {
     timestamp_unit: Option<String>,
     message_queue_key_field: Option<String>,
     with_special_fields: bool,
+    // The positions (within `value_fields`) of the fields that belong to the
+    // message payload, when they are a proper subset: the record formats
+    // whose output is a public, schema-described contract (avro) exclude the
+    // service columns (the dynamic topic, the keys, the headers) from it.
+    // `None` means every value field is part of the payload.
+    payload_field_indices: Option<Vec<usize>>,
 }
 
 #[pymethods]
@@ -5356,6 +6221,8 @@ impl DataStorage {
         aws_s3_settings = None,
         elasticsearch_params = None,
         elasticsearch_reader_params = None,
+        chroma_params = None,
+        weaviate_params = None,
         parallel_readers = None,
         python_subject = None,
         unique_name = None,
@@ -5365,6 +6232,10 @@ impl DataStorage {
         table_name = None,
         header_fields = None,
         key_field_index = None,
+        ordering_key_field_index = None,
+        event_time_field_index = None,
+        deliver_at_field_index = None,
+        deliver_after_field_index = None,
         min_commit_frequency = None,
         downloader_threads_count = None,
         database = None,
@@ -5387,7 +6258,13 @@ impl DataStorage {
         psql_replication = None,
         schema_name = None,
         with_metadata = false,
+        with_pathway_headers = true,
         mysql_server_id = None,
+        qdrant_params = None,
+        pinecone_params = None,
+        detach_between_batches = false,
+        pulsar_settings = None,
+        deduced_schema = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
@@ -5404,6 +6281,8 @@ impl DataStorage {
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         elasticsearch_reader_params: Option<Py<ElasticSearchReaderParams>>,
+        chroma_params: Option<Py<ChromaParams>>,
+        weaviate_params: Option<Py<WeaviateParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
         unique_name: Option<UniqueName>,
@@ -5413,6 +6292,10 @@ impl DataStorage {
         table_name: Option<String>,
         header_fields: Option<Vec<(String, usize)>>,
         key_field_index: Option<usize>,
+        ordering_key_field_index: Option<usize>,
+        event_time_field_index: Option<usize>,
+        deliver_at_field_index: Option<usize>,
+        deliver_after_field_index: Option<usize>,
         min_commit_frequency: Option<u64>,
         downloader_threads_count: Option<usize>,
         database: Option<String>,
@@ -5435,7 +6318,13 @@ impl DataStorage {
         psql_replication: Option<PsqlReplicationSettings>,
         schema_name: Option<String>,
         with_metadata: bool,
+        with_pathway_headers: bool,
         mysql_server_id: Option<i64>,
+        qdrant_params: Option<Py<QdrantParams>>,
+        pinecone_params: Option<Py<PineconeParams>>,
+        detach_between_batches: bool,
+        pulsar_settings: Option<PulsarSettings>,
+        deduced_schema: bool,
     ) -> PyResult<Self> {
         // ``max_batch_size`` is the buffer threshold at which the
         // size-based output writers (Postgres, MySQL, MSSQL, MongoDB,
@@ -5469,6 +6358,8 @@ impl DataStorage {
             aws_s3_settings: aws_s3_settings.map(Into::into),
             elasticsearch_params: elasticsearch_params.map(Into::into),
             elasticsearch_reader_params: elasticsearch_reader_params.map(Into::into),
+            chroma_params: chroma_params.map(Into::into),
+            weaviate_params: weaviate_params.map(Into::into),
             parallel_readers,
             python_subject: python_subject.map(Into::into),
             unique_name,
@@ -5478,6 +6369,10 @@ impl DataStorage {
             table_name,
             header_fields: header_fields.unwrap_or_default(),
             key_field_index,
+            ordering_key_field_index,
+            event_time_field_index,
+            deliver_at_field_index,
+            deliver_after_field_index,
             min_commit_frequency,
             downloader_threads_count,
             database,
@@ -5500,8 +6395,25 @@ impl DataStorage {
             psql_replication,
             schema_name,
             with_metadata,
+            with_pathway_headers,
             mysql_server_id,
+            qdrant_params: qdrant_params.map(Into::into),
+            pinecone_params: pinecone_params.map(Into::into),
+            detach_between_batches,
+            pulsar_settings,
+            deduced_schema,
         })
+    }
+
+    /// Whether the reader ever reports `ReadResult::FinishedSource` in the
+    /// streaming mode. Message queues have no notion of an exhausted source,
+    /// so their readers never do - the only thing that advances time for
+    /// them is the auto-commit timer.
+    fn emits_source_completion(&self) -> bool {
+        !matches!(
+            self.storage_type.as_ref(),
+            "kafka" | "nats" | "mqtt" | "rabbitmq" | "pulsar" | "kinesis"
+        )
     }
 
     #[pyo3(signature = ())]
@@ -5598,6 +6510,7 @@ impl DataFormat {
         timestamp_unit = None,
         message_queue_key_field = None,
         with_special_fields = true,
+        payload_field_indices = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -5620,6 +6533,7 @@ impl DataFormat {
         timestamp_unit: Option<String>,
         message_queue_key_field: Option<String>,
         with_special_fields: bool,
+        payload_field_indices: Option<Vec<usize>>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -5641,6 +6555,7 @@ impl DataFormat {
             timestamp_unit,
             message_queue_key_field,
             with_special_fields,
+            payload_field_indices,
         }
     }
 
@@ -5650,7 +6565,7 @@ impl DataFormat {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct IcebergCatalogSettings {
     type_: String,
     uri: Option<String>,
@@ -5715,7 +6630,16 @@ impl IcebergCatalogSettings {
             ::iceberg_catalog_rest::REST_CATALOG_PROP_WAREHOUSE,
             self.warehouse.as_ref(),
         );
+        // The catalog client is built through the shared guard policy
+        // (connect + whole-request timeouts); the library's own default
+        // client has no request timeout at all.
+        let catalog_http_client = crate::connectors::socket_guard::iceberg_http_client_builder()
+            .build()
+            .map_err(|e| {
+                PyValueError::new_err(format!("failed to build Iceberg catalog HTTP client: {e}"))
+            })?;
         let catalog = ::iceberg_catalog_rest::RestCatalogBuilder::default()
+            .with_client(catalog_http_client)
             .with_storage_factory(Arc::new(PathwayStorageFactory))
             .load("rest", props)
             .await
@@ -5796,7 +6720,7 @@ impl IcebergCatalogSettings {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 pub struct CsvParserSettings {
     pub delimiter: u8,
     pub quote: u8,
@@ -6007,6 +6931,60 @@ impl DataStorage {
         }
     }
 
+    /// The connected Pulsar client of this storage.
+    fn pulsar_client(&self, runtime: &TokioRuntime) -> PyResult<Pulsar<TokioExecutor>> {
+        let uri = self.path()?;
+        let tls = self.tls_settings.clone().unwrap_or_default();
+        build_pulsar_client(runtime, uri, &tls, self.pulsar_settings.as_ref())
+    }
+
+    /// The tokio runtime and the connected Pulsar client of this storage:
+    /// the shared prologue of the Pulsar construction sites.
+    fn pulsar_runtime_and_client(&self) -> PyResult<(TokioRuntime, Pulsar<TokioExecutor>)> {
+        let runtime = create_async_tokio_runtime()?;
+        let client = self.pulsar_client(&runtime)?;
+        Ok((runtime, client))
+    }
+
+    /// The writer-schema provider of this storage for the Avro payloads,
+    /// when the storage has a schema registry to resolve them in. The
+    /// storage-type dispatch lives here, next to the storage's other
+    /// construction helpers, so the format layer stays storage-agnostic.
+    fn avro_schema_provider(&self) -> PyResult<Option<Box<dyn AvroSchemaProvider>>> {
+        match self.storage_type.as_ref() {
+            "pulsar" => {
+                let topic = self.message_queue_fixed_topic()?;
+                // The provider connects lazily, on its first registry
+                // lookup: a parser that only meets known schema versions
+                // (or none at all, on an idle worker) never opens a client
+                // of its own.
+                let connection_storage = self.clone();
+                let connection_factory: PulsarConnectionFactory = Box::new(move || {
+                    connection_storage.pulsar_runtime_and_client().map_err(|e| {
+                        // A ValueError marks a broken client configuration
+                        // (an unreadable certificate file and the like):
+                        // retrying cannot heal it. Everything else is a
+                        // connection attempt, transient by nature.
+                        Python::attach(|py| {
+                            if e.is_instance_of::<PyValueError>(py) {
+                                SchemaLookupError::Permanent(format!(
+                                    "failed to configure the Pulsar client: {e}"
+                                ))
+                            } else {
+                                SchemaLookupError::Transient(e.to_string())
+                            }
+                        })
+                    })
+                });
+                Ok(Some(Box::new(PulsarSchemaProvider::new(
+                    connection_factory,
+                    &topic,
+                ))))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn message_queue_fixed_topic(&self) -> PyResult<String> {
         let topic = self.message_queue_topic()?;
         match topic {
@@ -6087,6 +7065,7 @@ impl DataStorage {
             self.object_pattern.clone(),
             self.downloader_threads_count()?,
             self.mode.is_polling_enabled(),
+            self.only_provide_metadata,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize S3 scanner: {e}")))?;
         let storage = PosixLikeReader::new(
@@ -6104,10 +7083,11 @@ impl DataStorage {
         &self,
         scope: &Scope,
         properties: &ConnectorProperties,
+        parser_needs_source_metadata: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let client_config = self.kafka_client_config()?;
-        let consumer: BaseConsumer = client_config
-            .create()
+        let consumer: KafkaConsumer = client_config
+            .create_with_context(PathwayConsumerContext::default())
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
         let topic = self.message_queue_fixed_topic()?;
 
@@ -6129,13 +7109,23 @@ impl DataStorage {
         // The Kafka-specific machinery (fetching partitions/watermarks, resolving
         // timestamp seeks, sharding partitions and acquiring them) lives in
         // `KafkaReader::build`.
+        let bootstrap_servers = client_config
+            .get("bootstrap.servers")
+            .unwrap_or("<not set>")
+            .to_string();
+        // Building the per-message metadata costs an allocation, a JSON
+        // serialization and a hash, so it happens only when someone consumes
+        // it: the user through the `_metadata` column, or the parser itself.
+        let with_metadata = self.with_metadata || parser_needs_source_metadata;
         let reader = KafkaReader::build(
             consumer,
             topic,
+            &bootstrap_servers,
             self.mode,
             self.start_from_timestamp_ms,
             scope.worker_index(),
             reader_count,
+            with_metadata,
         )
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
@@ -6217,6 +7207,42 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_duckdb_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+        needs_initialization: bool,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["duckdb"])?;
+        }
+        // The connection is opened lazily by the writer on first use, not here:
+        // DuckDB takes an exclusive file lock, and this constructor runs on
+        // every engine worker, so opening eagerly would make all but one fail.
+        let path = self.path()?.to_string();
+        let table_name = self.table_name.clone().ok_or_else(|| {
+            PyValueError::new_err("For DuckDB connector, table_name should be specified")
+        })?;
+        let table_ctx = TableContext::new(
+            "",
+            &table_name,
+            &data_format.value_fields_vec(py),
+            data_format.key_field_names.as_deref(),
+        );
+        let writer = DuckDbWriter::new(
+            path,
+            table_ctx,
+            self.snapshot_maintenance_on_output,
+            self.table_writer_init_mode,
+            self.max_batch_size,
+            needs_initialization,
+            self.detach_between_batches,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Unable to initialize DuckDB table: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
     fn construct_mssql_reader(
         &self,
         py: pyo3::Python,
@@ -6227,7 +7253,7 @@ impl DataStorage {
             license.check_entitlements(["mssql"])?;
         }
         let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(connection_string)
+        let config = mssql::config_from_connection_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
         let table_name = self.table_name.clone().ok_or_else(|| {
             PyValueError::new_err("For MSSQL connector, table_name should be specified")
@@ -6284,7 +7310,10 @@ impl DataStorage {
 
     fn object_downloader(&self) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
-            Ok(ObjectDownloader::S3(Box::new(self.s3_bucket()?)))
+            Ok(ObjectDownloader::S3 {
+                bucket: Box::new(self.s3_bucket()?),
+                runtime: crate::s3_runtime::build_s3_runtime(),
+            })
         } else {
             Ok(ObjectDownloader::Local)
         }
@@ -6334,11 +7363,20 @@ impl DataStorage {
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
-        let runtime = create_async_tokio_runtime()?;
-        let connector_index = *scope.total_connectors.get(py).borrow();
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-nats")?;
+        let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
         let readers_group_name = format!("pathway-reader-{connector_index}");
+        let is_persisted = scope.is_persisted;
 
         let poller = if let Some(js_stream_name) = &self.js_stream_name {
+            if is_persisted && self.durable_consumer_name.is_some() {
+                info!(
+                    "A user-provided durable consumer is used with persistence enabled. \
+                     Messages are acknowledged only when a checkpoint covers them, so the \
+                     consumer's ack_wait must exceed the checkpoint interval and its \
+                     max_ack_pending must accommodate a checkpoint window of messages."
+                );
+            }
             let messages = runtime.block_on(async {
                 let client = async_nats::connect(uri)
                     .await
@@ -6362,14 +7400,30 @@ impl DataStorage {
                             )
                         })?
                 } else {
+                    let mut config = async_nats::jetstream::consumer::pull::Config {
+                        durable_name: Some(readers_group_name.clone()),
+                        // Restrict the consumer to the requested topic.
+                        // A JetStream stream can span several subjects,
+                        // so without this filter the consumer would
+                        // deliver every subject in the stream instead of
+                        // just the one the user asked to read.
+                        filter_subject: topic.clone(),
+                        ..Default::default()
+                    };
+                    if is_persisted {
+                        // With persistence the messages are acknowledged only
+                        // once a durable checkpoint covers them, so up to a
+                        // checkpoint window of deliveries stays unacknowledged.
+                        // The default cap of 1000 pending acks would throttle
+                        // the delivery to the checkpoint cadence, and an
+                        // `ack_wait` shorter than the checkpoint interval would
+                        // make the server redeliver messages to a healthy
+                        // pipeline.
+                        config.max_ack_pending = -1;
+                        config.ack_wait = NATS_PERSISTED_CONSUMER_ACK_WAIT;
+                    }
                     stream
-                        .get_or_create_consumer(
-                            &readers_group_name.clone(),
-                            async_nats::jetstream::consumer::pull::Config {
-                                durable_name: Some(readers_group_name),
-                                ..Default::default()
-                            },
-                        )
+                        .get_or_create_consumer(&readers_group_name.clone(), config)
                         .await
                         .map_err(|e| {
                             PyIOError::new_err(format!("Failed to create JetStream consumer: {e}"))
@@ -6384,6 +7438,13 @@ impl DataStorage {
             })?;
             nats::NatsPoller::JetStream(Box::new(messages))
         } else {
+            if is_persisted {
+                warn!(
+                    "The NATS reader is subscribed without JetStream: the server gives no \
+                     delivery guarantees, so persistence cannot prevent message losses on \
+                     restart. Use jetstream_stream_name for lossless recovery."
+                );
+            }
             let subscriber = runtime.block_on(async {
                 let client = nats_connect(uri)
                     .await
@@ -6426,7 +7487,7 @@ impl DataStorage {
 
         let uri = self.path()?;
         let stream_name = self.message_queue_fixed_topic()?;
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-rabbitmq")?;
 
         let start_from_end = self.start_from_timestamp_ms == Some(-1);
         if start_from_end && self.mode == ConnectorMode::Static {
@@ -6442,7 +7503,7 @@ impl DataStorage {
         };
 
         let tls = self.tls_settings.clone().unwrap_or_default();
-        let (environment, consumer, end_offset) = runtime.block_on(async {
+        let (environment, consumer, end_offset, initial_offset) = runtime.block_on(async {
             let environment = build_rabbitmq_environment(uri, &tls).await?;
 
             // Probe the tail of the stream. Used for:
@@ -6450,7 +7511,13 @@ impl DataStorage {
             // - start_from="end": to position the consumer past all existing messages
             let needs_probe = self.mode == ConnectorMode::Static || start_from_end;
             let last_offset = if needs_probe {
-                probe_last_offset(&environment, &stream_name).await
+                probe_last_offset(&environment, &stream_name)
+                    .await
+                    .map_err(|e| {
+                        PyIOError::new_err(format!(
+                            "Failed to probe the end of the RabbitMQ stream: {e}"
+                        ))
+                    })?
             } else {
                 None
             };
@@ -6464,10 +7531,7 @@ impl DataStorage {
                 offset_spec
             };
 
-            let consumer = environment
-                .consumer()
-                .offset(effective_offset)
-                .build(&stream_name)
+            let consumer = build_consumer(&environment, &stream_name, effective_offset.clone())
                 .await
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to create RabbitMQ consumer: {e}"))
@@ -6479,7 +7543,7 @@ impl DataStorage {
                 None
             };
 
-            Ok::<_, PyErr>((environment, consumer, end_offset))
+            Ok::<_, PyErr>((environment, consumer, end_offset, effective_offset))
         })?;
 
         let already_at_end = start_from_end && self.mode == ConnectorMode::Static;
@@ -6488,11 +7552,234 @@ impl DataStorage {
             consumer,
             environment,
             arcstr::ArcStr::from(stream_name.as_str()),
+            self.mode == ConnectorMode::Static,
+            initial_offset,
             end_offset,
             already_at_end,
             self.with_metadata,
         );
         Ok((Box::new(reader), 1))
+    }
+
+    /// Decodes the `start_from` configuration of the Pulsar reader: whether
+    /// the reading starts at the end of the topic (the `-1` sentinel), and
+    /// the publish-timestamp threshold of `start_from="timestamp"`.
+    fn pulsar_start_from(&self, topic: &str, is_static: bool) -> (bool, Option<u64>) {
+        let start_from_end = self.start_from_timestamp_ms == Some(-1);
+        if start_from_end && is_static {
+            warn!(
+                "Pulsar reader for topic '{topic}' is configured with \
+                 start_from=\"end\" in static mode. This will produce an empty table \
+                 because there are no new messages to read after the current tail."
+            );
+        }
+        let min_publish_timestamp_ms = match self.start_from_timestamp_ms {
+            Some(timestamp_ms) if timestamp_ms >= 0 => {
+                Some(u64::try_from(timestamp_ms).expect("non-negative timestamp must fit u64"))
+            }
+            _ => None,
+        };
+        (start_from_end, min_publish_timestamp_ms)
+    }
+
+    fn construct_pulsar_reader(
+        &self,
+        py: pyo3::Python,
+        scope: &Scope,
+        properties: &ConnectorProperties,
+        parser_needs_source_metadata: bool,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if let Some(license) = scope.license.as_ref() {
+            license.check_entitlements(["pulsar"])?;
+        }
+
+        let topic = self.message_queue_fixed_topic()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-pulsar")?;
+        let connector_index = *scope.total_connectors.lock_py_attached(py).unwrap();
+        let worker_index = scope.worker_index();
+        let is_static = self.mode == ConnectorMode::Static;
+        let (start_from_end, min_publish_timestamp_ms) = self.pulsar_start_from(&topic, is_static);
+        // Building the metadata costs a per-message allocation, so it
+        // happens when someone consumes it: the user through the
+        // `_metadata` column, or the parser itself.
+        let with_metadata = self.with_metadata || parser_needs_source_metadata;
+
+        if scope.is_input_persisted && self.deduced_schema {
+            // The deduction runs anew at every start, while the snapshot
+            // stores the rows of the previous run's schema: a topic
+            // evolution between the runs would fail the replay or silently
+            // shift the old values into the wrong columns.
+            return Err(PyValueError::new_err(
+                "schema deduction (schema=None) cannot be used with persistence: the schema \
+                 would be deduced anew at every restart, while the snapshot stores the rows \
+                 of the schema the previous run deduced — a topic evolution between the runs \
+                 would corrupt or fail the replay. Pass an explicit schema instead",
+            ));
+        }
+        let use_partition_readers = pulsar_partition_readers_requested(
+            self.pulsar_settings.as_ref(),
+            is_static,
+            scope.is_persisted,
+            start_from_end,
+        )?;
+        if use_partition_readers {
+            if topic.starts_with("non-persistent://") {
+                // Normally rejected in Python for the static mode and the
+                // explicit reader mode; this also covers the persistence-
+                // implied choice of the mechanism. Without the check the
+                // reader spins in a broker-error loop for minutes before
+                // exhausting its error budget.
+                return Err(PyValueError::new_err(format!(
+                    "the non-persistent Pulsar topic '{topic}' cannot be read through \
+                     the partition-reader mechanism: it stores no messages, so there \
+                     are no positions to read from or replay. Use a persistent topic, \
+                     or the streaming mode with a subscription type (which cannot be \
+                     combined with persistence)",
+                )));
+            }
+            if self.durable_consumer_name.is_some() {
+                warn!(
+                    "The Pulsar reader for topic '{topic}' runs in the partition-reader mode, \
+                     which does not create broker-side subscriptions: the subscription_name \
+                     parameter is ignored. The reading position is tracked in the persistence \
+                     checkpoint instead."
+                );
+            }
+            // Partition sharding respects the same reader cap as Kafka: a
+            // synchronization group limits the readers to the first process,
+            // and assigning partitions by the raw worker count would hand
+            // them to workers that never run a reader.
+            let reader_count = scope
+                .worker_count()
+                .min(properties.max_parallel_readers(scope));
+            if worker_index >= reader_count {
+                let reader = idle_pulsar_reader(runtime, &topic, worker_index, connector_index);
+                return Ok((reader, reader_count));
+            }
+            let client = self.pulsar_client(&runtime)?;
+            return construct_pulsar_partition_reader(
+                runtime,
+                client,
+                &topic,
+                is_static,
+                start_from_end,
+                min_publish_timestamp_ms,
+                with_metadata,
+                reader_count,
+                worker_index,
+                connector_index,
+            );
+        }
+
+        let (streaming_subscription_type, single_consumer) =
+            parse_pulsar_subscription_type(self.pulsar_settings.as_ref())?;
+
+        if !single_consumer && self.durable_consumer_name.is_none() && scope.process_count() > 1 {
+            return Err(multiprocess_auto_subscription_error(
+                self.pulsar_settings.as_ref(),
+            ));
+        }
+
+        // The reader is constructed on every worker, but the engine only
+        // reads on the workers whose index is below the returned parallelism.
+        // Single-consumer subscription types (exclusive, failover) must not
+        // even *connect* from the other workers: a second consumer joining
+        // the same exclusive subscription is rejected by the broker with
+        // ConsumerBusy, which would fail the whole pipeline.
+        let parallel_readers = if single_consumer {
+            1
+        } else {
+            properties.max_parallel_readers(scope)
+        };
+        if worker_index >= parallel_readers {
+            let reader = idle_pulsar_reader(runtime, &topic, worker_index, connector_index);
+            return Ok((reader, parallel_readers));
+        }
+
+        let subscription_name = self
+            .durable_consumer_name
+            .clone()
+            .unwrap_or_else(|| auto_pulsar_subscription_name(scope, connector_index));
+        let reader = self.construct_pulsar_subscription_reader(
+            runtime,
+            &topic,
+            &subscription_name,
+            streaming_subscription_type,
+            start_from_end,
+            min_publish_timestamp_ms,
+            with_metadata,
+            worker_index,
+            connector_index,
+        )?;
+        Ok((reader, parallel_readers))
+    }
+
+    /// Builds the subscription-mode Pulsar reader: a consumer attached to the
+    /// given subscription, positioned by `start_from_end` when the
+    /// subscription doesn't exist yet.
+    #[allow(clippy::too_many_arguments)]
+    fn construct_pulsar_subscription_reader(
+        &self,
+        runtime: TokioRuntime,
+        topic: &str,
+        subscription_name: &str,
+        subscription_type: PulsarSubType,
+        start_from_end: bool,
+        min_publish_timestamp_ms: Option<u64>,
+        with_metadata: bool,
+        worker_index: usize,
+        connector_index: usize,
+    ) -> PyResult<Box<dyn ReaderBuilder>> {
+        let client = self.pulsar_client(&runtime)?;
+        // The subscription is durable only when the user provided its name:
+        // a durable cursor survives the pipeline and pins the topic backlog
+        // on the broker, so it must belong to someone who manages its
+        // lifecycle. The auto-generated per-run names would leak one
+        // abandoned cursor per launch.
+        let subscription_options = PulsarConsumerOptions::default()
+            .durable(self.durable_consumer_name.is_some())
+            .with_initial_position(if start_from_end {
+                PulsarInitialPosition::Latest
+            } else {
+                PulsarInitialPosition::Earliest
+            })
+            .read_compacted(
+                self.pulsar_settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.read_compacted),
+            );
+        // The reader recreates the consumer when its stream ends, so the
+        // consumer is built from the recipe the reader keeps.
+        let spec = PulsarSubscriptionSpec {
+            topic: topic.to_string(),
+            subscription_name: subscription_name.to_string(),
+            subscription_type,
+            consumer_name: format!("pathway-worker-{worker_index}"),
+            options: subscription_options,
+        };
+        // Counted before the consumer attaches: an expansion in the gap
+        // between the two would otherwise be baselined into the watch's
+        // initial count and never reported. In this order the same race
+        // degrades to a spurious expansion error at worst.
+        let num_partitions = runtime
+            .block_on(client.lookup_partitioned_topic_number(topic))
+            .map_err(|e| PyIOError::new_err(format!("Failed to look up the Pulsar topic: {e}")))?;
+        let consumer = runtime
+            .block_on(spec.build_consumer(&client))
+            .map_err(|e| PyIOError::new_err(format!("Failed to create Pulsar consumer: {e}")))?;
+        let mut reader = PulsarReader::new_with_subscription(
+            runtime,
+            client,
+            consumer,
+            spec,
+            arcstr::ArcStr::from(topic),
+            worker_index,
+            connector_index,
+            min_publish_timestamp_ms,
+            with_metadata,
+        );
+        reader.watch_partition_count(num_partitions);
+        Ok(Box::new(reader))
     }
 
     fn construct_iceberg_reader(
@@ -6546,21 +7833,56 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
-    fn construct_mqtt_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_mqtt_reader(&self, scope: &Scope) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
         let settings = self.mqtt_settings()?;
         let topic: String = self.message_queue_fixed_topic()?.clone();
-        let connection_options = MqttOptions::parse_url(uri)
+        let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        relax_mqtt_packet_size_limits(&mut connection_options, uri);
+
+        // MQTT has no replayable log, so `seek` can't re-read messages that
+        // the broker already considers delivered. With persistence enabled the
+        // reader therefore runs a two-phase commit against the broker: it
+        // consumes messages without acknowledging them and lets the deferred
+        // ack worker acknowledge each message only after a durable checkpoint
+        // covers it. The unacknowledged messages, as well as the messages
+        // published while the pipeline is down, are kept by the broker in the
+        // client session - which must survive both reconnects and restarts,
+        // hence the persistent session bound to a stable client id. None of
+        // this is possible with QoS 0, which has no acknowledgements at all.
+        let manual_acks = scope.is_persisted && settings.qos != MqttQoS::AtMostOnce;
+        if manual_acks {
+            if connection_options.client_id().is_empty() {
+                return Err(PyValueError::new_err(
+                    "MQTT reader with persistence enabled requires a stable client_id in the \
+                     connection URI: the broker keeps the not-yet-checkpointed messages in a \
+                     session bound to it",
+                ));
+            }
+            connection_options.set_clean_session(false);
+            connection_options.set_manual_acks(true);
+        } else if scope.is_persisted {
+            warn!(
+                "The MQTT reader is subscribed with QoS 0: the broker gives no delivery \
+                 guarantees, so persistence cannot prevent message losses on restart. \
+                 Use QoS 1 or 2 for lossless recovery."
+            );
+        }
+
         let (client, mut connection) =
             MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
-        client.subscribe(topic, settings.qos).map_err(|e| {
+        client.subscribe(topic.clone(), settings.qos).map_err(|e| {
             PyIOError::new_err(format!(
                 "Failed to establish connection with MQTT broker: {e}"
             ))
         })?;
 
-        // Wait for the subscription acknowledgement from the broker
+        // Wait for the subscription acknowledgement from the broker. When a
+        // persistent session is resumed, the broker may start redelivering
+        // the unacknowledged messages before confirming the subscription;
+        // they are collected and served to the engine first.
+        let mut preloaded = Vec::new();
         loop {
             let maybe_event = connection
                 .recv_timeout(std::time::Duration::from_secs(1))
@@ -6572,12 +7894,24 @@ impl DataStorage {
                     "Failed to receive subscription confirmation from MQTT broker: {e:?}"
                 ))
             })?;
-            if matches!(event, MqttEvent::Incoming(MqttPacket::SubAck(_))) {
-                break;
+            match event {
+                MqttEvent::Incoming(MqttPacket::SubAck(_)) => break,
+                MqttEvent::Incoming(MqttPacket::Publish(message)) => preloaded.push(message),
+                _ => {}
             }
         }
 
-        Ok((Box::new(MqttReader::new(connection)), 1))
+        Ok((
+            Box::new(MqttReader::new(
+                client,
+                connection,
+                topic,
+                settings.qos,
+                manual_acks,
+                preloaded,
+            )),
+            1,
+        ))
     }
 
     fn construct_kinesis_reader(
@@ -6727,25 +8061,33 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    /// `parser_needs_source_metadata` is the parser's own requirement (see
+    /// `Parser::needs_source_metadata`): the readers that build the source
+    /// metadata on demand emit it when either the user asked for the
+    /// `_metadata` column or the parser consumes the metadata itself.
     fn construct_reader(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
         scope: &Scope,
         properties: &ConnectorProperties,
+        parser_needs_source_metadata: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(scope, data_format),
             "s3" => self.construct_s3_reader(scope, data_format),
-            "kafka" => self.construct_kafka_reader(scope, properties),
+            "kafka" => self.construct_kafka_reader(scope, properties, parser_needs_source_metadata),
             "python" => self.construct_python_reader(py, data_format),
             "mssql" => self.construct_mssql_reader(py, data_format, scope),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format, scope),
             "nats" => self.construct_nats_reader(py, scope, properties),
             "rabbitmq" => self.construct_rabbitmq_reader(scope, properties),
+            "pulsar" => {
+                self.construct_pulsar_reader(py, scope, properties, parser_needs_source_metadata)
+            }
             "iceberg" => self.construct_iceberg_reader(py, data_format, scope),
-            "mqtt" => self.construct_mqtt_reader(),
+            "mqtt" => self.construct_mqtt_reader(scope),
             "kinesis" => self.construct_kinesis_reader(scope, properties),
             "postgres" => self.construct_postgres_reader(py, data_format, scope, properties),
             "mongodb" => self.construct_mongodb_reader(scope),
@@ -6772,7 +8114,7 @@ impl DataStorage {
                 let path = self.path()?;
                 let azure_settings = self.azure_blob_storage_settings()?;
                 Ok(PersistentStorageConfig::Azure {
-                    credentials: azure_settings.credentials(),
+                    account_key: azure_settings.password,
                     account: azure_settings.account,
                     container: azure_settings.container,
                     root_path: path.into(),
@@ -6802,9 +8144,20 @@ impl DataStorage {
                     FileWriter::new(buf_writer, path.to_string())
                 }
                 Err(e) => {
+                    let missing_directory = std::path::Path::new(path)
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty() && !parent.exists())
+                        .map(|parent| {
+                            format!(
+                                " The directory {} does not exist: create it first, the \
+                                 writer does not create missing directories.",
+                                parent.display()
+                            )
+                        })
+                        .unwrap_or_default();
                     return Err(PyIOError::new_err(format!(
-                        "Filesystem operation (create) failed: {e}"
-                    )))
+                        "cannot create the output file {path}: {e}.{missing_directory}"
+                    )));
                 }
             }
         };
@@ -6825,6 +8178,7 @@ impl DataStorage {
             topic,
             self.header_fields.clone(),
             self.key_field_index,
+            self.with_pathway_headers,
         );
 
         Ok(Box::new(writer))
@@ -6896,6 +8250,143 @@ impl DataStorage {
                 "Failed to create async runtime for ElasticSearch writer: {e}"
             ))
         })?;
+        Ok(Box::new(writer))
+    }
+
+    fn construct_chroma_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["chromadb"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .chroma_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Chroma output, the chroma_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+
+        // Resolve the role column names to their positions in the value fields
+        // the writer receives at runtime, so it can index straight into them.
+        let field_names = data_format.value_field_names(py);
+        let index_of = |role: &str, name: &str| -> PyResult<usize> {
+            field_names
+                .iter()
+                .position(|field| field == name)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "Chroma {role} column {name:?} is not present in the table"
+                    ))
+                })
+        };
+        let primary_key_index = match &params.primary_key_field {
+            Some(name) => Some(index_of("primary_key", name)?),
+            None => None,
+        };
+        let embedding_index = index_of("embedding", &params.embedding_field)?;
+        let document_index = match &params.document_field {
+            Some(name) => Some(index_of("document", name)?),
+            None => None,
+        };
+        let metadata_indices = params
+            .metadata_fields
+            .iter()
+            .map(|name| index_of("metadata", name))
+            .collect::<PyResult<Vec<usize>>>()?;
+
+        let writer = ChromaWriter::new(
+            &params.host,
+            params.port,
+            params.ssl,
+            params.headers.clone(),
+            &params.tenant,
+            &params.database,
+            params.collection_name.clone(),
+            field_names,
+            primary_key_index,
+            embedding_index,
+            document_index,
+            metadata_indices,
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to create Chroma writer: {e}")))?;
+        Ok(Box::new(writer))
+    }
+
+    fn construct_weaviate_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["weaviate"])?;
+        }
+
+        let params_py: &Py<_> = self
+            .weaviate_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For Weaviate output, weaviate_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = params_py.get();
+
+        let field_names = data_format.value_field_names(py);
+        let pk_index = match &params.pk_field {
+            Some(pk_field) => Some(
+                field_names
+                    .iter()
+                    .position(|name| name == pk_field)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "primary key field {pk_field:?} not found among the output columns"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let vector_index = match &params.vector_field {
+            Some(vector_field) => Some(
+                field_names
+                    .iter()
+                    .position(|name| name == vector_field)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "vector field {vector_field:?} not found among the output columns"
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let property_fields: Vec<(String, usize)> = field_names
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != pk_index && Some(*index) != vector_index)
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+
+        let writer = WeaviateWriter::new(
+            &params.url,
+            params.collection_name.clone(),
+            pk_index,
+            vector_index,
+            property_fields,
+            params.api_key.as_deref(),
+            &params.headers,
+            params.batch_size,
+            params.concurrency,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Weaviate writer: {e}")))?;
         Ok(Box::new(writer))
     }
 
@@ -7022,17 +8513,23 @@ impl DataStorage {
 
     fn construct_nats_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.path()?;
-        let runtime = create_async_tokio_runtime()?;
+        let runtime = create_async_tokio_runtime_with_background_worker("pathway-nats")?;
         let client = runtime.block_on(async {
             let client = nats_connect(uri)
                 .await
                 .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
             Ok::<NatsClient, PyErr>(client)
         })?;
-        let accessor: Box<dyn nats::WriteAccessor> = if self.js_stream_name.is_some() {
-            Box::new(nats::JetStreamWriteAccessor::new(client))
-        } else {
-            Box::new(nats::SimpleWriteAccessor::new(client))
+        let accessor: Box<dyn nats::WriteAccessor> = {
+            // jetstream::new spawns the ack-handling task at construction
+            // time, so the accessor must be created inside the runtime
+            // context.
+            let _guard = runtime.enter();
+            if self.js_stream_name.is_some() {
+                Box::new(nats::JetStreamWriteAccessor::new(client))
+            } else {
+                Box::new(nats::SimpleWriteAccessor::new(client))
+            }
         };
         let writer = NatsWriter::new(
             runtime,
@@ -7057,7 +8554,81 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
-    fn construct_mongodb_writer(&self) -> PyResult<Box<dyn Writer>> {
+    /// The delivery schedule of the produced Pulsar messages. The Python
+    /// side validates that at most one of the sources is set.
+    fn pulsar_delivery_schedule(&self) -> PyResult<PulsarDeliverySchedule> {
+        let constant_delay = self
+            .pulsar_settings
+            .as_ref()
+            .and_then(|settings| settings.deliver_after_millis);
+        let sources_set = usize::from(self.deliver_at_field_index.is_some())
+            + usize::from(self.deliver_after_field_index.is_some())
+            + usize::from(constant_delay.is_some());
+        if sources_set > 1 {
+            return Err(PyValueError::new_err(
+                "at most one of deliver_at and deliver_after can be set",
+            ));
+        }
+        if let Some(index) = self.deliver_at_field_index {
+            return Ok(PulsarDeliverySchedule::AtColumn(index));
+        }
+        if let Some(index) = self.deliver_after_field_index {
+            return Ok(PulsarDeliverySchedule::AfterColumn(index));
+        }
+        if let Some(millis) = constant_delay {
+            return Ok(PulsarDeliverySchedule::AfterMillis(millis));
+        }
+        Ok(PulsarDeliverySchedule::Immediate)
+    }
+
+    fn construct_pulsar_writer(
+        &self,
+        license: Option<&License>,
+        worker_index: usize,
+        wire_schema: Option<String>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["pulsar"])?;
+        }
+        let topic = self.message_queue_topic()?;
+        let (runtime, client) = self.pulsar_runtime_and_client()?;
+        let compression = parse_pulsar_compression(self.pulsar_settings.as_ref())?;
+        // Pulsar requires producer names to be unique within a topic, and
+        // every worker runs its own producer, so the user-visible name gets a
+        // per-worker suffix instead of colliding in multi-worker runs.
+        let producer_name = self
+            .pulsar_settings
+            .as_ref()
+            .and_then(|settings| settings.producer_name.as_deref())
+            .map(|name| format!("{name}-{worker_index}"));
+        let event_time_from_engine = self
+            .pulsar_settings
+            .as_ref()
+            .is_some_and(|settings| settings.event_time_from_engine);
+        let delivery_schedule = self.pulsar_delivery_schedule()?;
+        // The formatter's schema, when it has one, is declared to the
+        // broker's registry: the broker validates it against the topic's
+        // compatibility policy and versions it, making the topic readable
+        // for any schema-aware consumer.
+        let declared_avro_schema = wire_schema;
+        let writer = PulsarWriter::new(
+            runtime,
+            client,
+            topic,
+            self.header_fields.clone(),
+            self.key_field_index,
+            self.ordering_key_field_index,
+            self.event_time_field_index,
+            event_time_from_engine,
+            delivery_schedule,
+            compression,
+            producer_name,
+            declared_avro_schema,
+        );
+        Ok(Box::new(writer))
+    }
+
+    fn construct_mongodb_writer(&self, sorted_output: bool) -> PyResult<Box<dyn Writer>> {
         let uri = self.connection_string()?;
         let client = MongoClient::with_uri_str(uri)
             .map_err(|e| PyIOError::new_err(format!("Failed to connect to MongoDB: {e}")))?;
@@ -7071,7 +8642,49 @@ impl DataStorage {
             collection,
             self.max_batch_size,
             self.snapshot_maintenance_on_output,
+            sorted_output,
         );
+        Ok(Box::new(writer))
+    }
+
+    fn construct_qdrant_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["qdrant"])?;
+        }
+
+        let qdrant_params_py: &Py<_> = self
+            .qdrant_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("For Qdrant output, qdrant_params section must be specified")
+            })?
+            .borrow();
+        let qdrant_params = qdrant_params_py.get();
+
+        let runtime = create_async_tokio_runtime()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create async runtime: {e}")))?;
+        let client = build_qdrant_client(&qdrant_params.url, qdrant_params.api_key.clone())
+            .map_err(|e| PyIOError::new_err(format!("Failed to connect to Qdrant: {e}")))?;
+
+        let writer = QdrantWriter::new(
+            runtime,
+            client,
+            qdrant_params.collection_name.clone(),
+            data_format.value_fields_vec(py),
+            qdrant_params.batch_size,
+        )
+        .map_err(|e| match e {
+            QdrantWriteError::MultivectorNotImplemented(_) => {
+                PyNotImplementedError::new_err(e.to_string())
+            }
+            QdrantWriteError::Client(_) => PyIOError::new_err(e.to_string()),
+            _ => PyValueError::new_err(e.to_string()),
+        })?;
         Ok(Box::new(writer))
     }
 
@@ -7079,8 +8692,9 @@ impl DataStorage {
         let uri = self.path()?;
         let topic = self.message_queue_topic()?;
         let settings = self.mqtt_settings()?;
-        let connection_options = MqttOptions::parse_url(uri)
+        let mut connection_options = MqttOptions::parse_url(uri)
             .map_err(|e| PyValueError::new_err(format!("Incorrect MQTT URI: {e}")))?;
+        relax_mqtt_packet_size_limits(&mut connection_options, uri);
         let (client, eventloop) = MqttClient::new(connection_options, MQTT_CLIENT_MAX_CHANNEL_SIZE);
         let writer = MqttWriter::new(client, eventloop, topic, settings.qos, settings.retain);
         Ok(Box::new(writer))
@@ -7097,6 +8711,17 @@ impl DataStorage {
         }
 
         let uri = self.path()?;
+        if uri.starts_with("tcp::") || uri.starts_with("tcps::") {
+            // The client library keeps a read timeout only during connection
+            // setup and exposes no socket controls afterwards, so this
+            // transport cannot be guarded from our side. The default HTTP
+            // transport bounds every request and is not affected.
+            crate::connectors::socket_guard::warn_unguardable_transport(
+                "QuestDB",
+                "the tcp:: transport has no timeouts past connection setup \
+                 (prefer the default http:: transport)",
+            );
+        }
         let sender = QuestDBSender::from_conf(uri)
             .map_err(|e| PyValueError::new_err(format!("Failed to create QuestDB sender: {e}")))?;
         let table_name = self.table_name()?;
@@ -7235,7 +8860,7 @@ impl DataStorage {
             license.check_entitlements(["mssql"])?;
         }
         let connection_string = self.connection_string()?;
-        let config = tiberius::Config::from_ado_string(connection_string)
+        let config = mssql::config_from_connection_string(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MSSQL connection string: {e}")))?;
         let table_ctx = TableContext::new(
             self.schema_name()?,
@@ -7265,27 +8890,10 @@ impl DataStorage {
             license.check_entitlements(["mysql"])?;
         }
         let connection_string = self.connection_string()?;
-        // Bound the connection pool. The `mysql` crate's default pool
-        // constraints are min=10/max=100, and the pool eagerly opens `min`
-        // connections the moment it is created. A single writer needs only one
-        // live connection (plus, at most, a transient replacement when
-        // reconnecting after a recoverable error), so the default would open
-        // nine idle connections per writer for nothing. Under parallel test or
-        // production fan-out that silently exhausts the server's
-        // `max_connections` and surfaces as a spurious "Too many connections"
-        // failure. min=0 keeps the pool lazy (no eager connections) and max=2
-        // leaves headroom for one in-flight reconnection.
         let opts = MysqlOpts::from_url(connection_string)
             .map_err(|e| PyValueError::new_err(format!("Invalid MySQL connection string: {e}")))?;
-        let pool_opts = MysqlPoolOpts::new().with_constraints(
-            MysqlPoolConstraints::new(0, 2).expect("0 <= 2 is a valid pool constraint"),
-        );
-        let opts = MysqlOptsBuilder::from_opts(opts).pool_opts(pool_opts);
-        let pool = MysqlConnectionPool::new(opts).map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to create MySQL connection pool: {e}"))
-        })?;
         let writer = MysqlWriter::new(
-            pool,
+            opts,
             self.max_batch_size,
             self.snapshot_maintenance_on_output,
             self.table_name()?,
@@ -7298,22 +8906,32 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    /// `wire_schema` is the schema of the payloads the formatter produces
+    /// (see `Formatter::wire_schema`): the sinks whose target keeps a schema
+    /// registry declare it there, the others ignore it.
     fn construct_writer(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
         license: Option<&License>,
+        worker_index: usize,
+        sorted_output: bool,
+        wire_schema: Option<String>,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_writer(),
             "kafka" => self.construct_kafka_writer(),
             "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py, license),
+            "chroma" => self.construct_chroma_writer(py, data_format, license),
+            "weaviate" => self.construct_weaviate_writer(py, data_format, license),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
-            "mongodb" => self.construct_mongodb_writer(),
+            "mongodb" => self.construct_mongodb_writer(sorted_output),
+            "qdrant" => self.construct_qdrant_writer(py, data_format, license),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
             "rabbitmq" => self.construct_rabbitmq_writer(license),
+            "pulsar" => self.construct_pulsar_writer(license, worker_index, wire_schema),
             "iceberg" => self.construct_iceberg_writer(py, data_format, license),
             "mqtt" => self.construct_mqtt_writer(),
             "questdb" => self.construct_questdb_writer(py, data_format, license),
@@ -7323,10 +8941,51 @@ impl DataStorage {
             "mssql" => self.construct_mssql_writer(py, data_format, license),
             "mysql" => self.construct_mysql_writer(py, data_format, license),
             "sqlite" => self.construct_sqlite_writer(py, data_format),
+            "duckdb" => {
+                // Only the output-owning worker (index 0) creates/replaces the
+                // destination table on an empty output; the rest must not contend
+                // for DuckDB's exclusive file lock.
+                self.construct_duckdb_writer(py, data_format, license, worker_index == 0)
+            }
+            "pinecone" => self.construct_pinecone_writer(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),
         }
+    }
+
+    fn construct_pinecone_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<Box<dyn Writer>> {
+        if let Some(license) = license {
+            license.check_entitlements(["pinecone"])?;
+        }
+        let params_py: &Py<PineconeParams> = self
+            .pinecone_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("For Pinecone output, pinecone_params must be specified")
+            })?
+            .borrow();
+        let params = params_py.get();
+        // `key_field_index` is None when the user did not pass a primary_key; the
+        // writer then uses the row's internal key as the Pinecone record id.
+        let writer = PineconeWriter::new(
+            params.api_key.clone(),
+            params.control_host.clone(),
+            &params.index_name,
+            params.namespace.clone(),
+            data_format.value_fields_vec(py),
+            self.key_field_index,
+            params.vector_index,
+            params.metadata_indices.clone(),
+            self.max_batch_size,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Pinecone writer: {e}")))?;
+        Ok(Box::new(writer))
     }
 }
 
@@ -7346,6 +9005,21 @@ impl DataFormat {
             .iter()
             .map(|field| field.borrow(py).clone())
             .collect()
+    }
+
+    /// The value fields that belong to the message payload, each paired with
+    /// its position among the row values. Restricted to
+    /// `payload_field_indices` when set — that is how the record formats
+    /// keep the service columns out of the payload — and covering every
+    /// field otherwise.
+    fn payload_fields_with_positions(&self, py: pyo3::Python) -> Vec<(usize, ValueField)> {
+        match &self.payload_field_indices {
+            Some(indices) => indices
+                .iter()
+                .map(|index| (*index, self.value_fields[*index].borrow(py).clone()))
+                .collect(),
+            None => self.value_fields_vec(py).into_iter().enumerate().collect(),
+        }
     }
 
     fn value_field_names(&self, py: pyo3::Python) -> Vec<String> {
@@ -7453,8 +9127,42 @@ impl DataFormat {
                 self.schema(py)?,
                 self.session_type,
             )?)),
+            "avro" => {
+                let parser = AvroParser::new(
+                    self.value_fields_vec(py),
+                    self.key_field_names.as_deref(),
+                    None,
+                    true,
+                )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Box::new(parser))
+            }
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
+    }
+
+    /// Like [`Self::construct_parser`], but wired to the data storage the
+    /// parser will consume: the schema-aware formats obtain their schema
+    /// provider from the storage (e.g. the Avro parser resolves the writer
+    /// schemas in the Pulsar registry of the topic being read).
+    fn construct_parser_for_storage(
+        &self,
+        py: pyo3::Python,
+        data_storage: &DataStorage,
+    ) -> PyResult<Box<dyn Parser>> {
+        if self.format_type == "avro" {
+            if let Some(provider) = data_storage.avro_schema_provider()? {
+                let parser = AvroParser::new(
+                    self.value_fields_vec(py),
+                    self.key_field_names.as_deref(),
+                    Some(provider),
+                    !data_storage.deduced_schema,
+                )
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                return Ok(Box::new(parser));
+            }
+        }
+        self.construct_parser(py)
     }
 
     fn construct_formatter(&self, py: pyo3::Python) -> PyResult<Box<dyn Formatter>> {
@@ -7503,12 +9211,17 @@ impl DataFormat {
                     BsonFormatter::new(self.value_field_names(py), self.with_special_fields);
                 Ok(Box::new(formatter))
             }
+            "avro" => {
+                let formatter = AvroFormatter::new(self.payload_fields_with_positions(py))
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                Ok(Box::new(formatter))
+            }
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct ColumnProperties(Arc<EngineColumnProperties>);
 
@@ -7537,7 +9250,7 @@ impl ColumnProperties {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen, subclass)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen, subclass)]
 #[derive(Clone)]
 pub struct TableProperties(Arc<EngineTableProperties>);
 
@@ -7585,7 +9298,7 @@ impl TableProperties {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct ConnectorProperties {
     #[pyo3(get)]
@@ -7660,7 +9373,7 @@ impl ConnectorProperties {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(from_py_object, module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct Trace {
     #[pyo3(get)]
@@ -7692,8 +9405,10 @@ impl Trace {
     }
 }
 
-impl<'py> FromPyObject<'py> for EngineTrace {
-    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for EngineTrace {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let Trace {
             file_name,
             line_number,
@@ -7744,7 +9459,7 @@ mod done {
     pub struct Done(InnerDone);
 
     pub static DONE: Lazy<Py<Done>> = Lazy::new(|| {
-        Python::with_gil(|py| Py::new(py, Done(InnerDone)).expect("creating DONE should not fail"))
+        Python::attach(|py| Py::new(py, Done(InnerDone)).expect("creating DONE should not fail"))
     });
 }
 use done::{Done, DONE};
@@ -7769,15 +9484,17 @@ impl Done {
     }
 }
 
-impl<'py, T> FromPyObject<'py> for TotalFrontier<T>
+impl<'a, 'py, T> FromPyObject<'a, 'py> for TotalFrontier<T>
 where
-    T: FromPyObject<'py>,
+    T: FromPyObjectOwned<'py>,
 {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         if ob.is_instance_of::<Done>() {
             Ok(TotalFrontier::Done)
         } else {
-            Ok(TotalFrontier::At(ob.extract()?))
+            Ok(TotalFrontier::At(ob.extract().map_err(Into::into)?))
         }
     }
 }
@@ -7881,7 +9598,7 @@ fn run_with_wakeup_receiver<R>(
             #[allow(clippy::redundant_closure_for_method_calls)]
             wakeup_sender
                 .send(Box::new(|| {
-                    Python::with_gil(|py| py.check_signals()).map_err(DynError::from)
+                    Python::attach(|py| py.check_signals()).map_err(DynError::from)
                 }))
                 .unwrap_or(());
         })?;
@@ -7902,6 +9619,63 @@ impl From<LicenseError> for PyErr {
     }
 }
 
+/// The generic entry point of schema deduction: dispatches to the
+/// `explore_schema` routine of the storage the `DataStorage` describes and
+/// returns, per column, the name, the portable JSON descriptor of the engine
+/// type, whether the source schema defines a (representable) default, that
+/// default itself, and the documentation string. The default travels with an
+/// explicit presence flag because a defined default may legitimately be
+/// `None` — a bare `Option` could not tell "no default" from "defaults to
+/// None" on the Python side. The Python side assembles a `pw.Schema` out of
+/// these, knowing nothing about the storage's own type system.
+type ExploredColumn = (String, String, bool, Option<Value>, Option<String>);
+
+/// `format` is the payload format of the connector performing the deduction
+/// (e.g. "avro" or "json" for the message queues): a storage whose schema
+/// registry types the topics can reject a mismatch up front, instead of the
+/// pipeline failing on every message at runtime.
+#[pyfunction]
+#[pyo3(signature = (data_storage, format = None))]
+fn explore_schema(
+    data_storage: PyRef<DataStorage>,
+    format: Option<String>,
+) -> PyResult<Vec<ExploredColumn>> {
+    let fields = match data_storage.storage_type.as_ref() {
+        "pulsar" => {
+            let topic = data_storage.message_queue_fixed_topic()?;
+            let (runtime, client) = data_storage.pulsar_runtime_and_client()?;
+            crate::connectors::data_storage::pulsar::explore_schema(
+                &runtime,
+                &client,
+                &topic,
+                format.as_deref(),
+            )
+            .map_err(|e| {
+                PyValueError::new_err(format!(
+                    "Failed to deduce the schema of the Pulsar topic {topic:?}: {e}"
+                ))
+            })?
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "schema deduction is not supported for the {other:?} data storage"
+            )))
+        }
+    };
+    Ok(fields
+        .into_iter()
+        .map(|field| {
+            (
+                field.name,
+                crate::connectors::exploration::type_descriptor(&field.type_).to_string(),
+                field.default.is_some(),
+                field.default,
+                field.doc,
+            )
+        })
+        .collect())
+}
+
 #[pyfunction]
 #[pyo3(signature = (
     *,
@@ -7913,7 +9687,7 @@ fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) ->
     Ok(())
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[pyo3(name = "engine")]
 fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     // Initialize the logging
@@ -7955,8 +9729,12 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<ChromaParams>()?;
+    m.add_class::<WeaviateParams>()?;
+    m.add_class::<PineconeParams>()?;
     m.add_class::<ElasticSearchReaderParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
+    m.add_class::<QdrantParams>()?;
     m.add_class::<CsvParserSettings>()?;
     m.add_class::<ValueField>()?;
     m.add_class::<DataStorage>()?;
@@ -7971,6 +9749,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<BackfillingThreshold>()?;
     m.add_class::<PyDeltaOptimizerRule>()?;
     m.add_class::<MqttSettings>()?;
+    m.add_class::<PulsarSettings>()?;
     m.add_class::<PySchemaRegistrySettings>()?;
     m.add_class::<IcebergCatalogSettings>()?;
     m.add_class::<PsqlReplicationSettings>()?;
@@ -7996,8 +9775,10 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     #[allow(clippy::unsafe_removed_from_name)] // false positive
     m.add_function(wrap_pyfunction!(unsafe_make_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(check_entitlements, m)?)?;
+    m.add_function(wrap_pyfunction!(explore_schema, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize, m)?)?;
     m.add_function(wrap_pyfunction!(serialize, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_aws_credentials, m)?)?;
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;

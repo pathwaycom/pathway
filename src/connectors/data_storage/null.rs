@@ -16,7 +16,7 @@ impl NullWriter {
 }
 
 impl Writer for NullWriter {
-    fn write(&mut self, _data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, _data: &FormatterContext) -> Result<(), WriteError> {
         Ok(())
     }
 

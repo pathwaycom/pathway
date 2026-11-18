@@ -1,0 +1,51 @@
+version: "3.8"
+services:
+  postgres:
+    container_name: postgres
+    image: postgres
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=STRUCTUREDDB
+      - PGPASSWORD=password
+    volumes:
+      - ./postgres/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    expose:
+      - 5432
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h 0.0.0.0 -p 5432 -U user -d STRUCTUREDDB"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  pathway:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    build:
+      context: .
+    ports:
+      - "8080:8080"
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      PATHWAY_REST_CONNECTOR_HOST:
+      PATHWAY_REST_CONNECTOR_PORT:
+      PATHWAY_PERSISTENT_STORAGE:
+      POSTGRESQL_HOST: "postgres"
+    volumes:
+      - "./data:/app/data"
+  streamlit_ui:
+    depends_on:
+      - pathway
+    build:
+      context: ./ui
+    ports:
+      - "8501:8501"
+    environment:
+      PATHWAY_HOST: "pathway"
+      PATHWAY_PORT: "8080"

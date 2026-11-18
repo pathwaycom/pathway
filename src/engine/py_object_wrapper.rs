@@ -5,13 +5,13 @@ use pyo3::prelude::*;
 use std::fmt::{self, Display};
 
 use pyo3::intern;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyModule};
 use serde::{ser::Error, Deserialize, Serialize};
 
 use super::error::DynResult;
 
-static PICKLE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+static PICKLE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
 fn get_pickle_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     PICKLE
@@ -21,12 +21,13 @@ fn get_pickle_module(py: Python<'_>) -> &Bound<'_, PyModule> {
 
 fn python_dumps<'py>(
     serializer: &Bound<'py, PyAny>,
-    object: &PyObject,
+    object: &Py<PyAny>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let py = serializer.py();
     serializer
         .call_method1(intern!(py, "dumps"), (object,))?
         .extract()
+        .map_err(Into::into)
 }
 
 fn python_loads<'py>(serializer: &Bound<'py, PyAny>, bytes: &[u8]) -> PyResult<Bound<'py, PyAny>> {
@@ -36,27 +37,27 @@ fn python_loads<'py>(serializer: &Bound<'py, PyAny>, bytes: &[u8]) -> PyResult<B
 
 #[derive(Debug)]
 pub struct PyObjectWrapper {
-    object: PyObject,
-    serializer: Option<PyObject>,
+    object: Py<PyAny>,
+    serializer: Option<Py<PyAny>>,
 }
 
 impl PyObjectWrapper {
-    pub fn new(object: PyObject, serializer: Option<PyObject>) -> Self {
+    pub fn new(object: Py<PyAny>, serializer: Option<Py<PyAny>>) -> Self {
         Self { object, serializer }
     }
 
-    pub fn get_inner(&self, py: Python<'_>) -> PyObject {
+    pub fn get_inner(&self, py: Python<'_>) -> Py<PyAny> {
         self.object.clone_ref(py)
     }
 
-    pub fn get_serializer(&self, py: Python<'_>) -> Option<PyObject> {
+    pub fn get_serializer(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         self.serializer
             .as_ref()
             .map(|serializer| serializer.clone_ref(py))
     }
 
     pub fn as_bytes(&self) -> DynResult<Vec<u8>> {
-        Ok(Python::with_gil(|py| {
+        Ok(Python::attach(|py| {
             let serializer = match self.serializer.as_ref() {
                 Some(serializer) => serializer.bind(py),
                 None => get_pickle_module(py),
@@ -65,8 +66,8 @@ impl PyObjectWrapper {
         })?)
     }
 
-    pub fn from_bytes(bytes: &[u8], serializer: Option<PyObject>) -> DynResult<Self> {
-        let object = Python::with_gil(|py| -> PyResult<_> {
+    pub fn from_bytes(bytes: &[u8], serializer: Option<Py<PyAny>>) -> DynResult<Self> {
+        let object = Python::attach(|py| -> PyResult<_> {
             let serializer = match serializer.as_ref() {
                 Some(serializer) => serializer.bind(py),
                 None => get_pickle_module(py),
@@ -97,7 +98,7 @@ impl Serialize for PyObjectWrapper {
     {
         let own_serializer_bytes = match self.serializer.as_ref() {
             Some(serializer) => {
-                Python::with_gil(|py| python_dumps(get_pickle_module(py), serializer)?.extract())
+                Python::attach(|py| python_dumps(get_pickle_module(py), serializer)?.extract())
             }
             None => Ok(vec![]),
         }
@@ -116,10 +117,10 @@ impl<'de> Deserialize<'de> for PyObjectWrapper {
         D: serde::Deserializer<'de>,
     {
         let intermediate = PyObjectWrapperIntermediate::deserialize(deserializer)?;
-        let own_serializer: Option<PyObject> = if intermediate.serializer.is_empty() {
+        let own_serializer: Option<Py<PyAny>> = if intermediate.serializer.is_empty() {
             None
         } else {
-            Some(Python::with_gil(|py| {
+            Some(Python::attach(|py| {
                 python_loads(get_pickle_module(py), &intermediate.serializer)
                     .map_err(serde::de::Error::custom)
                     .map(Bound::unbind)

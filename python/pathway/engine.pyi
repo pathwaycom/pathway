@@ -11,6 +11,8 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any, Generic, TypeVar, TypeVarTuple, Union, final
 
+from typing_extensions import Unpack
+
 from pathway.internals.api import (
     CapturedStream,
     CombineMany,
@@ -25,7 +27,7 @@ from pathway.internals.monitoring import StatsMonitor
 _T = TypeVarTuple("_T")
 
 @final
-class Pointer(Generic[*_T]):
+class Pointer(Generic[Unpack[_T]]):
     pass
 
 def ref_scalar(*args, optional=False) -> Pointer: ...
@@ -858,6 +860,7 @@ def run_with_new_graph(
     license_key: str | None = None,
     terminate_on_error: bool = True,
     max_expression_batch_size: int,
+    udf_cache_directory: str | None = None,
 ) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
 
@@ -899,6 +902,22 @@ class DeltaOptimizerRule:
 class MqttSettings:
     def __init__(self, qos: int, retain: bool): ...
 
+class PulsarSettings:
+    def __init__(
+        self,
+        auth_token: str | None = None,
+        oauth2_issuer_url: str | None = None,
+        oauth2_credentials_url: str | None = None,
+        oauth2_audience: str | None = None,
+        oauth2_scope: str | None = None,
+        subscription_type: str | None = None,
+        compression: str | None = None,
+        read_compacted: bool = False,
+        producer_name: str | None = None,
+        event_time_from_engine: bool = False,
+        deliver_after_millis: int | None = None,
+    ) -> None: ...
+
 class TableWriterInitMode(Enum):
     DEFAULT: TableWriterInitMode
     CREATE_IF_NOT_EXISTS: TableWriterInitMode
@@ -915,6 +934,7 @@ class PsqlReplicationSettings:
 
 class DataStorage:
     mode: ConnectorMode
+    def emits_source_completion(self) -> bool: ...
     def __init__(
         self,
         storage_type: str,
@@ -929,6 +949,8 @@ class DataStorage:
         aws_s3_settings: AwsS3Settings | None = None,
         elasticsearch_params: ElasticSearchParams | None = None,
         elasticsearch_reader_params: ElasticSearchReaderParams | None = None,
+        chroma_params: ChromaParams | None = None,
+        weaviate_params: WeaviateParams | None = None,
         parallel_readers: int | None = None,
         python_subject: PythonSubject | None = None,
         unique_name: str | None = None,
@@ -938,6 +960,10 @@ class DataStorage:
         table_name: str | None = None,
         header_fields: list[tuple[str, int]] | None = None,
         key_field_index: int | None = None,
+        ordering_key_field_index: int | None = None,
+        event_time_field_index: int | None = None,
+        deliver_at_field_index: int | None = None,
+        deliver_after_field_index: int | None = None,
         min_commit_frequency: int | None = None,
         downloader_threads_count: int | None = None,
         database: str | None = None,
@@ -960,7 +986,13 @@ class DataStorage:
         psql_replication: PsqlReplicationSettings | None = None,
         schema_name: str | None = None,
         with_metadata: bool = False,
+        with_pathway_headers: bool = True,
         mysql_server_id: int | None = None,
+        qdrant_params: QdrantParams | None = None,
+        pinecone_params: PineconeParams | None = None,
+        detach_between_batches: bool = False,
+        pulsar_settings: PulsarSettings | None = None,
+        deduced_schema: bool = False,
     ) -> None: ...
     def delta_s3_storage_options(self, *args, **kwargs): ...
 
@@ -1003,6 +1035,32 @@ class ElasticSearchAuth:
 
 class ElasticSearchParams:
     def __init__(self, *args, **kwargs): ...
+
+class ChromaParams:
+    def __init__(self, *args, **kwargs): ...
+
+class QdrantParams:
+    def __init__(
+        self,
+        url: str,
+        collection_name: str,
+        api_key: str | None = None,
+        batch_size: int = 256,
+    ) -> None: ...
+
+class WeaviateParams:
+    def __init__(self, *args, **kwargs): ...
+
+class PineconeParams:
+    def __init__(
+        self,
+        api_key: str,
+        index_name: str,
+        vector_index: int,
+        metadata_indices: list[int],
+        namespace: str = ...,
+        control_host: str | None = None,
+    ) -> None: ...
 
 class ElasticSearchReaderParams:
     def __init__(self, *args, **kwargs): ...
@@ -1144,8 +1202,15 @@ def check_entitlements(
     license_key: str | None,
     entitlements: list[str],
 ): ...
+def explore_schema(
+    data_storage: DataStorage,
+    format: str | None = None,
+) -> list[tuple[str, str, bool, Value | None, str | None]]: ...
 def deserialize(data: bytes) -> Value: ...
 def serialize(value: Value) -> bytes: ...
+def resolve_aws_credentials(
+    profile: str | None = None,
+) -> tuple[str, str, str | None] | None: ...
 
 T = TypeVar("T")
 

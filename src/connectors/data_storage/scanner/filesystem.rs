@@ -66,6 +66,12 @@ impl PosixLikeScanner for FilesystemScanner {
     fn short_description(&self) -> String {
         format!("FileSystem({})", self.path)
     }
+
+    fn can_object_change_during_read(&self) -> bool {
+        // A file is created empty and written afterwards, and the two steps
+        // may straddle a scan.
+        true
+    }
 }
 
 impl FilesystemScanner {
@@ -86,20 +92,20 @@ impl FilesystemScanner {
         cached_object_storage: &CachedObjectStorage,
     ) -> Vec<QueuedAction> {
         let mut result = Vec::new();
-        for (encoded_path, stored_metadata) in cached_object_storage.get_iter() {
+        for (encoded_path, stored_tag) in cached_object_storage.get_iter() {
             let path: PathBuf = OsStr::from_bytes(encoded_path).into();
             match std::fs::metadata(&path) {
                 Err(e) => {
                     let is_deleted = e.kind() == std::io::ErrorKind::NotFound;
                     if is_deleted {
-                        result.push(QueuedAction::Delete(encoded_path.clone()));
+                        result.push(QueuedAction::Delete(encoded_path.to_vec()));
                     }
                 }
                 Ok(metadata) => {
                     let actual_metadata = FileLikeMetadata::from_fs_meta(&path, &metadata);
-                    let is_updated = stored_metadata.is_changed(&actual_metadata);
+                    let is_updated = cached_object_storage.is_changed(stored_tag, &actual_metadata);
                     if is_updated {
-                        result.push(QueuedAction::Update(encoded_path.clone(), actual_metadata));
+                        result.push(QueuedAction::Update(encoded_path.to_vec(), actual_metadata));
                     }
                 }
             }

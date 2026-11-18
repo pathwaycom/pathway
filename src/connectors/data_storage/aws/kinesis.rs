@@ -1,7 +1,6 @@
 use log::{error, warn};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::mem::take;
 use std::time::{Duration, Instant};
 
 use aws_sdk_kinesis::operation::describe_stream_summary::DescribeStreamSummaryError;
@@ -62,7 +61,11 @@ pub enum Error {
 }
 
 const MAX_KINESIS_RECORDS_PER_REQUEST: i32 = 10_000;
+// Kinesis keeps a shard iterator valid for 5 minutes. A cached one is reused
+// only while comfortably inside that window, so a request issued at the edge
+// of it never trips over an expired iterator.
 const SHARD_ITERATOR_TTL_SECONDS: u64 = 300;
+const SHARD_ITERATOR_REUSE_WINDOW: Duration = Duration::from_secs(SHARD_ITERATOR_TTL_SECONDS - 60);
 
 struct Shard {
     shard_id: String,
@@ -84,7 +87,7 @@ impl CachedShardIterator {
 
     fn is_expired(&self, queried_at: &Instant) -> bool {
         let iterator_age = queried_at.duration_since(self.received_at);
-        iterator_age <= Duration::from_secs(SHARD_ITERATOR_TTL_SECONDS)
+        iterator_age >= SHARD_ITERATOR_REUSE_WINDOW
     }
 }
 
@@ -403,10 +406,10 @@ impl Reader for KinesisReader {
                         .map_err(|e| ReadError::Kinesis(Box::new(e.into())))?;
 
                     for record in records_response.records() {
-                        let key = record.partition_key.as_bytes();
+                        // AUTO record distribution can return records without a partition key.
+                        let key = record.partition_key().map(|key| key.as_bytes().to_vec());
                         let value = record.data.clone().into_inner();
-                        let context =
-                            ReaderContext::from_key_value(Some(key.to_vec()), Some(value));
+                        let context = ReaderContext::from_key_value(key, Some(value));
 
                         let offset = (
                             Self::offset_key_for_shard(&mut self.shard_offset_keys, &shard_id),
@@ -486,7 +489,7 @@ impl BufferedShardEntries {
         stream: &str,
         entry: PutRecordsRequestEntry,
     ) -> Result<(), WriteError> {
-        let entry_length = entry.data.as_ref().len() + entry.partition_key.len();
+        let entry_length = entry.data.as_ref().len() + entry.partition_key().map_or(0, str::len);
         let entry_limit_reached = self.entries.len() == MAX_KINESIS_BULK_REQUEST_ENTRIES;
         let size_limit_reached = self.total_length + entry_length > MAX_KINESIS_BULK_REQUEST_LENGTH;
         if entry_limit_reached || size_limit_reached {
@@ -504,18 +507,23 @@ impl BufferedShardEntries {
 
         let mut retry = RetryConfig::default();
 
-        for _ in 0..N_SEND_ATTEMPTS {
+        for attempt in 0..N_SEND_ATTEMPTS {
+            // Keep the pending records until the response confirms acceptance.
+            // A transport error retries the same batch; a partial success below
+            // removes only accepted records before the next request.
             let response = client
                 .put_records()
                 .stream_name(stream)
-                .set_records(Some(take(&mut self.entries)))
+                .set_records(Some(self.entries.clone()))
                 .send()
                 .await;
 
             match response {
                 Ok(response) => {
                     if response.failed_record_count().unwrap_or(0) == 0 {
-                        break;
+                        self.entries.clear();
+                        self.total_length = 0;
+                        return Ok(());
                     }
 
                     let mut total_entries_to_retry = 0;
@@ -526,6 +534,13 @@ impl BufferedShardEntries {
                         }
                     }
                     self.entries.truncate(total_entries_to_retry);
+                    self.total_length = self
+                        .entries
+                        .iter()
+                        .map(|entry| {
+                            entry.data.as_ref().len() + entry.partition_key().map_or(0, str::len)
+                        })
+                        .sum();
                     if total_entries_to_retry > 0 {
                         warn!("There are {total_entries_to_retry} objects requiring retry. If you see this message often, it means that the writing rate is too high. Consider increasing the number of shards.");
                     }
@@ -538,16 +553,12 @@ impl BufferedShardEntries {
                 }
             }
 
-            retry.sleep_after_error();
+            if attempt + 1 < N_SEND_ATTEMPTS {
+                retry.sleep_after_error_async().await;
+            }
         }
 
-        self.total_length = 0;
-        if self.entries.is_empty() {
-            Ok(())
-        } else {
-            self.entries.clear();
-            Err(WriteError::SomeItemsNotDelivered(self.entries.len()))
-        }
+        Err(WriteError::SomeItemsNotDelivered(self.entries.len()))
     }
 }
 
@@ -609,14 +620,14 @@ impl KinesisWriter {
 }
 
 impl Writer for KinesisWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+    fn write(&mut self, data: &FormatterContext) -> Result<(), WriteError> {
         let partition_key = match self.key_field_index {
             Some(index) => data.values[index].to_string(),
-            None => data.key.0.to_string(),
+            None => data.key.as_u128().to_string(),
         };
 
-        for payload in data.payloads {
-            let payload = payload.into_raw_bytes()?;
+        for payload in &data.payloads {
+            let payload = payload.as_raw_bytes()?.to_vec();
             let effective_stream = self.stream_name.get_for_posting(&data.values)?;
             let entry = PutRecordsRequestEntry::builder()
                 .partition_key(partition_key.clone())
@@ -650,5 +661,26 @@ impl Writer for KinesisWriter {
 
     fn single_threaded(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_shard_iterator_is_reused_and_an_old_one_is_not() {
+        // The cache exists to spare a GetShardIterator call per visit of a
+        // shard: a just-received iterator must be handed back, and only one
+        // approaching the 5-minute validity of Kinesis iterators refreshed.
+        let received_at = Instant::now();
+        let cached = CachedShardIterator {
+            iterator: "iterator".to_string(),
+            received_at,
+        };
+        assert!(!cached.is_expired(&received_at));
+        assert!(!cached.is_expired(&(received_at + Duration::from_mins(1))));
+        assert!(cached.is_expired(&(received_at + SHARD_ITERATOR_REUSE_WINDOW)));
+        assert!(cached.is_expired(&(received_at + Duration::from_secs(SHARD_ITERATOR_TTL_SECONDS))));
     }
 }

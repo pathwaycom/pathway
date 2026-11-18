@@ -14,7 +14,7 @@ from pathway.internals import config, parse_graph
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
     SerializationTestHelper,
-    UniquePortDispenser,
+    make_port_fixture,
 )
 
 
@@ -73,18 +73,20 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
     if list(item.iter_markers("environment_changes")):
         return
 
-    assert saved_env == new_env, "environment changed during the test run"
+    # OpenMP runtimes loaded lazily inside a test (e.g. by faiss or scikit-learn
+    # on their first parallel call) set KMP_* variables process-wide. That is
+    # runtime-library initialization noise, not the test misusing the
+    # environment, so those keys are exempt from the equality check.
+    def without_openmp_keys(env: dict[str, str]) -> dict[str, str]:
+        return {k: v for k, v in env.items() if not k.startswith("KMP_")}
+
+    assert without_openmp_keys(saved_env) == without_openmp_keys(
+        new_env
+    ), "environment changed during the test run"
 
 
-# FIXME: if you plan to use more than 16 pathway processes, increase the step size
-PORT_DISPENSER = UniquePortDispenser(
-    step_size=16,
-)
-
-
-@pytest.fixture
-def port(testrun_uid):
-    yield PORT_DISPENSER.get_unique_port(testrun_uid)
+# FIXME: if you plan to use more than 16 pathway processes, increase the block size
+port = make_port_fixture(block_size=16)
 
 
 @pytest.fixture

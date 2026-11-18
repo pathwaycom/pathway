@@ -19,9 +19,14 @@ def test_formats_without_parsing(
     input_path = f"{s3_path}/input.txt"
     input_full_contents = "abc\n\ndef\nghi\njkl"
     output_path = tmp_path / "output.json"
-    uploaded_at = int(time.time())
+    upload_started_at = int(time.time())
 
     put_object_into_storage(storage_type, input_path, input_full_contents)
+    # The upload itself can take a while: ``put_object_into_storage`` retries
+    # transient backend failures with exponential backoff, so the object's
+    # server-side mtime is only known to lie between the start and the end of
+    # the call — bracket it instead of assuming the upload was instant.
+    upload_finished_at = int(time.time())
     table = create_table_for_storage(
         storage_type, input_path, format, with_metadata=with_metadata
     )
@@ -29,7 +34,11 @@ def test_formats_without_parsing(
     pw.run()
 
     def check_metadata(metadata):
-        assert uploaded_at <= metadata["modified_at"] <= uploaded_at + 10
+        # ±10s of slack absorbs clock skew between the test runner and the
+        # storage backend and the second-level truncation of both timestamps.
+        assert (
+            upload_started_at - 10 <= metadata["modified_at"] <= upload_finished_at + 10
+        )
         assert metadata["path"] == input_path
         assert metadata["size"] == len(input_full_contents)
 

@@ -111,15 +111,18 @@ def test_unpack_snapshots_static_table():
 
 
 def test_unpack_snapshots_dynamically_growing_table():
-    table = pw.demo.generate_custom_stream(
-        value_generators={
-            "key": lambda x: str(x + 1),
-            "data": lambda x: str(x + 1),
-        },
+    # One upsert per transaction, committed explicitly, so each row is guaranteed
+    # its own mini-batch and the table grows by exactly one row per engine time.
+    # A wall-clock-driven source must not be used here: under load several rows
+    # could share one mini-batch, producing fewer, larger snapshots.
+    scenario = [
+        [{"type": "Upsert", "key": str(i), "data": str(i)}] for i in range(1, 6)
+    ]
+    table = pw.io.python.read(
+        subject=SnapshotChangeStreamer(scenario),
         schema=KeyDataColumnSchema,
-        nb_rows=5,
-        input_rate=5,
-        autocommit_duration_ms=10,
+        format="json",
+        autocommit_duration_ms=None,
     )
     unpacked = table.unpack_snapshots()
     observer = SnapshotObserver()

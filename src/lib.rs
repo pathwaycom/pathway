@@ -21,6 +21,7 @@ mod fs_helpers;
 mod mat_mul;
 mod pipe;
 mod retry;
+mod s3_runtime;
 mod timestamp;
 
 #[cfg(not(feature = "standard-allocator"))]

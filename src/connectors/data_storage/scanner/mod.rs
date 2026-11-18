@@ -40,4 +40,15 @@ pub trait PosixLikeScanner: Send {
     ) -> Result<Vec<QueuedAction>, ReadError>;
     fn has_pending_actions(&self) -> bool;
     fn short_description(&self) -> String;
+
+    /// Whether an object can change between the moment a scan took its
+    /// metadata and the moment its contents are read. A local file is
+    /// created empty and filled afterwards, so a scan may tag it before the
+    /// writer is done; for such a scanner the reader takes the metadata
+    /// again after the read and reads the object once more while the two
+    /// disagree. An S3 object is replaced atomically, and its metadata costs
+    /// a request, so the default keeps the metadata taken by the scan.
+    fn can_object_change_during_read(&self) -> bool {
+        false
+    }
 }

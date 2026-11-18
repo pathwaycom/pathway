@@ -3,6 +3,10 @@ import pathlib
 
 import pytest
 from utils import (
+    MYSQL_DB_HOST,
+    MYSQL_LOCAL_INFILE_DB_HOST,
+    AtlasContext,
+    ChromaContext,
     ClickHouseContext,
     DebeziumContext,
     DynamoDBContext,
@@ -13,10 +17,14 @@ from utils import (
     MySQLContext,
     NeonContext,
     PgvectorContext,
+    PineconeContext,
     PostgresContext,
     PostgresWithTlsContext,
+    QdrantContext,
     QuestDBContext,
+    WeaviateContext,
     clickhouse_concurrency_slot,
+    elasticsearch_concurrency_slot,
     mongodb_concurrency_slot,
     mssql_concurrency_slot,
     mysql_concurrency_slot,
@@ -95,6 +103,16 @@ def pgvector():
 
 
 @pytest.fixture
+def pinecone():
+    # Each test gets a fresh control-plane client and drops every index it
+    # created on teardown, since Pinecone Local does not persist across tests
+    # but a single emulator instance is shared by the whole suite.
+    ctx = PineconeContext()
+    yield ctx
+    ctx.cleanup()
+
+
+@pytest.fixture
 def neon():
     # ``NeonContext`` is a context manager: on exit it drops every table the
     # test created so nothing survives the run, whatever the verdict — Neon
@@ -124,6 +142,17 @@ def mongodb():
     ctx.client.close()
 
 
+@pytest.fixture(scope="session")
+def atlas():
+    # One shared client against the `mongodb-atlas` compose service for the whole
+    # session, mirroring the `mongodb` fixture above. The Atlas Local image is
+    # heavy (it runs both mongod and the mongot search process), so the tests are
+    # also pinned to a single xdist worker via `xdist_group("mongodb_atlas")`.
+    ctx = AtlasContext()
+    yield ctx
+    ctx.client.close()
+
+
 @pytest.fixture(autouse=True)
 def _mongodb_concurrency_cap(request):
     # The `mongodb` context is session-scoped (one shared client), so the
@@ -141,9 +170,13 @@ def _mongodb_concurrency_cap(request):
 
 @pytest.fixture
 def elasticsearch():
-    ctx = ElasticsearchContext()
-    yield ctx
-    ctx.cleanup()
+    # Bound how many ES tests hammer the single, small-heap ES node at once so
+    # newly created indices' primary shards activate before writes arrive (see
+    # ELASTICSEARCH_MAX_CONCURRENCY).
+    with elasticsearch_concurrency_slot():
+        ctx = ElasticsearchContext()
+        yield ctx
+        ctx.cleanup()
 
 
 @pytest.fixture
@@ -173,7 +206,22 @@ def mysql():
             ctx.close()
 
 
-_MSSQL_CAPTURE_JOB_CONFIGURED = False
+@pytest.fixture(
+    params=[MYSQL_DB_HOST, MYSQL_LOCAL_INFILE_DB_HOST],
+    ids=["local_infile_off", "local_infile_on"],
+)
+def mysql_either_strategy(request):
+    """A ``MySQLContext`` against each of the two servers, so a parametrized test
+    runs once per write strategy: the default server (``local_infile=OFF``) drives
+    the multi-row INSERT fallback, the ``--local-infile=ON`` server drives the
+    LOAD DATA LOCAL INFILE fast path. ``ctx.connection_string`` points at the
+    matching server."""
+    with mysql_concurrency_slot():
+        ctx = MySQLContext(host=request.param)
+        try:
+            yield ctx
+        finally:
+            ctx.close()
 
 
 @pytest.fixture
@@ -189,7 +237,6 @@ def mssql():
 
 
 def _mssql_session():
-    global _MSSQL_CAPTURE_JOB_CONFIGURED
     ctx = MssqlContext()
     # Guarantee the precondition every CDC test depends on: the database must
     # be CDC-enabled before any `sp_cdc_enable_table` call.  Done on every
@@ -197,25 +244,6 @@ def _mssql_session():
     # trusting only the one-shot docker init, which can be skipped or silently
     # fail and would otherwise make the whole MSSQL suite fail in setup.
     ctx.ensure_database_cdc()
-    if not _MSSQL_CAPTURE_JOB_CONFIGURED:
-        # Make the CDC capture job run back-to-back instead of sleeping
-        # the default 5 s between scans.  Under heavy xdist parallelism
-        # the capture agent falls many seconds behind, which causes
-        # `wait_for_capture_count` to time out in flaky CDC tests.
-        # Idempotent — sp_cdc_change_job updates msdb.dbo.cdc_jobs once
-        # per server, so it's fine to call from every fixture
-        # initialization that wins the race.
-        try:
-            ctx.execute_sql(
-                "EXEC sys.sp_cdc_change_job @job_type=N'capture', @pollinginterval=0",
-                drain_status_rows=True,
-            )
-        except Exception:
-            # The proc requires elevated permissions; if it fails, fall
-            # back to the default pollinginterval and tolerate the
-            # additional latency.
-            pass
-        _MSSQL_CAPTURE_JOB_CONFIGURED = True
     try:
         yield ctx
     finally:
@@ -231,3 +259,28 @@ def milvus(tmp_path):
     ctx = MilvusContext(str(tmp_path / "milvus.db"))
     yield ctx
     ctx.close()
+
+
+@pytest.fixture
+def chroma():
+    ctx = ChromaContext()
+    yield ctx
+    ctx.close()
+
+
+@pytest.fixture
+def qdrant():
+    import os
+
+    grpc_url = os.environ.get("QDRANT_URL", "http://qdrant:6334")
+    rest_url = os.environ.get("QDRANT_REST_URL", "http://qdrant:6333")
+    ctx = QdrantContext(grpc_url, rest_url)
+    yield ctx
+    ctx.close()
+
+
+@pytest.fixture
+def weaviate():
+    ctx = WeaviateContext()
+    yield ctx
+    ctx.cleanup()

@@ -3,7 +3,6 @@
 import os
 import pathlib
 
-import pytest
 from click.testing import CliRunner
 
 from pathway import cli
@@ -59,7 +58,6 @@ def run_replay(
     assert result.exit_code == 0
 
 
-@pytest.mark.flaky(reruns=10)  # FIXME
 def test_record_replay_through_cli(tmp_path: pathlib.Path):
     replay_dir = str(tmp_path / "test_replay")
     timestamp_file = tmp_path / "timestamp"
@@ -75,8 +73,11 @@ def test_record_replay_through_cli(tmp_path: pathlib.Path):
     # expected number will be ignored, as we are generating rows
     run_replay(replay_dir, "speedrun", 30, rows_to_generate=15)
 
-    # Check that the rows weren't recorded
-    run_replay(replay_dir, "speedrun", 15)
+    # Check that the rows weren't recorded: the replayed stream must contain
+    # exactly the timestamps of the original recording. Rows produced during
+    # recording may share a timestamp, so compare against the recorded number
+    # of distinct timestamps, not the number of rows.
+    run_replay(replay_dir, "speedrun", n_timestamps)
 
     # Without replay (and with empty input connector), there are no rows
     run_record(replay_dir, timestamp_file, 0, 0)

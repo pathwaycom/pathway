@@ -9,7 +9,7 @@ use super::{error::DynError, license::License, Graph, Result};
 use crate::{engine::dataflow::monitoring::ProberStats, env::parse_env_var};
 use arc_swap::ArcSwapOption;
 use itertools::Itertools;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use nix::sys::{
     resource::{getrusage, UsageWho},
     time::TimeValLike,
@@ -38,6 +38,13 @@ use uuid::Uuid;
 const PATHWAY_TELEMETRY_SERVER: &str = "https://usage.pathway.com";
 const PERIODIC_READER_INTERVAL: Duration = Duration::from_mins(1);
 const OPENTELEMETRY_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
+
+// The telemetry runtime drives one periodic reader and its exporters. Tokio
+// would otherwise size its pool by the host's CPU count, which has nothing to
+// do with how many CPUs the process may use - a container limited to a couple
+// of cores on a large machine got a thread per host core, in every worker
+// process.
+const TELEMETRY_RUNTIME_WORKER_THREADS: usize = 2;
 
 const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";
 const PROCESS_CPU_USER_TIME: &str = "process.cpu.utime";
@@ -207,6 +214,7 @@ impl TelemetryObserver {
         let mut interval = tokio::time::interval(interval);
         let mut sys: System = System::new();
         let pid = get_current_pid().expect("Failed to get current PID");
+        let mut memory_watchdog = MemoryWatchdog::new();
 
         let global_gauges = self
             .meter_provider
@@ -233,6 +241,9 @@ impl TelemetryObserver {
                                 }
                                 if let Some(g) = detailed_gauges.as_ref() {
                                     g.record_system_metrics(&system_metrics);
+                                }
+                                if let Some(memory_usage) = system_metrics.memory_usage {
+                                    memory_watchdog.observe(memory_usage);
                                 }
                             }
                             Err(e) => {
@@ -439,6 +450,92 @@ impl Runner {
     }
 }
 
+/// Reads the memory limit the process runs under from the cgroup (v2 then
+/// v1) hierarchy. Returns `None` when unlimited or not on Linux cgroups.
+fn cgroup_memory_limit() -> Option<u64> {
+    fn read_limit(path: &str) -> Option<u64> {
+        let contents = std::fs::read_to_string(path).ok()?;
+        let trimmed = contents.trim();
+        if trimmed == "max" {
+            return None;
+        }
+        let value: u64 = trimmed.parse().ok()?;
+        // cgroup v1 reports a sentinel close to u64::MAX for "unlimited";
+        // treat anything above a petabyte as no real limit.
+        if value >= (1 << 50) {
+            None
+        } else {
+            Some(value)
+        }
+    }
+    read_limit("/sys/fs/cgroup/memory.max")
+        .or_else(|| read_limit("/sys/fs/cgroup/memory/memory.limit_in_bytes"))
+}
+
+/// Warns, at most once per threshold, when process memory is heading toward
+/// the container's limit. Container OOM kills are silent from the pipeline's
+/// point of view — the kernel sends SIGKILL and nothing reaches the logs or
+/// telemetry — so a heads-up while there is still headroom is the only signal
+/// the operator gets. Purely observational: it never changes execution.
+struct MemoryWatchdog {
+    limit: Option<u64>,
+    warned_at_fraction: u8,
+}
+
+impl MemoryWatchdog {
+    fn new() -> Self {
+        let limit = cgroup_memory_limit();
+        if let Some(limit) = limit {
+            debug!(
+                "Memory watchdog active: cgroup limit is {} MiB",
+                limit / (1 << 20)
+            );
+        }
+        Self {
+            limit,
+            warned_at_fraction: 0,
+        }
+    }
+
+    /// Decides whether crossing the current memory fraction warrants a
+    /// warning, updating the once-per-threshold state. Returns the crossed
+    /// threshold (as a percentage) when a warning is due. Split out from the
+    /// logging so the escalate-once / reset-below semantics are unit-testable.
+    fn check(&mut self, memory_usage: u64) -> Option<u8> {
+        let limit = self.limit?;
+        #[allow(clippy::cast_possible_truncation)]
+        let fraction = ((u128::from(memory_usage) * 100) / u128::from(limit)) as u8;
+        // Warn once when crossing 80%, again at 90%; reset if usage falls
+        // back below 75% so a later climb warns again.
+        if fraction < 75 {
+            self.warned_at_fraction = 0;
+        }
+        for threshold in [90u8, 80u8] {
+            if fraction >= threshold && self.warned_at_fraction < threshold {
+                self.warned_at_fraction = threshold;
+                return Some(fraction);
+            }
+        }
+        None
+    }
+
+    fn observe(&mut self, memory_usage: u64) {
+        if let Some(fraction) = self.check(memory_usage) {
+            let limit = self.limit.expect("check returned Some only with a limit");
+            warn!(
+                "Process memory usage is {}% of the container limit ({} / {} MiB). \
+                 If it keeps growing the process will be OOM-killed. A pipeline whose \
+                 memory grows without bound usually keeps unbounded state: consider \
+                 `forget`/windowing to drop old rows, an upsert output keyed on a bounded \
+                 key set, or `max_backlog_size` to bound the input backlog.",
+                fraction,
+                memory_usage / (1 << 20),
+                limit / (1 << 20),
+            );
+        }
+    }
+}
+
 struct SystemMetrics {
     memory_usage: Option<u64>,
     cpu_user_time: i64,
@@ -463,13 +560,7 @@ impl SystemMetrics {
         sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
-        );
-        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::nothing().with_cpu(),
+            ProcessRefreshKind::nothing().with_memory(),
         );
     }
 }
@@ -567,6 +658,7 @@ fn start_telemetry_thread(
         .name("pathway:telemetry_thread".to_string())
         .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(TELEMETRY_RUNTIME_WORKER_THREADS)
                 .enable_time()
                 .enable_io()
                 .build()
@@ -633,5 +725,44 @@ pub fn maybe_run_telemetry_thread(
             debug!("Telemetry disabled");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryWatchdog;
+
+    fn watchdog(limit: u64) -> MemoryWatchdog {
+        MemoryWatchdog {
+            limit: Some(limit),
+            warned_at_fraction: 0,
+        }
+    }
+
+    #[test]
+    fn no_limit_never_warns() {
+        let mut w = MemoryWatchdog {
+            limit: None,
+            warned_at_fraction: 0,
+        };
+        assert_eq!(w.check(u64::MAX), None);
+    }
+
+    #[test]
+    fn warns_once_per_threshold_and_escalates() {
+        let mut w = watchdog(1000);
+        assert_eq!(w.check(500), None); // 50%
+        assert_eq!(w.check(820), Some(82)); // crosses 80%
+        assert_eq!(w.check(850), None); // still in the 80s, already warned
+        assert_eq!(w.check(910), Some(91)); // crosses 90%
+        assert_eq!(w.check(999), None); // already warned at 90
+    }
+
+    #[test]
+    fn rearms_after_dropping_below_75() {
+        let mut w = watchdog(1000);
+        assert_eq!(w.check(850), Some(85));
+        assert_eq!(w.check(700), None); // fell back below 75% -> rearm
+        assert_eq!(w.check(850), Some(85)); // warns again
     }
 }

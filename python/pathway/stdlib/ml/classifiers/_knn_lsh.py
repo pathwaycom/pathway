@@ -98,18 +98,30 @@ def knn_lsh_classifier_train(
 
 
 # support for glob metadata search
-def _globmatch_impl(pat_i, pat_n, pattern, p_i, p_n, path):
-    """Match pattern to path, recursively expanding **."""
+def _globmatch_impl(pat_i, pat_n, pattern, p_i, p_n, path, memo):
+    """Match pattern to path, recursively expanding **, using memoization."""
+    state = (pat_i, p_i)
+    if state in memo:
+        return memo[state]
+
     if pat_i == pat_n:
-        return p_i == p_n
+        memo[state] = p_i == p_n
+        return memo[state]
     if p_i == p_n:
-        return False
+        memo[state] = False
+        return memo[state]
     if pattern[pat_i] == "**":
-        return _globmatch_impl(
-            pat_i, pat_n, pattern, p_i + 1, p_n, path
-        ) or _globmatch_impl(pat_i + 1, pat_n, pattern, p_i, p_n, path)
+        res = _globmatch_impl(
+            pat_i, pat_n, pattern, p_i + 1, p_n, path, memo
+        ) or _globmatch_impl(pat_i + 1, pat_n, pattern, p_i, p_n, path, memo)
+        memo[state] = res
+        return res
     if fnmatch.fnmatch(path[p_i], pattern[pat_i]):
-        return _globmatch_impl(pat_i + 1, pat_n, pattern, p_i + 1, p_n, path)
+        res = _globmatch_impl(pat_i + 1, pat_n, pattern, p_i + 1, p_n, path, memo)
+        memo[state] = res
+        return res
+
+    memo[state] = False
     return False
 
 
@@ -118,7 +130,7 @@ def _globmatch(pattern, path):
     pattern_parts = pattern.split("/")
     path_parts = path.split("/")
     return _globmatch_impl(
-        0, len(pattern_parts), pattern_parts, 0, len(path_parts), path_parts
+        0, len(pattern_parts), pattern_parts, 0, len(path_parts), path_parts, {}
     )
 
 

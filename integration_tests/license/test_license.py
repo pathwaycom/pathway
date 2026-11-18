@@ -11,7 +11,18 @@ from pathway.internals import api
 from pathway.internals.config import _check_entitlements
 from pathway.tests.utils import run_all
 
-PATHWAY_LICENSES = json.loads(os.environ.get("PATHWAY_LICENSES", "{}"))
+# The license set is provided as a JSON file in the credentials directory:
+# it is too large to travel through the environment (one oversized exported
+# variable makes every execve fail with "Argument list too long"). The
+# environment variable is kept as a fallback for local runs.
+_LICENSES_FILE = os.path.join(
+    os.environ.get("CREDENTIALS_DIR", "/credentials"), "pathway-licenses.json"
+)
+try:
+    with open(_LICENSES_FILE) as _licenses_file:
+        PATHWAY_LICENSES = json.load(_licenses_file)
+except FileNotFoundError:
+    PATHWAY_LICENSES = json.loads(os.environ.get("PATHWAY_LICENSES", "{}"))
 PATHWAY_LICENSES["none"] = None
 
 ENTERPRISE_BUILD = pw.__version__.endswith("+enterprise")

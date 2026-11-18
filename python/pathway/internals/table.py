@@ -359,7 +359,7 @@ id_type=<class 'pathway.engine.Pointer'>>
     @trace_user_frame
     @staticmethod
     @check_arg_types
-    def empty(**kwargs: dt.DType) -> Table:
+    def empty(**kwargs) -> Table:
         """Creates an empty table with a schema specified by kwargs.
 
         Args:

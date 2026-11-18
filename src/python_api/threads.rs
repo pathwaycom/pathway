@@ -67,7 +67,7 @@ impl Drop for PythonThreadState {
 }
 
 fn attach_python_tracer() {
-    Python::with_gil(|py| -> PyResult<()> {
+    Python::attach(|py| -> PyResult<()> {
         let threading = py.import(intern!(py, "threading"))?;
         let trace = threading.call_method0(intern!(py, "gettrace"))?;
         if !trace.is_none() {

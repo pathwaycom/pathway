@@ -68,7 +68,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         let context = formatter
             .format(&Key::random(), std::slice::from_ref(value), Timestamp(0), 1)
             .expect("formatter failed");
-        writer.write(context)?;
+        writer.write(&context)?;
     }
     writer.flush(true)?;
     let rows_present: Vec<_> = read_from_deltalake(test_storage_path.to_str().unwrap(), &type_)
@@ -556,7 +556,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
                 1,
             )
             .expect("formatter failed");
-        writer.write(context)?;
+        writer.write(&context)?;
         let context = formatter
             .format(
                 &key_second_entry,
@@ -565,7 +565,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
                 1,
             )
             .expect("formatter failed");
-        writer.write(context)?;
+        writer.write(&context)?;
         writer.flush(false)?;
 
         let mut reread_data =
@@ -584,7 +584,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
                 -1,
             )
             .expect("formatter failed");
-        writer.write(context)?;
+        writer.write(&context)?;
         writer.flush(false)?;
 
         let reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
@@ -626,7 +626,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
             1,
         )
         .expect("formatter failed");
-    writer.write(context)?;
+    writer.write(&context)?;
     writer.flush(false)?;
 
     let mut reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
@@ -645,7 +645,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
             1,
         )
         .expect("formatter failed");
-    writer.write(context)?;
+    writer.write(&context)?;
     writer.flush(false)?;
 
     let mut reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;
@@ -668,7 +668,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
             -1,
         )
         .expect("formatter failed");
-    writer.write(context)?;
+    writer.write(&context)?;
     writer.flush(false)?;
 
     let mut reread_data = read_with_connector(test_storage_path.to_str().unwrap(), &Type::String)?;

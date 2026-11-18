@@ -5,20 +5,21 @@ use std::str::from_utf8;
 use std::time::SystemTime;
 
 use arcstr::ArcStr;
+use futures::stream::{self, StreamExt};
 use glob::Pattern as GlobPattern;
 use log::{info, warn};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use crate::connectors::data_storage::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::metadata::FileLikeMetadata;
 use crate::connectors::ReadError;
 use crate::persistence::cached_object_storage::CachedObjectStorage;
-use crate::retry::{execute_with_retries, RetryConfig};
+use crate::retry::{execute_with_retries_async, RetryConfig};
+use crate::s3_runtime::build_s3_runtime;
 
 use s3::bucket::Bucket as S3Bucket;
 use s3::request::request_trait::ResponseData as S3ResponseData;
 use s3::serde_types::ListBucketResult as S3ListBucketResult;
+use tokio::runtime::Runtime as TokioRuntime;
 
 const MAX_S3_RETRIES: usize = 2;
 const S3_PATH_PREFIXES: [&str; 2] = ["s3://", "s3a://"];
@@ -70,9 +71,14 @@ pub struct S3Scanner {
     bucket: S3Bucket,
     objects_prefix: String,
     object_pattern: GlobPattern,
+    only_provide_metadata: bool,
     pending_modification_download_tasks: Vec<FileLikeMetadata>,
     pending_modifications: HashMap<String, Vec<u8>>,
-    downloader_pool: ThreadPool,
+    downloader_concurrency: usize,
+
+    // Owned so it is dropped with the scanner. It must never outlive the
+    // process that created it: see `s3_runtime::build_s3_runtime`.
+    runtime: TokioRuntime,
 }
 
 impl PosixLikeScanner for S3Scanner {
@@ -81,12 +87,14 @@ impl PosixLikeScanner for S3Scanner {
         object_path: &[u8],
     ) -> Result<Option<FileLikeMetadata>, ReadError> {
         let path = from_utf8(object_path).expect("S3 path are expected to be UTF-8 strings");
-        let object_lists = execute_with_retries(
-            || self.bucket.list(path.to_string(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        let object_lists = self
+            .runtime
+            .block_on(execute_with_retries_async(
+                async || self.bucket.list(path.to_string(), None).await,
+                RetryConfig::default(),
+                MAX_S3_RETRIES,
+            ))
+            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
         for list in object_lists {
             for object in &list.contents {
                 if object.key != path {
@@ -106,7 +114,8 @@ impl PosixLikeScanner for S3Scanner {
         if let Some(prepared_object) = self.pending_modifications.remove(path) {
             Ok(prepared_object)
         } else {
-            let downloaded_object = Self::stream_object_from_path_and_bucket(path, &self.bucket)?;
+            let downloaded_object =
+                Self::stream_object_from_path_and_bucket(&self.runtime, path, &self.bucket)?;
             Ok(downloaded_object.contents)
         }
     }
@@ -137,6 +146,21 @@ impl PosixLikeScanner for S3Scanner {
                     }
                 }
             }
+        }
+
+        // When only the metadata is requested, the object contents are never read.
+        // The pending tasks already carry the full `FileLikeMetadata` obtained from
+        // the bucket listing, so the actions can be emitted straight away without
+        // spending a single network request on downloading the bodies.
+        if self.only_provide_metadata {
+            for task in self.pending_modification_download_tasks.drain(..) {
+                if cached_object_storage.contains_object(task.path.as_bytes()) {
+                    result.push(QueuedAction::Update(task.path.as_bytes().into(), task));
+                } else {
+                    result.push(QueuedAction::Read(task.path.as_bytes().into(), task));
+                }
+            }
+            return Ok(result);
         }
 
         let mut bulk_for_download = Vec::new();
@@ -195,16 +219,23 @@ impl S3Scanner {
         object_pattern: impl Into<String>,
         downloader_threads_count: usize,
         is_polling_enabled: bool,
+        only_provide_metadata: bool,
     ) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
         let object_pattern = object_pattern.into();
+        let runtime = build_s3_runtime();
 
-        let (object_list, _) = execute_with_retries(
-            || bucket.list_page(objects_prefix.clone(), None, None, None, Some(1)),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListPage, e))?;
+        let (object_list, _) = runtime
+            .block_on(execute_with_retries_async(
+                async || {
+                    bucket
+                        .list_page(objects_prefix.clone(), None, None, None, Some(1))
+                        .await
+                },
+                RetryConfig::default(),
+                MAX_S3_RETRIES,
+            ))
+            .map_err(|e| ReadError::S3(S3CommandName::ListPage, e))?;
         if object_list.contents.is_empty() {
             if !is_polling_enabled {
                 return Err(ReadError::NoObjectsToRead);
@@ -216,12 +247,11 @@ impl S3Scanner {
             bucket,
             objects_prefix,
             object_pattern: GlobPattern::new(&object_pattern)?,
-            downloader_pool: ThreadPoolBuilder::new()
-                .num_threads(downloader_threads_count)
-                .build()
-                .expect("Failed to create downloader pool"),
+            only_provide_metadata,
+            downloader_concurrency: downloader_threads_count.max(1),
             pending_modifications: HashMap::new(),
             pending_modification_download_tasks: Vec::new(),
+            runtime,
         })
     }
 
@@ -240,25 +270,43 @@ impl S3Scanner {
     }
 
     pub fn download_object_from_path_and_bucket(
+        runtime: &TokioRuntime,
+        object_path_ref: &str,
+        bucket: &S3Bucket,
+    ) -> Result<S3ResponseData, ReadError> {
+        runtime.block_on(Self::download_object_async(object_path_ref, bucket))
+    }
+
+    async fn download_object_async(
         object_path_ref: &str,
         bucket: &S3Bucket,
     ) -> Result<S3ResponseData, ReadError> {
         let (_, deduced_path) = Self::deduce_bucket_and_path(object_path_ref);
-        execute_with_retries(
-            || bucket.get_object(&deduced_path), // returns Err on incorrect status code because fail-on-err feature is enabled
+        execute_with_retries_async(
+            async || bucket.get_object(&deduced_path).await, // returns Err on incorrect status code because fail-on-err feature is enabled
             RetryConfig::default(),
             MAX_S3_RETRIES,
         )
+        .await
         .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))
     }
 
     fn stream_object_from_path_and_bucket(
+        runtime: &TokioRuntime,
         object_path_ref: &str,
         bucket: &S3Bucket,
     ) -> S3DownloadResult {
-        let object_path = object_path_ref.to_string();
-        let response = Self::download_object_from_path_and_bucket(&object_path, bucket)?;
+        let response =
+            Self::download_object_from_path_and_bucket(runtime, object_path_ref, bucket)?;
+        Ok(S3DownloadedObject::new(
+            object_path_ref.to_string().into(),
+            response.bytes().to_vec(),
+            None,
+        ))
+    }
 
+    async fn stream_object_async(object_path_ref: &str, bucket: &S3Bucket) -> S3DownloadResult {
+        let response = Self::download_object_async(object_path_ref, bucket).await?;
         Ok(S3DownloadedObject::new(
             object_path_ref.to_string().into(),
             response.bytes().to_vec(),
@@ -268,7 +316,7 @@ impl S3Scanner {
 
     fn download_bulk(&mut self, new_objects: &[FileLikeMetadata]) -> Vec<S3DownloadResult> {
         if new_objects.is_empty() {
-            return Vec::with_capacity(0);
+            return Vec::new();
         }
         info!(
             "Downloading a bulk of {} objects. {} are still in the queue.",
@@ -276,14 +324,21 @@ impl S3Scanner {
             self.pending_modification_download_tasks.len()
         );
         let downloading_started_at = SystemTime::now();
-        let new_objects_downloaded: Vec<S3DownloadResult> = self.downloader_pool.install(|| {
-            new_objects
-                .par_iter()
-                .map(|task| {
-                    Self::stream_object_from_path_and_bucket(&task.path, &self.bucket)
+        let bucket = &self.bucket;
+        let concurrency = self.downloader_concurrency;
+        // All downloads run on the shared runtime and therefore share the
+        // bucket's pooled `hyper::Client`: DNS is resolved and the TLS
+        // connection is opened once, then kept alive and reused across objects.
+        let new_objects_downloaded: Vec<S3DownloadResult> = self.runtime.block_on(async move {
+            stream::iter(new_objects.iter())
+                .map(|task| async move {
+                    Self::stream_object_async(&task.path, bucket)
+                        .await
                         .map(|result| result.set_metadata(task.clone()))
                 })
+                .buffer_unordered(concurrency)
                 .collect()
+                .await
         });
         info!("Downloading done in {:?}", downloading_started_at.elapsed());
         new_objects_downloaded
@@ -295,12 +350,14 @@ impl S3Scanner {
         cached_object_storage: &CachedObjectStorage,
         seen_object_keys: &mut HashSet<String>,
     ) -> Result<(), ReadError> {
-        let object_lists: Vec<S3ListBucketResult> = execute_with_retries(
-            || self.bucket.list(self.objects_prefix.clone(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        let object_lists: Vec<S3ListBucketResult> = self
+            .runtime
+            .block_on(execute_with_retries_async(
+                async || self.bucket.list(self.objects_prefix.clone(), None).await,
+                RetryConfig::default(),
+                MAX_S3_RETRIES,
+            ))
+            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
         for list in object_lists {
             for object in &list.contents {
                 if !self.object_pattern.matches(&object.key) {
@@ -309,9 +366,9 @@ impl S3Scanner {
                 seen_object_keys.insert(object.key.clone());
                 let actual_metadata = FileLikeMetadata::from_s3_object(object);
                 let object_key = object.key.as_bytes();
-                if let Some(stored_metadata) = cached_object_storage.stored_metadata(object_key) {
-                    let needs_pending_action =
-                        are_deletions_enabled && stored_metadata.is_changed(&actual_metadata);
+                if let Some(stored_tag) = cached_object_storage.stored_tag(object_key) {
+                    let needs_pending_action = are_deletions_enabled
+                        && cached_object_storage.is_changed(stored_tag, &actual_metadata);
                     if needs_pending_action {
                         self.pending_modification_download_tasks
                             .push(actual_metadata);

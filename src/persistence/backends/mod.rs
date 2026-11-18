@@ -10,13 +10,13 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use ::s3::error::S3Error;
-use azure_storage::Error as AzureStorageError;
 use bincode::ErrorKind as BincodeError;
 use futures::channel::oneshot;
 use futures::channel::oneshot::Receiver as OneShotReceiver;
 use futures::channel::oneshot::Sender as OneShotSender;
 use glob::PatternError as GlobPatternError;
 use lz4_flex::block::DecompressError;
+use opendal::Error as AzureStorageError;
 use rusqlite::Error as SqliteError;
 use serde_json::Error as JsonParseError;
 
@@ -35,6 +35,13 @@ pub mod s3;
 pub enum Error {
     #[error(transparent)]
     Io(#[from] IoError),
+
+    #[error("{}: {error}", path.display())]
+    IoWithPath {
+        path: std::path::PathBuf,
+        #[source]
+        error: IoError,
+    },
 
     #[error(transparent)]
     S3(#[from] S3Error),
@@ -68,6 +75,23 @@ pub enum Error {
 
     #[error("metadata entry {0:?} incorrectly formatted: {1}")]
     IncorrectMetadataFormat(String, #[source] JsonParseError),
+
+    // Without the chunk name and its size, a truncated chunk and a chunk that
+    // was overwritten by unrelated data look exactly the same downstream.
+    #[error("snapshot chunk {chunk:?} of {size} bytes can't be deserialized: {source}")]
+    ChunkDeserialization {
+        chunk: String,
+        size: usize,
+        #[source]
+        source: BincodeError,
+    },
+
+    #[error("the body of {key:?} holds {actual} bytes while {expected} were announced")]
+    TruncatedResponse {
+        key: String,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 pub type BackendPutFuture = OneShotReceiver<Result<(), Error>>;

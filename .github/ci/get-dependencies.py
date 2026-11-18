@@ -9,7 +9,12 @@
 # `pip install -r requirements.txt` without the main package
 # build.
 
-import tomllib
+import sys
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # tomli ships with mypy on Python < 3.11
 
 if __name__ == "__main__":
     with open("pyproject.toml", "rb") as f:

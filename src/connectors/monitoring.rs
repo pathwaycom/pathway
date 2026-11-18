@@ -1,3 +1,6 @@
+// PyO3 generates Clone-based extraction for the Copy stats classes below.
+#![allow(clippy::clone_on_copy)]
+
 // Copyright © 2026 Pathway
 
 use std::collections::VecDeque;
@@ -7,7 +10,7 @@ use log::{info, warn};
 use pyo3::pyclass;
 
 #[derive(Debug, Clone, Copy)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ConnectorStats {
     #[pyo3(get, set)]
     pub num_messages_from_start: usize,

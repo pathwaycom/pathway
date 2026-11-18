@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Iterable
 
@@ -28,7 +29,8 @@ def _prepare_row(row: dict) -> dict:
     Unwraps ``pw.Json`` wrapper objects, converts 1-D ``numpy.ndarray`` values
     to lists, and validates that every value belongs to a type the Milvus
     connector supports.  Raises ``TypeError`` with a descriptive message for
-    unsupported types, and ``ValueError`` for multi-dimensional arrays.
+    unsupported types, and ``ValueError`` for multi-dimensional arrays or for a
+    vector containing a non-finite (NaN / infinity) component.
     """
     result = {}
     for k, v in row.items():
@@ -48,6 +50,17 @@ def _prepare_row(row: dict) -> dict:
                 f"{type(v).__name__!r}. pw.io.milvus.write supports the "
                 f"following Pathway types: int, float, str, bool, pw.Json, "
                 f"list[float], bytes, and numpy.ndarray (1-D only)."
+            )
+        # A FLOAT_VECTOR (list / tuple / 1-D array of floats) with a non-finite
+        # component is silently stored by Milvus and corrupts the index —
+        # distances against NaN/infinity are meaningless. Reject it up front with
+        # a clear, column-named error, as the other vector sinks do.
+        if isinstance(v, (list, tuple)) and any(
+            isinstance(x, float) and not math.isfinite(x) for x in v
+        ):
+            raise ValueError(
+                f"Column {k!r} contains a non-finite value (NaN or infinity) in "
+                f"its vector, which cannot be indexed by Milvus."
             )
         result[k] = v
     return result
@@ -128,6 +141,7 @@ def write(
     collection_name: str,
     *,
     primary_key: ColumnReference,
+    batch_size: int = 256,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
@@ -204,6 +218,13 @@ def write(
         collection_name: Name of the Milvus collection to write to.
         primary_key: A column reference (e.g. ``table.doc_id``) whose values are
             used as the Milvus primary key. The column must belong to ``table``.
+        batch_size: Maximum number of rows sent to Milvus in a single ``upsert``
+            or ``delete`` request. A mini-batch larger than this is split into
+            several requests so that no single gRPC message exceeds Milvus's
+            message-size limit (64 MiB by default), which would otherwise make
+            Milvus reject a large commit with ``RESOURCE_EXHAUSTED``. Deletes are
+            always issued before upserts within a mini-batch regardless of
+            chunking. Must be a positive integer.
         name: A unique name for the connector. If provided, this name will be
             used in logs and monitoring dashboards.
         sort_by: If specified, the output within each mini-batch will be sorted
@@ -264,6 +285,9 @@ def write(
     with optional_imports("milvus"):
         from pymilvus import MilvusClient
 
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
+
     if primary_key._table is not table:
         raise ValueError(
             f"primary_key column {primary_key._name!r} does not belong to the "
@@ -272,6 +296,17 @@ def write(
         )
 
     client = _make_client(MilvusClient, uri)
+
+    # Fail fast if the collection is missing: otherwise the error would only
+    # surface deep inside pw.run() on the first upsert, or — for an empty table —
+    # never, silently running a misconfigured pipeline that writes nothing.
+    if not client.has_collection(collection_name):
+        client.close()
+        raise ValueError(
+            f"Milvus collection {collection_name!r} does not exist; create it "
+            f"before writing. pw.io.milvus.write never creates a collection "
+            f"because it cannot infer the vector field's dimension."
+        )
 
     pk = primary_key._name
     # Accumulates (is_addition, row) in arrival order for the current batch.
@@ -292,11 +327,24 @@ def write(
         _buffer.clear()
 
         # Deletes before upserts: handles update pairs (delete old + insert new)
-        # with the same primary key within one batch.
-        if to_delete:
-            client.delete(collection_name=collection_name, ids=to_delete)
-        if to_upsert:
-            client.upsert(collection_name=collection_name, data=to_upsert)
+        # with the same primary key within one batch. All deletes are issued
+        # before any upsert even when chunked, so the invariant holds regardless
+        # of batch_size.
+        #
+        # Each request is capped at batch_size rows so a large commit is streamed
+        # as several bounded gRPC messages instead of one oversized upsert, which
+        # Milvus rejects once it exceeds the gRPC message-size limit (64 MiB by
+        # default) with RESOURCE_EXHAUSTED.
+        for i in range(0, len(to_delete), batch_size):
+            client.delete(
+                collection_name=collection_name,
+                ids=to_delete[i : i + batch_size],
+            )
+        for i in range(0, len(to_upsert), batch_size):
+            client.upsert(
+                collection_name=collection_name,
+                data=to_upsert[i : i + batch_size],
+            )
 
     def on_end():
         client.close()

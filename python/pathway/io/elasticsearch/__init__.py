@@ -13,7 +13,12 @@ from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Schema, Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import internal_connector_mode, read_schema
+from pathway.io._utils import (
+    DurationLike,
+    as_duration_seconds,
+    internal_connector_mode,
+    read_schema,
+)
 
 
 class ElasticSearchAuth:
@@ -190,9 +195,9 @@ def read(
     *,
     timestamp_column: str,
     id_column: str,
-    max_transaction_duration: datetime.timedelta,
+    max_transaction_duration: DurationLike,
     mode: Literal["static", "streaming"] = "streaming",
-    poll_interval: datetime.timedelta = datetime.timedelta(seconds=1),
+    poll_interval: DurationLike = datetime.timedelta(seconds=1),
     read_batch_size: int = 10_000,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
@@ -251,10 +256,12 @@ def read(
         id_column: Name of the unique, sortable identifier column. Used to deduplicate the
             overlap window and as the Pathway Live Data Framework row key.
         max_transaction_duration: Maximum time within which a concurrent writer may still
-            commit a row with a timestamp older than the current watermark.
+            commit a row with a timestamp older than the current watermark. Given as a
+            number of seconds or a ``datetime.timedelta`` / ``pw.Duration``.
         mode: If set to ``"streaming"`` (the default), the connector keeps polling for new
             rows. If set to ``"static"``, it reads the index once and terminates.
         poll_interval: How long to wait between two consecutive polls in streaming mode.
+            Given as a number of seconds or a ``datetime.timedelta`` / ``pw.Duration``.
         read_batch_size: Maximum number of documents fetched per query. The connector
             pages through the index in blocks of this size — each block becomes one
             minibatch — instead of pulling the whole index at once, which bounds memory
@@ -316,13 +323,9 @@ def read(
         )
 
     max_transaction_duration_ms = round(
-        max_transaction_duration / datetime.timedelta(milliseconds=1)
+        as_duration_seconds(max_transaction_duration, "max_transaction_duration") * 1000
     )
-    if max_transaction_duration_ms < 0:
-        raise ValueError("max_transaction_duration must be non-negative")
-    poll_interval_ms = round(poll_interval / datetime.timedelta(milliseconds=1))
-    if poll_interval_ms < 0:
-        raise ValueError("poll_interval must be non-negative")
+    poll_interval_ms = round(as_duration_seconds(poll_interval, "poll_interval") * 1000)
     if read_batch_size <= 0:
         raise ValueError("read_batch_size must be positive")
 

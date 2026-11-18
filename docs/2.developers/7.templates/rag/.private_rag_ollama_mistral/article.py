@@ -43,7 +43,7 @@
 # - prompt our LLM with relevant context, and adaptively add more documents as needed
 # - combine everything, and orchestrate the RAG pipeline with the Pathway Live Data Framework.
 #
-# If you are not familiar with the Pathway yet, you can refer to the [overview of Pathway Live Data Framework's LLM xpack](https://pathway.com/developers/user-guide/llm-xpack/overview) and [its documentation](https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms).
+# If you are not familiar with the Pathway Live Data Framework yet, you can refer to the [overview of Pathway Live Data Framework's LLM xpack](https://pathway.com/developers/user-guide/llm-xpack/overview) and [its documentation](https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms).
 
 
 # ## What is Private RAG and Why Do You Need It?
@@ -279,8 +279,8 @@ Extensive genetic studies were conducted during the 2010s which indicated that d
 #
 # We can now go further by building and deploying your RAG application in production with the Pathway Live Data Framework, including updating data in constant connection with data sources and serving the endpoints 24/7. All the code logic we have built so far can be used directly!
 #
-# For a full production-ready set-up, we have built a slightly larger RAG application demonstrator which also includes reading your data sources, parsing the data, and serving the endpoint. To get started, check it out [here](https://github.com/pathwaycom/llm-app/tree/main/templates/private_rag).
-# You will find easy-to-follow setup instructions in our [question answering demo](https://github.com/pathwaycom/llm-app/tree/main/templates/question_answering).
+# For a full production-ready set-up, we have built a slightly larger RAG application demonstrator which also includes reading your data sources, parsing the data, and serving the endpoint. To get started, check it out [here](https://github.com/pathwaycom/pathway/tree/main/examples/llm-app/templates/private_rag).
+# You will find easy-to-follow setup instructions in our [question answering demo](https://github.com/pathwaycom/pathway/tree/main/examples/llm-app/templates/question_answering_rag).
 #
 # Enjoy your fully private RAG application!
 

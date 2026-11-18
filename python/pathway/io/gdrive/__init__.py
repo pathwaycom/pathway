@@ -28,12 +28,15 @@ from pathway.io._utils import (
     STATUS_DOWNLOADED,
     STATUS_SIZE_LIMIT_EXCEEDED,
     STATUS_SYMLINKS_NOT_SUPPORTED,
+    DurationLike,
+    as_duration_seconds,
 )
 from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 MIME_TYPE_FOLDER = "application/vnd.google-apps.folder"
 FILE_FIELDS = "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser, trashed, size"
+_NUM_RETRIES = 3
 
 DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
     "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -124,7 +127,9 @@ class _GDriveClient:
         from googleapiclient.discovery import build
 
         self.root = root
-        self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
+        self.drive = build(
+            "drive", "v3", credentials=credentials, num_retries=_NUM_RETRIES
+        )
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
         self.object_size_limit = object_size_limit
         self.file_name_pattern = file_name_pattern
@@ -156,7 +161,7 @@ class _GDriveClient:
                     pageToken=page_token,
                     corpora="allDrives",
                 )
-                .execute()
+                .execute(num_retries=_NUM_RETRIES)
             )
             items.extend(response.get("files", []))
             page_token = response.get("nextPageToken", None)
@@ -307,7 +312,7 @@ class _GDriveClient:
                     fields=FILE_FIELDS,
                     supportsAllDrives=True,
                 )
-                .execute()
+                .execute(num_retries=_NUM_RETRIES)
             )
             if file.get("trashed") is True:
                 warnings.warn(
@@ -353,7 +358,7 @@ class _GDriveClient:
             downloader = MediaIoBaseDownload(response, request)
             done = False
             while done is False:
-                _, done = downloader.next_chunk()
+                _, done = downloader.next_chunk(num_retries=_NUM_RETRIES)
             return response.getvalue()
         except HttpError as e:
             file_id = file["id"]
@@ -425,7 +430,7 @@ class _GDriveTree:
 class _GDriveSubject(ConnectorSubject):
     _credentials_factory: Callable[[], ServiceCredentials]
     _root: str
-    _refresh_interval: int
+    _refresh_interval: float
     _mode: str
     _only_metadata: bool
     _append_metadata: bool
@@ -437,7 +442,7 @@ class _GDriveSubject(ConnectorSubject):
         *,
         credentials_factory: Callable[[], ServiceCredentials],
         root: str,
-        refresh_interval: int,
+        refresh_interval: float,
         mode: str,
         only_metadata: bool,
         with_metadata: bool,
@@ -520,7 +525,7 @@ def read(
     mode: Literal["streaming", "static"] = "streaming",
     format: Literal["binary", "only_metadata"] = "binary",
     object_size_limit: int | None = None,
-    refresh_interval: int = 30,
+    refresh_interval: DurationLike = 30,
     service_user_credentials_file: str | PathLike,
     with_metadata: bool = False,
     file_name_pattern: list | str | None = None,
@@ -553,7 +558,8 @@ def read(
             column with the objects' metadata, without downloading the objects themselves.
         object_size_limit: Maximum size (in bytes) of a file that will be processed by
             this connector or ``None`` if no filtering by size should be made;
-        refresh_interval: time in seconds between scans. Applicable if mode is set to ``"streaming"``.
+        refresh_interval: time between scans, given as a number of seconds or a
+            ``datetime.timedelta`` / ``pw.Duration``. Applicable if mode is set to ``"streaming"``.
         service_user_credentials_file: Google API service user json file. Please follow the instructions
             provided in the `developer's user guide
             <https://pathway.com/developers/user-guide/connect/connectors/gdrive-connector/#setting-up-google-drive>`_
@@ -600,7 +606,7 @@ def read(
     subject = _GDriveSubject(
         credentials_factory=credentials_factory,
         root=object_id,
-        refresh_interval=refresh_interval,
+        refresh_interval=as_duration_seconds(refresh_interval, "refresh_interval"),
         mode=mode,
         only_metadata=only_provide_metadata,
         with_metadata=with_metadata or only_provide_metadata,

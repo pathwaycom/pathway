@@ -25,6 +25,7 @@ from pathway.io._utils import (
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
     internal_connector_mode,
+    remap_sort_by,
 )
 
 
@@ -81,6 +82,9 @@ def read(
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway Live Data Framework's computation graph.
+            Required for streaming reads: a Kafka topic never signals completion, so the
+            timer is the only thing that advances time; ``None`` is rejected at
+            construction.
         json_field_paths: If the format is JSON, this field allows to map field names
             into path in the field. For the field which require such mapping, it should be
             given in the format ``<field_name>: <path to be mapped>``, where the path to
@@ -112,8 +116,12 @@ def read(
             will be used as the name for the snapshot that stores the connector's progress.
         max_backlog_size: Limit on the number of entries read from the input source and kept
             in processing at any moment. Reading pauses when the limit is reached and resumes
-            as processing of some entries completes. Useful with large sources that
-            emit an initial burst of data to avoid memory spikes.
+            as processing of some entries completes. Set this whenever the source can deliver
+            data faster than the graph processes it — most importantly when a pipeline restarts
+            against a source that has accumulated a backlog (a stream replayed from the start,
+            a catch-up after downtime): without a limit the whole backlog is pulled into memory
+            at once and the process can be OOM-killed before it catches up. A few thousand to a
+            few tens of thousands is a reasonable starting point.
 
     Returns:
         Table: The table read.
@@ -372,6 +380,7 @@ def read(
         parallel_readers=parallel_readers,
         start_from_timestamp_ms=start_from_timestamp_ms,
         mode=internal_connector_mode(mode),
+        with_metadata=with_metadata,
     )
 
     # TODO: support case when the key is scalar and the value is json
@@ -425,10 +434,10 @@ def simple_read(
 ) -> Table:
     """Simplified method to read data from Kafka. Only requires the server address and
     the topic name. If you have any kind of authentication or require fine-tuning of the
-    parameters, please use `read` method.
+    parameters, please use ``read`` method.
 
-    Read starts from the beginning of the topic, unless the `read_only_new` parameter is
-    set to True.
+    Read starts from the beginning of the topic, unless the ``read_only_new`` parameter is
+    set to ``True``.
 
     There are three formats currently supported: "plaintext", "raw", and "json".
     If the "raw" format is chosen, the key and the payload are read from the topic as raw
@@ -445,7 +454,7 @@ def simple_read(
     Args:
         server: Address of the server.
         topic: Name of topic in Kafka from which the data should be read.
-        read_only_new: If set to `True` only the entries which appear after the start
+        read_only_new: If set to ``True`` only the entries which appear after the start
             of the program will be read. Otherwise, the read will be done from the
             beginning of the topic.
         schema: Schema of the resulting table.
@@ -552,6 +561,7 @@ def write(
     headers: Iterable[ColumnReference] | None = None,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
+    with_pathway_headers: bool = True,
 ) -> None:
     """Write a table to a given topic on a Kafka instance.
 
@@ -609,6 +619,10 @@ def write(
         sort_by: If specified, the output will be sorted in ascending order based on the
             values of the given columns within each minibatch. When multiple columns are provided,
             the corresponding value tuples will be compared lexicographically.
+        with_pathway_headers: If ``True`` (the default), every message carries the
+            ``pathway_time`` and ``pathway_diff`` headers described above. Set it to
+            ``False`` to produce messages without them, which makes the writer cheaper
+            when nothing downstream reads these headers.
 
     Returns:
         None
@@ -731,7 +745,7 @@ def write(
         subject=subject,
     )
     output_table = output_format.table
-    remapped_sort_by = _remap_sort_by(sort_by, table, output_table)
+    remapped_sort_by = remap_sort_by(sort_by, table, output_table, "pw.io.kafka.write")
 
     data_storage = api.DataStorage(
         storage_type="kafka",
@@ -740,6 +754,7 @@ def write(
         topic_name_index=output_format.topic_name_index,
         key_field_index=output_format.key_field_index,
         header_fields=[item for item in output_format.header_fields.items()],
+        with_pathway_headers=with_pathway_headers,
     )
 
     output_table.to(
@@ -751,34 +766,6 @@ def write(
             sort_by=remapped_sort_by,
         )
     )
-
-
-def _remap_sort_by(
-    sort_by: Iterable[ColumnReference] | None,
-    original_table: Table,
-    output_table: Table,
-) -> list[ColumnReference] | None:
-    if sort_by is None:
-        return None
-    remapped: list[ColumnReference] = []
-    for column in sort_by:
-        if column._table is output_table:
-            remapped.append(column)
-            continue
-        if column._table is not original_table:
-            raise ValueError(
-                f"The sort_by column {column} doesn't belong to the table "
-                "passed to pw.io.kafka.write."
-            )
-        if column.name not in output_table._columns:
-            raise ValueError(
-                f"The sort_by column {column.name!r} is not part of the "
-                "data being written. For 'raw' or 'plaintext' format, only "
-                "the 'value', 'key', 'topic_name' and 'headers' columns "
-                "are forwarded."
-            )
-        remapped.append(output_table[column.name])
-    return remapped
 
 
 __all__ = [

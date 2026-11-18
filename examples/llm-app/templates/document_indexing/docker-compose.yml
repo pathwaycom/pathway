@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  pathway_vector_indexer:
+    build:
+      context: .
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    volumes:
+      - "./files-for-indexing:/app/files-for-indexing"
+  streamlit_ui:
+    depends_on:
+      - pathway_vector_indexer
+    build:
+      context: https://github.com/pathway-labs/realtime-indexer-qa-chat.git
+    ports:
+      - "8501:8501"
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      PATHWAY_HOST: "pathway_vector_indexer"
+      PATHWAY_PORT: "8000"

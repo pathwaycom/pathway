@@ -2,6 +2,7 @@
 
 #![allow(clippy::module_name_repetitions)]
 
+use derivative::Derivative;
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::ExchangeData;
 use log::{error, info, warn};
@@ -11,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use azure_storage::StorageCredentials as AzureStorageCredentials;
 use s3::bucket::Bucket as S3Bucket;
 
 use crate::connectors::{PersistenceMode, SnapshotAccess};
@@ -42,7 +42,8 @@ const STREAMS_DIRECTORY_NAME: &str = "streams";
 pub type ConnectorWorkerPair = (PersistentId, usize);
 
 /// The configuration for the backend that stores persisted state.
-#[derive(Debug, Clone)]
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
 pub enum PersistentStorageConfig {
     Filesystem(PathBuf),
     S3 {
@@ -51,7 +52,8 @@ pub enum PersistentStorageConfig {
     },
     Azure {
         account: String,
-        credentials: AzureStorageCredentials,
+        #[derivative(Debug = "ignore")]
+        account_key: String,
         container: String,
         root_path: String,
     },
@@ -67,14 +69,14 @@ impl PersistentStorageConfig {
             }
             Self::Azure {
                 account,
-                credentials,
+                account_key,
                 container,
                 root_path,
             } => Ok(Box::new(AzureKVStorage::new(
                 root_path,
-                account.clone(),
-                container.clone(),
-                credentials.clone(),
+                account,
+                container,
+                account_key,
             )?)),
             Self::Mock(_) => Ok(Box::new(MockKVStorage {})),
         }
@@ -95,9 +97,17 @@ pub struct PersistenceManagerOuterConfig {
     continue_after_replay: bool,
     pub worker_scaling_enabled: bool,
     pub workload_tracking_window: Duration,
+    run_start_timestamp: Option<Timestamp>,
 }
 
 impl PersistenceManagerOuterConfig {
+    /// The persistence mode of the run: the restrictions that only concern
+    /// the input snapshots (e.g. the deduced-schema guard) check it to stay
+    /// out of the way of the modes that keep none, such as the UDF caching.
+    pub fn persistence_mode(&self) -> PersistenceMode {
+        self.persistence_mode
+    }
+
     pub fn new(
         snapshot_interval: Duration,
         backend: PersistentStorageConfig,
@@ -115,7 +125,17 @@ impl PersistenceManagerOuterConfig {
             continue_after_replay,
             worker_scaling_enabled,
             workload_tracking_window,
+            run_start_timestamp: None,
         }
+    }
+
+    /// The shared start timestamp of the current run. Checkpoint commits are
+    /// clamped to it, so that a run never certifies a time range produced by
+    /// an earlier (possibly crashed) run.
+    #[must_use]
+    pub fn with_run_start_timestamp(mut self, run_start_timestamp: Timestamp) -> Self {
+        self.run_start_timestamp = Some(run_start_timestamp);
+        self
     }
 
     pub fn into_inner(self, worker_id: usize, total_workers: usize) -> PersistenceManagerConfig {
@@ -147,6 +167,7 @@ pub struct PersistenceManagerConfig {
     pub continue_after_replay: bool,
     pub worker_id: usize,
     pub snapshot_interval: Duration,
+    pub run_start_timestamp: Option<Timestamp>,
     total_workers: usize,
 }
 
@@ -202,6 +223,7 @@ impl PersistenceManagerConfig {
             persistence_mode: outer_config.persistence_mode,
             continue_after_replay: outer_config.continue_after_replay,
             snapshot_interval: outer_config.snapshot_interval,
+            run_start_timestamp: outer_config.run_start_timestamp,
             worker_id,
             total_workers,
         }
@@ -229,7 +251,7 @@ impl PersistenceManagerConfig {
             }
             PersistentStorageConfig::Azure {
                 account,
-                credentials,
+                account_key,
                 container,
                 root_path,
             } => {
@@ -239,9 +261,9 @@ impl PersistenceManagerConfig {
                 );
                 Box::new(AzureKVStorage::new(
                     &storage_root_path,
-                    account.clone(),
-                    container.clone(),
-                    credentials.clone(),
+                    account,
+                    container,
+                    account_key,
                 )?)
             }
             PersistentStorageConfig::Mock(_) => Box::new(MockKVStorage {}),
@@ -289,14 +311,14 @@ impl PersistenceManagerConfig {
                 root_path,
                 account,
                 container,
-                credentials,
+                account_key,
             } => {
                 let snapshots_root_path = Self::cloud_snapshots_root_path(root_path);
                 let backend = Box::new(AzureKVStorage::new(
                     &snapshots_root_path,
-                    account.clone(),
-                    container.clone(),
-                    credentials.clone(),
+                    account,
+                    container,
+                    account_key,
                 )?);
                 let assigned_snapshot_paths = self.assigned_cloud_snapshot_paths(
                     backend.as_ref(),
@@ -305,12 +327,7 @@ impl PersistenceManagerConfig {
                     query_purpose,
                 )?;
                 for (_, path) in assigned_snapshot_paths {
-                    let backend = AzureKVStorage::new(
-                        &path,
-                        account.clone(),
-                        container.clone(),
-                        credentials.clone(),
-                    )?;
+                    let backend = AzureKVStorage::new(&path, account, container, account_key)?;
                     result.push(Box::new(backend));
                 }
                 Ok(result)
@@ -369,12 +386,12 @@ impl PersistenceManagerConfig {
                 root_path,
                 account,
                 container,
-                credentials,
+                account_key,
             } => Ok(Box::new(AzureKVStorage::new(
                 &self.cloud_snapshot_path(root_path, persistent_id),
-                account.clone(),
-                container.clone(),
-                credentials.clone(),
+                account,
+                container,
+                account_key,
             )?)),
             PersistentStorageConfig::Mock(_) => {
                 unreachable!()

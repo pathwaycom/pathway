@@ -1,8 +1,8 @@
 // Copyright © 2026 Pathway
 
-use crate::engine::{Key, Result, Timestamp, Value};
+use crate::engine::Result;
 
-use super::{FormattedDocument, Formatter, FormatterContext, FormatterError};
+use super::{Formatter, FormatterContext, FormatterError};
 
 pub struct NullFormatter {}
 
@@ -19,19 +19,9 @@ impl Default for NullFormatter {
 }
 
 impl Formatter for NullFormatter {
-    fn format(
-        &mut self,
-        key: &Key,
-        _values: &[Value],
-        time: Timestamp,
-        diff: isize,
-    ) -> Result<FormatterContext, FormatterError> {
-        Ok(FormatterContext::new(
-            Vec::<FormattedDocument>::new(),
-            *key,
-            Vec::new(),
-            time,
-            diff,
-        ))
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError> {
+        // Nothing is written anywhere; the row's values are not even kept.
+        context.values.clear();
+        Ok(())
     }
 }

@@ -24,6 +24,24 @@ pub enum RabbitmqStreamType {
     Stream(ArcStr),
 }
 
+/// Identifies the progress axis of a Pulsar offset. The two reading
+/// mechanisms of the Pulsar input connector track their progress along
+/// different axes, so the key carries which one is in use.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
+pub enum PulsarOffsetKey {
+    /// The subscription reading modes. The broker distributes a shared
+    /// subscription between the workers arbitrarily, so a partition position
+    /// is meaningless there — the only monotonic progress measure is the
+    /// number of entries the given worker has read.
+    Worker(usize),
+    /// One partition of a topic in the partition-reader (Kafka-like) mode:
+    /// `(base topic, partition index)`; the partition index is `-1` for a
+    /// non-partitioned topic. Keyed by the partition rather than the worker,
+    /// so the checkpointed positions survive the reassignment of partitions
+    /// to workers across restarts.
+    Partition(ArcStr, i32),
+}
+
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum OffsetKey {
@@ -36,16 +54,19 @@ pub enum OffsetKey {
     Mssql,
     Mysql,
     ElasticSearch,
+    Pulsar(PulsarOffsetKey),
 }
 
 impl HashInto for OffsetKey {
     fn hash_into(&self, hasher: &mut Hasher) {
         match self {
-            OffsetKey::Kafka(topic_name, partition) => {
+            OffsetKey::Kafka(topic_name, partition)
+            | OffsetKey::Pulsar(PulsarOffsetKey::Partition(topic_name, partition)) => {
                 hasher.update(topic_name.as_bytes());
                 partition.hash_into(hasher);
             }
-            OffsetKey::Nats(worker_index) => {
+            OffsetKey::Nats(worker_index)
+            | OffsetKey::Pulsar(PulsarOffsetKey::Worker(worker_index)) => {
                 worker_index.hash_into(hasher);
             }
             OffsetKey::Rabbitmq(RabbitmqStreamType::Stream(stream_name)) => {
@@ -141,6 +162,31 @@ pub enum OffsetValue {
         entries_read: u64,
         pending: Vec<(String, i64)>,
     },
+    // NB: snapshots serialize these variants by index (bincode 1.x), so new
+    // variants must be appended at the end of the enum — inserting one in
+    // the middle shifts the tags of every variant after it and corrupts the
+    // recovery of older persisted pipelines.
+    Pulsar(PulsarOffsetValue),
+}
+
+/// The progress value of a Pulsar offset. Each variant pairs with the
+/// matching [`PulsarOffsetKey`] axis: a `Worker` key always carries an
+/// `EntriesCount` value and a `Partition` key always carries a
+/// `MessagePosition`, so values of different variants are never compared.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
+pub enum PulsarOffsetValue {
+    /// The number of entries the worker has read (the subscription modes).
+    EntriesCount(usize),
+    /// The position of the last delivered message within one partition of a
+    /// Pulsar topic, in the partition-reader (Kafka-like) mode. Positions are
+    /// ordered lexicographically: ledger ids grow monotonically within a
+    /// topic, entry ids within a ledger, and batch indexes within an entry
+    /// (all the messages of one producer batch share a single entry).
+    MessagePosition {
+        ledger_id: u64,
+        entry_id: u64,
+        batch_index: i32,
+    },
 }
 
 impl OffsetValue {
@@ -211,8 +257,18 @@ impl HashInto for OffsetValue {
             }
             OffsetValue::NatsReadEntriesCount(count)
             | OffsetValue::MqttReadEntriesCount(count)
-            | OffsetValue::PostgresReadEntriesCount(count) => {
+            | OffsetValue::PostgresReadEntriesCount(count)
+            | OffsetValue::Pulsar(PulsarOffsetValue::EntriesCount(count)) => {
                 count.hash_into(hasher);
+            }
+            OffsetValue::Pulsar(PulsarOffsetValue::MessagePosition {
+                ledger_id,
+                entry_id,
+                batch_index,
+            }) => {
+                ledger_id.hash_into(hasher);
+                entry_id.hash_into(hasher);
+                batch_index.hash_into(hasher);
             }
             OffsetValue::RabbitmqOffset(offset) => {
                 offset.hash_into(hasher);

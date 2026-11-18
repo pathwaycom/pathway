@@ -36,6 +36,11 @@ class Reducer(ABC):
     def maybe_warn_in_windowby(self) -> None:
         pass
 
+    def maybe_warn_if_input_not_append_only(
+        self, expression: expr.ReducerExpression
+    ) -> None:
+        pass
+
 
 class UnaryReducer(Reducer):
     name: str
@@ -106,6 +111,27 @@ class TimeBasedTypePreservingUnaryReducer(TypePreservingUnaryReducer):
             + f" to their data time, you may use {self.alternative} reducer.",
             stacklevel=12,
         )
+
+    def maybe_warn_if_input_not_append_only(
+        self, expression: expr.ReducerExpression
+    ) -> None:
+        # latest/earliest keep at most a single winner per group, so they
+        # cannot recover a previous value when a row is deleted; a deletion
+        # reaching them fails the computation at runtime. The append-only
+        # property is derived statically, so this can warn for inputs that
+        # never delete in practice - assert_append_only() records that
+        # promise and silences the warning.
+        if not all(arg._is_append_only() for arg in expression._args):
+            warnings.warn(
+                f"the {self.name} reducer requires an append-only input to work"
+                + " correctly, but the append-only property could not be derived"
+                + " for its input. If rows of the input can only be inserted,"
+                + " mark it with .assert_append_only(); if they can be updated"
+                + " or deleted, a deletion reaching the reducer will fail the"
+                + f" computation - use the {self.alternative} reducer to select"
+                + " by value instead.",
+                stacklevel=12,
+            )
 
 
 class SumReducer(UnaryReducer):

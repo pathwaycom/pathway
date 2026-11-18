@@ -83,7 +83,7 @@ impl ComputerLogic {
     fn compute(&mut self, context: &dyn ContextTrait, args: &[Value]) -> DynResult<Option<Value>> {
         match self {
             Self::Attribute(logic) => {
-                assert!(args.is_empty());
+                assert_eq!(args, []);
                 logic(context)
             }
             Self::Method(logic) => logic(context, args),

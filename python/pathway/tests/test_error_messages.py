@@ -742,7 +742,7 @@ def test_restrict():
 
     with _assert_error_trace(
         KeyError,
-        match=re.escape("key missing in output table"),
+        match=re.escape("but not in the table restricted to it"),
     ):
         pw.universes.promise_is_subset_of(t2, t1)
         t1.restrict(t2)  # cause

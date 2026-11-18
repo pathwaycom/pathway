@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import random
+import threading
 import time
+import weakref
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -75,6 +78,32 @@ class Sender:
         )
         self._allow_redirects = allow_redirects
         self._retry_codes = retry_codes or ()
+        # Keep requests.Session's mutable state local to the sending thread.
+        self._local = threading.local()
+        self._sessions: set[requests.Session] = set()
+        self._session_lock = threading.Lock()
+        weakref.finalize(self, self._close_sessions, self._sessions)
+
+    def _get_session(self) -> requests.Session:
+        import requests
+
+        with self._session_lock:
+            session = getattr(self._local, "session", None)
+            if session not in self._sessions:
+                session = requests.Session()
+                self._local.session = session
+                self._sessions.add(session)
+            return session
+
+    @staticmethod
+    def _close_sessions(sessions: set[requests.Session]) -> None:
+        while sessions:
+            sessions.pop().close()
+
+    def close(self) -> None:
+        # on_end runs once, after all workers have finished their callbacks.
+        with self._session_lock:
+            self._close_sessions(self._sessions)
 
     def send(
         self,
@@ -88,26 +117,52 @@ class Sender:
         headers = headers or {}
         if "User-Agent" not in headers:
             headers["User-Agent"] = f"pathway/{pw.__version__}"
-        retry_policy = self._retry_policy
-        for n_attempt in range(0, self._n_retries + 1):
-            try:
-                response = requests.request(
-                    self._request_method,
-                    url,
-                    timeout=self._timeout,
-                    headers=headers,
-                    data=data,
-                    allow_redirects=self._allow_redirects,
-                    stream=stream,
-                )
-                if response.ok or response.status_code not in self._retry_codes:
-                    break
-            except requests.exceptions.ConnectTimeout:
-                if n_attempt == self._n_retries:
-                    raise
+        retry_policy = copy.copy(self._retry_policy)
+        session = self._get_session()
+        try:
+            for n_attempt in range(0, self._n_retries + 1):
+                try:
+                    response = session.request(
+                        self._request_method,
+                        url,
+                        timeout=self._timeout,
+                        headers=headers,
+                        data=data,
+                        allow_redirects=self._allow_redirects,
+                        stream=stream,
+                    )
+                except requests.exceptions.ConnectTimeout:
+                    if n_attempt == self._n_retries:
+                        raise
+                else:
+                    if (
+                        response.ok
+                        or response.status_code not in self._retry_codes
+                        or n_attempt == self._n_retries
+                    ):
+                        break
+                    # A retried streaming response may have an unread body.
+                    response.close()
+                finally:
+                    # Preserve requests.request's cookie isolation between
+                    # attempts, including retries. Redirects within an
+                    # attempt still use their response cookies normally.
+                    session.cookies.clear()
 
-            sleep_duration = retry_policy.wait_duration_before_retry()
-            time.sleep(sleep_duration)
+                sleep_duration = retry_policy.wait_duration_before_retry()
+                time.sleep(sleep_duration)
+
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError:
+                # A failed streaming response can still have an unread body.
+                response.close()
+                raise
+        except BaseException:
+            with self._session_lock:
+                self._sessions.discard(session)
+            session.close()
+            raise
 
         return response
 

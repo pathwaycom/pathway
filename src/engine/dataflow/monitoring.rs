@@ -1,3 +1,6 @@
+// PyO3 generates Clone-based extraction for the Copy stats classes below.
+#![allow(clippy::clone_on_copy)]
+
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::SystemTime};
 
 use once_cell::unsync::Lazy;
@@ -11,7 +14,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct OperatorStats {
     #[pyo3(get, set)]
     pub time: Option<Timestamp>,
@@ -42,7 +45,7 @@ impl OperatorStats {
 }
 
 #[derive(Debug, Clone)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct ProberStats {
     #[pyo3(get, set)]
     pub input_stats: OperatorStats,
@@ -57,7 +60,7 @@ pub struct ProberStats {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-#[pyclass]
+#[pyclass(from_py_object)]
 pub struct CountStats {
     #[pyo3(get)]
     total_rows: isize,

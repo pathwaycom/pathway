@@ -58,6 +58,26 @@ def test_single_file_read_with_constraints(object_size_limit, with_metadata, tmp
     assert rows_count == 1
 
 
+def test_single_file_only_metadata(tmp_path):
+    files_table = connector_table(FOLDER_WITH_ONE_FILE_ID, format="only_metadata")
+    pw.io.jsonlines.write(files_table, tmp_path / "output.jsonl")
+    pw.run()
+    rows_count = 0
+    with open(tmp_path / "output.jsonl", "r") as f:
+        for raw_row in f:
+            row = json.loads(raw_row)
+            # No file contents are downloaded in this mode: the row carries the
+            # metadata column only, with no ``data`` column at all. The size,
+            # however, is still reported correctly straight from the listing.
+            assert row.keys() == {"_metadata", "time", "diff"}
+            metadata = row["_metadata"]
+            assert FOLDER_WITH_ONE_FILE_ID in metadata["path"]
+            assert metadata["size"] == TEST_FILE_SIZE
+            assert metadata["status"] == sharepoint_connector.STATUS_DOWNLOADED
+            rows_count += 1
+    assert rows_count == 1
+
+
 @pytest.mark.parametrize("with_metadata", [True, False])
 def test_sharepoint_link(with_metadata, tmp_path):
     files_table = connector_table(FOLDER_WITH_SYMLINK_ID, with_metadata=with_metadata)

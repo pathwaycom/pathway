@@ -4,6 +4,7 @@ use std::any::type_name;
 use std::borrow::Cow;
 use std::clone::Clone;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
@@ -28,6 +29,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::data_storage::ConversionError;
 
+pub mod avro;
 pub mod bson;
 pub mod debezium;
 pub mod dsv;
@@ -210,6 +212,9 @@ pub enum ParseError {
 
     #[error(transparent)]
     SchemaRepository(#[from] SchemaRepositoryError),
+
+    #[error(transparent)]
+    Avro(avro::AvroParseError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -279,6 +284,16 @@ pub trait Parser: Send {
     fn on_new_source_started(&mut self, metadata: &SourceMetadata);
     fn column_count(&self) -> usize;
 
+    /// Whether the parser needs the source metadata for the parsing itself,
+    /// as opposed to filling a `_metadata` column: the Avro parser, for
+    /// one, takes the writer schema version of every message from it. A
+    /// reader that only builds the metadata on demand (it costs a
+    /// per-message allocation) turns it on when this is true, whether or
+    /// not the user asked for the column.
+    fn needs_source_metadata(&self) -> bool {
+        false
+    }
+
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()
     }
@@ -288,19 +303,51 @@ pub trait Parser: Send {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PreparedMessageHeader {
-    key: String,
-    value: Option<Vec<u8>>,
+pub const PATHWAY_TIME_HEADER: &str = "pathway_time";
+pub const PATHWAY_DIFF_HEADER: &str = "pathway_diff";
+
+/// Formatted values of the `pathway_time` and `pathway_diff` message headers,
+/// kept between rows.
+///
+/// All rows of one output minibatch share the same time, and their diffs are
+/// grouped by sign, so the values only change a couple of times per minibatch.
+/// Formatting them once per change instead of once per row removes the
+/// per-row allocations from the output thread of every message-queue writer.
+/// Each writer owns one instance.
+#[derive(Debug, Default)]
+pub struct PathwayHeadersCache {
+    time: Option<Timestamp>,
+    time_formatted: String,
+    diff: Option<isize>,
+    diff_formatted: String,
 }
 
-impl PreparedMessageHeader {
-    pub fn new(key: impl Into<String>, value: Option<Vec<u8>>) -> Self {
-        Self {
-            key: key.into(),
-            value,
+impl PathwayHeadersCache {
+    /// The `pathway_time` and `pathway_diff` values for a row with the given
+    /// time and diff, as strings.
+    pub fn formatted(&mut self, time: Timestamp, diff: isize) -> (&str, &str) {
+        if self.time != Some(time) {
+            self.time_formatted.clear();
+            write!(self.time_formatted, "{time}").expect("writing to a String never fails");
+            self.time = Some(time);
         }
+        if self.diff != Some(diff) {
+            self.diff_formatted.clear();
+            write!(self.diff_formatted, "{diff}").expect("writing to a String never fails");
+            self.diff = Some(diff);
+        }
+        (&self.time_formatted, &self.diff_formatted)
     }
+}
+
+/// One message header. Both the key and the value borrow from the row
+/// (or from the [`PathwayHeadersCache`]) wherever the value needs no
+/// conversion, so building the headers of a row allocates only for the
+/// values that must be re-encoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageHeader<'a> {
+    pub key: &'a str,
+    pub value: Option<Cow<'a, [u8]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -310,6 +357,24 @@ pub enum FormattedDocument {
 }
 
 impl FormattedDocument {
+    /// The payload bytes, borrowed: the writers that hand them to their
+    /// client at once (or copy them into a batch of their own) read them here.
+    pub fn as_raw_bytes(&self) -> Result<&[u8], FormatterError> {
+        if let Self::RawBytes(b) = self {
+            Ok(b)
+        } else {
+            Err(FormatterError::UnexpectedContextType)
+        }
+    }
+
+    pub fn as_bson_document(&self) -> Result<&BsonDocument, FormatterError> {
+        if let Self::Bson(b) = self {
+            Ok(b)
+        } else {
+            Err(FormatterError::UnexpectedContextType)
+        }
+    }
+
     pub fn into_raw_bytes(self) -> Result<Vec<u8>, FormatterError> {
         if let Self::RawBytes(b) = self {
             Ok(b)
@@ -339,6 +404,14 @@ impl From<BsonDocument> for FormattedDocument {
     }
 }
 
+/// One formatted row on its way to a writer.
+///
+/// The output loop keeps a single context per sink and reuses it for every
+/// row (`start_row` + `Formatter::format_into`): the values vector and the
+/// payload buffers keep their capacity across rows, so formatting a row
+/// allocates only what its content forces (a BSON document, a value that
+/// must be re-encoded). Writers get the context by reference and copy what
+/// they keep beyond the call.
 #[derive(Debug)]
 pub struct FormatterContext {
     pub payloads: Vec<FormattedDocument>,
@@ -346,9 +419,79 @@ pub struct FormatterContext {
     pub values: Vec<Value>,
     pub time: Timestamp,
     pub diff: isize,
+    /// Payload buffers of previous rows, kept for reuse by `payload_buffer`.
+    spare_buffers: Vec<Vec<u8>>,
+}
+
+// A copy carries the row, not the spare buffers: the writers that keep rows
+// for a batch clone the context, and must not drag the scratch space along.
+impl Clone for FormatterContext {
+    fn clone(&self) -> Self {
+        Self {
+            payloads: self.payloads.clone(),
+            key: self.key,
+            values: self.values.clone(),
+            time: self.time,
+            diff: self.diff,
+            spare_buffers: Vec::new(),
+        }
+    }
+}
+
+impl Default for FormatterContext {
+    fn default() -> Self {
+        Self {
+            payloads: Vec::new(),
+            key: Key::from_u128(0),
+            values: Vec::new(),
+            time: Timestamp(0),
+            diff: 0,
+            spare_buffers: Vec::new(),
+        }
+    }
 }
 
 impl FormatterContext {
+    /// Prepares the context for the next row: the previous payloads are
+    /// dropped (their buffers kept for reuse), the row's key, values, time
+    /// and diff are set. The values are copied into the context's own
+    /// vector, which keeps its capacity across rows.
+    pub fn start_row(&mut self, key: Key, values: &[Value], time: Timestamp, diff: isize) {
+        for payload in self.payloads.drain(..) {
+            if let FormattedDocument::RawBytes(mut buffer) = payload {
+                buffer.clear();
+                self.spare_buffers.push(buffer);
+            }
+        }
+        self.key = key;
+        self.values.clear();
+        self.values.extend_from_slice(values);
+        self.time = time;
+        self.diff = diff;
+    }
+
+    /// Appends an empty bytes payload and returns its buffer to write into.
+    /// The buffer of a previous row is reused when there is one.
+    pub fn payload_buffer(&mut self) -> &mut Vec<u8> {
+        let buffer = self.spare_buffers.pop().unwrap_or_default();
+        self.payloads.push(FormattedDocument::RawBytes(buffer));
+        match self.payloads.last_mut() {
+            Some(FormattedDocument::RawBytes(buffer)) => buffer,
+            _ => unreachable!("the payload was pushed just above"),
+        }
+    }
+
+    /// Appends a payload of any kind (a BSON document, ready bytes).
+    pub fn push_payload(&mut self, payload: impl Into<FormattedDocument>) {
+        self.payloads.push(payload.into());
+    }
+
+    /// A spare (empty) buffer to fill while `values` is still borrowed;
+    /// hand it back with `push_payload` once written.
+    pub fn take_payload_buffer(&mut self) -> Vec<u8> {
+        self.spare_buffers.pop().unwrap_or_default()
+    }
+
     pub fn new(
         payloads: Vec<impl Into<FormattedDocument>>,
         key: Key,
@@ -366,6 +509,7 @@ impl FormatterContext {
             values,
             time,
             diff,
+            spare_buffers: Vec::new(),
         }
     }
 
@@ -382,57 +526,102 @@ impl FormatterContext {
             values,
             time,
             diff,
+            spare_buffers: Vec::new(),
         }
     }
 
-    fn construct_message_headers(
+    /// The headers of a message carrying this row: `pathway_time` and
+    /// `pathway_diff` first, then the user header fields in their declared
+    /// order. Bytes values are passed through as they are, or base64-encoded
+    /// when `encode_bytes` is set (for the brokers whose headers are strings);
+    /// `None` becomes a header without a value.
+    pub fn message_headers<'a>(
+        &'a self,
+        header_fields: &'a [(String, usize)],
+        encode_bytes: bool,
+        include_pathway_headers: bool,
+        cache: &'a mut PathwayHeadersCache,
+    ) -> impl Iterator<Item = MessageHeader<'a>> {
+        let pathway_headers = if include_pathway_headers {
+            let (time, diff) = cache.formatted(self.time, self.diff);
+            Some([
+                MessageHeader {
+                    key: PATHWAY_TIME_HEADER,
+                    value: Some(Cow::Borrowed(time.as_bytes())),
+                },
+                MessageHeader {
+                    key: PATHWAY_DIFF_HEADER,
+                    value: Some(Cow::Borrowed(diff.as_bytes())),
+                },
+            ])
+        } else {
+            None
+        };
+        let user_headers = header_fields.iter().map(move |(name, position)| {
+            let value = match (&self.values[*position], encode_bytes) {
+                (Value::Bytes(b), false) => Some(Cow::Borrowed(b.as_ref())),
+                (Value::Bytes(b), true) => Some(Cow::Owned(base64encoder.encode(b).into_bytes())),
+                (Value::String(s), _) => Some(Cow::Borrowed(s.as_bytes())),
+                (Value::None, _) => None,
+                (other, _) => Some(Cow::Owned(other.to_string().into_bytes())),
+            };
+            MessageHeader { key: name, value }
+        });
+        pathway_headers.into_iter().flatten().chain(user_headers)
+    }
+
+    pub fn construct_kafka_headers(
         &self,
         header_fields: &[(String, usize)],
-        encode_bytes: bool,
-    ) -> Vec<PreparedMessageHeader> {
-        let mut headers = Vec::with_capacity(header_fields.len() + 2);
-        headers.push(PreparedMessageHeader::new(
-            "pathway_time",
-            Some(self.time.to_string().as_bytes().to_vec()),
-        ));
-        headers.push(PreparedMessageHeader::new(
-            "pathway_diff",
-            Some(self.diff.to_string().as_bytes().to_vec()),
-        ));
-        for (name, position) in header_fields {
-            let value: Option<Vec<u8>> = match (&self.values[*position], encode_bytes) {
-                (Value::Bytes(b), false) => Some((*b).to_vec()),
-                (Value::Bytes(b), true) => Some(base64encoder.encode(b).into()),
-                (Value::String(s), _) => Some(s.as_bytes().to_vec()),
-                (Value::None, _) => None,
-                (other, _) => Some((*other.to_string().as_bytes()).to_vec()),
-            };
-            headers.push(PreparedMessageHeader::new(name, value));
-        }
-        headers
+        include_pathway_headers: bool,
+        cache: &mut PathwayHeadersCache,
+    ) -> KafkaHeaders {
+        self.message_headers(header_fields, false, include_pathway_headers, cache)
+            .fold(
+                KafkaHeaders::new_with_capacity(header_fields.len() + 2),
+                |headers, header| {
+                    headers.insert(KafkaHeader {
+                        key: header.key,
+                        value: header.value.as_deref(),
+                    })
+                },
+            )
     }
 
-    pub fn construct_kafka_headers(&self, header_fields: &[(String, usize)]) -> KafkaHeaders {
-        let raw_headers = self.construct_message_headers(header_fields, false);
-        let mut kafka_headers = KafkaHeaders::new_with_capacity(raw_headers.len());
-        for header in raw_headers {
-            kafka_headers = kafka_headers.insert(KafkaHeader {
-                key: &header.key,
-                value: header.value.as_ref(),
-            });
+    /// String-to-string message properties: `pathway_time` and `pathway_diff`
+    /// first, then the user header fields with their values serialized to
+    /// JSON strings. Used by the brokers whose per-message metadata is a
+    /// string map (`RabbitMQ` Streams application properties, Pulsar message
+    /// properties).
+    pub fn construct_string_properties(
+        &self,
+        header_fields: &[(String, usize)],
+        cache: &mut PathwayHeadersCache,
+    ) -> Vec<(String, String)> {
+        let (time, diff) = cache.formatted(self.time, self.diff);
+        let mut properties = Vec::with_capacity(header_fields.len() + 2);
+        properties.push((PATHWAY_TIME_HEADER.to_string(), time.to_string()));
+        properties.push((PATHWAY_DIFF_HEADER.to_string(), diff.to_string()));
+        for (name, index) in header_fields {
+            let value = serialize_value_to_json(&self.values[*index])
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            properties.push((name.clone(), value));
         }
-        kafka_headers
+        properties
     }
 
-    pub fn construct_nats_headers(&self, header_fields: &[(String, usize)]) -> NatsHeaders {
-        let raw_headers = self.construct_message_headers(header_fields, true);
+    pub fn construct_nats_headers(
+        &self,
+        header_fields: &[(String, usize)],
+        cache: &mut PathwayHeadersCache,
+    ) -> NatsHeaders {
         let mut nats_headers = NatsHeaders::new();
-        for header in raw_headers {
-            let header_value = if let Some(header_value) = header.value {
-                String::from_utf8(header_value)
-                    .expect("all prepared headers must be UTF-8 serializable")
-            } else {
-                Value::None.to_string()
+        for header in self.message_headers(header_fields, true, true, cache) {
+            let header_value = match header.value {
+                Some(value) => String::from_utf8(value.into_owned())
+                    .expect("all prepared headers must be UTF-8 serializable"),
+                None => Value::None.to_string(),
             };
             nats_headers.insert(header.key, header_value);
         }
@@ -470,18 +659,43 @@ pub enum FormatterError {
     #[error(transparent)]
     SchemaRepository(#[from] SchemaRepositoryError),
 
+    #[error(transparent)]
+    Avro(#[from] avro::AvroError),
+
     #[error("incorrect external diff value: {0}")]
     IncorrectDiffColumnValue(Value),
 }
 
 pub trait Formatter: Send {
+    /// Formats the row that `context.start_row` was called with, appending
+    /// the payloads to `context` (through `payload_buffer` / `push_payload`)
+    /// and adjusting `context.diff` when the format derives it from a column.
+    fn format_into(&mut self, context: &mut FormatterContext) -> Result<(), FormatterError>;
+
+    /// Formats one row into a fresh context. The output loop reuses one
+    /// context through `format_into` instead; this is for the callers that
+    /// format a row now and then (tests, one-off conversions).
     fn format(
         &mut self,
         key: &Key,
         values: &[Value],
         time: Timestamp,
         diff: isize,
-    ) -> Result<FormatterContext, FormatterError>;
+    ) -> Result<FormatterContext, FormatterError> {
+        let mut context = FormatterContext::default();
+        context.start_row(*key, values, time, diff);
+        self.format_into(&mut context)?;
+        Ok(context)
+    }
+
+    /// The schema of the payloads this formatter produces, for the sinks
+    /// whose target keeps a schema of its own: the Pulsar producers declare
+    /// it to the broker's registry, which versions it and lets the
+    /// schema-aware consumers decode the topic. `None` means the payloads
+    /// are self-describing or untyped, and nothing is declared.
+    fn wire_schema(&self) -> Option<String> {
+        None
+    }
 
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()

@@ -295,7 +295,7 @@ pw.run()
 # * Perform machine learning in real time. e.g. [real-time
 # Classification](/developers/templates/etl/lsh_chapter1) , [real-time fuzzy joins](/developers/templates/etl/fuzzy_join_chapter2)
 #
-# * Transform unstructured data to structured data using [live LLM pipelines](https://github.com/pathwaycom/llm-app)
+# * Transform unstructured data to structured data using [live LLM pipelines](https://github.com/pathwaycom/pathway/tree/main/examples/llm-app)
 #
 # * Making [joins](/developers/user-guide/temporal-data/interval-join) simple with timeseries data
 #

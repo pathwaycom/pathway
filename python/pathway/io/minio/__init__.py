@@ -59,7 +59,9 @@ class MinIOSettings:
 def read(
     path: str,
     minio_settings: MinIOSettings,
-    format: Literal["csv", "json", "plaintext", "plaintext_by_object", "binary"],
+    format: Literal[
+        "csv", "json", "plaintext", "plaintext_by_object", "binary", "only_metadata"
+    ],
     *,
     schema: type[Schema] | None = None,
     mode: Literal["streaming", "static"] = "streaming",
@@ -80,16 +82,24 @@ def read(
     prefix, their order is determined according to their modification times: the smaller
     the modification time is, the earlier the file will be passed to the engine.
 
+    Note that if you only need to monitor changes in the bucket, you can use the
+    ``"only_metadata"`` format, in which case the table will contain only metadata, and no
+    time or traffic will be spent on downloading the objects.
+
     Args:
         path: Path to an object or to a folder of objects in MinIO S3 bucket.
         minio_settings: Connection parameters for the MinIO account and the bucket.
         format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
-            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            ``plaintext_by_object``, ``binary`` and ``only_metadata`` formats are
+            supported. The difference
             between ``plaintext`` and ``plaintext_by_object`` is how the input is
             tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
             Otherwise, the files are split in full and one row will correspond to one
             file. In case the ``binary`` format is specified, the data is read as raw
-            bytes without UTF-8 parsing.
+            bytes without UTF-8 parsing. If the ``only_metadata`` format is chosen, the
+            objects are not downloaded at all: the resulting table contains only the
+            ``_metadata`` column, which is useful when you only need to track changes in
+            the bucket without spending time and traffic on fetching the objects' contents.
         schema: Schema of the resulting table. Not required for ``plaintext_by_object``
             and ``binary`` formats: if they are chosen, the contents of the read objects
             are stored in the column ``data``.
