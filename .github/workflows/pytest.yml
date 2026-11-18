@@ -73,7 +73,7 @@ jobs:
       - name: Build and install Pathway from this commit
         timeout-minutes: 90
         run: |
-          uv pip install --no-build-isolation --editable '.[tests-core]' \
+          uv pip install --no-build-isolation-package pathway --editable '.[tests-core]' \
             --config-settings 'build-args=--locked --profile dev'
 
       - name: Run core pytest suite
