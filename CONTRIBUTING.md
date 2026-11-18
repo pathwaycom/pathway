@@ -102,30 +102,51 @@ maintainer.
 
 ## Running the PR Python tests
 
-The **Python tests** workflow runs a core pytest subset on pull requests to
-`main`, on branch pushes, and on manual dispatch. It builds the Rust engine from
-the checked-out commit and uses Python 3.11 on Linux. The first build can take
-considerably longer than later runs, which reuse the Cargo cache.
+The **Python tests** workflow runs on pull requests to `main`, pushes to `main`,
+and manual dispatch. Updating a PR starts one workflow run. New commits to that
+PR cancel its previous run; a failure on one Python version does not cancel the
+other version.
 
-To run the same tests locally, install the native Rust build prerequisites
-(including Clang/LLVM and PostgreSQL development libraries), then run:
+The workflow builds one ABI3 wheel from the checked-out commit using Python 3.10,
+then installs that wheel with `tests-core` on **Python 3.10 and 3.15**. These are
+also the minimum and maximum versions in IoT-Pathway's
+`NO-XPACKS_Verify_Linux` matrix. Each version runs all core package tests and
+module doctests, excluding `pathway.xpacks`, with six pytest workers and a
+900-second per-test timeout. Optional ML/document dependencies are covered by
+the separate full package workflows.
+
+To reproduce a matrix entry locally on Linux, install the native Rust build
+prerequisites (including Clang/LLVM and PostgreSQL development libraries), then
+build the wheel:
 
 ```bash
-uv venv --python 3.11 .venv
-source .venv/bin/activate
-uv pip install 'maturin>=1.4,<2'
-uv pip install --no-build-isolation-package pathway --editable '.[tests-core]' \
-  --config-settings 'build-args=--locked --profile dev'
-python -m pytest -c pytest-pr.ini -n 2 --dist worksteal
+uv venv --python 3.10 .buildenv
+uv pip install --python .buildenv/bin/python 'maturin>=1.4,<2'
+.buildenv/bin/maturin build --locked --profile dev --compatibility linux \
+  --interpreter .buildenv/bin/python --out dist
 ```
 
-The selected modules are listed in `pytest-pr.ini`. They cover schemas, types,
-expressions, operators, joins, reducers, and SQL without requiring external
-services or repository secrets. This subset complements the full package tests.
-CI uploads a JUnit report as the `pytest-core-results` artifact even when pytest
-fails. To try a change in a fork, push it to a branch in that fork and inspect
-the **Python tests** run in its Actions tab, or open a PR against the fork's
-`main` branch to see the check on the PR.
+Install and verify it with the selected interpreter (`3.10` or `3.15`):
+
+```bash
+TEST_PYTHON=3.15
+uv python install "$TEST_PYTHON" 3.10
+uv venv --seed --python "$TEST_PYTHON" .testenv
+source .testenv/bin/activate
+export PATHWAY_AIRBYTE_PYTHON=$(uv python find 3.10)
+WHEEL=(dist/pathway-*.whl)
+uv pip install "${WHEEL[0]}[tests-core]"
+PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+python -m pytest -v --confcutdir .testenv --doctest-modules \
+  "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
+  --dist worksteal -n 6 --timeout=900
+```
+
+The first CI build can take considerably longer than later runs, which reuse
+the Cargo cache. The wheel is available as the `pathway-core-wheel` artifact.
+Each test job uploads its JUnit report as `pytest-core-python-3.10` or
+`pytest-core-python-3.15`, including when pytest fails. Artifacts are retained
+for seven days.
 
 ## How pull requests are handled
 
