@@ -109,7 +109,8 @@ all = [
     "pathway[airbyte]",
     "pathway[milvus]",
 ]
-tests = [
+# Dependencies for core tests without the optional ML/document processing stack.
+tests-core = [
     "pytest >= 8.0.0, < 9.0.0",
     "pytest-xdist >= 3.3.1, < 4.0.0",
     "pytest-rerunfailures >= 13.0, < 14.0",
@@ -119,9 +120,13 @@ tests = [
     "openapi_spec_validator",
     "kafka-python >= 2.0.2",
     "python-magic",
-    "pathway[all]",
+    "pathway[pyfilesystem,sql,airbyte]",
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
+]
+tests = [
+    "pathway[tests-core]",
+    "pathway[all]",
     "fpdf",
     "paddlepaddle >= 3.2.0, < 3.3.0", # required by paddleocr
     "paddlex >= 3.0.0, <= 3.3.8",  # pinning the latest working version, then the format changes

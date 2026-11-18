@@ -1,0 +1,89 @@
+name: Python tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pytest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest-core:
+    name: pytest core (Python 3.11, Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # Keep a cold native build within a hosted runner's memory/disk budget.
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_DEV_OPT_LEVEL: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+      PYTHONFAULTHANDLER: '1'
+      PATHWAY_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Free space for the Rust build
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake libclang-dev libmagic1 libpq-dev libssl-dev \
+            lld llvm-dev pkg-config protobuf-compiler
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install the repository's Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pytest-core
+
+      - name: Create the test environment
+        run: |
+          uv venv --python python .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+          uv pip install --python .venv/bin/python 'maturin>=1.4,<2'
+
+      - name: Build and install Pathway from this commit
+        timeout-minutes: 90
+        run: maturin develop --locked --profile dev --uv --extras tests-core
+
+      - name: Run core pytest suite
+        run: |
+          python -c 'import pathway; print("Testing:", pathway.__file__)'
+          python -m pytest -c pytest-pr.ini \
+            -n 2 --dist worksteal --junitxml=test-results/pytest.xml
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pytest-core-results
+          path: test-results/pytest.xml
+          if-no-files-found: ignore
