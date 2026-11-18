@@ -65,14 +65,16 @@ jobs:
 
       - name: Create the test environment
         run: |
-          uv venv --python python .venv
+          uv venv --python python3.11 .venv
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
           uv pip install --python .venv/bin/python 'maturin>=1.4,<2'
 
       - name: Build and install Pathway from this commit
         timeout-minutes: 90
-        run: maturin develop --locked --profile dev --uv --extras tests-core
+        run: |
+          uv pip install --no-build-isolation --editable '.[tests-core]' \
+            --config-settings 'build-args=--locked --profile dev'
 
       - name: Run core pytest suite
         run: |

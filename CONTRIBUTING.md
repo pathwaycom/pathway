@@ -28,7 +28,8 @@ To run the same tests locally, install the native Rust build prerequisites
 uv venv --python 3.11 .venv
 source .venv/bin/activate
 uv pip install 'maturin>=1.4,<2'
-maturin develop --locked --profile dev --uv --extras tests-core
+uv pip install --no-build-isolation --editable '.[tests-core]' \
+  --config-settings 'build-args=--locked --profile dev'
 python -m pytest -c pytest-pr.ini -n 2 --dist worksteal
 ```
 
