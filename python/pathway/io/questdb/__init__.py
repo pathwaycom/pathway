@@ -95,6 +95,7 @@ def write(
     You can now write a simple program. In this example, a table with one column called
     ``"data"`` is created and sent to the database:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> table = pw.debug.table_from_markdown('''
     ...      | data

@@ -103,7 +103,7 @@ def xfail_on_arg(
 
 only_with_license_key = functools.partial(
     xfail_on_arg,
-    condition=get_pathway_config().license_key is None,
+    condition=not get_pathway_config().license_key,
     reason="works only with a proper license key",
 )
 

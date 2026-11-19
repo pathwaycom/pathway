@@ -3659,9 +3659,10 @@ def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "reader_factory,error_match",
+    "connector_name,reader_factory,error_match",
     [
         pytest.param(
+            "iceberg",
             lambda schema: pw.io.iceberg.read(
                 catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181"),
                 namespace=["app"],
@@ -3672,6 +3673,7 @@ def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
             id="iceberg",
         ),
         pytest.param(
+            "mssql",
             lambda schema: pw.io.mssql.read(
                 connection_string=(
                     "Server=tcp:ignored,1433;Database=x;User Id=u;Password=p"
@@ -3685,7 +3687,8 @@ def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
         ),
     ],
 )
-def test_reader_requires_primary_key(reader_factory, error_match):
+@only_with_license_key("connector_name", ["mssql"])
+def test_reader_requires_primary_key(connector_name, reader_factory, error_match):
     """Connectors that need a primary key to identify rows must reject a
     schema that doesn't declare one, at `read()` time, before any I/O —
     surfacing a clear ValueError rather than a cryptic runtime failure
@@ -4978,6 +4981,7 @@ def test_subscribe_async_incompatible_with_sort_by():
         run()
 
 
+@only_with_license_key
 def test_postgres_append_only():
     postgres_settings = {
         "user": "user",
@@ -5003,6 +5007,7 @@ def test_postgres_append_only():
     assert not table.is_append_only
 
 
+@only_with_license_key
 def test_mongodb_read_rejects_user_defined_primary_key():
     class SchemaWithPrimaryKey(pw.Schema):
         name: str = pw.column_definition(primary_key=True)
@@ -5021,6 +5026,7 @@ def test_mongodb_read_rejects_user_defined_primary_key():
 
 
 @pytest.mark.parametrize("start_from", ["beginning", "end"])
+@only_with_license_key
 def test_rabbitmq_read_rejects_timestamp_with_wrong_start_from(start_from):
     with pytest.raises(
         ValueError,
@@ -5034,6 +5040,7 @@ def test_rabbitmq_read_rejects_timestamp_with_wrong_start_from(start_from):
         )
 
 
+@only_with_license_key
 def test_rabbitmq_read_requires_timestamp_with_timestamp_start_from():
     with pytest.raises(
         ValueError,
@@ -5047,6 +5054,7 @@ def test_rabbitmq_read_requires_timestamp_with_timestamp_start_from():
 
 
 @pytest.mark.parametrize("timestamp_ms", [-1, -1000])
+@only_with_license_key
 def test_rabbitmq_read_rejects_negative_timestamp(timestamp_ms):
     # The engine reserves -1 in the timestamp field as the internal sentinel
     # for start_from="end". An explicit negative timestamp must be rejected:
@@ -5310,6 +5318,7 @@ def test_rest_connector_reports_port_already_in_use():
             server._run()
 
 
+@only_with_license_key
 def test_rows_released_at_end_of_stream_are_written_with_end_of_stream_time(tmp_path):
     # A windowby with a delay keeps rows in a buffer and releases the ones it
     # still holds when the input ends, at the engine's maximal timestamp. That

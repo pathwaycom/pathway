@@ -100,6 +100,61 @@ behind it. The cost of producing a change and the cost of understanding one have
 simply drifted a long way apart, and without any context that whole gap lands on a
 maintainer.
 
+## Running the PR Python tests
+
+The **Python tests** workflow runs on pull requests to `main`, pushes to `main`,
+and manual dispatch. Updating a PR starts one workflow run. New commits to that
+PR cancel its previous run; a failure on one Python version does not cancel the
+other version.
+
+No license secret is required for public PRs. Tests that require licensed
+features use `only_with_license_key`; doctests request the `requires_license`
+fixture. Without a configured key (including an empty Actions secret), these
+cases are reported as `xfail`. When `PATHWAY_LICENSE_KEY` is available, they run
+normally against the real implementation. No license checks are mocked.
+
+The workflow builds one ABI3 wheel from the checked-out commit using Python 3.10,
+then installs that wheel with `tests-core` on **Python 3.10 and 3.15**. These are
+also the minimum and maximum versions in IoT-Pathway's
+`NO-XPACKS_Verify_Linux` matrix. Each version runs all core package tests and
+module doctests, excluding `pathway.xpacks`, with six pytest workers and a
+900-second per-test timeout. Optional ML/document dependencies are covered by
+the separate full package workflows.
+
+To reproduce a matrix entry locally on Linux, install the native Rust build
+prerequisites (including Clang/LLVM and PostgreSQL development libraries), then
+build the wheel:
+
+```bash
+uv venv --python 3.10 .buildenv
+uv pip install --python .buildenv/bin/python 'maturin>=1.4,<2'
+.buildenv/bin/maturin build --locked --profile dev --compatibility linux \
+  --interpreter .buildenv/bin/python --out dist
+```
+
+Install and verify it with the selected interpreter (`3.10` or `3.15`):
+Optionally set `PATHWAY_LICENSE_KEY` to include the licensed cases.
+
+```bash
+TEST_PYTHON=3.15
+uv python install "$TEST_PYTHON" 3.10
+uv venv --seed --python "$TEST_PYTHON" .testenv
+source .testenv/bin/activate
+export PATHWAY_AIRBYTE_PYTHON=$(uv python find 3.10)
+WHEEL=(dist/pathway-*.whl)
+uv pip install "${WHEEL[0]}[tests-core]"
+PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+python -m pytest -v --confcutdir .testenv --doctest-modules \
+  "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
+  --dist worksteal -n 6 --timeout=900
+```
+
+The first CI build can take considerably longer than later runs, which reuse
+the Cargo cache. The wheel is available as the `pathway-core-wheel` artifact.
+Each test job uploads its JUnit report as `pytest-core-python-3.10` or
+`pytest-core-python-3.15`, including when pytest fails. Artifacts are retained
+for seven days.
+
 ## How pull requests are handled
 
 We use a standard GitHub fork + pull request model for merging and reviewing

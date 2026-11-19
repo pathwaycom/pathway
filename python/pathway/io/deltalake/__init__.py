@@ -392,6 +392,7 @@ def read(
 
     Let's start writing Pathway Live Data Framework code. First, the schema of the table needs to be created:
 
+    >>> getfixture("requires_license")  # NODOCS
     >>> import pathway as pw
     >>> class KVSchema(pw.Schema):
     ...     key: str = pw.column_definition(primary_key=True)

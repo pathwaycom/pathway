@@ -1,0 +1,148 @@
+name: Python tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pytest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build core wheel (Python 3.10)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # Keep a cold native build within a hosted runner's memory/disk budget.
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_DEV_OPT_LEVEL: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Free space for the Rust build
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake libclang-dev libmagic1 libpq-dev libssl-dev \
+            lld llvm-dev pkg-config protobuf-compiler
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install the repository's Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pytest-core
+          cache-on-failure: true
+
+      - name: Create the build environment
+        run: |
+          uv venv --python python3.10 .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+          uv pip install --python .venv/bin/python 'maturin>=1.4,<2'
+
+      - name: Build Pathway from this commit
+        timeout-minutes: 90
+        run: |
+          maturin build --locked --profile dev --compatibility linux \
+            --interpreter .venv/bin/python --out dist
+
+      - name: Upload core wheel
+        uses: actions/upload-artifact@v6
+        with:
+          name: pathway-core-wheel
+          path: dist/pathway-*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  pytest-core:
+    name: pytest core (Python ${{ matrix.python-version }}, Linux)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # Match IoT-Pathway's NO-XPACKS_Verify_Linux supported-range bounds.
+        python-version: ['3.10', '3.15']
+    env:
+      PYTHON_VERSION: ${{ matrix.python-version }}
+      PYTHONFAULTHANDLER: '1'
+      PATHWAY_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
+      # Match the monorepo core package verification options.
+      PYTEST_ADDOPTS: '--dist worksteal -n 6 --timeout=900'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libmagic1 libpq5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: pathway-core-wheel
+          path: dist
+
+      - name: Install the core package and test dependencies
+        run: |
+          uv python install "$PYTHON_VERSION" 3.10
+          uv venv --seed --python "$PYTHON_VERSION" .venv
+          source .venv/bin/activate
+          WHEEL=(dist/pathway-*.whl)
+          uv pip install "${WHEEL[0]}[tests-core]"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "PATHWAY_AIRBYTE_PYTHON=$(uv python find 3.10)" >> "$GITHUB_ENV"
+
+      - name: Run all core tests and doctests
+        run: |
+          PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+          echo "Testing Python $PYTHON_VERSION package at $PACKAGE_DIR"
+          python -m pytest -v --confcutdir .venv --doctest-modules \
+            "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
+            --junitxml=test-results/pytest.xml
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pytest-core-python-${{ matrix.python-version }}
+          path: test-results/pytest.xml
+          if-no-files-found: ignore
+          retention-days: 7
