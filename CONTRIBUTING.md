@@ -114,11 +114,9 @@ cases are reported as `xfail`. When `PATHWAY_LICENSE_KEY` is available, they run
 normally against the real implementation. No license checks are mocked.
 
 The workflow builds one ABI3 wheel from the checked-out commit using Python 3.10,
-then installs that wheel with `tests-core` on **Python 3.10 and 3.15**. These are
-also the minimum and maximum versions in IoT-Pathway's
-`NO-XPACKS_Verify_Linux` matrix. Each version runs all core package tests and
-module doctests, excluding `pathway.xpacks`, twice to match IoT-Pathway's Jenkins
-test modes:
+then installs that wheel with `tests-core` on **Python 3.10 and 3.15**, the minimum
+and maximum supported versions. Each version runs all core package tests and
+module doctests, excluding `pathway.xpacks`, in two modes:
 
 * `PATHWAY_THREADS=1 PATHWAY_RUNTIME_TYPECHECKING=1`
 * `PATHWAY_THREADS=4 PATHWAY_RUNTIME_TYPECHECKING=0`
