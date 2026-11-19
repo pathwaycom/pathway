@@ -1,0 +1,59 @@
+[default]
+extend-ignore-re = [
+  # Opaque token used by the Twitter example.
+  '(?m)^MAPBOX_TOKEN\s*=\s*.+',
+]
+
+[default.extend-identifiers]
+# NumPy types and Pathway wrappers.
+NDArray = "NDArray"
+CowNdArray = "CowNdArray"
+TupleConvertibleToNDArrayWrappingReducer = "TupleConvertibleToNDArrayWrappingReducer"
+
+# Rust dependency.
+abomonation = "abomonation"
+
+# Panel import alias used in visualization code.
+pn = "pn"
+
+# Locality-sensitive hashing terminology.
+ANDS = "ANDS"
+ANDed = "ANDed"
+
+# Azure services referenced in deployment documentation.
+AKS = "AKS"
+ACI = "ACI"
+aci = "aci"
+
+# MQTT broker referenced in code and documentation.
+Mosquitto = "Mosquitto"
+mosquitto = "mosquitto"
+
+# Diagram service referenced in documentation.
+canva = "canva"
+
+[files]
+extend-exclude = [
+  # Vendored code and third-party license texts.
+  "external/**",
+  "library_licenses/**",
+
+  # Match IoT-Pathway: tests contain intentional misspellings and synthetic data.
+  "python/pathway/tests/*.py",
+
+  # Compiled dashboard assets.
+  "python/pathway/web_dashboard/frontend/assets/**",
+
+  # Evaluation datasets.
+  "integration_tests/rag_evals/dataset/**",
+
+  # Match IoT-Pathway: evaluation configs contain opaque document identifiers.
+  "integration_tests/rag_evals/*.yaml",
+]
+
+# Avoid checking serialized graphics and notebook outputs as prose.
+[type.svg]
+check-file = false
+
+[type.jupyter]
+check-file = false
