@@ -1,0 +1,38 @@
+name: Cargo sort
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-sort-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-sort:
+    name: cargo sort
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-sort 1.0.9
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/DevinR528/cargo-sort/releases/download/v1.0.9/cargo-sort-x86_64-unknown-linux-gnu.tar.gz \
+            --output "$RUNNER_TEMP/cargo-sort.tar.gz"
+          echo "e7ad1db1b20e0a382f6a77ba3725fdfdf939e6f14d7de6a021b5c38113723186  $RUNNER_TEMP/cargo-sort.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/cargo-sort.tar.gz" -C "$RUNNER_TEMP" cargo-sort
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Check Cargo manifests
+        run: |
+          git ls-files -z -- Cargo.toml '**/Cargo.toml' ':(exclude)external/**' |
+            while IFS= read -r -d '' manifest; do
+              cargo-sort --check --check-format "$(dirname "$manifest")"
+            done
