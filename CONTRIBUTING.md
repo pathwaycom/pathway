@@ -114,12 +114,17 @@ cases are reported as `xfail`. When `PATHWAY_LICENSE_KEY` is available, they run
 normally against the real implementation. No license checks are mocked.
 
 The workflow builds one ABI3 wheel from the checked-out commit using Python 3.10,
-then installs that wheel with `tests-core` on **Python 3.10 and 3.15**. These are
-also the minimum and maximum versions in IoT-Pathway's
-`NO-XPACKS_Verify_Linux` matrix. Each version runs all core package tests and
-module doctests, excluding `pathway.xpacks`, with six pytest workers and a
-900-second per-test timeout. Optional ML/document dependencies are covered by
-the separate full package workflows.
+then installs that wheel with `tests-core` on **Python 3.10 and 3.15**, the minimum
+and maximum supported versions. Each version runs all core package tests and
+module doctests, excluding `pathway.xpacks`, in two modes:
+
+* `PATHWAY_THREADS=1 PATHWAY_RUNTIME_TYPECHECKING=1`
+* `PATHWAY_THREADS=4 PATHWAY_RUNTIME_TYPECHECKING=0`
+
+Both are full test runs, with six pytest workers and a 900-second per-test
+timeout. Runtime typechecking adds checks of computed values during execution.
+The four-thread run also executes if the typechecking run fails. Optional
+ML/document dependencies are covered by the separate full package workflows.
 
 To reproduce a matrix entry locally on Linux, install the native Rust build
 prerequisites (including Clang/LLVM and PostgreSQL development libraries), then
@@ -144,16 +149,24 @@ export PATHWAY_AIRBYTE_PYTHON=$(uv python find 3.10)
 WHEEL=(dist/pathway-*.whl)
 uv pip install "${WHEEL[0]}[tests-core]"
 PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+export PYTEST_ADDOPTS='--dist worksteal -n 6 --timeout=900'
+PATHWAY_THREADS=1 PATHWAY_RUNTIME_TYPECHECKING=1 \
 python -m pytest -v --confcutdir .testenv --doctest-modules \
   "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
-  --dist worksteal -n 6 --timeout=900
+  --junitxml=test-results/pytest-typechecking.xml
+PATHWAY_THREADS=4 PATHWAY_RUNTIME_TYPECHECKING=0 \
+python -m pytest -v --confcutdir .testenv --doctest-modules \
+  "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
+  --junitxml=test-results/pytest-four-threads.xml
 ```
 
 The first CI build can take considerably longer than later runs, which reuse
 the Cargo cache. The wheel is available as the `pathway-core-wheel` artifact.
 Each test job uploads its JUnit report as `pytest-core-python-3.10` or
-`pytest-core-python-3.15`, including when pytest fails. Artifacts are retained
-for seven days.
+`pytest-core-python-3.15`, including when pytest fails. Each artifact contains
+separate `pytest-typechecking.xml` and `pytest-four-threads.xml` reports for the
+two modes that ran. Artifacts are retained for seven days.
 
 ## How pull requests are handled
 
