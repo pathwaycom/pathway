@@ -38,7 +38,7 @@ extend-exclude = [
   "external/**",
   "library_licenses/**",
 
-  # Match IoT-Pathway: tests contain intentional misspellings and synthetic data.
+  # Tests contain intentional misspellings and synthetic data.
   "python/pathway/tests/*.py",
 
   # Compiled dashboard assets.
@@ -47,7 +47,7 @@ extend-exclude = [
   # Evaluation datasets.
   "integration_tests/rag_evals/dataset/**",
 
-  # Match IoT-Pathway: evaluation configs contain opaque document identifiers.
+  # Evaluation configs contain opaque document identifiers.
   "integration_tests/rag_evals/*.yaml",
 ]
 
