@@ -26,7 +26,7 @@ jobs:
 
       - name: Install cargo-sort from crates.io
         run: |
-          # Match IoT-Pathway's cargo-sort version; its version is independent of Rust.
+          # Pin the extension version independently of the Rust compiler.
           cargo install --locked --version 1.0.9 \
             --root "$RUNNER_TEMP/cargo-sort" cargo-sort
           echo "$RUNNER_TEMP/cargo-sort/bin" >> "$GITHUB_PATH"
