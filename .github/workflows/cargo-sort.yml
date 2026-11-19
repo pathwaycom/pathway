@@ -21,18 +21,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install cargo-sort 1.0.9
+      - name: Install the repository's Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install cargo-sort from crates.io
         run: |
-          curl --fail --silent --show-error --location \
-            https://github.com/DevinR528/cargo-sort/releases/download/v1.0.9/cargo-sort-x86_64-unknown-linux-gnu.tar.gz \
-            --output "$RUNNER_TEMP/cargo-sort.tar.gz"
-          echo "e7ad1db1b20e0a382f6a77ba3725fdfdf939e6f14d7de6a021b5c38113723186  $RUNNER_TEMP/cargo-sort.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/cargo-sort.tar.gz" -C "$RUNNER_TEMP" cargo-sort
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          # Match IoT-Pathway's cargo-sort version; its version is independent of Rust.
+          cargo install --locked --version 1.0.9 \
+            --root "$RUNNER_TEMP/cargo-sort" cargo-sort
+          echo "$RUNNER_TEMP/cargo-sort/bin" >> "$GITHUB_PATH"
 
       - name: Check Cargo manifests
         run: |
           git ls-files -z -- Cargo.toml '**/Cargo.toml' ':(exclude)external/**' |
             while IFS= read -r -d '' manifest; do
-              cargo-sort --check --check-format "$(dirname "$manifest")"
+              cargo sort --check --check-format "$(dirname "$manifest")"
             done
