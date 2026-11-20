@@ -34,7 +34,7 @@ bigdecimal = "0.4.10"
 bincode = "1.3.3"
 bitflags = { version = "2.9.1", features = ["std"] } # Hack to keep features unified between normal and dev deps
 bytes = "1.10.1"
-cached = "0.55.1"
+cached = "4.1.1"
 cfg-if = "1.0.0"
 chrono = { version = "0.4.39", features = ["std", "clock"], default-features = false }
 chrono-tz = "0.10.3"
@@ -57,7 +57,9 @@ geozero = { version = "0.14", default-features = false, features = ["with-wkb", 
 glob = "0.3.2"
 half = "2.6.0"
 hex = "0.4.3"
-hyper = { version = "0.14", features = ["server"] }
+http-body-util = "0.1.4"
+hyper = { version = "1.12.0", features = ["server"] }
+hyper-util = { version = "0.1.20", features = ["server-auto", "server-graceful", "tokio"] }
 hyperloglogplus = "0.4.1"
 iceberg = "0.10.0"
 iceberg-catalog-glue = "0.10.0"
@@ -75,7 +77,7 @@ lz4_flex = "0.14.0"
 mongodb = { version = "~3.8.2", features = ["sync"] }
 mysql = { version = "28.0.4", features = ["binlog"] }
 native-tls = "0.2.14"
-ndarray = { version = "0.15.6", features = ["serde"] }
+ndarray = { version = "0.17.2", features = ["serde"] }
 nix = { version = "0.30.1", features = ["fs", "user", "resource"] }
 num-integer = "0.1.46"
 numpy = "0.29.0"
@@ -120,7 +122,7 @@ syn = { version = "2.0.101", features = ["default", "full", "visit", "visit-mut"
 sysinfo = "0.39.6"
 tantivy = "0.22.1"  # Note: don't bump this dependency before the RAG integration test failure is investigated
 tempfile = "3.20.0"
-thiserror = "1.0.63"
+thiserror = "2.0.21"
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "winauth", "rustls", "chrono"] }
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "net", "io-util", "macros", "test-util"] }

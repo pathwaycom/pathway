@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::engine::error::DynResult;
 use crate::retry::{execute_with_retries_if, RetryConfig};
 use base64::{prelude::BASE64_STANDARD, Engine};
-use cached::proc_macro::cached;
+use cached::cached;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::VerifyingKey;
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
@@ -43,7 +43,7 @@ impl License {
         let license: Self = match read_license_to_string(license_key)? {
             key if key.is_empty() => Ok(Self::NoLicenseKey),
             key if key.starts_with("-----BEGIN LICENSE FILE-----") => {
-                let license = read_license_content(key)?;
+                let license = read_license_content(&key)?;
                 Ok(Self::OfflineLicense(license))
             }
             key => Ok(Self::LicenseKey(key)),
@@ -77,7 +77,7 @@ impl License {
                 }
             }
             License::LicenseKey(key) => {
-                check_license_key_entitlements(key.clone(), entitlements)?;
+                check_license_key_entitlements(key, &entitlements)?;
                 Ok(())
             }
         }
@@ -87,7 +87,7 @@ impl License {
         match self {
             License::NoLicenseKey => false,
             License::OfflineLicense(license) => license.telemetry_required,
-            License::LicenseKey(key) => check_license_key_entitlements(key.clone(), vec![])
+            License::LicenseKey(key) => check_license_key_entitlements(key, &[])
                 .is_ok_and(|result| result.telemetry_required()),
         }
     }
@@ -156,7 +156,7 @@ impl ValidationResponse {
     }
 }
 
-// `result = true` makes the cached macro store only successful validations;
+// The cached macro stores only successful validations by default;
 // transient `Err`s are NOT cached, so a one-off network blip on the very first
 // call doesn't poison every subsequent license check in the process.
 //
@@ -164,14 +164,17 @@ impl ValidationResponse {
 // (network / timeout against license.pathway.com) via `execute_with_retries_if`.
 // `InsufficientLicenseEntitlements` and other non-transient errors fail the
 // predicate, propagate immediately, and don't burn retry budget.
-#[cached(result = true)]
+#[cached(
+    key = "(String, Vec<String>)",
+    convert = "{ (license_key.to_owned(), entitlements.to_vec()) }"
+)]
 fn check_license_key_entitlements(
-    license_key: String,
-    entitlements: Vec<String>,
+    license_key: &str,
+    entitlements: &[String],
 ) -> Result<ValidationResponse, Error> {
     let checker = KeygenLicenseChecker::new(PATHWAY_LICENSE_SERVER.to_string());
     execute_with_retries_if(
-        || checker.check_entitlements(&license_key, entitlements.clone()),
+        || checker.check_entitlements(license_key, entitlements),
         |e| matches!(e, Error::LicenseValidation(_)),
         RetryConfig::default(),
         3,
@@ -194,7 +197,7 @@ impl KeygenLicenseChecker {
     fn check_entitlements(
         &self,
         license_key: &str,
-        entitlements: Vec<String>,
+        entitlements: &[String],
     ) -> Result<ValidationResponse, Error> {
         let response = self
             .client
@@ -223,7 +226,9 @@ impl KeygenLicenseChecker {
             if result.valid {
                 Ok(result)
             } else {
-                Err(Error::InsufficientLicenseEntitlements(entitlements))
+                Err(Error::InsufficientLicenseEntitlements(
+                    entitlements.to_vec(),
+                ))
             }
         } else {
             let status = response.status();
@@ -286,9 +291,9 @@ fn deserialize_signed_license(public_key: &str, license: &str) -> DynResult<serd
     Ok(license_content)
 }
 
-#[cached]
-fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
-    let lic = deserialize_signed_license(PUBLIC_KEY, &license.clone())
+#[cached(cache_err = true, key = "String", convert = "{ license.to_owned() }")]
+fn read_license_content(license: &str) -> Result<LicenseDetails, Error> {
+    let lic = deserialize_signed_license(PUBLIC_KEY, license)
         .map_err(|e| Error::LicenseValidation(e.to_string()))?;
 
     let included = lic["included"].as_array().ok_or(Error::MalformedLicense)?;
@@ -358,7 +363,7 @@ fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
     Ok(result)
 }
 
-#[cached]
+#[cached(cache_err = true)]
 pub fn read_license_to_string(license_key_or_path: Option<String>) -> Result<String, Error> {
     if let Some(key_or_path) = license_key_or_path {
         let key_or_path = key_or_path.trim();

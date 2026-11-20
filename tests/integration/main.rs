@@ -27,6 +27,7 @@ mod test_gradual_broadcast;
 mod test_json_output;
 mod test_jsonlines;
 mod test_key;
+mod test_license_cache;
 mod test_message_headers;
 mod test_metadata;
 mod test_null_writer;
