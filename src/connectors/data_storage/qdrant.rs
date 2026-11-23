@@ -240,8 +240,7 @@ impl QdrantWriter {
         };
         let mut sparse_slots: Vec<String> = params
             .sparse_vectors_config
-            .map(|config| config.map.into_keys().collect())
-            .unwrap_or_default();
+            .map_or_default(|config| config.map.into_keys().collect());
         // The maps arrive in random order; sort so validation reports the same
         // slot first on every run.
         dense_slots.sort_by(|(left, _), (right, _)| left.cmp(right));

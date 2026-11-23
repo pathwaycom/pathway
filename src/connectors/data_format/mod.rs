@@ -603,9 +603,8 @@ impl FormatterContext {
         properties.push((PATHWAY_TIME_HEADER.to_string(), time.to_string()));
         properties.push((PATHWAY_DIFF_HEADER.to_string(), diff.to_string()));
         for (name, index) in header_fields {
-            let value = serialize_value_to_json(&self.values[*index])
-                .map(|v| v.to_string())
-                .unwrap_or_default();
+            let value =
+                serialize_value_to_json(&self.values[*index]).map_or_default(|v| v.to_string());
             properties.push((name.clone(), value));
         }
         properties

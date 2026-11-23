@@ -3,7 +3,7 @@ name = "pathway"
 version = "0.33.1"
 edition = "2021"
 publish = false
-rust-version = "1.99"
+rust-version = "1.100.0"
 license = "BUSL-1.1"
 
 [lib]
