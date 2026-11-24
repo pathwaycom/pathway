@@ -8,6 +8,9 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 
+// This dependency keeps syn features unified between normal and build dependencies.
+use syn as _;
+
 pub mod connectors;
 pub mod deepcopy;
 pub mod engine;
