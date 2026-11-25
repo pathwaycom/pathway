@@ -122,7 +122,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Match IoT-Pathway's NO-XPACKS_Verify_Linux supported-range bounds.
+        # Test the minimum and maximum supported Python versions.
         python-version: ['3.10', '3.15']
         platform:
           - name: Linux
@@ -132,7 +132,6 @@ jobs:
     env:
       PYTHON_VERSION: ${{ matrix.python-version }}
       PYTHONFAULTHANDLER: '1'
-      PATHWAY_THREADS: '1'
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
       PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
@@ -173,19 +172,36 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           echo "PATHWAY_AIRBYTE_PYTHON=$(uv python find 3.10)" >> "$GITHUB_ENV"
 
-      - name: Run all core tests and doctests
+      - name: Run all core tests and doctests (one thread, runtime typechecking)
+        id: pytest-typechecking
+        env:
+          PATHWAY_THREADS: '1'
+          PATHWAY_RUNTIME_TYPECHECKING: '1'
         run: |
           PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
           echo "Testing Python $PYTHON_VERSION package at $PACKAGE_DIR"
           python -m pytest -v --confcutdir .venv --doctest-modules \
             "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
-            --junitxml=test-results/pytest.xml
+            --junitxml=test-results/pytest-typechecking.xml
+
+      - name: Run all core tests and doctests (four threads)
+        # Exercise both modes even when the first pytest invocation fails.
+        if: ${{ !cancelled() && (steps.pytest-typechecking.outcome == 'success' || steps.pytest-typechecking.outcome == 'failure') }}
+        env:
+          PATHWAY_THREADS: '4'
+          PATHWAY_RUNTIME_TYPECHECKING: '0'
+        run: |
+          PACKAGE_DIR=$(python -c 'import pathway; print(next(iter(pathway.__path__)))')
+          echo "Testing Python $PYTHON_VERSION package at $PACKAGE_DIR"
+          python -m pytest -v --confcutdir .venv --doctest-modules \
+            "$PACKAGE_DIR" --ignore "$PACKAGE_DIR/xpacks" \
+            --junitxml=test-results/pytest-four-threads.xml
 
       - name: Upload pytest report
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: pytest-core-${{ matrix.platform.runner }}-python-${{ matrix.python-version }}
-          path: test-results/pytest.xml
+          path: test-results/*.xml
           if-no-files-found: ignore
           retention-days: 7

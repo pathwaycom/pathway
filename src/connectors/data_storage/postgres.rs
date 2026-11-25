@@ -798,9 +798,10 @@ mod to_sql {
             macro_rules! try_forward {
                 ($type:ty, $expr:expr) => {
                     if <$type as ToSql>::accepts(ty) {
-                        let value: $type = match $expr {
+                        let value: $type = match $expr.map_err(Box::<dyn Error + Sync + Send>::from)
+                        {
                             Ok(v) => v,
-                            Err(e) => return Some(Err(e.into())),
+                            Err(e) => return Some(Err(e)),
                         };
                         assert!(matches!(self.encode_format(ty), Format::Binary));
                         assert!(matches!(value.encode_format(ty), Format::Binary));
@@ -842,10 +843,7 @@ mod to_sql {
             macro_rules! try_forward {
                 ($type:ty, $expr:expr) => {
                     if <$type as ToSql>::accepts(ty) {
-                        let value: $type = match ($expr as $type).try_into() {
-                            Ok(v) => v,
-                            Err(e) => return Some(Err(e.into())),
-                        };
+                        let value: $type = $expr;
                         assert!(matches!(self.encode_format(ty), Format::Binary));
                         assert!(matches!(value.encode_format(ty), Format::Binary));
                         return Some(value.to_sql(ty, out));

@@ -85,12 +85,10 @@ xpack-llm = [
     "llama-index-retrievers-pathway >= 0.1.3",
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
     "instructor ~= 1.2",
-    "google-generativeai ~= 0.8.4",
+    # 2.x supports Python 3.10; 3.x supports Python 3.11 and newer.
+    "google-genai >= 2.33.0, < 4.0.0",
     "google-api-core >= 2.24.1, < 3.0.0",
-    # google-generativeai's google-ai-generativelanguage dependency forces
-    # protobuf < 6; stating it up front keeps pip from backtracking through
-    # dozens of grpcio-status / grpc-google-iam-v1 releases (newer ones require
-    # protobuf 6) before discovering the cap on its own
+    # Keep the other Google/gRPC integrations on the existing protobuf 5 set.
     "protobuf >= 5.26.1, < 6.0.0",
     # the google ecosystem is migrating to protobuf 6 one package at a time;
     # each of the caps below marks the last protobuf-5-compatible release. They

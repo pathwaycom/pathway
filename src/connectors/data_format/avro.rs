@@ -577,8 +577,7 @@ fn writer_declares_json_text(schema: Option<&AvroSchema>) -> bool {
 /// the walk then simply does not descend into the references.
 fn schema_names(schema: &AvroSchema) -> apache_avro::schema::NamesRef<'_> {
     apache_avro::schema::ResolvedSchema::try_from(schema)
-        .map(|resolved| resolved.get_names().clone())
-        .unwrap_or_default()
+        .map_or_default(|resolved| resolved.get_names().clone())
 }
 
 /// The lookup form the decimal walks use: either the borrowed names of a

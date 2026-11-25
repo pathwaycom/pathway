@@ -5,6 +5,8 @@ The Pathway Live Data Framework embedder UDFs.
 import asyncio
 import json
 import logging
+from contextlib import AbstractContextManager, nullcontext
+from functools import cached_property
 from typing import Any, Literal
 
 import numpy as np
@@ -572,12 +574,15 @@ class GeminiEmbedder(BaseEmbedder):
         gemini_kwargs: any other arguments accepted by gemini embedding service. Check
             the `Gemini documentation <https://ai.google.dev/api/embeddings#method:-models.embedcontent>`_
             for list of accepted arguments.
+            A supplied ``client`` must be a ``google.genai.Client`` and remains owned
+            by the caller. ``request_options`` accepts the legacy ``timeout`` in
+            seconds and a ``google.api_core.retry.Retry`` policy.
 
     Example:
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
-    >>> embedder = embedders.GeminiEmbedder(model="models/text-embedding-004")
+    >>> embedder = embedders.GeminiEmbedder(model="models/gemini-embedding-001")
     >>> t = pw.debug.table_from_markdown('''
     ... txt
     ... Text
@@ -590,7 +595,7 @@ class GeminiEmbedder(BaseEmbedder):
     >>> embedder = embedders.GeminiEmbedder()
     >>> t = pw.debug.table_from_markdown('''
     ... txt  | model
-    ... Text | models/embedding-001
+    ... Text | models/gemini-embedding-001
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model)) # doctest: +SKIP
     <pathway.Table schema={'ret': numpy.ndarray[tuple[int, ...], numpy.dtype[typing.Any]]}>
@@ -609,7 +614,7 @@ class GeminiEmbedder(BaseEmbedder):
         **gemini_kwargs,
     ):
         with optional_imports("xpack-llm"):
-            import google.generativeai as genai  # noqa: 401
+            from google import genai  # noqa: F401
 
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
@@ -622,20 +627,82 @@ class GeminiEmbedder(BaseEmbedder):
         if api_key is not None:
             self.kwargs["api_key"] = api_key
 
+    @cached_property
+    def _client(self):
+        from google import genai
+
+        return genai.Client(
+            vertexai=False,
+            api_key=self.kwargs.get("api_key"),
+            http_options={"api_version": "v1beta"},
+        )
+
     def __wrapped__(self, input: str, **kwargs) -> np.ndarray:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
         kwargs = {**self.kwargs, **kwargs}
         kwargs = _extract_value_inside_dict(kwargs)
         model = kwargs.pop("model", None)
 
         api_key = kwargs.pop("api_key", None)
-        if api_key is not None:
-            genai.configure(api_key=api_key)
+        client = kwargs.pop("client", None)
+        request_options = kwargs.pop("request_options", None) or {}
+        unknown_options = request_options.keys() - {"timeout", "retry"}
+        if unknown_options:
+            raise TypeError(f"Unknown request_options: {sorted(unknown_options)}")
+        timeout = request_options.get("timeout")
+        if timeout is not None or "retry" in request_options:
+            http_options = types.HttpOptions.model_validate(
+                kwargs.get("http_options") or {}
+            ).model_copy()
+            if timeout is not None:
+                http_options.timeout = int(timeout * 1_000)
+            if "retry" in request_options:
+                http_options.retry_options = types.HttpRetryOptions(attempts=1)
+            kwargs["http_options"] = http_options
 
-        response = genai.embed_content(model, content=[input], **kwargs)
-        embedding = response["embedding"][0]
-        return np.array(embedding)
+        # Keep the legacy SDK's API version, including on google-genai 3.x.
+        client_context: AbstractContextManager[genai.Client]
+        if client is not None:
+            client_context = nullcontext(client)
+        elif api_key == self.kwargs.get("api_key"):
+            client_context = nullcontext(self._client)
+        else:
+            client_context = genai.Client(
+                vertexai=False,
+                api_key=api_key,
+                http_options={"api_version": "v1beta"},
+            )
+        with client_context as client:
+
+            def request():
+                return client.models.embed_content(
+                    model=model,
+                    contents=[input],
+                    config=types.EmbedContentConfig(**kwargs),
+                )
+
+            retry = request_options.get("retry")
+            if retry is not None:
+                from google.api_core.exceptions import from_http_status
+
+                def legacy_request():
+                    try:
+                        return request()
+                    except genai.errors.APIError as error:
+                        # Legacy Retry predicates inspect google.api_core errors.
+                        if error.code is None:
+                            raise
+                        raise from_http_status(error.code, str(error)) from error
+
+                response = retry(legacy_request)()
+            else:
+                response = request()
+
+        if not response.embeddings or response.embeddings[0].values is None:
+            raise ValueError("Gemini API returned no embedding")
+        return np.array(response.embeddings[0].values)
 
 
 class BedrockEmbedder(BaseEmbedder):

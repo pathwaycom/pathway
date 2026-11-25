@@ -1,22 +1,30 @@
 // Copyright © 2026 Pathway
 
+use std::convert::Infallible;
 use std::env;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
 use std::time::SystemTime;
 
 use arc_swap::ArcSwapOption;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{header, Body, Method, Response, Server, StatusCode};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper::{header, Method, Request, Response, StatusCode};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as ServerBuilder;
+use hyper_util::server::graceful::GracefulShutdown;
 use log::{error, info};
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
+use tokio::net::TcpListener;
 use tokio::sync::oneshot::Sender;
 
 use crate::engine::dataflow::monitoring::ProberStats;
 
-use super::Error;
 use super::Graph;
 
 const DEFAULT_MONITORING_HTTP_PORT: u16 = 20000;
@@ -99,6 +107,34 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
     metrics_text
 }
 
+fn metrics_response(
+    request: &Request<Incoming>,
+    stats: &Arc<ArcSwapOption<ProberStats>>,
+) -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::new()));
+    let metrics_text = metrics_from_stats(stats);
+    match (request.method(), request.uri().path()) {
+        (&Method::GET, "/status") => {
+            *response.body_mut() = Full::new(Bytes::from(metrics_text));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("application/json"),
+            );
+        }
+        (&Method::GET, "/metrics") => {
+            *response.body_mut() = Full::new(Bytes::from(metrics_text));
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static(
+                    "application/openmetrics-text; version=1.0.0; charset=utf-8",
+                ),
+            );
+        }
+        _ => *response.status_mut() = StatusCode::NOT_FOUND,
+    }
+    response
+}
+
 /// Starts a lightweight http server allowing monitoring.
 /// Available at: http://localhost:PORT/status
 /// where PORT is `PATHWAY_MONITORING_HTTP_PORT + process_id`
@@ -124,58 +160,48 @@ pub fn start_http_server_thread(
                 .build()
                 .unwrap()
                 .block_on(async {
-                    let addr = ([127, 0, 0, 1], monitoring_http_port + process_id).into();
-                    let make_service = make_service_fn(move |_| {
-                        let stats = stats.clone();
-                        async move {
-                            Ok::<_, Error>(service_fn(move |req| {
-                                let stats = stats.clone();
-
-                                async move {
-                                    let mut response = Response::new(Body::empty());
-                                    let stats = stats.clone();
-
-                                    let metrics_text = metrics_from_stats(&stats);
-                                    match (req.method(), req.uri().path()) {
-                                        (&Method::GET, "/status") => {
-                                            *response.body_mut() = Body::from(metrics_text);
-                                            response.headers_mut().insert(
-                                                header::CONTENT_TYPE,
-                                                header::HeaderValue::from_static(
-                                                    "application/json",
-                                                ),
-                                            );
-                                        }
-                                        (&Method::GET, "/metrics") => {                              
-                                            *response.body_mut() = Body::from(metrics_text);
-                                            response.headers_mut().insert(
-                                                header::CONTENT_TYPE,
-                                                header::HeaderValue::from_static(
-                                                    "application/openmetrics-text; version=1.0.0; charset=utf-8",
-                                                ),
-                                            );
-                                        }
-
-                                        _ => {
-                                            *response.status_mut() = StatusCode::NOT_FOUND;
-                                        }
-                                    }
-                                    Ok::<_, Error>(response)
-                                }
-                            }))
-                        }
-                    });
-                    let server = Server::bind(&addr).serve(make_service);
-                    let shutdown_signal = async move {
-                        http_terminate_receiver.await.unwrap();
-                    };
-                    let graceful = server.with_graceful_shutdown(shutdown_signal);
+                    let addr = SocketAddr::from((
+                        [127, 0, 0, 1],
+                        monitoring_http_port + process_id,
+                    ));
+                    let listener = TcpListener::bind(addr).await.unwrap();
+                    let server = ServerBuilder::new(TokioExecutor::new());
+                    let graceful = GracefulShutdown::new();
+                    tokio::pin!(http_terminate_receiver);
                     info!("Metrics available at http://{addr}");
-                    if let Err(e) = graceful.await {
-                        error!(
-                            "http monitoring server error for process {process_id}: {e}"
-                        );
+
+                    loop {
+                        let stream = tokio::select! {
+                            result = &mut http_terminate_receiver => {
+                                result.unwrap();
+                                break;
+                            }
+                            connection = listener.accept() => {
+                                match connection {
+                                    Ok((stream, _)) => stream,
+                                    Err(e) => {
+                                        error!("http monitoring server error for process {process_id}: {e}");
+                                        break;
+                                    }
+                                }
+                            }
+                        };
+                        let stats = stats.clone();
+                        let service = service_fn(move |req: Request<Incoming>| {
+                            std::future::ready(Ok::<_, Infallible>(metrics_response(&req, &stats)))
+                        });
+                        let connection = server
+                            .serve_connection(TokioIo::new(stream), service)
+                            .into_owned();
+                        let connection = graceful.watch(connection);
+                        tokio::spawn(async move {
+                            if let Err(e) = connection.await {
+                                error!("http monitoring connection error for process {process_id}: {e}");
+                            }
+                        });
                     }
+                    drop(listener);
+                    graceful.shutdown().await;
                 });
         })
         .expect("http monitoring thread creation failed")

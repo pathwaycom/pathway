@@ -8147,14 +8147,13 @@ impl DataStorage {
                     let missing_directory = std::path::Path::new(path)
                         .parent()
                         .filter(|parent| !parent.as_os_str().is_empty() && !parent.exists())
-                        .map(|parent| {
+                        .map_or_default(|parent| {
                             format!(
                                 " The directory {} does not exist: create it first, the \
                                  writer does not create missing directories.",
                                 parent.display()
                             )
-                        })
-                        .unwrap_or_default();
+                        });
                     return Err(PyIOError::new_err(format!(
                         "cannot create the output file {path}: {e}.{missing_directory}"
                     )));

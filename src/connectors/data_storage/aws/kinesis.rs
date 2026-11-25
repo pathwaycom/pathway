@@ -164,10 +164,7 @@ impl ShardSet {
             }
 
             self.last_updated_at = Instant::now();
-            self.last_shard_id = shards
-                .last()
-                .map(|shard| shard.shard_id.clone())
-                .unwrap_or_default();
+            self.last_shard_id = shards.last().map_or_default(|shard| shard.shard_id.clone());
             self.had_full_round_robin = false;
 
             // After the first round-robin, there may still be some time left (for example, if some shards were empty

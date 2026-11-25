@@ -2430,9 +2430,8 @@ impl MssqlWriter {
         key_field_names: Option<&[String]>,
         include_special_fields: bool,
     ) -> Result<String, WriteError> {
-        let key_set: std::collections::HashSet<&str> = key_field_names
-            .map(|keys| keys.iter().map(String::as_str).collect())
-            .unwrap_or_default();
+        let key_set: std::collections::HashSet<&str> =
+            key_field_names.map_or_default(|keys| keys.iter().map(String::as_str).collect());
 
         let mut columns: Vec<String> = value_fields
             .iter()
