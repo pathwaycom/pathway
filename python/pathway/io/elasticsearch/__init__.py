@@ -243,6 +243,13 @@ def read(
     anything that was already emitted. The ``name`` parameter is required when using
     persistence so the engine can match the connector to its saved state.
 
+    Nested ``pw.Schema`` annotations validate objects in document ``_source``
+    fields, apply defaults, and provide typed dot and bracket access. Containers
+    remain ``pw.Json``. Missing nested fields require defaults, including optional
+    fields; explicit nulls never select defaults. See the
+    `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and JSON encodings.
+
     Args:
         host: The host and port on which the Elasticsearch server works, e.g.
             ``"http://localhost:9200"``.
@@ -305,6 +312,35 @@ def read(
     ...     id_column="doc_id",
     ...     max_transaction_duration=datetime.timedelta(minutes=5),
     ... )
+
+    For documents such as
+    ``{"doc_id": "order-1", "ts": 1793700000000, "payload": {"price": 12.5, "content": "AQI="}}``,
+    declare a nested payload schema. ``content`` is a base64-encoded byte string;
+    the missing ``currency`` receives its default.
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     doc_id: str
+    ...     ts: int
+    ...     payload: Payload
+    >>> table = pw.io.elasticsearch.read(
+    ...     "http://localhost:9200",
+    ...     pw.io.elasticsearch.ElasticSearchAuth.basic("admin", "admin"),
+    ...     "orders", schema=NestedInput, timestamp_column="ts", id_column="doc_id",
+    ...     max_transaction_duration=300, mode="static",
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    The selected columns have types ``float``, ``bytes``, and ``str``.
+    Invalid nested values become error values with the full field path in the
+    diagnostic; ``table.remove_errors()`` discards affected rows.
     """
 
     _check_entitlements("elasticsearch")

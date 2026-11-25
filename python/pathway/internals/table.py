@@ -529,7 +529,9 @@ id_type=<class 'pathway.engine.Pointer'>>
         ) is not None and filter_col.table == self:
             name = filter_col.name
             dtype = self._columns[name].dtype
-            ret = ret.update_types(**{name: dt.unoptionalize(dtype)})
+            ret = ret.with_columns(
+                **{name: expr.DeclareTypeExpression(dt.unoptionalize(dtype), ret[name])}
+            )
         return ret
 
     @trace_user_frame

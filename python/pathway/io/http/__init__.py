@@ -48,6 +48,14 @@ def read(
 ):
     """Reads a table from an HTTP stream.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    Encoded leaves use JSON representations, such as base64 strings for bytes.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     A final HTTP 4xx or 5xx response raises an error after any retries configured
     by ``n_retries`` and ``retry_codes``. Its body is not read as input data.
 
@@ -119,6 +127,31 @@ def read(
     ...   schema=InputSchema,
     ...   response_mapper=mapper
     ... )
+
+    Validate a nested JSON payload and extract typed fields from records such as
+    ``{"payload": {"price": 12.5, "content": "AQI="}}``. The missing ``currency``
+    receives its default; ``content`` is a base64-encoded byte string.
+    The endpoint in this example sends one JSON object per line.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> table = pw.io.http.read(
+    ...     "http://localhost:8000/orders", format="json", schema=NestedInput,
+    ...     delimiter="\\n",
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
 
     sender = Sender(

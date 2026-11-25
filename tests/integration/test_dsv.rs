@@ -11,12 +11,114 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use pathway_engine::connectors::data_format::{
-    DsvParser, DsvSettings, InnerSchemaField, ParseResult, ParsedEvent, Parser,
+    json_schema::JsonSchema, DsvParser, DsvSettings, InnerSchemaField, ParseResult, ParsedEvent,
+    ParsedEventWithErrors, Parser,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, ReadMethod, ReadResult, ReadResult::Data, Reader,
+    ConnectorMode, DataEventType, ReadMethod, ReadResult, ReadResult::Data, Reader, ReaderContext,
 };
 use pathway_engine::engine::{Key, Type, Value};
+
+#[test]
+fn test_dsv_nested_json_validation_and_error_paths() -> eyre::Result<()> {
+    let validation: JsonSchema = serde_json::from_value(serde_json::json!({
+        "type": "object", "fields": [{"name": "two", "schema": {
+            "type": "list", "items": {"type": "object", "fields": [
+                {"name": "three", "schema": {"type": "float"}},
+                {"name": "unit", "schema": {"type": "string"}, "default": {"value": "USD"}}
+            ]}
+        }}]
+    }))?;
+    for transport in 0..3 {
+        let context = |token: &str| match transport {
+            0 => ReaderContext::from_raw_bytes(DataEventType::Insert, token.as_bytes().to_vec()),
+            1 => {
+                ReaderContext::from_tokenized_entries(DataEventType::Insert, vec![token.to_owned()])
+            }
+            _ => ReaderContext::from_csv_record(
+                DataEventType::Insert,
+                csv::StringRecord::from(vec![token]),
+            ),
+        };
+        let mut field = InnerSchemaField::new(Type::Json, None);
+        field.json_schema = Some(validation.clone());
+        let mut parser = DsvParser::new(
+            DsvSettings::new(None, vec!["one".to_owned()], ';'),
+            [("one".to_owned(), field)].into(),
+        )?;
+        assert!(parser.parse(&context("one")).unwrap().is_empty());
+        let events = parser
+            .parse(&context(r#"{"two":[{"three":1}],"extra":true}"#))
+            .unwrap();
+        let [ParsedEventWithErrors::Insert((_, values))] = events.as_slice() else {
+            panic!("expected one insert event");
+        };
+        assert_eq!(
+            values[0].as_ref().unwrap(),
+            &Value::from(serde_json::json!({
+                "two": [{"three": 1, "unit": "USD"}], "extra": true
+            }))
+        );
+
+        let events = parser
+            .parse(&context(r#"{"two":[{"three":"wrong"}]}"#))
+            .unwrap();
+        let [ParsedEventWithErrors::Insert((_, values))] = events.as_slice() else {
+            panic!("expected one insert event with a field error");
+        };
+        let error = values[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("/one/two/0/three"), "{error}");
+        assert!(error.contains("expected float"), "{error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_dsv_nested_json_empty_defaults_and_explicit_null() -> eyre::Result<()> {
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let object = json!({"type": "object", "fields": [
+        {"name": "value", "schema": {"type": "int"}}
+    ]});
+    for optional in [false, true] {
+        let dtype = if optional {
+            Type::Optional(Arc::new(Type::Json))
+        } else {
+            Type::Json
+        };
+        let validation = if optional {
+            json!({"type": "optional", "wrapped": object})
+        } else {
+            object.clone()
+        };
+        let default = Value::from(json!({"value": 2}));
+        let mut field = InnerSchemaField::new(dtype, Some(default.clone()));
+        field.json_schema = Some(serde_json::from_value(validation)?);
+        let mut parser = DsvParser::new(
+            DsvSettings::new(None, vec!["one".to_owned()], ','),
+            [("one".to_owned(), field)].into(),
+        )?;
+        let context = |token: &str| {
+            ReaderContext::from_tokenized_entries(DataEventType::Insert, vec![token.to_owned()])
+        };
+        parser.parse(&context("one")).unwrap();
+        for token in ["", "null", " NULL ", "None", "  "] {
+            let events = parser.parse(&context(token)).unwrap();
+            let [ParsedEventWithErrors::Insert((_, values))] = events.as_slice() else {
+                panic!("expected one insert event");
+            };
+            if token.is_empty() {
+                assert_eq!(values[0].as_ref().unwrap(), &default);
+            } else if optional {
+                assert_eq!(values[0].as_ref().unwrap(), &Value::None);
+            } else {
+                assert!(values[0].is_err(), "{token:?}");
+            }
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn test_dsv_read_ok() -> eyre::Result<()> {

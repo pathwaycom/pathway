@@ -41,7 +41,13 @@ def read(
             `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the
             objects to be read. The connector will read the contents of all matching files as well
             as recursively read the contents of all matching folders.
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. A column annotated with another
+            ``pw.Schema`` is read as a JSON value inside the CSV field, validated
+            against that nested schema, and stored as ``pw.Json``. Declared nested
+            fields support typed dot and bracket access. An empty CSV field uses
+            its column default, if provided; otherwise it is accepted only for an
+            optional nested schema. An explicit JSON ``null`` requires an optional
+            nested schema and does not select the column default.
         csv_settings: Settings for the CSV parser.
         mode: Denotes how the engine polls the new data from the source. Currently
             ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
@@ -73,6 +79,11 @@ def read(
 
     Returns:
         Table: The table read.
+
+    Nested schemas validate JSON fields and give declared leaves their types on
+    dot or bracket access. Containers remain ``pw.Json``. The
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    describes supported encodings, defaults, nulls, and validation errors.
 
     Example:
 
@@ -142,6 +153,32 @@ def read(
     With this method, you obtain a table updated dynamically. The changes in the logs would incur
     changes in the Business-Intelligence 'BI'-ready data, namely, in the tables you would like to output.
     article.
+
+    A JSON object inside a CSV cell uses CSV quoting:
+
+    .. code-block:: text
+
+        payload
+        "{""price"":12.5,""content"":""AQI=""}"
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> records = pw.io.csv.read(
+    ...     "nested.csv", schema=NestedInput, mode="static"
+    ... )
+    >>> result = records.select(
+    ...     price=records.payload.price,       # float
+    ...     content=records.payload.content,   # bytes, decoded from base64
+    ...     currency=records.payload.currency, # str, default "USD"
+    ... )
+
+    ``records.payload`` remains JSON. A missing ``price`` or a string in place of
+    the numeric price produces a parsing error with path ``/payload/price``.
+
     """
 
     check_deprecated_kwargs(

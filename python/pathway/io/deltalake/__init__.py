@@ -352,6 +352,20 @@ def read(
     fields to be specified in the schema. You can define the primary key fields using the
     ``pw.column_definition`` function.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    JSON text columns and native structs/lists/maps are supported; structs are
+    matched by field name and map keys must be strings. Native binary and temporal
+    leaves use the ordinary column codecs, then their JSON representations
+    (base64 for bytes, ISO strings for dates/timestamps, nanoseconds for durations).
+    Native integer durations are in microseconds. Plain ``pw.Json`` columns also
+    accept native containers without nested validation. See the guide for array
+    shapes, extra fields and invalid-value handling.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     Args:
         uri: URI of the Delta Lake source that must be read.
         schema: Defines the schema of the resulting table. You can omit this parameter
@@ -450,6 +464,28 @@ def read(
     The symmetric write path, described in ``pw.io.deltalake.write``, lets you preserve
     a Delta ``decimal(p, s)`` column type across a Pathway pipeline: read it as ``str``,
     process it as text, and write it back into the same Delta column.
+    A native ``payload: struct<price: double, content: binary>`` column can be
+    read with typed access and a default for the missing ``currency`` field:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> records = pw.io.deltalake.read(
+    ...     "./nested_delta", schema=NestedInput, mode="static",
+    ... )
+    >>> result = records.select(
+    ...     price=records.payload.price, content=records.payload.content,
+    ...     currency=records.payload.currency,
+    ... )
+
+    The result columns have types ``float``, ``bytes`` and ``str``. The payload
+    container remains ``pw.Json``. JSON text containing the equivalent canonical
+    values can be read with the same schema.
+
     """
     _check_entitlements("deltalake")
     prepared_connection_settings = _prepare_s3_connection_settings(

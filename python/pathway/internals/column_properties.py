@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class ColumnProperties:
     dtype: dt.DType
     append_only: bool = False
+    json_schema: dict | None = field(default=None, hash=False)
 
 
 class ColumnPropertiesEvaluator(ABC):
@@ -23,7 +24,9 @@ class ColumnPropertiesEvaluator(ABC):
 
     def eval(self, column: clmn.ColumnWithContext) -> ColumnProperties:
         return ColumnProperties(
-            dtype=column.context_dtype, append_only=self._append_only(column)
+            dtype=column.context_dtype,
+            append_only=self._append_only(column),
+            json_schema=column.context_json_schema,
         )
 
     @abstractmethod

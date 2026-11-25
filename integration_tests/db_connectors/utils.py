@@ -1776,14 +1776,26 @@ class AtlasContext:
 
     def _wait_index_queryable(self, collection: str, index_name: str) -> None:
         deadline = time.monotonic() + self.INDEX_READY_TIMEOUT_S
+        indexes: list[dict] = []
         while time.monotonic() < deadline:
-            for idx in self.collection(collection).list_search_indexes():
-                if idx.get("name") == index_name and idx.get("queryable"):
+            indexes = [
+                idx
+                for idx in self.collection(collection).list_search_indexes()
+                if idx.get("name") == index_name
+            ]
+            for idx in indexes:
+                if idx.get("status") == "FAILED":
+                    raise RuntimeError(
+                        f"vector search index {index_name!r} on {collection!r} failed: "
+                        f"{json.dumps(idx, default=str)}"
+                    )
+                if idx.get("queryable"):
                     return
             time.sleep(2)
         raise TimeoutError(
-            f"vector search index {index_name!r} did not become queryable "
-            f"within {self.INDEX_READY_TIMEOUT_S}s"
+            f"vector search index {index_name!r} on {collection!r} did not become "
+            f"queryable within {self.INDEX_READY_TIMEOUT_S}s; "
+            f"last index state: {json.dumps(indexes, default=str)}"
         )
 
     def vector_search(

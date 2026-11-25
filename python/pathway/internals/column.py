@@ -15,7 +15,7 @@ from typing_extensions import Self
 
 import pathway.internals as pw
 from pathway.engine import ExternalIndexFactory
-from pathway.internals import column_properties as cp, dtype as dt, trace
+from pathway.internals import column_properties as cp, dtype as dt, json_schema, trace
 from pathway.internals.datasource import GenericDataSource
 from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
@@ -144,6 +144,10 @@ class ColumnWithContext(Column, ABC):
     @abstractmethod
     def context_dtype(self) -> dt.DType: ...
 
+    @property
+    def context_json_schema(self) -> dict | None:
+        return None
+
 
 class IdColumn(ColumnWithContext):
     def __init__(self, context: Context) -> None:
@@ -211,7 +215,25 @@ class ColumnWithExpression(ColumnWithContext):
 
     @cached_property
     def context_dtype(self) -> dt.DType:
-        return self.context.expression_type(self.expression)
+        return self.context_expression._dtype
+
+    @cached_property
+    def context_expression(self) -> ColumnExpression:
+        return self.context.expression_with_type(self.expression)
+
+    @property
+    def context_json_schema(self) -> dict | None:
+        schema = self.context_expression._json_schema
+        if schema is not None and isinstance(self.expression, ColumnReference):
+            # Updates and concatenations can supply values from other columns.
+            # Keep a structure guarantee only when every input agrees.
+            for column in self.context.reference_column_dependencies(self.expression):
+                other = column.properties.json_schema
+                if other is None or json_schema.unoptionalize(
+                    schema
+                ) != json_schema.unoptionalize(other):
+                    return None
+        return schema
 
 
 class ColumnWithReference(ColumnWithExpression):
@@ -1151,13 +1173,13 @@ class SlidingWindow:
 
     def cast_to_float(self) -> Self:
         assert isinstance(self.hop, int | float)
-        assert isinstance(self.duration, int | float | None)
-        assert isinstance(self.origin, int | float | None)
+        assert self.duration is None or isinstance(self.duration, int | float)
+        assert self.origin is None or isinstance(self.origin, int | float)
         return type(self)(
             hop=float(self.hop),
-            duration=float(self.duration) if self.duration is not None else None,  # type: ignore[arg-type]
+            duration=float(self.duration) if self.duration is not None else None,
             ratio=self.ratio,
-            origin=float(self.origin) if self.origin is not None else None,  # type: ignore[arg-type]
+            origin=float(self.origin) if self.origin is not None else None,
         )
 
     def with_updated_origin(self, origin: TimeEventType) -> SlidingWindow:

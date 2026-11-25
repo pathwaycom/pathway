@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import doctest
 import importlib
 import json
 import pathlib
@@ -17,6 +18,65 @@ from dateutil import tz
 import pathway as pw
 from pathway.internals.schema import Schema
 from pathway.tests.utils import write_csv, write_lines
+
+
+def test_nested_schema_keeps_local_annotation_types_after_definition():
+    def define_schema():
+        class LocalPayload(pw.Schema):
+            price: float
+
+        class LocalInput(pw.Schema):
+            payload: LocalPayload
+            alternatives: list[LocalPayload | None]
+
+        return LocalInput
+
+    original = define_schema()
+
+    # The declaration frame is gone; this identically named type must not
+    # change the inherited nested schema or schema unions.
+    class LocalPayload(pw.Schema):
+        price: str
+
+    class Derived(original):
+        number: int
+
+    combined = original | pw.schema_from_types(number=int)
+    for schema in (original, Derived, combined):
+        assert schema["payload"].json_schema["fields"][0]["schema"] == {"type": "float"}
+        table = pw.debug.table_from_rows(schema, [])
+        assert table.select(price=table.payload.price).schema.typehints() == {
+            "price": float
+        }
+
+
+def test_nested_schema_resolves_postponed_annotations_in_doctest_namespace():
+    import __future__
+
+    examples = """
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    >>> class Input(pw.Schema):
+    ...     payload: Payload
+    >>> Input["payload"].dtype == pw.internals.dtype.JSON
+    True
+    """
+    namespace = {"pw": pw, "__name__": __name__}
+    test = doctest.DocTestParser().get_doctest(
+        examples, namespace, "nested", __file__, 0
+    )
+    runner = doctest.DocTestRunner()
+    assert (
+        runner.run(test, compileflags=__future__.annotations.compiler_flag).failed == 0
+    )
+
+
+def test_schema_column_names_do_not_shadow_annotation_types():
+    class Input(pw.Schema):
+        int: int = pw.column_definition(default_value=0)
+        value: int
+
+    assert Input.typehints() == {"int": int, "value": int}
 
 
 def assert_same_schema(left: type[Schema], right: type[Schema]):

@@ -46,7 +46,15 @@ def read(
             `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the
             objects to be read. The connector will read the contents of all matching files as well
             as recursively read the contents of all matching folders.
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. A field annotated with another
+            ``pw.Schema`` validates the nested JSON object and is stored as ``pw.Json``.
+            Nested fields are required unless they have defaults; optional types allow
+            explicit ``null``. Missing defaults are inserted and additional fields are
+            preserved. Nested schemas also support lists and tuples of types supported
+            by JSON input. Invalid objects produce parsing errors for the affected column.
+            Declared fields can be accessed with their schema types using
+            dot or bracket syntax, for example ``pw.this.price.value`` for a float
+            field, without an explicit ``.as_float()`` conversion.
         mode: Denotes how the engine polls the new data from the source. Currently
             ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
             the updates in the specified directory. It will track file additions, deletions, and
@@ -82,6 +90,11 @@ def read(
 
     Returns:
         Table: The table read.
+
+    Nested schemas validate JSON fields and give declared leaves their types on
+    dot or bracket access. Containers remain ``pw.Json``. The
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    describes supported encodings, defaults, nulls, and validation errors.
 
     Example:
 
@@ -158,6 +171,31 @@ def read(
 
     With this method, you obtain a table updated dynamically. The changes in the logs would incur
     changes in the Business-Intelligence 'BI'-ready data, namely, in the tables you would like to output.
+
+    For a nested payload, the input file can contain:
+
+    .. code-block:: json
+
+        {"payload": {"price": 12.5, "content": "AQI="}}
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> records = pw.io.jsonlines.read(
+    ...     "nested.jsonl", schema=NestedInput, mode="static"
+    ... )
+    >>> result = records.select(
+    ...     price=records.payload.price,       # float
+    ...     content=records.payload.content,   # bytes, decoded from base64
+    ...     currency=records.payload.currency, # str, default "USD"
+    ... )
+
+    ``records.payload`` remains JSON. A missing ``price`` or a string in place of
+    the numeric price produces a parsing error with path ``/payload/price``.
+
     """
 
     return pw.io.fs.read(

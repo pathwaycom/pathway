@@ -14,6 +14,7 @@
 
 use serde_json::{json, Value as JsonValue};
 
+use crate::connectors::data_format::json_schema::JsonSchema;
 use crate::engine::{Type, Value};
 
 /// One column of a deduced schema.
@@ -27,6 +28,7 @@ pub struct ExploredField {
     /// The documentation string of the field, when the source schema carries
     /// one.
     pub doc: Option<String>,
+    pub json_schema: Option<JsonSchema>,
 }
 
 /// The `parse_dtype_from_dict` form of an engine type, consumed by the

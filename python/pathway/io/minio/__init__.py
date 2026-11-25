@@ -86,6 +86,14 @@ def read(
     ``"only_metadata"`` format, in which case the table will contain only metadata, and no
     time or traffic will be spent on downloading the objects.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    The same validation applies to JSON cells with ``format="csv"``.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         path: Path to an object or to a folder of objects in MinIO S3 bucket.
         minio_settings: Connection parameters for the MinIO account and the bucket.

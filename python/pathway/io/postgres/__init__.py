@@ -331,6 +331,14 @@ def read(
     hex-encoded EWKB — the canonical PostgreSQL output format. Such strings can be
     passed back to ``pw.io.postgres.write`` verbatim, which also accepts WKT.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    Encoded leaves use JSON representations, such as base64 strings for bytes.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     Args:
         postgres_settings: Connection parameters for PostgreSQL, provided as a
             dictionary of key-value pairs. The connection string is assembled by joining
@@ -562,6 +570,33 @@ def read(
     ...     mode="streaming",
     ...     publication_name="order_items_pub",
     ... )
+
+    Read an ``orders`` table with an integer primary key ``key`` and a
+    ``payload`` column of type ``JSONB`` containing
+    ``{"price": 12.5, "content": "AQI="}``. Bytes inside the JSON value use base64,
+    even when the database also supports native binary columns.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> table = pw.io.postgres.read(
+    ...     {"host": "localhost", "port": "5432", "dbname": "database",
+    ...      "user": "user", "password": "pass"},
+    ...     table_name="orders", schema=NestedInput, mode="static",
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     _check_entitlements("postgres-wal-reader")
 

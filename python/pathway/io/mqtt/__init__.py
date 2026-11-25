@@ -47,6 +47,13 @@ def read(
     and creates table columns based on the schema provided in the ``schema`` parameter. The
     column values come from the corresponding JSON fields.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         uri: The connection string for the MQTT broker.
         topic: The name of the MQTT topic to read data from.
@@ -180,6 +187,30 @@ def read(
     your data: a device-generated event id, a ``(device_id, timestamp)`` pair passed
     to ``groupby`` as two columns, or any other combination that uniquely identifies
     a message at the source.
+
+    Validate a nested JSON payload and extract typed fields from records such as
+    ``{"payload": {"price": 12.5, "content": "AQI="}}``. The missing ``currency``
+    receives its default; ``content`` is a base64-encoded byte string.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> table = pw.io.mqtt.read(
+    ...     "mqtt://localhost:1883/?client_id=nested-orders", "orders",
+    ...     format="json", schema=NestedInput,
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     if topic == "":
         raise ValueError("The MQTT topic to read from must not be empty.")

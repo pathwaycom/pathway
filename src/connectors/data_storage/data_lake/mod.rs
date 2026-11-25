@@ -44,6 +44,7 @@ pub mod buffering;
 pub mod delta;
 pub mod iceberg;
 pub mod iceberg_storage;
+pub mod nested;
 pub mod writer;
 
 pub use delta::DeltaBatchWriter;
@@ -126,13 +127,48 @@ pub fn parquet_row_into_values_map<S: ::std::hash::BuildHasher>(
     parquet_row: &ParquetRow,
     column_types: &HashMap<String, Type, S>,
 ) -> ValuesMap {
+    parquet_row_into_values_map_with_schema(parquet_row, column_types, &HashMap::new())
+}
+
+pub fn parquet_row_into_values_map_with_schema<S: ::std::hash::BuildHasher>(
+    parquet_row: &ParquetRow,
+    column_types: &HashMap<String, Type, S>,
+    nested_schemas: &nested::NestedSchemas,
+) -> ValuesMap {
     let mut row_map = HashMap::new();
     for (name, parquet_value) in parquet_row.get_column_iter() {
         let Some(expected_type) = column_types.get(name) else {
             // Column outside of the user-provided schema
             continue;
         };
-        let value = parquet_value_into_pathway_value(parquet_value, expected_type, name);
+        let schema = nested_schemas.get(name);
+        let native_json = expected_type.unoptionalize() == &Type::Json
+            && matches!(
+                parquet_value,
+                ParquetValue::Group(_)
+                    | ParquetValue::MapInternal(_)
+                    | ParquetValue::ListInternal(_)
+            );
+        let value = if schema.is_some() || native_json {
+            if matches!(parquet_value, ParquetValue::Str(_)) {
+                parquet_value_into_pathway_value(parquet_value, expected_type, name)
+            } else {
+                nested::parquet(
+                    parquet_value,
+                    schema,
+                    &crate::connectors::data_format::json_schema::child_path("", name),
+                )
+                .map(|json| {
+                    if json.is_null() && expected_type.is_optional() {
+                        Value::None
+                    } else {
+                        Value::from(json)
+                    }
+                })
+            }
+        } else {
+            parquet_value_into_pathway_value(parquet_value, expected_type, name)
+        };
         row_map.insert(name.clone(), value);
     }
 
@@ -341,6 +377,14 @@ pub fn columns_into_pathway_values<S: ::std::hash::BuildHasher>(
     entry: &ArrowRecordBatch,
     column_types: &HashMap<String, Type, S>,
 ) -> Vec<ValuesMap> {
+    columns_into_pathway_values_with_schema(entry, column_types, &HashMap::new())
+}
+
+pub fn columns_into_pathway_values_with_schema<S: ::std::hash::BuildHasher>(
+    entry: &ArrowRecordBatch,
+    column_types: &HashMap<String, Type, S>,
+    nested_schemas: &nested::NestedSchemas,
+) -> Vec<ValuesMap> {
     let rows_count = entry.num_rows();
     let mut result = vec![HashMap::new(); rows_count];
 
@@ -348,8 +392,38 @@ pub fn columns_into_pathway_values<S: ::std::hash::BuildHasher>(
         let Some(column) = entry.column_by_name(column_name) else {
             continue;
         };
-        let values_vector =
-            column_into_pathway_values(column, expected_type, column_name, rows_count);
+        let schema = nested_schemas.get(column_name);
+        let native_json = expected_type.unoptionalize() == &Type::Json
+            && matches!(
+                column.data_type(),
+                ArrowDataType::Struct(_)
+                    | ArrowDataType::Map(_, _)
+                    | ArrowDataType::List(_)
+                    | ArrowDataType::LargeList(_)
+                    | ArrowDataType::FixedSizeList(_, _)
+                    | ArrowDataType::ListView(_)
+                    | ArrowDataType::LargeListView(_)
+            );
+        let values_vector = if schema.is_some() || native_json {
+            if nested::is_json_text_type(column.data_type()) {
+                column_into_pathway_values(column, expected_type, column_name, rows_count)
+            } else {
+                let path = crate::connectors::data_format::json_schema::child_path("", column_name);
+                (0..rows_count)
+                    .map(|index| {
+                        nested::arrow(column, index, schema, &path).map(|json| {
+                            if json.is_null() && expected_type.is_optional() {
+                                Value::None
+                            } else {
+                                Value::from(json)
+                            }
+                        })
+                    })
+                    .collect()
+            }
+        } else {
+            column_into_pathway_values(column, expected_type, column_name, rows_count)
+        };
         for (index, value) in values_vector.into_iter().enumerate() {
             result[index].insert(column_name.clone(), value);
         }

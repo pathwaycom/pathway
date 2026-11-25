@@ -231,3 +231,130 @@ fn test_postgres_with_empty_pkey() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_debezium_nested_images() {
+    use pathway_engine::connectors::data_format::InnerSchemaField;
+    use pathway_engine::engine::Type;
+    use serde_json::{json, Value as JsonValue};
+    use std::collections::HashMap;
+
+    let mut field = InnerSchemaField::new(Type::Json, None);
+    field.json_schema = Some(
+        serde_json::from_value(json!({
+            "type": "object", "fields": [{"name": "two", "schema": {
+                "type": "object", "fields": [
+                    {"name": "three", "schema": {"type": "float"}},
+                    {"name": "currency", "schema": {"type": "string"}, "default": {"value": "USD"}}
+                ]
+            }}]
+        }))
+        .unwrap(),
+    );
+    for db in [DebeziumDBType::Postgres, DebeziumDBType::MongoDB] {
+        for json_text in [false, true] {
+            let mut parser = DebeziumMessageParser::new(
+                Some(vec!["key".into()]),
+                vec!["one".into()],
+                " ".into(),
+                db,
+            )
+            .with_schema(HashMap::from([("one".into(), field.clone())]));
+            let image = |price: JsonValue| {
+                let one = json!({"two": {"three": price}, "extra": 7});
+                let row = json!({"one": if json_text { json!(one.to_string()) } else { one }});
+                if matches!(db, DebeziumDBType::MongoDB) {
+                    json!(row.to_string())
+                } else {
+                    row
+                }
+            };
+            let key = Some(serde_json::to_vec(&json!({"payload": {"key": 1}})).unwrap());
+            for op in ["r", "c", "u", "d"] {
+                let context = ReaderContext::KeyValue((key.clone(), Some(serde_json::to_vec(&json!({
+                    "payload": {"op": op, "before": image(json!(1.5)), "after": image(json!(2.5))}
+                })).unwrap())));
+                let actual: Vec<_> = parser
+                    .parse(&context)
+                    .unwrap()
+                    .into_iter()
+                    .map(|event| event.replace_errors())
+                    .collect();
+                let expected_value = |price| {
+                    vec![Value::from(
+                        json!({"two":{"three":price,"currency":"USD"},"extra":7}),
+                    )]
+                };
+                let row_key = Some(vec![Value::Int(1)]);
+                let expected = match (db, op) {
+                    (DebeziumDBType::Postgres, "u") => vec![
+                        ParsedEvent::Delete((row_key.clone(), expected_value(1.5))),
+                        ParsedEvent::Insert((row_key, expected_value(2.5))),
+                    ],
+                    (DebeziumDBType::Postgres, "d") => {
+                        vec![ParsedEvent::Delete((row_key, expected_value(1.5)))]
+                    }
+                    (DebeziumDBType::MongoDB, "d") => vec![ParsedEvent::Delete((row_key, vec![]))],
+                    _ => vec![ParsedEvent::Insert((row_key, expected_value(2.5)))],
+                };
+                assert_eq!(actual, expected);
+            }
+            let bad = ReaderContext::KeyValue((
+                key,
+                Some(
+                    serde_json::to_vec(&json!({
+                        "payload": {"op": "c", "after": image(json!("bad"))}
+                    }))
+                    .unwrap(),
+                ),
+            ));
+            let actual = parser.parse(&bad).unwrap();
+            assert!(format!("{actual:?}").contains("/one/two/three"));
+        }
+    }
+}
+
+#[test]
+fn test_debezium_nested_defaults_nulls_and_invalid_text() {
+    use pathway_engine::connectors::data_format::InnerSchemaField;
+    use pathway_engine::engine::Type;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    let mut field = InnerSchemaField::new(
+        Type::Optional(Type::Json.into()),
+        Some(Value::from(json!({"n": 7}))),
+    );
+    field.json_schema = Some(
+        serde_json::from_value(json!({"type":"optional","wrapped":{
+            "type":"object","fields":[{"name":"n","schema":{"type":"int"}}]
+        }}))
+        .unwrap(),
+    );
+    let mut parser = DebeziumMessageParser::new(
+        None,
+        vec!["one".into()],
+        " ".into(),
+        DebeziumDBType::Postgres,
+    )
+    .with_schema(HashMap::from([("one".into(), field)]));
+    for (after, expected) in [
+        (json!({}), Value::from(json!({"n":7}))),
+        (json!({"one":null}), Value::None),
+        (json!({"one":"null"}), Value::None),
+    ] {
+        let context = ReaderContext::KeyValue((
+            None,
+            Some(serde_json::to_vec(&json!({"payload":{"op":"c","after":after}})).unwrap()),
+        ));
+        let event = parser.parse(&context).unwrap().remove(0).replace_errors();
+        assert_eq!(event, ParsedEvent::Insert((None, vec![expected])));
+    }
+    for one in [json!("{bad"), json!({}), json!({"n":"bad"})] {
+        let context = ReaderContext::KeyValue((
+            None,
+            Some(serde_json::to_vec(&json!({"payload":{"op":"c","after":{"one":one}}})).unwrap()),
+        ));
+        assert!(format!("{:?}", parser.parse(&context).unwrap()).contains("/one"));
+    }
+}

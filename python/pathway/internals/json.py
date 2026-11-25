@@ -31,6 +31,13 @@ class _JsonEncoder(_json.JSONEncoder):
 class Json:
     """Represents JSON values.
 
+    A table column annotated with a nested ``pw.Schema`` also stores ``pw.Json``
+    values. On column expressions, dot and bracket access to declared fields
+    extracts their declared types; ordinary JSON columns return JSON and require
+    explicit conversions. Inside a Python UDF, the argument is a ``pw.Json``
+    value: use brackets and methods such as ``as_int()`` to access its contents.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
+
     Example:
 
     >>> import pathway as pw

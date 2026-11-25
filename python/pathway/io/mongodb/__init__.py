@@ -120,7 +120,16 @@ def read(
         collection: The name of the collection to read.
         schema: Schema of the resulting table. Column names must match the field names
             in the MongoDB documents. Specifying a primary key in the schema is not
-            supported; see above for details.
+            supported; see above for details. A column annotated with another
+            ``pw.Schema`` validates a nested BSON document and stores it as
+            ``pw.Json``; lists and tuples of schemas also support BSON arrays.
+            Declared fields support typed dot and bracket access.
+            Missing fields require defaults, including optional fields; explicit
+            nulls never use defaults. Native BSON types are normalized to the JSON
+            encodings used by field access. A column containing a JSON string uses
+            JSON encoding rules instead. See the
+            `schema guide </developers/user-guide/connect/schema/#nested-schemas-in-mongodb-bson-input>`_
+            for type mappings and examples.
         mode: If set to ``"streaming"`` (the default), the connector first delivers
             the initial collection snapshot and then continuously watches for new
             changes via the change stream. If set to ``"static"``, it reads the
@@ -157,7 +166,7 @@ def read(
 
     .. code-block:: bash
 
-        docker exec -it mongo mongosh --eval "rs.initiate()"
+        docker exec -it mongo mongosh --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
 
     You only need to do this once. Once the replica set is up, connect to the shell
     to insert some sample data:
@@ -202,6 +211,45 @@ def read(
       apple   10
      banana    5
      cherry   20
+
+    **Nested BSON documents.** Insert a document with a native binary field using
+    ``mongosh``:
+
+    .. code-block:: javascript
+
+        use shop
+        db.nested_orders.insertOne({
+            payload: {price: 12.5, content: BinData(0, "AQI=")}
+        })
+
+    Declare the nested structure to validate it and obtain typed leaves:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedOrder(pw.Schema):
+    ...     payload: Payload
+    >>> orders = pw.io.mongodb.read(
+    ...     "mongodb://127.0.0.1:27017/?replicaSet=rs0",
+    ...     database="shop", collection="nested_orders",
+    ...     schema=NestedOrder, mode="static",
+    ... )
+    >>> result = orders.select(
+    ...     price=orders.payload.price,       # float
+    ...     content=orders.payload.content,   # bytes
+    ...     currency=orders.payload.currency, # str, default "USD"
+    ... )
+
+    ``orders.payload`` remains JSON; its ``content`` is stored as base64 and decoded
+    on field access. BSON dates and declared numeric arrays are normalized too.
+    Validation errors include the full path, such as ``/payload/content``.
+    ``orders.remove_errors()`` discards rows containing error values.
+
+    Writing ``orders`` back to MongoDB stores ``payload`` as a JSON string. Reading
+    it with ``NestedOrder`` restores typed access; it does not restore the native
+    BSON type tags. To write ``content`` as native BSON ``Binary``, write the
+    extracted ``result`` table instead.
 
     **Streaming mode.** When ``mode="streaming"`` (the default), the connector first
     delivers the full collection as an initial snapshot and then continues to watch
@@ -331,6 +379,12 @@ def write(
     sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Writes ``table`` to a MongoDB table.
+
+    JSON columns, including columns with a nested schema, are written as BSON
+    strings containing JSON. Nested schemas describe validation and field access;
+    they do not change the output encoding. Read such a column with the same
+    nested schema to restore typed access. To write native BSON binary, datetime,
+    or numeric-array fields, extract them into typed columns before writing.
 
     The output table supports two formats, controlled by the ``output_table_type``
     parameter.

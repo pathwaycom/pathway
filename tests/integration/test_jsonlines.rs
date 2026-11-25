@@ -9,13 +9,190 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use pathway_engine::connectors::data_format::{
-    InnerSchemaField, JsonLinesParser, ParsedEvent, Parser,
+    json_schema::JsonSchema, FieldSource, InnerSchemaField, JsonLinesParser, ParsedEvent,
+    ParsedEventWithErrors, Parser,
 };
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, DataEventType, ReadMethod, ReaderContext,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Type, Value};
+use pathway_engine::python_api::ValueField;
+
+#[test]
+fn test_nested_json_validation_in_key_payload_and_pointer_paths() -> eyre::Result<()> {
+    let validation: JsonSchema = serde_json::from_value(serde_json::json!({
+        "type": "object", "fields": [
+            {"name": "value", "schema": {"type": "float"}},
+            {"name": "currency", "schema": {"type": "string"},
+             "default": {"value": "USD"}}
+        ]
+    }))?;
+    for from_key in [false, true] {
+        for use_path in [false, true] {
+            let mut field = InnerSchemaField::new(Type::Json, None);
+            field.json_schema = Some(validation.clone());
+            let paths = if use_path {
+                HashMap::from([("price".to_owned(), "/wrapper/price".to_owned())])
+            } else {
+                HashMap::new()
+            };
+            let mut parser = JsonLinesParser::new(
+                None,
+                vec![ValueField::new(
+                    "price".to_owned(),
+                    Type::Json,
+                    if from_key {
+                        FieldSource::Key
+                    } else {
+                        FieldSource::Payload
+                    },
+                )],
+                paths,
+                true,
+                HashMap::from([("price".to_owned(), field)]),
+                SessionType::Native,
+                None,
+            )?;
+            for (input, valid) in [
+                (serde_json::json!({"value": 12, "extra": true}), true),
+                (serde_json::json!({"value": "12"}), false),
+                (serde_json::json!({"value": true}), false),
+                (serde_json::json!({"value": 12, "currency": null}), false),
+                (serde_json::json!({}), false),
+                (serde_json::json!(null), false),
+                (serde_json::json!([]), false),
+            ] {
+                let mut record = serde_json::json!({"price": input});
+                if use_path {
+                    record = serde_json::json!({"wrapper": record});
+                }
+                let data = serde_json::to_vec(&record)?;
+                let context = if from_key {
+                    ReaderContext::KeyValue((Some(data), None))
+                } else {
+                    ReaderContext::from_raw_bytes(DataEventType::Insert, data)
+                };
+                let events = parser
+                    .parse(&context)
+                    .expect("valid JSON should produce an insert event");
+                let [ParsedEventWithErrors::Insert((_, values))] = events.as_slice() else {
+                    panic!("expected one insert event");
+                };
+                if valid {
+                    let Value::Json(actual) = values[0].as_ref().unwrap() else {
+                        panic!("expected a JSON value");
+                    };
+                    assert_eq!(
+                        **actual,
+                        serde_json::json!({"value": 12, "currency": "USD", "extra": true})
+                    );
+                } else {
+                    let error = values[0].as_ref().unwrap_err().to_string();
+                    assert!(error.contains("/price"), "{error}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_nested_json_validation_reports_array_index_and_escaped_field() -> eyre::Result<()> {
+    let schema: JsonSchema = serde_json::from_value(serde_json::json!({
+        "type": "object", "fields": [
+            {"name": "a/b~c", "schema": {"type": "list", "items": {
+                "type": "object", "fields": [
+                    {"name": "value", "schema": {"type": "int"}}
+                ]
+            }}}
+        ]
+    }))?;
+    let mut input = serde_json::json!({"a/b~c": [{"value": 1}, {"value": "bad"}]});
+    let error = schema
+        .validate(&mut input, "/data")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("/data/a~1b~0c/1/value"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn test_nested_json_encoded_leaves_validate_without_replacing_json() -> eyre::Result<()> {
+    use serde_json::json;
+
+    for (leaf, valid, invalid) in [
+        (json!({"type": "bytes"}), json!("AQI="), json!("%%%")),
+        (
+            json!({"type": "date_time_naive"}),
+            json!("2026-11-04T12:00:00.123456789"),
+            json!("bad"),
+        ),
+        (
+            json!({"type": "date_time_utc"}),
+            json!("2026-11-04T12:00:00+00:00"),
+            json!("2026-11-04T12:00:00"),
+        ),
+        (json!({"type": "duration"}), json!(123456789), json!(1.5)),
+        (
+            json!({"type": "pointer"}),
+            json!(pathway_engine::engine::Key::from_impl(42).to_string()),
+            json!("bad"),
+        ),
+        (
+            json!({"type": "array", "n_dim": 1, "items": {"type": "int"}}),
+            json!({"shape": [2], "elements": [1, 2]}),
+            json!({"shape": [2], "elements": [1]}),
+        ),
+        (
+            json!({"type": "array", "n_dim": 2, "items": {"type": "float"}}),
+            json!({"shape": [1, 2], "elements": [1, 2.5]}),
+            json!({"shape": [2], "elements": [1, 2.5]}),
+        ),
+    ] {
+        let schema: JsonSchema = serde_json::from_value(json!({
+            "type": "object", "fields": [{"name": "two", "schema": {
+                "type": "list", "items": {"type": "object", "fields": [
+                    {"name": "three", "schema": leaf}
+                ]}
+            }}]
+        }))?;
+        let mut value = json!({"two": [{"three": valid}], "extra": true});
+        let original = value.clone();
+        schema.validate(&mut value, "/one")?;
+        assert_eq!(value, original);
+        value["two"][0]["three"] = invalid;
+        let error = schema.validate(&mut value, "/one").unwrap_err().to_string();
+        assert!(error.contains("/one/two/0/three"), "{error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_json_array_decoder_rejects_malformed_arrays() {
+    use pathway_engine::connectors::data_format::parse_value_from_json;
+    use serde_json::json;
+
+    let dtype = Type::Array(Some(1), Arc::new(Type::Int));
+    for value in [
+        json!({}),
+        json!({"shape": [1]}),
+        json!({"elements": [1]}),
+        json!({"shape": [1], "elements": null}),
+        json!({"shape": null, "elements": [1]}),
+        json!({"shape": [-1], "elements": []}),
+        json!({"shape": [1, 1], "elements": [1]}),
+        json!({"shape": [2], "elements": [1]}),
+        json!({"shape": [1], "elements": [1.5]}),
+    ] {
+        assert!(parse_value_from_json(&value, &dtype).is_none(), "{value}");
+    }
+    assert!(parse_value_from_json(
+        &json!({"shape": [1], "elements": [1]}),
+        &Type::Array(None, Arc::new(Type::Any)),
+    )
+    .is_none());
+}
 
 fn generate_deeply_nested_json(depth: usize) -> String {
     let mut raw_nested_json = String::with_capacity(depth * 8);

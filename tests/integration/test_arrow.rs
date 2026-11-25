@@ -62,6 +62,7 @@ fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {
         source: FieldSource::Payload,
         default: None,
         metadata: None,
+        json_schema: None,
     };
     let (sender, receiver) = channel::unbounded();
     let batch_writer = ArrowBatchWriter::new(sender);

@@ -20,6 +20,7 @@ from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CsvLinesNumberChecker,
     FileLinesNumberChecker,
+    assert_table_equality_wo_index,
     wait_result_with_checker,
 )
 
@@ -2973,10 +2974,8 @@ def test_pulsar_schema_deduction_rejects_reserved_column_names(pulsar_context):
         )
 
 
-def test_pulsar_avro_deduction_names_the_unresolved_type_reference(pulsar_context):
-    """A schema that reuses a named type by reference is not supported by the
-    deduction, and the error must name the referenced type instead of
-    pointing at an empty field."""
+def test_pulsar_avro_deduction_resolves_named_type_references(pulsar_context):
+    """Reused named records retain the same typed JSON field metadata."""
 
     schema_definition = {
         "type": "record",
@@ -2995,16 +2994,16 @@ def test_pulsar_avro_deduction_names_the_unresolved_type_reference(pulsar_contex
         ],
     }
 
-    publish_avro_datums(pulsar_context, schema_definition, [])
-
-    G.clear()
-    with pytest.raises(Exception, match="named type .*Point.* by reference"):
-        pw.io.pulsar.read(
-            PULSAR_SERVICE_URI,
-            pulsar_context.topic,
-            format="avro",
-            mode="static",
-        )
+    publish_avro_datums(
+        pulsar_context, schema_definition, [{"first": {"x": 1}, "second": {"x": 2}}]
+    )
+    table = pw.io.pulsar.read(
+        PULSAR_SERVICE_URI, pulsar_context.topic, format="avro", mode="static"
+    )
+    result = table.select(first=table.first.x, second=table.second.x)
+    expected = pw.schema_from_types(first=int, second=int)
+    assert result.schema.typehints() == expected.typehints()
+    assert_table_equality_wo_index(result, pw.debug.table_from_rows(expected, [(1, 2)]))
 
 
 # --- Metadata tests ---

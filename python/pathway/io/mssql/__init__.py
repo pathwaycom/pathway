@@ -101,6 +101,14 @@ def read(
     additional system dependencies. Compatible with SQL Server 2017, 2019, 2022,
     and Azure SQL Edge.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    Encoded leaves use JSON representations, such as base64 strings for bytes.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     Args:
         connection_string: ADO.NET-style connection string for the MSSQL database.
             Example: ``"Server=tcp:localhost,1433;Database=mydb;User Id=sa;Password=pass;TrustServerCertificate=true"``
@@ -209,6 +217,33 @@ def read(
     ... )
     >>> pw.io.jsonlines.write(table, "output.jsonl")  # doctest: +SKIP
     >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
+
+    Read an ``orders`` table with an integer primary key ``key`` and a
+    ``payload`` column of type ``NVARCHAR(MAX)`` containing
+    ``{"price": 12.5, "content": "AQI="}``. Bytes inside the JSON value use base64,
+    even when the database also supports native binary columns.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> table = pw.io.mssql.read(
+    ...     "Server=tcp:localhost,1433;Database=testdb;"
+    ...     "User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=true",
+    ...     table_name="orders", schema=NestedInput, mode="static",
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     _check_entitlements("mssql")
 

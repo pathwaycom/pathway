@@ -125,6 +125,7 @@ class IdentityTransform(ExpressionVisitor):
         ret = super().eval_expression(expression, **kwargs)
         if hasattr(expression, "_dtype"):
             ret._dtype = expression._dtype
+            ret._json_schema = expression._json_schema
         return ret
 
     def eval_column_val(
@@ -312,6 +313,7 @@ class IdentityTransform(ExpressionVisitor):
             self.eval_expression(expression._index, **kwargs),
             self.eval_expression(expression._default, **kwargs),
             check_if_exists=expression._check_if_exists,
+            use_json_schema=expression._use_json_schema,
         )
 
     def eval_method_call(

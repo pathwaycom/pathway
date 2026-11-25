@@ -592,7 +592,8 @@ class RowwiseEvaluator(
             or dt.dtype_equivalence(dt.Optional(source_type), target_type)
             or (source_type == dt.NONE and isinstance(target_type, dt.Optional))
             or target_type == dt.ANY
-        ):
+        ) and target_type != dt.JSON:
+            # JSON conversion also normalizes JSON null to the supplied default.
             return expr
 
         if (

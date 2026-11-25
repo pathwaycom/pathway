@@ -74,7 +74,11 @@ def read(
             the data is read as raw bytes without UTF-8 parsing. Finally, if ``"only_metadata"``
             is chosen, the connector only scans the filesystem for file additions,
             changes, modifications, and provides them in the metadata column.
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. For ``format="json"`` or
+            ``format="csv"``, nested ``pw.Schema`` annotations validate JSON-valued
+            fields and provide typed dot and bracket access. See the
+            `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+            for supported types, defaults and null handling.
         mode: Denotes how the engine polls the new data from the source. Currently
             ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"`` the engine will wait for
             the updates in the specified directory. It will track file additions, deletions, and
@@ -214,6 +218,26 @@ def read(
     Finally, a simple example for the plaintext format would look as follows:
 
     >>> t = pw.io.fs.read("raw_dataset/lines.txt", format="plaintext")
+
+    For JSON records such as ``{"payload": {"price": 12.5}}``, a nested schema
+    validates the payload and makes its fields directly usable in expressions:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> nested = pw.io.fs.read(
+    ...     "nested.jsonl", format="json", schema=NestedInput, mode="static"
+    ... )
+    >>> result = nested.select(
+    ...     price=nested.payload.price,       # float
+    ...     currency=nested.payload.currency, # str, default "USD"
+    ... )
+
+    ``nested.payload`` remains ``pw.Json``. Missing required fields or invalid
+    types produce parsing errors with the full nested field path.
+
     """
 
     path = fspath(path)

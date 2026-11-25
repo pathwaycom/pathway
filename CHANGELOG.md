@@ -12,11 +12,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [0.33.1] - 2026-11-05
 
 ### Added
+- JSON input, JSON fields in CSV, MongoDB BSON input, Avro input, and JSON-valued columns from Python/HTTP, SQL and data-lake readers, and Debezium accept nested `pw.Schema` declarations to validate objects and arrays while keeping the column type JSON. Dot and bracket access to declared fields infer their types and decode bytes, dates, durations, pointers, numeric arrays, and wrapped Python objects without explicit conversions. Dot access is also supported for JSON columns without nested schemas. Delta Lake and Iceberg also decode native structs, lists and string-keyed maps into JSON columns. Pulsar registry deduction infers nested metadata and defaults for records, maps and arrays containing them, including named type references and typed dynamic map access.
 - Added Python 3.15 support for the core package. Optional ML/document extras are not yet supported on Python 3.15.
 - `pw.xpacks.llm.rerankers.LLMReranker` now accepts `call_kwargs`, the kwargs passed to each call of the LLM. The default is still `{"temperature": 0}`; pass `call_kwargs={}` to use the reranker with models that accept only the default `temperature`, such as Claude Opus 4.7 and newer (including Claude Opus 5.5) on Bedrock.
 - `pw.io.kafka.write` accepts `with_pathway_headers` (default `True`): with `False`, the messages are produced without the `pathway_time` and `pathway_diff` headers, which makes the writer cheaper when nothing downstream reads them.
 
+### Changed
+- Pulsar registry inference (`schema=None`) now gives nested record/map fields their declared types, so remove redundant `.as_*()` calls when accessing them. Top-level arrays containing records or maps now use `pw.Json` with nested metadata. To keep untyped JSON access without nested validation, pass an explicit schema with `pw.Json` columns. See the [nested-schema migration guide](https://pathway.com/developers/user-guide/connect/schema/#migrating-code-that-uses-pulsar-registry-inference).
+
 ### Fixed
+- Runtime type checking preserves warnings and avoids hangs when multiple engine workers construct validation wrappers concurrently.
 - Improved Pulsar producer recovery after topic unloads and retry handling for temporary monitoring collector failures.
 - S3 reads and persistence now pass the configured session token when using temporary credentials.
 - PostgreSQL streaming reads fail explicitly after losing their temporary replication slot instead of reconnecting with a new slot that could skip changes.

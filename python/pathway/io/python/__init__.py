@@ -608,7 +608,11 @@ def read(
 
     Args:
         subject: An instance of a :py:class:`~pathway.python.ConnectorSubject`.
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. Nested ``pw.Schema`` annotations
+            validate JSON-compatible objects and provide typed field access.
+            Encoded leaves use JSON representations, such as base64 for bytes.
+            Missing fields require defaults; explicit nulls never select defaults.
+            See the `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_ .
         format: Deprecated. Pass values of proper types to ``subject``'s ``next`` instead.
             Format of the data produced by a subject, "json", "raw" or "binary". In case of
             a "raw"/"binary" format, table with single "data" column will be produced.
@@ -659,6 +663,28 @@ def read(
     1 | x1
     2 | x2
     3 | x3
+
+    A nested object keeps its JSON container and exposes typed leaves:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> class NestedSubject(pw.io.python.ConnectorSubject):
+    ...     def run(self):
+    ...         self.next(payload={"price": 12.5, "content": "AQI="})
+    >>> records = pw.io.python.read(NestedSubject(), schema=NestedInput)
+    >>> result = records.select(
+    ...     price=records.payload.price,
+    ...     content=records.payload.content,
+    ...     currency=records.payload.currency,
+    ... )
+
+    ``result.content`` is bytes; ``records.payload`` remains ``pw.Json``.
+    Invalid nested values become error values with a full field path; use
+    ``records.remove_errors()`` to discard affected rows.
     """
 
     if format is None:

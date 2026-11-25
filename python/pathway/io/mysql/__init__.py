@@ -81,6 +81,14 @@ def read(
     different host, clear the persistence directory. Persistence applies to
     ``"streaming"`` mode; in ``"static"`` mode every run re-reads the full table.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    Encoded leaves use JSON representations, such as base64 strings for bytes.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     Args:
         connection_string: \
 `Connection string <https://dev.mysql.com/doc/connector-j/en/connector-j-reference-jdbc-url-format.html>`_ \
@@ -181,6 +189,32 @@ for the MySQL database. It must include the database name, e.g.
     ... )
     >>> pw.io.jsonlines.write(table, "output.jsonl")  # doctest: +SKIP
     >>> pw.run(persistence_config=persistence_config)  # doctest: +SKIP
+
+    Read an ``orders`` table with an integer primary key ``key`` and a
+    ``payload`` column of type ``JSON`` containing
+    ``{"price": 12.5, "content": "AQI="}``. Bytes inside the JSON value use base64,
+    even when the database also supports native binary columns.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> table = pw.io.mysql.read(
+    ...     "mysql://testuser:testpass@localhost:3306/testdb",
+    ...     table_name="orders", schema=NestedInput, mode="static",
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     _check_entitlements("mysql")
 

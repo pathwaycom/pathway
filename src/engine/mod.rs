@@ -12,6 +12,8 @@ pub mod report_error;
 pub mod value;
 pub use self::value::{Key, KeyImpl, ShardPolicy, Type, Value};
 
+pub mod json;
+
 pub mod reduce;
 pub use reduce::Reducer;
 

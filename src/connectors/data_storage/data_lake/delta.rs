@@ -43,9 +43,10 @@ use tempfile::tempfile;
 use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
-    arrow::DecimalSerializationError, columns_into_pathway_values, parquet_row_into_values_map,
-    LakeBatchWriter, LakeWriterSettings, MaintenanceMode, MetadataPerColumn,
-    PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
+    arrow::DecimalSerializationError, columns_into_pathway_values,
+    columns_into_pathway_values_with_schema, nested::NestedSchemas,
+    parquet_row_into_values_map_with_schema, LakeBatchWriter, LakeWriterSettings, MaintenanceMode,
+    MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{
@@ -948,6 +949,7 @@ pub struct DeltaTableReader {
     table: DeltaTable,
     streaming_mode: ConnectorMode,
     column_types: HashMap<String, Type>,
+    nested_schemas: NestedSchemas,
     base_path: String,
     object_downloader: ObjectDownloader,
 
@@ -974,6 +976,7 @@ impl DeltaTableReader {
         object_downloader: ObjectDownloader,
         storage_options: HashMap<String, String>,
         mut column_types: HashMap<String, Type>,
+        nested_schemas: NestedSchemas,
         streaming_mode: ConnectorMode,
         start_from_timestamp_ms: Option<i64>,
         has_primary_key: bool,
@@ -1054,12 +1057,14 @@ impl DeltaTableReader {
                 &table,
                 backfilling_thresholds,
                 &mut column_types,
+                &nested_schemas,
             )?;
         }
 
         Ok(Self {
             table,
             column_types,
+            nested_schemas,
             streaming_mode,
             base_path: path.to_string(),
 
@@ -1164,6 +1169,7 @@ impl DeltaTableReader {
         table: &DeltaTable,
         backfilling_thresholds: Vec<BackfillingThreshold>,
         column_types: &mut HashMap<String, Type>,
+        nested_schemas: &NestedSchemas,
     ) -> Result<VecDeque<BackfillingEntry>, ReadError> {
         let mut binary_partition_columns = Vec::new();
         for partition_column in table
@@ -1223,7 +1229,8 @@ impl DeltaTableReader {
                     column_types.insert(SPECIAL_FIELD_TIME.to_string(), Type::Int);
                     pathway_meta_column_added = true;
                 }
-                let value_maps = columns_into_pathway_values(&entry, column_types);
+                let value_maps =
+                    columns_into_pathway_values_with_schema(&entry, column_types, nested_schemas);
                 for mut value_map in value_maps {
                     // Perhaps a bug in DataFusion: when a query returns a binary partition column,
                     // it returns the value of this column as a sequence of escaped characters.
@@ -1729,7 +1736,11 @@ impl Reader for DeltaTableReader {
                     Err(ReadError::NoObjectsToRead) => return Ok(ReadResult::Finished),
                     Err(other) => return Err(other),
                 };
-            parquet_row_into_values_map(&parquet_row, &self.column_types)
+            parquet_row_into_values_map_with_schema(
+                &parquet_row,
+                &self.column_types,
+                &self.nested_schemas,
+            )
         };
         if let Some(current_action) = self.current_action.as_ref() {
             row_map.merge(&current_action.partition_values);

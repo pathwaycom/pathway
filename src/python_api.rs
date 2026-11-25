@@ -2052,15 +2052,32 @@ impl PyExpression {
     ) -> Option<Self> {
         type Tp = Type;
         match (&source_type, &target_type) {
-            (Tp::Json, Tp::Int | Tp::Float | Tp::Bool | Tp::String) => Some(Self::new(
-                Arc::new(Expression::Any(AnyExpression::JsonToValue(
-                    expr.inner.clone(),
-                    default.inner.clone(),
-                    target_type,
-                    unwrap,
-                ))),
-                expr.gil || default.gil,
-            )),
+            (
+                Tp::Json,
+                Tp::Int
+                | Tp::Float
+                | Tp::Bool
+                | Tp::String
+                | Tp::Json
+                | Tp::Bytes
+                | Tp::DateTimeNaive
+                | Tp::DateTimeUtc
+                | Tp::Duration
+                | Tp::Pointer
+                | Tp::Array(..)
+                | Tp::PyObjectWrapper,
+            ) => {
+                let gil = expr.gil || default.gil || target_type == Tp::PyObjectWrapper;
+                Some(Self::new(
+                    Arc::new(Expression::Any(AnyExpression::JsonToValue(
+                        expr.inner.clone(),
+                        default.inner.clone(),
+                        target_type,
+                        unwrap,
+                    ))),
+                    gil,
+                ))
+            }
             _ => None,
         }
     }
@@ -4532,6 +4549,13 @@ pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
 }
 
 #[pyfunction]
+pub fn value_to_json(value: Value) -> PyResult<String> {
+    crate::connectors::data_format::serialize_value_to_json(&value)
+        .map(|value| value.to_string())
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 #[pyo3(signature = (profile = None))]
 pub fn resolve_aws_credentials(
     py: Python,
@@ -6006,11 +6030,16 @@ pub struct ValueField {
     pub default: Option<Value>,
     #[pyo3(get)]
     pub metadata: Option<String>,
+    pub json_schema: Option<crate::connectors::data_format::json_schema::JsonSchema>,
 }
 
 impl ValueField {
     fn as_inner_schema_field(&self) -> InnerSchemaField {
-        InnerSchemaField::new(self.type_.clone(), self.default.clone())
+        InnerSchemaField {
+            type_: self.type_.clone(),
+            default: self.default.clone(),
+            json_schema: self.json_schema.clone(),
+        }
     }
 }
 
@@ -6031,6 +6060,7 @@ impl ValueField {
             source: effective_source,
             default: None,
             metadata: None,
+            json_schema: None,
         }
     }
 
@@ -6041,6 +6071,36 @@ impl ValueField {
 
     fn set_metadata(&mut self, ob: &Bound<PyString>) -> PyResult<()> {
         self.metadata = Some(ob.extract()?);
+        Ok(())
+    }
+
+    fn set_json_schema(&mut self, schema: &str) -> PyResult<()> {
+        use crate::connectors::data_format::json_schema::{child_path, JsonSchema};
+
+        if self.type_.unoptionalize() != &Type::Json {
+            return Err(PyValueError::new_err(
+                "Nested schemas require a JSON column.",
+            ));
+        }
+        let schema: JsonSchema = serde_json::from_str(schema)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let path = child_path("", &self.name);
+        schema
+            .validate_defaults(&path)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        if let Some(default) = &self.default {
+            let mut value = crate::connectors::data_format::serialize_value_to_json(default)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            schema
+                .validate(&mut value, &path)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            self.default = Some(if value.is_null() && self.type_.is_optional() {
+                Value::None
+            } else {
+                Value::from(value)
+            });
+        }
+        self.json_schema = Some(schema);
         Ok(())
     }
 }
@@ -6534,8 +6594,22 @@ impl DataFormat {
         message_queue_key_field: Option<String>,
         with_special_fields: bool,
         payload_field_indices: Option<Vec<usize>>,
-    ) -> Self {
-        DataFormat {
+    ) -> PyResult<Self> {
+        Python::attach(|py| {
+            if !matches!(
+                format_type.as_str(),
+                "jsonlines" | "dsv" | "bson" | "avro" | "transparent" | "debezium"
+            ) && value_fields
+                .iter()
+                .any(|field| field.borrow(py).json_schema.is_some())
+            {
+                return Err(PyValueError::new_err(
+                    "Nested schemas are supported only for JSON, CSV, BSON, Avro, transparent or Debezium input.",
+                ));
+            }
+            Ok(())
+        })?;
+        Ok(DataFormat {
             format_type,
             key_field_names,
             value_fields,
@@ -6556,7 +6630,7 @@ impl DataFormat {
             message_queue_key_field,
             with_special_fields,
             payload_field_indices,
-        }
+        })
     }
 
     fn is_native_session_used(&self) -> bool {
@@ -7346,6 +7420,11 @@ impl DataStorage {
             self.object_downloader()?,
             self.delta_storage_options()?,
             data_format.value_fields_type_map(py),
+            data_format
+                .schema(py)?
+                .into_iter()
+                .filter_map(|(name, field)| field.json_schema.map(|schema| (name, schema)))
+                .collect(),
             self.mode,
             self.start_from_timestamp_ms,
             data_format.key_field_names.is_some(),
@@ -7824,6 +7903,11 @@ impl DataStorage {
             &namespace,
             &table_params,
             data_format.value_fields_type_map(py),
+            data_format
+                .schema(py)?
+                .into_iter()
+                .filter_map(|(name, field)| field.json_schema.map(|schema| (name, schema)))
+                .collect(),
             self.mode,
         )
         .map_err(|e| {
@@ -9090,7 +9174,8 @@ impl DataFormat {
                     self.value_field_names(py),
                     DebeziumMessageParser::standard_separator(),
                     self.debezium_db_type,
-                );
+                )
+                .with_schema(self.schema(py)?);
                 Ok(Box::new(parser))
             }
             "jsonlines" => {
@@ -9627,7 +9712,14 @@ impl From<LicenseError> for PyErr {
 /// `None` — a bare `Option` could not tell "no default" from "defaults to
 /// None" on the Python side. The Python side assembles a `pw.Schema` out of
 /// these, knowing nothing about the storage's own type system.
-type ExploredColumn = (String, String, bool, Option<Value>, Option<String>);
+type ExploredColumn = (
+    String,
+    String,
+    bool,
+    Option<Value>,
+    Option<String>,
+    Option<String>,
+);
 
 /// `format` is the payload format of the connector performing the deduction
 /// (e.g. "avro" or "json" for the message queues): a storage whose schema
@@ -9670,6 +9762,9 @@ fn explore_schema(
                 field.default.is_some(),
                 field.default,
                 field.doc,
+                field.json_schema.map(|schema| {
+                    serde_json::to_string(&schema).expect("JSON schema metadata is serializable")
+                }),
             )
         })
         .collect())
@@ -9777,6 +9872,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(explore_schema, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize, m)?)?;
     m.add_function(wrap_pyfunction!(serialize, m)?)?;
+    m.add_function(wrap_pyfunction!(value_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_aws_credentials, m)?)?;
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;

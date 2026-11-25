@@ -88,12 +88,20 @@ class InternalColRef(InternalColExpr):
 class ColumnExpression(OperatorInput, ABC):
     _dtype: dt.DType
     _trace: Trace
+    _json_schema: dict | None = None
 
     def __init__(self):
         self._trace = Trace.from_traceback()
 
     def __bool__(self):
         raise RuntimeError("Cannot use expression as boolean.")
+
+    def __getattr__(self, name: str) -> ColumnExpression:
+        # Missing internal attributes must remain missing (notably _dtype), and
+        # Python's copy/pickle protocols must not turn into JSON lookups.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self[name]
 
     @property
     @abstractmethod
@@ -336,6 +344,13 @@ class ColumnExpression(OperatorInput, ABC):
         Index can be effectively `int` for Tuple and `int` or `str` for Json.
         For Tuples, using negative index can be used to access elements at the end, moving backwards.
 
+        JSON fields also support dot access, for example ``pw.this.data.address.city``.
+        Use brackets for keys that conflict with existing attributes or start with ``_``.
+        If a nested schema declares the field, scalar values are extracted with their
+        declared type; objects and arrays remain JSON. Access through nullable objects
+        and indexing schema-declared lists produce optional results. Unknown fields
+        and JSON columns without nested schemas return JSON.
+
         if no element is present at `index`:
             - returns `json(null)` for Json
             - raises error for Tuple
@@ -371,6 +386,8 @@ class ColumnExpression(OperatorInput, ABC):
     ) -> ColumnExpression:
         """Extracts element at `index` from an object. The object has to be a Tuple or Json.
         If no element is present at `index`, it returns value specified by a `default` parameter.
+        For JSON, this method retains its JSON return type even when a nested schema
+        is available; dot access and brackets infer the declared field type.
 
         Index can be effectively `int` for Tuple and `int` or `str` for Json.
         For Tuples, using negative index can be used to access elements at the end, moving backwards.
@@ -1100,6 +1117,7 @@ class GetExpression(ColumnExpression):
     _default: ColumnExpression
     _check_if_exists: bool
     _const_index: int | str | None
+    _use_json_schema: bool
 
     def __init__(
         self,
@@ -1107,12 +1125,14 @@ class GetExpression(ColumnExpression):
         index: ColumnExpression | int | str,
         default: ColumnExpression | Value = None,
         check_if_exists=True,
+        use_json_schema=True,
     ) -> None:
         super().__init__()
         self._object = object
         self._index = ColumnExpression._wrap(index)
         self._default = ColumnExpression._wrap(default)
         self._check_if_exists = check_if_exists
+        self._use_json_schema = use_json_schema
         if isinstance(self._index, ColumnConstExpression) and isinstance(
             self._index._val, (int, str)
         ):
@@ -1122,7 +1142,12 @@ class GetExpression(ColumnExpression):
 
     def _to_internal(self) -> InternalColExpr:
         return InternalColExpr.build(
-            type(self), self._object, self._index, self._default, self._check_if_exists
+            type(self),
+            self._object,
+            self._index,
+            self._default,
+            self._check_if_exists,
+            self._use_json_schema,
         )
 
     @property

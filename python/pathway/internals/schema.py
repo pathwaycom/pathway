@@ -6,13 +6,14 @@ import base64
 import csv
 import dataclasses
 import itertools
+import sys
 from collections import ChainMap
 from collections.abc import Callable, Iterable, KeysView, Mapping
 from dataclasses import dataclass
 from os import PathLike
 from pydoc import locate
 from types import MappingProxyType, UnionType
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, get_type_hints, overload
 from warnings import warn
 
 import numpy as np
@@ -21,6 +22,7 @@ import pandas as pd
 from pathway.internals import api, dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.helpers import StableSet, _no_default_value_marker, _Undefined
+from pathway.internals.json_schema import encode_default, parse_annotation
 from pathway.internals.runtime_type_check import check_arg_types
 
 if TYPE_CHECKING:
@@ -137,6 +139,12 @@ def schema_from_types(
 ) -> type[Schema]:
     """Constructs schema from kwargs: field=type.
 
+    A field type can be another ``pw.Schema``, including in a list, tuple, or
+    optional annotation. For example, ``pw.schema_from_types(payload=Payload)``
+    creates a JSON column with the nested validation and typed field access
+    declared by ``Payload``. See the
+    `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
+
     Example:
 
     >>> import pathway as pw
@@ -185,9 +193,12 @@ def _create_column_definitions(
     schema: SchemaMetaclass,
     bases: tuple[type],
     schema_properties: SchemaProperties,
+    annotation_locals: dict[str, Any],
 ) -> dict[str, ColumnSchema]:
-    localns = locals()
-    #  Update locals to handle recursive Schema definitions
+    # Postponed annotations can refer to schemas local to a function or a
+    # doctest namespace, neither of which is in the class's module globals.
+    localns = annotation_locals.copy()
+    # Preserve detection of recursive Schema definitions.
     localns[schema.__name__] = schema
     annotations = get_type_hints(schema, localns=localns)
     fields = _cls_fields(schema)
@@ -201,7 +212,7 @@ def _create_column_definitions(
     columns = {}
 
     for column_name, annotation in annotations.items():
-        col_dtype = dt.wrap(annotation)
+        col_dtype, json_schema = parse_annotation(annotation)
         column = fields.pop(column_name, column_definition(dtype=col_dtype))
 
         if not isinstance(column, ColumnDefinition):
@@ -249,12 +260,17 @@ def _create_column_definitions(
             description=column.description,
             example=column.example,
             source_component=column.source_component,
+            json_schema=json_schema or column.json_schema,
         )
 
     if fields:
         names = ", ".join(fields.keys())
         raise ValueError(f"definitions of columns {names} lack type annotation")
 
+    # Keep the resolved types, not the declaration frame. Subclasses and schema
+    # unions must still resolve correctly after that frame has disappeared or
+    # its local names have been rebound.
+    schema.__annotations__ = annotations
     return columns
 
 
@@ -284,6 +300,12 @@ class SchemaMetaclass(type):
     __types__: dict[str, Any]
     __universe_properties__: ColumnProperties
 
+    @classmethod
+    def __prepare__(
+        mcs, name: str, bases: tuple[type, ...], /, **kwargs: Any
+    ) -> dict[str, Any]:
+        return {"__annotation_locals__": sys._getframe(1).f_locals.copy()}
+
     @trace.trace_user_frame
     def __init__(
         self,
@@ -296,8 +318,13 @@ class SchemaMetaclass(type):
         **kwargs,
     ) -> None:
         super().__init__(name, bases, namespace, **kwargs)
+        annotation_locals = namespace.pop("__annotation_locals__", {})
+        if "__annotation_locals__" in self.__dict__:
+            delattr(self, "__annotation_locals__")
         schema_properties = SchemaProperties(append_only=append_only)
-        self.__columns__ = _create_column_definitions(self, bases, schema_properties)
+        self.__columns__ = _create_column_definitions(
+            self, bases, schema_properties, annotation_locals
+        )
         pk_dtypes = [col.dtype for col in self.__columns__.values() if col.primary_key]
         if len(pk_dtypes) > 0:
             derived_type = dt.Pointer(*pk_dtypes)
@@ -319,7 +346,15 @@ class SchemaMetaclass(type):
             "Schemas should not be called. Use `table.schema` not `table.schema()."
         )
 
-    def __or__(self, other: type[Schema]) -> type[Schema]:  # type: ignore
+    @overload
+    def __or__(self, other: type[Schema]) -> type[Schema]: ...
+
+    @overload
+    def __or__(self, other: None) -> UnionType: ...
+
+    def __or__(self, other: type[Schema] | None) -> type[Schema] | UnionType:
+        if other is None:
+            return type.__or__(self, other)
         return schema_add(self, other)  # type: ignore
 
     def columns(self) -> Mapping[str, ColumnSchema]:
@@ -359,7 +394,11 @@ class SchemaMetaclass(type):
 
     def column_properties(self, name: str) -> ColumnProperties:
         column = self.__columns__[name]
-        return ColumnProperties(dtype=column.dtype, append_only=column.append_only)
+        return ColumnProperties(
+            dtype=column.dtype,
+            append_only=column.append_only,
+            json_schema=column.json_schema,
+        )
 
     def primary_key_columns(self) -> list[str] | None:
         # There is a distinction between an empty set of columns denoting
@@ -392,7 +431,10 @@ class SchemaMetaclass(type):
                 raise ValueError(
                     f"Schema.with_types() argument name has to be an existing column name, received f{name}."
                 )
-            columns[name] = dataclasses.replace(columns[name], dtype=dt.wrap(dtype))
+            column_dtype, json_schema = parse_annotation(dtype)
+            columns[name] = dataclasses.replace(
+                columns[name], dtype=column_dtype, json_schema=json_schema
+            )
 
         return schema_builder(columns=columns, id_dtype=self.id.dtype)
 
@@ -530,7 +572,8 @@ class SchemaMetaclass(type):
 
         def render_column_definition(name: str, definition: ColumnSchema):
             properties = [
-                f"{field.name}={repr(getattr(definition, field.name))}"
+                f"{'_json_schema' if field.name == 'json_schema' else field.name}="
+                f"{repr(getattr(definition, field.name))}"
                 for field in dataclasses.fields(definition)
                 if field.name not in ("name", "dtype")
                 and getattr(definition, field.name) != field.default
@@ -683,6 +726,7 @@ class ColumnSchema:
     description: str | None = None  # used in OpenAPI schema autogeneration
     example: Any = None  # used in OpenAPI schema autogeneration
     source_component: str = PAYLOAD_SOURCE_COMPONENT
+    json_schema: dict | None = dataclasses.field(default=None, hash=False)
 
     def has_default_value(self) -> bool:
         return not isinstance(self.default_value, _Undefined)
@@ -697,6 +741,7 @@ class ColumnSchema:
             description=self.description,
             example=self.example,
             source_component=self.source_component,
+            json_schema=self.json_schema,
         )
 
     def to_json_serializable_dict(self) -> dict:
@@ -709,8 +754,11 @@ class ColumnSchema:
             "source_component": self.source_component,
         }
         if not isinstance(self.default_value, _Undefined):
+            default_value = self.default_value
+            if self.json_schema is not None:
+                default_value = encode_default(default_value)
             default_value_base64 = base64.b64encode(
-                api.serialize(self.default_value)
+                api.serialize(default_value)
             ).decode("UTF-8")
             result["_serialized_default_value"] = default_value_base64
         if self.example is not None:
@@ -718,6 +766,8 @@ class ColumnSchema:
                 "UTF-8"
             )
             result["_serialized_example"] = example_base64
+        if self.json_schema is not None:
+            result["_json_schema"] = self.json_schema
         return result
 
     @property
@@ -744,13 +794,18 @@ class ColumnDefinition:
     description: str | None = None  # used in OpenAPI schema autogeneration
     example: Any = None  # used in OpenAPI schema autogeneration
     source_component: str = PAYLOAD_SOURCE_COMPONENT
+    json_schema: dict | None = None
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)
 
     @classmethod
     def from_properties(cls, properties: ColumnProperties) -> ColumnDefinition:
-        return cls(dtype=properties.dtype, append_only=properties.append_only)
+        return cls(
+            dtype=properties.dtype,
+            append_only=properties.append_only,
+            json_schema=properties.json_schema,
+        )
 
 
 def column_definition(
@@ -765,6 +820,7 @@ def column_definition(
     source_component: Literal["key", "payload"] = "payload",
     _serialized_default_value: Any | None = None,
     _serialized_example: Any | None = None,
+    _json_schema: dict | None = None,
 ) -> Any:  # Return any so that mypy does not complain
     """Creates column definition
 
@@ -815,8 +871,11 @@ id_type=pathway.engine.Pointer[int]>
             )
         example = api.deserialize(base64.b64decode(_serialized_example))
 
+    column_dtype, json_schema = (
+        parse_annotation(dtype) if dtype is not None else (None, None)
+    )
     return ColumnDefinition(
-        dtype=dt.wrap(dtype) if dtype is not None else None,
+        dtype=column_dtype,
         primary_key=primary_key,
         default_value=default_value,
         name=name,
@@ -824,6 +883,7 @@ id_type=pathway.engine.Pointer[int]>
         description=description,
         example=example,
         source_component=source_component,
+        json_schema=json_schema or _json_schema,
     )
 
 
@@ -891,12 +951,12 @@ def schema_from_dict(
     <pathway.Schema types={'key': <class 'int'>, 'data': <class 'int'>}, id_type=pathway.engine.Pointer[int]>
     """
 
-    def get_dtype(dtype) -> dt.DType:
+    def get_dtype(dtype) -> Any:
         if isinstance(dtype, str):
             dtype = locate(dtype)
         if isinstance(dtype, dict):
             dtype = dt.parse_dtype_from_dict(dtype)
-        return dt.wrap(dtype)
+        return dtype
 
     def create_column_definition(entry):
         if not isinstance(entry, dict):
@@ -1009,6 +1069,14 @@ class Schema(metaclass=SchemaMetaclass):
     """Base class to inherit from when creating schemas.
     All schemas should be subclasses of this one.
 
+    Annotating a column with another ``pw.Schema`` validates a nested object on
+    input and enables typed dot and bracket access to its fields. The column
+    itself has type ``pw.Json``. Lists and tuples containing nested schemas and
+    optional nested schemas are also supported. Missing fields require defaults;
+    an optional annotation permits null values but does not supply a default.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported inputs, leaf types, and validation rules.
+
     Example:
 
     >>> import pathway as pw
@@ -1029,6 +1097,19 @@ id_type=<class 'pathway.engine.Pointer'>>
     >>> SchemaSum
     <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, \
 'foo': <class 'int'>}, id_type=<class 'pathway.engine.Pointer'>>
+
+    A nested declaration keeps the JSON container type:
+
+    >>> class Price(pw.Schema):
+    ...     value: float
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class Order(pw.Schema):
+    ...     price: Price
+    >>> Order.typehints()["price"] is pw.Json
+    True
+
+    Reading with ``schema=Order`` makes ``table.price.value`` and
+    ``table.price["value"]`` typed float expressions.
     """
 
     def __init_subclass__(

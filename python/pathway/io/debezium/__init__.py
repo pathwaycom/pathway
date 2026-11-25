@@ -36,7 +36,12 @@ def read(
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic_name: Name of topic in Kafka to which the updates are streamed.
         db_type: Type of the database from which events are streamed;
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. Nested ``pw.Schema`` annotations
+            validate JSON-valued columns and enable typed dot/bracket access.
+            A nested column may be a JSON object or JSON text. Defaults and
+            validation apply to both before and after images; MongoDB key-only
+            deletes do not need a value image. See the
+            `nested schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -107,6 +112,28 @@ def read(
     usual. Throughout the run time, the rows in the table ``pets`` can change. In this
     case, the changes in the result will be provided in the output connectors by the
     Stream of Updates mechanism.
+
+    For a JSON/JSONB column ``payload`` containing
+    ``{"price": 12.5, "content": "AQI="}``, declare its structure as follows:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> records = pw.io.debezium.read(
+    ...     rdkafka_settings, topic_name="orders", schema=NestedInput,
+    ... )
+    >>> result = records.select(
+    ...     price=records.payload.price, content=records.payload.content,
+    ...     currency=records.payload.currency,
+    ... )
+
+    The leaves have types ``float``, ``bytes`` and ``str``. The container remains
+    ``pw.Json``; bytes use base64 in JSON. An invalid leaf makes its containing
+    column an error value with the nested path in the diagnostic.
     """
 
     data_storage = api.DataStorage(

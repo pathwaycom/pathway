@@ -9,8 +9,9 @@ use ndarray::{ArrayViewD, Axis};
 use ordered_float::OrderedFloat;
 
 use super::{
-    ensure_all_fields_in_schema, Formatter, FormatterContext, FormatterError, InnerSchemaField,
-    ParseError, ParseResult, ParsedEventWithErrors, Parser,
+    ensure_all_fields_in_schema, json_schema::child_path, validate_json_field, Formatter,
+    FormatterContext, FormatterError, InnerSchemaField, ParseError, ParseResult,
+    ParsedEventWithErrors, Parser,
 };
 use crate::connectors::data_storage::{ConversionError, DataEventType};
 use crate::connectors::metadata::SourceMetadata;
@@ -282,7 +283,7 @@ impl BsonParser {
         }
     }
 
-    fn bson_to_value(
+    pub(super) fn bson_to_value(
         bson: &Bson,
         field_name: &str,
         type_: &Type,
@@ -394,10 +395,39 @@ impl Parser for BsonParser {
             DataEventType::Insert => {
                 let mut parsed_value_fields = Vec::with_capacity(self.value_field_names.len());
                 for field_name in &self.value_field_names {
-                    let type_ = self
-                        .schema
-                        .get(field_name)
-                        .map_or(Type::Any, |item| item.type_.clone());
+                    let schema_field = self.schema.get(field_name);
+                    if let Some(field) = schema_field {
+                        if let Some(validation) = &field.json_schema {
+                            let value = match document.get(field_name) {
+                                None => field.default.clone().ok_or_else(|| {
+                                    super::json_schema::JsonSchemaError::missing_field(child_path(
+                                        "", field_name,
+                                    ))
+                                    .into()
+                                }),
+                                Some(value) => (|| {
+                                    // JSON columns written by BsonFormatter are strings
+                                    // containing our JSON encoding, including encoded leaves.
+                                    let json = match value {
+                                        Bson::String(text) => {
+                                            serde_json::from_str(text).map_err(|error| {
+                                                super::json_schema::JsonSchemaError::new(
+                                                    child_path("", field_name),
+                                                    error.to_string(),
+                                                )
+                                            })?
+                                        }
+                                        value => validation
+                                            .normalize_bson(value, &child_path("", field_name))?,
+                                    };
+                                    validate_json_field(json, &field.type_, validation, field_name)
+                                })(),
+                            };
+                            parsed_value_fields.push(value);
+                            continue;
+                        }
+                    }
+                    let type_ = schema_field.map_or(Type::Any, |item| item.type_.clone());
                     parsed_value_fields.push(
                         Self::extract_value_from_document(document, field_name, &type_)
                             .map_err(|e| e as Box<dyn std::error::Error + Send + Sync>),
@@ -452,14 +482,12 @@ fn collect_bson_ndarray<T>(
     type_: &Type,
     parse_elem: &dyn Fn(&Bson) -> Option<T>,
     flat: &mut Vec<T>,
-    shape: &mut Vec<usize>,
+    shape: &[usize],
     depth: usize,
 ) -> Result<(), Box<ConversionError>> {
     match bson {
         Bson::Array(arr) => {
-            if depth >= shape.len() {
-                shape.push(arr.len());
-            } else if shape[depth] != arr.len() {
+            if shape.get(depth) != Some(&arr.len()) {
                 return Err(Box::new(make_conversion_err(
                     format!("{bson:?}"),
                     "jagged ndarray is not supported",
@@ -472,7 +500,7 @@ fn collect_bson_ndarray<T>(
             }
             Ok(())
         }
-        scalar => match parse_elem(scalar) {
+        scalar => match (depth == shape.len()).then(|| parse_elem(scalar)).flatten() {
             Some(v) => {
                 flat.push(v);
                 Ok(())
@@ -501,10 +529,18 @@ fn bson_to_ndarray_value(
             type_,
         ))
     };
+    // Infer dimensions from the first branch, then check every branch against
+    // them. Matching lengths alone would accept mixed depths such as [1, [2]].
+    let mut shape = Vec::new();
+    let mut first = bson;
+    while let Bson::Array(array) = first {
+        shape.push(array.len());
+        let Some(value) = array.first() else { break };
+        first = value;
+    }
     match element_type {
         Type::Int => {
             let mut flat = Vec::new();
-            let mut shape = Vec::new();
             collect_bson_ndarray(
                 bson,
                 field_name,
@@ -515,10 +551,10 @@ fn bson_to_ndarray_value(
                     _ => None,
                 },
                 &mut flat,
-                &mut shape,
+                &shape,
                 0,
             )?;
-            if shape.is_empty() {
+            if shape.is_empty() && !matches!(type_, Type::Array(Some(0), _)) {
                 shape.push(flat.len());
             }
             ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), flat)
@@ -527,7 +563,6 @@ fn bson_to_ndarray_value(
         }
         Type::Float => {
             let mut flat = Vec::new();
-            let mut shape = Vec::new();
             collect_bson_ndarray(
                 bson,
                 field_name,
@@ -540,10 +575,10 @@ fn bson_to_ndarray_value(
                     _ => None,
                 },
                 &mut flat,
-                &mut shape,
+                &shape,
                 0,
             )?;
-            if shape.is_empty() {
+            if shape.is_empty() && !matches!(type_, Type::Array(Some(0), _)) {
                 shape.push(flat.len());
             }
             ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), flat)

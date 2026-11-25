@@ -139,7 +139,7 @@ def _serialize_item_for_mssql(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, pw.PyObjectWrapper):
-        return api.serialize(value)  # type: ignore[arg-type]
+        return api.serialize(value)
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float, str, bytes)):

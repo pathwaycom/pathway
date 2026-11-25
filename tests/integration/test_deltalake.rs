@@ -45,6 +45,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         source: FieldSource::Payload,
         default: None,
         metadata: None,
+        json_schema: None,
     }];
 
     let batch_writer = DeltaBatchWriter::new(
@@ -123,6 +124,7 @@ fn read_with_connector(path: &str, type_: &Type) -> Result<Vec<Value>> {
         ObjectDownloader::Local,
         HashMap::new(),
         type_map,
+        HashMap::new(),
         ConnectorMode::Static,
         None,
         true,
@@ -527,6 +529,7 @@ fn test_snapshot_mode() -> eyre::Result<()> {
         source: FieldSource::Payload,
         default: None,
         metadata: None,
+        json_schema: None,
     }];
 
     let key_first_entry = Key::random();

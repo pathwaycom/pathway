@@ -221,6 +221,16 @@ def read(
             for the mechanics and the restrictions). An explicit schema always
             overrides the deduction; a topic with no registered schema, a
             multi-process run and a persistent pipeline require one.
+            For JSON and Avro input, nested ``pw.Schema`` annotations validate
+            fields and provide typed dot and bracket access, while containers
+            remain ``pw.Json``. For native Avro records, the writer's registered
+            schema supplies the binary layout; the nested Pathway schema supplies
+            validation and field types. With ``schema=None``, records, maps and
+            arrays containing them get nested metadata from the registry,
+            including representable defaults. Recursive edges and unions with
+            multiple non-null branches remain opaque JSON. See the
+            `schema guide </developers/user-guide/connect/schema/#nested-schemas-in-avro-input>`_
+            for encodings, defaults and limitations.
         format: Format of the incoming messages: ``"plaintext"``, ``"raw"``,
             ``"json"`` or ``"avro"``. With ``"avro"``, the payloads are bare
             Avro binary datums decoded through the broker's schema registry —
@@ -358,6 +368,54 @@ def read(
     ...     format="json",
     ...     schema=InputSchema,
     ... )
+
+    For an Avro topic whose registered record has a ``payload`` record with
+    ``price: double`` and ``content: bytes`` fields, declare the nested schema:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> orders = pw.io.pulsar.read(
+    ...     "pulsar://localhost:6650", "nested-orders",
+    ...     format="avro", schema=NestedInput, mode="static",
+    ... )
+    >>> result = orders.select(
+    ...     price=orders.payload.price,       # float
+    ...     content=orders.payload.content,   # bytes
+    ...     currency=orders.payload.currency, # str, default "USD"
+    ... )
+
+    ``orders.payload`` remains JSON; its binary content is stored as base64 and
+    decoded on access. Missing fields require defaults even when optional;
+    explicit nulls never select defaults. Parsing errors include the full nested
+    path, such as ``/payload/price``; ``orders.remove_errors()`` removes affected
+    rows. This example also works with ``format="json"`` when content is base64.
+    Writing ``orders`` with ``format="avro"`` stores the JSON column as an Avro
+    string. Reading it with ``NestedInput`` restores typed field access.
+
+    For that native Avro topic, the registry can also supply the nested field
+    types and defaults automatically. This lookup contacts the broker when the
+    table is constructed, so the topic and its registered schema must already
+    exist:
+
+    >>> inferred = pw.io.pulsar.read( # doctest: +SKIP
+    ...     "pulsar://localhost:6650", "nested-orders",
+    ...     format="avro", schema=None, mode="static",
+    ... )
+    >>> inferred_result = inferred.select( # doctest: +SKIP
+    ...     price=inferred.payload.price,     # float
+    ...     content=inferred.payload.content, # bytes
+    ... )
+
+    Inferred maps support typed lookup with constant or dynamic string keys;
+    results are optional because keys may be absent. Arrays of records or maps
+    stay JSON with nested metadata; top-level scalar arrays keep native list
+    types. Arrays inside JSON records stay JSON with typed element access.
+    JSON text inside Avro strings still needs an explicit nested schema because
+    the registry does not describe its contents.
 
     If the payloads are not JSON, the ``"plaintext"`` format reads each message
     into the ``data`` column as a UTF-8 string, with the partition key of the
@@ -563,6 +621,11 @@ def write(
     ``pathway_diff`` property equal to ``1``, and a deletion of a previously sent
     row carries ``pathway_diff`` equal to ``-1`` (the attached properties and the
     partition key are described in the *Delivery semantics* section above).
+
+    With ``format="avro"``, JSON columns, including columns with a nested schema,
+    are written as strings containing JSON. Nested field metadata is not part
+    of the registered Avro schema; pass the nested Pathway schema explicitly on
+    read to restore validation and typed field access.
 
     Args:
         table: The table to write.

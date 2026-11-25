@@ -857,7 +857,7 @@ def explore_schema(
     # renamed by the deduction, so such fields must fail loudly.
     reserved_column_names = {"id", METADATA_COLUMN_NAME}
     columns: dict[str, Any] = {}
-    for name, type_descriptor_json, has_default, default, doc in fields:
+    for name, type_descriptor_json, has_default, default, doc, nested_json in fields:
         if name in reserved_column_names:
             raise ValueError(
                 f"The deduced schema of {source_description} contains the field "
@@ -875,6 +875,8 @@ def explore_schema(
         # The presence flag distinguishes "no default" from a default that
         # is legitimately None (e.g. an optional Avro field with
         # "default": null).
+        if nested_json is not None:
+            entry["_json_schema"] = json.loads(nested_json)
         if has_default:
             entry["default_value"] = default
         if doc:

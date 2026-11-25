@@ -125,6 +125,14 @@ def read(
     ``"only_metadata"`` format, in which case the table will contain only metadata, and no
     time or traffic will be spent on downloading the objects.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    The same validation applies to JSON cells with ``format="csv"``.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         path: Path to an object or to a folder of objects in Amazon S3 bucket.
         aws_s3_settings: Connection parameters for the S3 account and the bucket.
@@ -283,6 +291,32 @@ def read(
     Please note that the min.io connection via generic S3 connector is given only as an
     example: you may use ``pw.io.minio.read`` connector which wouldn't require any custom
     settings object creation from you.
+
+    Validate a nested JSON payload and extract typed fields from records such as
+    ``{"payload": {"price": 12.5, "content": "AQI="}}``. The missing ``currency``
+    receives its default; ``content`` is a base64-encoded byte string.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> table = pw.io.s3.read(
+    ...     "orders/", format="json", schema=NestedInput,
+    ...     aws_s3_settings=pw.io.s3.AwsS3Settings(
+    ...         bucket_name="datasets", region="eu-west-3",
+    ...     ),
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     if aws_s3_settings:
         prepared_aws_settings = aws_s3_settings
@@ -361,6 +395,10 @@ def read_from_digital_ocean(
     Note that if you only need to monitor changes in the bucket, you can use the
     ``"only_metadata"`` format, in which case the table will contain only metadata, and no
     time or traffic will be spent on downloading the objects.
+
+    Nested schemas work with JSON input and JSON cells in CSV, as in
+    :py:func:`pathway.io.s3.read`. See its nested-field example and the
+    `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
 
     Args:
         path: Path to an object or to a folder of objects in S3 bucket.
@@ -514,6 +552,10 @@ def read_from_wasabi(
     Note that if you only need to monitor changes in the bucket, you can use the
     ``"only_metadata"`` format, in which case the table will contain only metadata, and no
     time or traffic will be spent on downloading the objects.
+
+    Nested schemas work with JSON input and JSON cells in CSV, as in
+    :py:func:`pathway.io.s3.read`. See its nested-field example and the
+    `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
 
     Args:
         path: Path to an object or to a folder of objects in S3 bucket.

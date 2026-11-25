@@ -174,3 +174,74 @@ fn test_transparent_parser_upsert() -> eyre::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn test_transparent_nested_validation_and_retractions() {
+    use pathway_engine::connectors::data_format::ParsedEventWithErrors;
+    use serde_json::json;
+    let mut field = InnerSchemaField::new(Type::Json, None);
+    field.json_schema = Some(
+        serde_json::from_value(json!({"type":"object", "fields":[
+            {"name":"two", "schema":{"type":"object", "fields":[
+                {"name":"three", "schema":{"type":"float"}},
+                {"name":"currency", "schema":{"type":"string"}, "default":{"value":"USD"}}
+            ]}}
+        ]}))
+        .unwrap(),
+    );
+    let mut parser = TransparentParser::new(
+        None,
+        vec!["one".into()],
+        [("one".into(), field)].into(),
+        SessionType::Native,
+    )
+    .unwrap();
+    for event in [DataEventType::Insert, DataEventType::Delete] {
+        let context = ReaderContext::from_diff(
+            event,
+            None,
+            HashMap::from([(
+                "one".into(),
+                Ok(Value::from(json!({"two":{"three":1,"extra":true}}))),
+            )])
+            .into(),
+        );
+        let parsed = parser
+            .parse(&context)
+            .unwrap()
+            .pop()
+            .unwrap()
+            .replace_errors();
+        let values = vec![Value::from(
+            json!({"two":{"three":1,"extra":true,"currency":"USD"}}),
+        )];
+        assert_eq!(
+            parsed,
+            if event == DataEventType::Insert {
+                ParsedEvent::Insert((None, values))
+            } else {
+                ParsedEvent::Delete((None, values))
+            }
+        );
+    }
+    let context = ReaderContext::from_diff(
+        DataEventType::Insert,
+        None,
+        HashMap::from([(
+            "one".into(),
+            Ok(Value::from(json!({"two":{"three":"bad"}}))),
+        )])
+        .into(),
+    );
+    let ParsedEventWithErrors::Insert((_, mut values)) =
+        parser.parse(&context).unwrap().pop().unwrap()
+    else {
+        panic!("expected insert")
+    };
+    assert!(values
+        .pop()
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("/one/two/three"));
+}

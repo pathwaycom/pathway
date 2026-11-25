@@ -46,6 +46,13 @@ def read(
     schema defined by the ``schema`` parameter. The values of these columns are
     taken from the respective parsed JSON fields.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         rdkafka_settings: Connection settings in the format of
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.

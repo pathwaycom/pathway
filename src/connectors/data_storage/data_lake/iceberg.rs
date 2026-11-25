@@ -35,7 +35,8 @@ use tokio::runtime::Runtime as TokioRuntime;
 use uuid::Uuid;
 
 use super::{
-    columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
+    columns_into_pathway_values_with_schema, nested::NestedSchemas, LakeBatchWriter,
+    LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::connectors::data_format::{
     NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME, NDARRAY_SINGLE_ELEMENT_FIELD_NAME,
@@ -1047,6 +1048,7 @@ pub struct IcebergReader {
     catalog: Box<dyn IcebergCatalog>,
     table_ident: TableIdent,
     column_types: HashMap<String, Type>,
+    nested_schemas: NestedSchemas,
     streaming_mode: ConnectorMode,
 
     runtime: TokioRuntime,
@@ -1065,6 +1067,7 @@ impl IcebergReader {
         namespace: &[String],
         table_params: &IcebergTableParams,
         column_types: HashMap<String, Type>,
+        nested_schemas: NestedSchemas,
         streaming_mode: ConnectorMode,
     ) -> Result<Self, ReadError> {
         let namespace = ensure_namespace(&runtime, catalog.as_ref(), namespace)?;
@@ -1108,7 +1111,14 @@ impl IcebergReader {
             let Some(user_type) = column_types.get(&field.name) else {
                 continue;
             };
-            if !iceberg_to_pathway_compatible(&field.field_type, user_type.unoptionalize()) {
+            let native_nested = user_type.unoptionalize() == &Type::Json
+                && matches!(
+                    field.field_type.as_ref(),
+                    IcebergType::Struct(_) | IcebergType::Map(_) | IcebergType::List(_)
+                );
+            if !native_nested
+                && !iceberg_to_pathway_compatible(&field.field_type, user_type.unoptionalize())
+            {
                 return Err(IcebergError::ReadColumnTypeMismatch {
                     column: field.name.clone(),
                     pathway_type: format!("{user_type}"),
@@ -1172,6 +1182,7 @@ impl IcebergReader {
             catalog,
             table_ident,
             column_types,
+            nested_schemas,
             streaming_mode,
 
             runtime,
@@ -1256,6 +1267,7 @@ impl IcebergReader {
                 let diffs = Self::create_version_diffs(
                     &table,
                     &self.column_types,
+                    &self.nested_schemas,
                     insertion_tasks,
                     DataEventType::Insert,
                     available_snapshot_id.unwrap(),
@@ -1268,6 +1280,7 @@ impl IcebergReader {
                 let diffs = Self::create_version_diffs(
                     &table,
                     &self.column_types,
+                    &self.nested_schemas,
                     deletion_tasks,
                     DataEventType::Delete,
                     available_snapshot_id.unwrap(),
@@ -1309,6 +1322,7 @@ impl IcebergReader {
     async fn create_version_diffs(
         table: &IcebergTable,
         column_types: &HashMap<String, Type>,
+        nested_schemas: &NestedSchemas,
         difference_tasks: Vec<FileScanTask>,
         event_type: DataEventType,
         snapshot_id: IcebergSnapshotId,
@@ -1325,7 +1339,8 @@ impl IcebergReader {
             .await?;
         let mut result = Vec::new();
         for entry in entries {
-            let converted_values = columns_into_pathway_values(&entry, column_types);
+            let converted_values =
+                columns_into_pathway_values_with_schema(&entry, column_types, nested_schemas);
             for values_map in converted_values {
                 let deferred_read_result = ReadResult::Data(
                     ReaderContext::from_diff(event_type, None, values_map),

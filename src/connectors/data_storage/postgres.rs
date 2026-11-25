@@ -4559,8 +4559,8 @@ impl PsqlReader {
 
         let (shape, flat) = Self::flatten_tuple_with_shape(&value)?;
 
-        // ndim == 0 means "any dimensionality" in the schema.
-        if ndim != Some(&0) && Some(shape.len()) != ndim.copied() {
+        // None leaves the rank unrestricted; Some(0) means a scalar ndarray.
+        if ndim.is_some_and(|expected| *expected != shape.len()) {
             return Err(format!(
                 "expected array with {:?} dimensions, got {}",
                 ndim,
@@ -4791,5 +4791,55 @@ impl Reader for PsqlReader {
 
     fn storage_type(&self) -> StorageType {
         StorageType::Postgres
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PsqlReader, Type, Value};
+    use ndarray::{ArrayD, IxDyn};
+
+    fn tuple_array(shape: &[usize], floats: bool) -> Value {
+        match shape.split_first() {
+            Some((&length, rest)) => Value::from(
+                (0..length)
+                    .map(|_| tuple_array(rest, floats))
+                    .collect::<Vec<_>>(),
+            ),
+            None if floats => Value::from(7.5),
+            None => Value::Int(7),
+        }
+    }
+
+    #[test]
+    fn postgres_arrays_with_unspecified_rank_preserve_empty_and_nested_shapes() {
+        for shape in [vec![0], vec![3], vec![2, 2, 2], vec![2; 6]] {
+            for floats in [false, true] {
+                let (element_type, expected) = if floats {
+                    (
+                        Type::Float,
+                        Value::from(ArrayD::from_elem(IxDyn(&shape), 7.5)),
+                    )
+                } else {
+                    (
+                        Type::Int,
+                        Value::from(ArrayD::from_elem(IxDyn(&shape), 7_i64)),
+                    )
+                };
+                let actual =
+                    PsqlReader::precise_array(tuple_array(&shape, floats), None, &element_type)
+                        .unwrap();
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn postgres_arrays_enforce_explicit_rank_including_zero() {
+        let value = tuple_array(&[2, 2], false);
+        assert!(PsqlReader::precise_array(value.clone(), Some(&2), &Type::Int).is_ok());
+        for rank in [0, 1, 3] {
+            assert!(PsqlReader::precise_array(value.clone(), Some(&rank), &Type::Int).is_err());
+        }
     }
 }

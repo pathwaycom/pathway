@@ -754,6 +754,14 @@ def rest_connector(
     the result table of the computation, which entries will be tracked and put into
     respective request's responses.
 
+    The request schema can contain nested ``pw.Schema`` annotations to validate
+    objects in the JSON request body and access declared fields with typed dot
+    or bracket expressions. Containers remain ``pw.Json``. Missing nested fields
+    require defaults, including optional fields; explicit nulls never select
+    defaults. Encoded leaves use JSON representations, such as base64 strings
+    for bytes. See the
+    `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
+
     Args:
         webserver: configuration object containing host and port information. You only
           need to create only one instance of this class per single host-port pair;

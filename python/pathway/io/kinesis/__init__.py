@@ -51,6 +51,13 @@ def read(
     and creates table columns based on the schema provided in the ``schema`` parameter. The
     column values come from the corresponding JSON fields.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         stream_name: The name of the data stream to be read.
         schema: The table schema, used only when the format is set to ``"json"``.
@@ -145,6 +152,27 @@ def read(
     Do not forget to call ``pw.run()`` to start the pipeline.
     Once running, the connector continuously monitors the Kinesis stream and writes both
     existing and newly arriving messages to ``output.jsonl``.
+
+    Validate a nested JSON payload and extract typed fields from records such as
+    ``{"payload": {"price": 12.5, "content": "AQI="}}``. The missing ``currency``
+    receives its default; ``content`` is a base64-encoded byte string.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> table = pw.io.kinesis.read("orders", format="json", schema=NestedInput)
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
 
     _check_entitlements("kinesis")

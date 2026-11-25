@@ -68,6 +68,13 @@ def read(
     stream offset (a single integer) to the snapshot. On restart, it resumes from
     the saved offset, so already-processed messages are not re-read.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         uri: The URI of the RabbitMQ server with Streams enabled, e.g.
             ``"rabbitmq-stream://guest:guest@localhost:5552"``.
@@ -200,6 +207,30 @@ def read(
     ...     "events",
     ...     with_metadata=True,
     ... )
+
+    Validate a nested JSON payload and extract typed fields from records such as
+    ``{"payload": {"price": 12.5, "content": "AQI="}}``. The missing ``currency``
+    receives its default; ``content`` is a base64-encoded byte string.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> table = pw.io.rabbitmq.read(
+    ...     "rabbitmq-stream://guest:guest@localhost:5552", "orders",
+    ...     format="json", schema=NestedInput,
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     _check_entitlements("rabbitmq")
     effective_timestamp = resolve_start_from_timestamp_ms(

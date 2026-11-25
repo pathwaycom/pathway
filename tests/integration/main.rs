@@ -30,6 +30,7 @@ mod test_key;
 mod test_license_cache;
 mod test_message_headers;
 mod test_metadata;
+mod test_nested_bson;
 mod test_null_writer;
 mod test_offsets_storage;
 mod test_operator_persistence;

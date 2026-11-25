@@ -13,8 +13,10 @@ use crate::engine::Result;
 use serde_json::Value as JsonValue;
 
 use super::{
-    prepare_plaintext_string, values_by_names_from_json, DebeziumFormatError, ParseError,
-    ParseResult, ParsedEventWithErrors, Parser,
+    json_schema::{child_path, JsonSchemaError},
+    prepare_plaintext_string, validate_json_field, values_by_names_from_json, DebeziumFormatError,
+    InnerSchemaField, ParseError, ParseResult, ParsedEventWithErrors, Parser,
+    ValueFieldsWithErrors,
 };
 
 const DEBEZIUM_EMPTY_KEY_PAYLOAD: &str = "{\"payload\": {\"before\": {}, \"after\": {}}}";
@@ -30,6 +32,7 @@ pub struct DebeziumMessageParser {
     value_field_names: Vec<String>,
     separator: String, // how key-value pair is separated
     db_type: DebeziumDBType,
+    nested_fields: HashMap<String, InnerSchemaField>,
 }
 
 impl DebeziumMessageParser {
@@ -44,7 +47,52 @@ impl DebeziumMessageParser {
             value_field_names,
             separator,
             db_type,
+            nested_fields: HashMap::new(),
         }
+    }
+
+    /// Only nested columns opt into schema validation. Keep the established
+    /// decoding of ordinary Debezium columns unchanged.
+    #[must_use]
+    pub fn with_schema(mut self, schema: HashMap<String, InnerSchemaField>) -> Self {
+        self.nested_fields = schema
+            .into_iter()
+            .filter(|(_, field)| field.json_schema.is_some())
+            .collect();
+        self
+    }
+
+    fn values(&self, payload: &JsonValue, names: &[String]) -> ValueFieldsWithErrors {
+        let mut values =
+            values_by_names_from_json(payload, names, &HashMap::new(), true, &self.nested_fields);
+        if self.nested_fields.is_empty() {
+            return values;
+        }
+        // Debezium represents PostgreSQL JSON/JSONB columns as JSON text.
+        // Only a nested column's root is decoded this way; strings within
+        // objects and ordinary columns retain their original meaning.
+        for (index, name) in names.iter().enumerate() {
+            let Some(field) = self.nested_fields.get(name) else {
+                continue;
+            };
+            let Some(JsonValue::String(text)) = payload.get(name) else {
+                continue;
+            };
+            values[index] = match serde_json::from_str(text) {
+                Ok(json) => validate_json_field(
+                    json,
+                    &field.type_,
+                    field.json_schema.as_ref().unwrap(),
+                    name,
+                ),
+                Err(error) => Err(ParseError::from(JsonSchemaError::new(
+                    child_path("", name),
+                    format!("invalid JSON text: {error}"),
+                ))
+                .into()),
+            };
+        }
+        values
     }
 
     pub fn standard_separator() -> String {
@@ -69,19 +117,12 @@ impl DebeziumMessageParser {
             }
         };
 
-        let key = self.key_field_names.as_ref().map(|names| {
-            values_by_names_from_json(key, names, &HashMap::new(), true, &HashMap::new())
-                .into_iter()
-                .collect()
-        });
+        let key = self
+            .key_field_names
+            .as_ref()
+            .map(|names| self.values(key, names).into_iter().collect());
 
-        let parsed_values = values_by_names_from_json(
-            &prepared_value,
-            &self.value_field_names,
-            &HashMap::new(),
-            true,
-            &HashMap::new(),
-        );
+        let parsed_values = self.values(&prepared_value, &self.value_field_names);
 
         Ok(ParsedEventWithErrors::new(
             self.session_type(),
@@ -102,11 +143,10 @@ impl DebeziumMessageParser {
                 self.parse_event(key, &value["before"], DataEventType::Delete)?
             }
             DebeziumDBType::MongoDB => {
-                let key = self.key_field_names.as_ref().map(|names| {
-                    values_by_names_from_json(key, names, &HashMap::new(), true, &HashMap::new())
-                        .into_iter()
-                        .collect()
-                });
+                let key = self
+                    .key_field_names
+                    .as_ref()
+                    .map(|names| self.values(key, names).into_iter().collect());
                 //deletion in upsert session - no data needed
                 ParsedEventWithErrors::Delete((key, vec![]))
             }

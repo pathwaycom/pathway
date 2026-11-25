@@ -7,7 +7,7 @@ import datetime
 import json
 import os
 
-from pathway.internals import api, schema
+from pathway.internals import api, json_schema, schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
@@ -386,7 +386,12 @@ def _form_value_fields(schema: type[schema.Schema]) -> list[api.ValueField]:
                 source=item.engine_field_source,
             )
         if f in default_values:
-            value_field.set_default(default_values[f])
+            default = default_values[f]
+            if item is not None and item.json_schema is not None:
+                default = json_schema.encode_default(default)
+            value_field.set_default(default)
+        if item is not None and item.json_schema is not None:
+            value_field.set_json_schema(json.dumps(item.json_schema))
         result.append(value_field)
 
     return result

@@ -32,6 +32,11 @@ use crate::engine::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration as Engi
 use crate::engine::{Type, Value};
 use crate::python_api::ValueField;
 
+mod inference;
+
+#[cfg(test)]
+mod nested_tests;
+
 /// The name under which the generated record schema is registered. The
 /// namespace keeps the records produced by Pathway distinguishable from the
 /// application-defined ones.
@@ -706,7 +711,7 @@ fn normalize_decimals(
 /// side of the conversion table lives: integer and float width promotions,
 /// every timestamp precision, enums and uuids read as strings, fixed read as
 /// bytes.
-fn avro_value_to_engine(
+pub(super) fn avro_value_to_engine(
     value: AvroValue,
     type_: &Type,
     field: &str,
@@ -834,9 +839,10 @@ fn avro_elements_to_engine(
 /// as Json — nested records, maps and multi-branch unions are deduced into
 /// them. The logical time types keep their raw integer representation, and
 /// bytes are base64-encoded (JSON cannot carry them natively). `None` marks
-/// the values without a faithful JSON form: non-finite floats, unscaled
-/// decimals and the calendar duration.
-fn avro_value_to_json(value: AvroValue) -> Option<JsonValue> {
+/// the values without a faithful JSON form: non-finite floats and decimals
+/// whose scale could not be resolved. Calendar durations retain their units
+/// in a JSON object.
+pub(super) fn avro_value_to_json(value: AvroValue) -> Option<JsonValue> {
     let json = match value {
         AvroValue::Null => JsonValue::Null,
         AvroValue::Boolean(b) => json!(b),
@@ -888,6 +894,42 @@ fn avro_value_to_json(value: AvroValue) -> Option<JsonValue> {
     Some(json)
 }
 
+fn parse_nested_avro(
+    taken: Option<(AvroValue, bool)>,
+    value_field: &ValueField,
+    validation: &super::json_schema::JsonSchema,
+) -> DynResult<Value> {
+    use super::json_schema::{child_path, JsonSchemaError};
+
+    let path = child_path("", &value_field.name);
+    match taken {
+        None => value_field.default.clone().ok_or_else(|| {
+            DynError::from(super::ParseError::from(JsonSchemaError::missing_field(
+                path,
+            )))
+        }),
+        Some((mut value, json_as_text)) => (|| {
+            while let AvroValue::Union(_, inner) = value {
+                value = *inner;
+            }
+            let json = match value {
+                AvroValue::String(text) if json_as_text => {
+                    serde_json::from_str(&text).map_err(|error| {
+                        super::ParseError::from(JsonSchemaError::new(
+                            path.clone(),
+                            error.to_string(),
+                        ))
+                    })?
+                }
+                value => validation
+                    .normalize_avro(value, &path)
+                    .map_err(super::ParseError::from)?,
+            };
+            super::validate_json_field(json, &value_field.type_, validation, &value_field.name)
+        })(),
+    }
+}
+
 impl super::Parser for AvroParser {
     fn parse(&mut self, data: &super::ReaderContext) -> super::ParseResult {
         use super::ReaderContext::{Empty, KeyValue, RawBytes};
@@ -929,6 +971,10 @@ impl super::Parser for AvroParser {
                     .map(|avro_value| (avro_value, *json_as_text)),
                 ColumnPlan::Absent => None,
             };
+            if let Some(validation) = &value_field.json_schema {
+                values.push(parse_nested_avro(taken, value_field, validation));
+                continue;
+            }
             let value = match taken {
                 Some((avro_value, json_as_text)) => avro_value_to_engine(
                     avro_value,
@@ -1239,51 +1285,7 @@ pub fn avro_schema_to_explored_fields(
     encoding: PayloadEncoding,
 ) -> Result<Vec<ExploredField>, AvroError> {
     let schema = AvroSchema::parse_str(schema_json).map_err(AvroError::SchemaConstruction)?;
-    let AvroSchema::Record(record) = &schema else {
-        return Err(AvroError::NonRecordSchema);
-    };
-    let mut fields = Vec::with_capacity(record.fields.len());
-    for record_field in &record.fields {
-        let mut type_ =
-            avro_schema_to_engine_type(&record_field.schema, encoding).map_err(|e| match e {
-                AvroError::UnsupportedType { type_, .. } => AvroError::UnsupportedType {
-                    field: record_field.name.clone(),
-                    type_,
-                },
-                other => other,
-            })?;
-        // The marker the generated schemas attach to the types whose Avro
-        // encoding alone cannot express them (see `PATHWAY_TYPE_ATTRIBUTE`):
-        // a long marked as a Duration is deduced back into one. Restricted
-        // to the Avro-encoded payloads: the JSON parser reads Duration
-        // columns in different units, and Pathway registers such markers
-        // for the Avro format only.
-        let duration_marked = encoding == PayloadEncoding::AvroDatum
-            && record_field
-                .custom_attributes
-                .get(PATHWAY_TYPE_ATTRIBUTE)
-                .and_then(|value| value.as_str())
-                == Some(DURATION_TYPE_MARKER);
-        if duration_marked {
-            type_ = match type_ {
-                Type::Int => Type::Duration,
-                Type::Optional(inner) if *inner == Type::Int => {
-                    Type::Optional(Type::Duration.into())
-                }
-                other => other,
-            };
-        }
-        let default = record_field.default.as_ref().and_then(|default| {
-            avro_default_to_engine_value(default, &type_, &record_field.schema)
-        });
-        fields.push(ExploredField {
-            name: record_field.name.clone(),
-            type_,
-            default,
-            doc: record_field.doc.clone(),
-        });
-    }
-    Ok(fields)
+    inference::explore(&schema, encoding)
 }
 
 #[cfg(test)]

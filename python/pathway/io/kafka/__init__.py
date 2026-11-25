@@ -69,7 +69,11 @@ def read(
         rdkafka_settings: Connection settings in the format of `librdkafka
             <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic: Name of topic in Kafka from which the data should be read.
-        schema: Schema of the resulting table.
+        schema: Schema of the resulting table. For ``format="json"``,
+            nested ``pw.Schema`` annotations validate JSON-valued
+            fields and provide typed dot and bracket access. See the
+            `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+            for supported types, defaults and null handling.
         mode: Specifies how the engine retrieves data from the topic. The default value is
             ``"streaming"``, which means the engine will constantly wait for new messages,
             process them as they arrive, and send them into the engine. Alternatively,
@@ -252,6 +256,26 @@ def read(
 
     Note that you would not need to provide the JSONPath for ``pet_id`` if it is
     at the top level of the key JSON.
+
+    For JSON records such as ``{"payload": {"price": 12.5}}``, a nested schema
+    validates the payload and makes its fields directly usable in expressions:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> nested = pw.io.kafka.read(
+    ...     rdkafka_settings, topic="nested-orders", format="json", schema=NestedInput
+    ... )
+    >>> result = nested.select(
+    ...     price=nested.payload.price,       # float
+    ...     currency=nested.payload.currency, # str, default "USD"
+    ... )
+
+    ``nested.payload`` remains ``pw.Json``. Missing required fields or invalid
+    types produce parsing errors with the full nested field path.
+
     """
     # The data_storage is common to all kafka connectors
 
@@ -450,6 +474,12 @@ def simple_read(
     according to the JSON format and then creates the columns corresponding to the
     schema defined by the ``schema`` parameter. The values of these columns are
     taken from the respective parsed JSON fields.
+
+    With ``format="json"``, nested ``pw.Schema`` annotations validate object
+    fields, apply defaults, and provide typed dot and bracket access while the
+    containers remain ``pw.Json``, as in :py:func:`pathway.io.kafka.read`.
+    See its nested-field example and the
+    `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_.
 
     Args:
         server: Address of the server.

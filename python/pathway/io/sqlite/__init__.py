@@ -125,6 +125,14 @@ def read(
     resumed from a Pathway Live Data Framework snapshot. Enabling ``pw.persistence.Config``
     against such a pipeline raises ``ValueError`` at startup.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    Encoded leaves use JSON representations, such as base64 strings for bytes.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     Args:
         path: Path to the database file. If the path resolves to an
             existing directory (directly or via a symlink), a
@@ -148,6 +156,36 @@ def read(
 
     Returns:
         Table: The table read.
+
+    Example:
+
+    Create the source table in ``orders.db`` using SQLite:
+
+    .. code-block:: sql
+
+        CREATE TABLE orders (key INTEGER PRIMARY KEY, payload TEXT);
+        INSERT INTO orders VALUES (1, '{"price": 12.5, "content": "AQI="}');
+
+    Read its JSON-text column with a nested schema. The reader continues polling
+    for changes; the database must exist before running the pipeline.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> table = pw.io.sqlite.read("orders.db", table_name="orders", schema=NestedInput)
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
     path_str = fspath(path)
     _reject_directory_path(path_str)

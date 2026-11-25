@@ -725,9 +725,9 @@ def wrap(input_type) -> DType:
     elif typing.get_origin(input_type) == np.ndarray:
         dims, wrapped = typing.get_args(input_type)
         dims_args = typing.get_args(dims)
-        if dims == typing.Any or (dims_args and dims_args[-1] is ...):
+        if dims in (None, typing.Any) or (dims_args and dims_args[-1] is ...):
             # tuple[X, ...] shapes (used by NDArray on numpy >= 2.1) leave the
-            # number of dimensions unspecified, same as the older Any shape
+            # number of dimensions unspecified, as do the older None/Any shapes.
             return Array(n_dim=None, wrapped=wrap(wrapped))
         return Array(n_dim=len(dims_args), wrapped=wrap(wrapped))
     elif input_type == api.PyObjectWrapper:

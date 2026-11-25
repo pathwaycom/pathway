@@ -26,10 +26,9 @@ use serde_json::json;
 use serde_json::Value as JsonValue;
 
 use super::{
-    ensure_all_fields_in_schema, parse_value_from_json, prepare_plaintext_str,
-    serialize_value_to_json, values_by_names_from_json, Formatter, FormatterContext,
-    FormatterError, InnerSchemaField, ParseError, ParseResult, ParsedEventWithErrors, Parser,
-    ValueFieldsWithErrors, COMMIT_LITERAL,
+    ensure_all_fields_in_schema, parse_json_field, prepare_plaintext_str, serialize_value_to_json,
+    values_by_names_from_json, Formatter, FormatterContext, FormatterError, InnerSchemaField,
+    ParseError, ParseResult, ParsedEventWithErrors, Parser, ValueFieldsWithErrors, COMMIT_LITERAL,
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -381,6 +380,7 @@ struct FastFieldSpec {
     index: HashMap<String, usize>,
     types: Vec<Type>,
     defaults: Vec<Option<Value>>,
+    json_schemas: Vec<Option<super::json_schema::JsonSchema>>,
 }
 
 impl FastFieldSpec {
@@ -409,6 +409,10 @@ impl FastFieldSpec {
             index,
             types,
             defaults,
+            json_schemas: names
+                .iter()
+                .map(|name| schema.get(name).and_then(|field| field.json_schema.clone()))
+                .collect(),
         }
     }
 
@@ -577,14 +581,12 @@ impl<'de> Visitor<'de> for FastFieldExtractor<'_> {
                 let scalar: JsonScalar = map.next_value()?;
                 let parsed = match scalar.into_value(dtype) {
                     Ok(value) => Ok(value),
-                    Err(value) => parse_value_from_json(&value, dtype).ok_or_else(|| {
-                        ParseError::FailedToParseFromJson {
-                            field_name: spec.names[index].clone(),
-                            payload: value,
-                            type_: dtype.clone(),
-                        }
-                        .into()
-                    }),
+                    Err(value) => parse_json_field(
+                        &value,
+                        dtype,
+                        spec.json_schemas[index].as_ref(),
+                        &spec.names[index],
+                    ),
                 };
                 slots[index] = Some(parsed);
             } else {

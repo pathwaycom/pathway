@@ -808,11 +808,8 @@ impl AnyExpression {
                                     Type::Float => json.as_f64().map(Value::from),
                                     Type::Bool => json.as_bool().map(Value::from),
                                     Type::String => json.as_str().map(Value::from),
-                                    _ => {
-                                        return Err(DynError::from(DataError::ValueError(
-                                            format!("Cannot convert json {json} to {type_:?}"),
-                                        )));
-                                    }
+                                    Type::Json => Some(Value::Json(json.clone())),
+                                    _ => super::json::parse_value_from_json(&json, type_),
                                 }
                                 .ok_or_else(|| {
                                     DynError::from(DataError::ValueError(format!(

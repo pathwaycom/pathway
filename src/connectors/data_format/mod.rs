@@ -19,13 +19,11 @@ use async_nats::header::HeaderMap as NatsHeaders;
 use base64::engine::general_purpose::STANDARD as base64encoder;
 use base64::Engine;
 use bincode::ErrorKind as BincodeError;
-use itertools::Itertools;
 use mongodb::bson::Document as BsonDocument;
-use ndarray::ArrayD;
 use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
 use schema_registry_converter::error::SRCError as SchemaRepositoryError;
 use serde_json::json;
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::Value as JsonValue;
 
 use super::data_storage::ConversionError;
 
@@ -35,6 +33,7 @@ pub mod debezium;
 pub mod dsv;
 pub mod identity;
 pub mod json;
+pub mod json_schema;
 pub mod null;
 pub mod single_column;
 pub mod transparent;
@@ -50,10 +49,12 @@ pub use null::NullFormatter;
 pub use single_column::SingleColumnFormatter;
 pub use transparent::TransparentParser;
 
+pub use crate::engine::json::{
+    parse_value_from_json, NDARRAY_ELEMENTS_FIELD_NAME, NDARRAY_SHAPE_FIELD_NAME,
+};
+
 pub const COMMIT_LITERAL: &str = "*COMMIT*";
-pub const NDARRAY_ELEMENTS_FIELD_NAME: &str = "elements";
 pub const NDARRAY_SINGLE_ELEMENT_FIELD_NAME: &str = "element";
-pub const NDARRAY_SHAPE_FIELD_NAME: &str = "shape";
 
 fn is_commit_literal(value: &DynResult<Value>) -> bool {
     match value {
@@ -215,6 +216,9 @@ pub enum ParseError {
 
     #[error(transparent)]
     Avro(avro::AvroParseError),
+
+    #[error(transparent)]
+    NestedJson(#[from] json_schema::JsonSchemaError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -244,11 +248,16 @@ type PrepareStringResult = Result<String, ParseError>;
 pub struct InnerSchemaField {
     pub type_: Type,
     pub default: Option<Value>, // None means that there is no default for the field
+    pub json_schema: Option<json_schema::JsonSchema>,
 }
 
 impl InnerSchemaField {
     pub fn new(type_: Type, default: Option<Value>) -> Self {
-        Self { type_, default }
+        Self {
+            type_,
+            default,
+            json_schema: None,
+        }
     }
 
     pub fn maybe_use_default(
@@ -256,6 +265,18 @@ impl InnerSchemaField {
         name: &str,
         value: Option<Result<Value, Box<ConversionError>>>,
     ) -> DynResult<Value> {
+        if let Some(validation) = &self.json_schema {
+            let value = match value {
+                Some(value) => value?,
+                None => self.default.clone().ok_or_else(|| {
+                    ParseError::from(json_schema::JsonSchemaError::missing_field(
+                        json_schema::child_path("", name),
+                    ))
+                })?,
+            };
+            let json = serialize_value_to_json(&value)?;
+            return validate_json_field(json, &self.type_, validation, name);
+        }
         match value {
             Some(value) => Ok(value?),
             None => self.default.clone().ok_or(
@@ -808,7 +829,17 @@ fn parse_with_type(
         }
     }
 
-    let result = parse_str_with_type(raw_value, &schema.type_);
+    let result = if let Some(validation) = &schema.json_schema {
+        if schema.type_.is_optional() && can_represent_null_value(raw_value) {
+            Ok(Value::None)
+        } else {
+            serde_json::from_str(raw_value)
+                .map_err(DynError::from)
+                .and_then(|value| validate_json_field(value, &schema.type_, validation, field_name))
+        }
+    } else {
+        parse_str_with_type(raw_value, &schema.type_)
+    };
     Ok(result.map_err(|e| ParseError::SchemaNotSatisfied {
         field_name: field_name.to_string(),
         value: raw_value.to_string(),
@@ -848,83 +879,6 @@ fn value_from_bytes(bytes: &[u8], parse_utf8: bool) -> DynResult<Value> {
     }
 }
 
-fn parse_list_from_json(values: &[JsonValue], dtype: &Type) -> Option<Value> {
-    let mut list = Vec::with_capacity(values.len());
-    for value in values {
-        list.push(parse_value_from_json(value, dtype)?);
-    }
-    Some(Value::from(list))
-}
-
-fn parse_tuple_from_json(values: &[JsonValue], dtypes: &[Type]) -> Option<Value> {
-    if values.len() != dtypes.len() {
-        return None;
-    }
-    let mut tuple = Vec::with_capacity(values.len());
-    for (value, dtype) in values.iter().zip_eq(dtypes.iter()) {
-        tuple.push(parse_value_from_json(value, dtype)?);
-    }
-    Some(Value::from(tuple))
-}
-
-fn parse_ndarray_from_json(value: &JsonMap<String, JsonValue>, dtype: &Type) -> Option<Value> {
-    let JsonValue::Array(ref elements) = value[NDARRAY_ELEMENTS_FIELD_NAME] else {
-        return None;
-    };
-    let JsonValue::Array(ref json_field_shape) = value[NDARRAY_SHAPE_FIELD_NAME] else {
-        return None;
-    };
-    let mut shape = Vec::new();
-    for shape_element in json_field_shape {
-        let JsonValue::Number(shape_element) = shape_element else {
-            return None;
-        };
-        let shape_element = shape_element.as_u64()?;
-        let Ok(shape_element) = TryInto::<usize>::try_into(shape_element) else {
-            return None;
-        };
-        shape.push(shape_element);
-    }
-
-    match dtype {
-        Type::Int => {
-            let mut flat_elements = Vec::new();
-            for element in elements {
-                let JsonValue::Number(number_element) = element else {
-                    return None;
-                };
-                let int_element = number_element.as_i64()?;
-                flat_elements.push(int_element);
-            }
-            let array_impl = ArrayD::<i64>::from_shape_vec(shape, flat_elements);
-            if let Ok(array_impl) = array_impl {
-                Some(Value::from(array_impl))
-            } else {
-                None
-            }
-        }
-        Type::Float => {
-            let mut flat_elements = Vec::new();
-            for element in elements {
-                let JsonValue::Number(number_element) = element else {
-                    return None;
-                };
-                let float_element = number_element.as_f64()?;
-                flat_elements.push(float_element);
-            }
-            let array_impl = ArrayD::<f64>::from_shape_vec(shape, flat_elements);
-            if let Ok(array_impl) = array_impl {
-                Some(Value::from(array_impl))
-            } else {
-                None
-            }
-        }
-        type_ => {
-            unreachable!("ndarray elements can only be either int or float, but {type_} was used")
-        }
-    }
-}
-
 pub fn create_bincoded_value(value: &Value) -> Result<String, FormatterError> {
     let raw_bytes = bincode::serialize(value).map_err(|e| *e)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
@@ -934,80 +888,6 @@ pub fn create_bincoded_value(value: &Value) -> Result<String, FormatterError> {
 pub fn parse_bincoded_value(s: &str) -> Result<Value, ParseError> {
     let raw_bytes = base64::engine::general_purpose::STANDARD.decode(s)?;
     Ok(bincode::deserialize::<Value>(&raw_bytes).map_err(|e| *e)?)
-}
-
-/// Parses a value of type `dtype` from JSON variable `value`.
-/// If the field is not present or has incorrect format in the
-/// given payload, returns `None`. This `None` is further converted
-/// into `ParseError::FailedToParseFromJson` containing verbose
-/// information about parsing problem.
-pub fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
-    if value.is_null() {
-        if dtype.is_optional() {
-            return Some(Value::None);
-        }
-        return None;
-    }
-    match (dtype.unoptionalize(), value) {
-        (Type::Bool | Type::Any, JsonValue::Bool(v)) => Some(Value::Bool(*v)),
-        // Numbers parsing
-        (Type::Int, JsonValue::Number(v)) => {
-            let i64_field = v.as_i64()?;
-            Some(Value::from(i64_field))
-        }
-        (Type::Float, JsonValue::Number(v)) => {
-            let f64_field = v.as_f64()?;
-            Some(Value::from(f64_field))
-        }
-        (Type::Duration, JsonValue::Number(v)) => {
-            let duration_ns = v.as_i64()?;
-            let engine_duration = EngineDuration::new_with_unit(duration_ns, "ns")
-                .expect("new_with_unit can't fail when 'ns' is used as a unit");
-            Some(Value::Duration(engine_duration))
-        }
-        (Type::Any, JsonValue::Number(v)) => {
-            if let Some(parsed_i64) = v.as_i64() {
-                Some(Value::from(parsed_i64))
-            } else {
-                v.as_f64().map(Value::from)
-            }
-        }
-        // Strings parsing
-        (Type::String | Type::Any, JsonValue::String(s)) => Some(Value::from(s.as_str())),
-        (Type::Bytes, JsonValue::String(s)) => {
-            let decoded = base64::engine::general_purpose::STANDARD.decode(s);
-            if let Ok(decoded) = decoded {
-                Some(Value::Bytes(decoded.into()))
-            } else {
-                None
-            }
-        }
-        (Type::PyObjectWrapper, JsonValue::String(s)) => parse_bincoded_value(s).ok(),
-        (Type::Pointer, JsonValue::String(s)) => parse_pathway_pointer(s).ok(),
-        (Type::DateTimeUtc, JsonValue::String(s)) => {
-            let engine_datetime = DateTimeUtc::strptime(s, "%Y-%m-%dT%H:%M:%S%.f%z");
-            if let Ok(engine_datetime) = engine_datetime {
-                Some(Value::DateTimeUtc(engine_datetime))
-            } else {
-                None
-            }
-        }
-        (Type::DateTimeNaive, JsonValue::String(s)) => {
-            let engine_datetime = DateTimeNaive::strptime(s, "%Y-%m-%dT%H:%M:%S%.f");
-            if let Ok(engine_datetime) = engine_datetime {
-                Some(Value::DateTimeNaive(engine_datetime))
-            } else {
-                None
-            }
-        }
-        (Type::Json, value) => Some(Value::from(value.clone())),
-        (Type::Tuple(dtypes), JsonValue::Array(v)) => parse_tuple_from_json(v, dtypes),
-        (Type::List(arg), JsonValue::Array(v)) => parse_list_from_json(v, arg),
-        (Type::Array(_, nested_type), JsonValue::Object(v)) => {
-            parse_ndarray_from_json(v, nested_type.as_ref())
-        }
-        _ => None,
-    }
 }
 
 pub fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
@@ -1065,6 +945,41 @@ pub fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterErro
     }
 }
 
+fn validate_json_field(
+    mut value: JsonValue,
+    dtype: &Type,
+    validation: &json_schema::JsonSchema,
+    field_name: &str,
+) -> DynResult<Value> {
+    validation
+        .validate(&mut value, &json_schema::child_path("", field_name))
+        .map_err(ParseError::from)?;
+    Ok(if value.is_null() && dtype.is_optional() {
+        Value::None
+    } else {
+        Value::from(value)
+    })
+}
+
+fn parse_json_field(
+    value: &JsonValue,
+    dtype: &Type,
+    validation: Option<&json_schema::JsonSchema>,
+    field_name: &str,
+) -> DynResult<Value> {
+    if let Some(validation) = validation {
+        return validate_json_field(value.clone(), dtype, validation, field_name);
+    }
+    parse_value_from_json(value, dtype).ok_or_else(|| {
+        ParseError::FailedToParseFromJson {
+            field_name: field_name.to_owned(),
+            payload: value.clone(),
+            type_: dtype.clone(),
+        }
+        .into()
+    })
+}
+
 fn values_by_names_from_json(
     payload: &JsonValue,
     field_names: &[String],
@@ -1074,24 +989,21 @@ fn values_by_names_from_json(
 ) -> ValueFieldsWithErrors {
     let mut parsed_values = Vec::with_capacity(field_names.len());
     for value_field in field_names {
-        let (default_value, dtype) = {
+        let (default_value, dtype, validation) = {
             if let Some(schema_item) = schema.get(value_field) {
-                (schema_item.default.as_ref(), &schema_item.type_)
+                (
+                    schema_item.default.as_ref(),
+                    &schema_item.type_,
+                    schema_item.json_schema.as_ref(),
+                )
             } else {
-                (None, &Type::Any)
+                (None, &Type::Any, None)
             }
         };
 
         let value = if let Some(path) = column_paths.get(value_field) {
             if let Some(value) = payload.pointer(path) {
-                parse_value_from_json(value, dtype).ok_or_else(|| {
-                    ParseError::FailedToParseFromJson {
-                        field_name: value_field.clone(),
-                        payload: value.clone(),
-                        type_: dtype.clone(),
-                    }
-                    .into()
-                })
+                parse_json_field(value, dtype, validation, value_field)
             } else if let Some(default) = default_value {
                 Ok(default.clone())
             } else if field_absence_is_error {
@@ -1105,14 +1017,7 @@ fn values_by_names_from_json(
                 Ok(Value::None)
             }
         } else if let Some(found_value) = payload.get(value_field) {
-            parse_value_from_json(found_value, dtype).ok_or_else(|| {
-                ParseError::FailedToParseFromJson {
-                    field_name: value_field.clone(),
-                    payload: found_value.clone(),
-                    type_: dtype.clone(),
-                }
-                .into()
-            })
+            parse_json_field(found_value, dtype, validation, value_field)
         } else if let Some(default) = default_value {
             Ok(default.clone())
         } else if field_absence_is_error {

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from pathway.internals import dtype as dt, expression as expr
+from pathway.internals import dtype as dt, expression as expr, json_schema
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.json import Json
@@ -58,7 +58,12 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.ColumnReference:
         expression = super().eval_column_val(expression, state=state, **kwargs)
-        return _wrap(expression, self._eval_column_val(expression, state))
+        dtype = self._eval_column_val(expression, state)
+        return _wrap(
+            expression,
+            dtype,
+            json_schema.for_dtype(expression._column.properties.json_schema, dtype),
+        )
 
     def _eval_column_val(
         self,
@@ -320,7 +325,13 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.CastExpression:
         expression = super().eval_cast(expression, state=state, **kwargs)
-        return _wrap(expression, expression._return_type)
+        return _wrap(
+            expression,
+            expression._return_type,
+            json_schema.for_dtype(
+                expression._expr._json_schema, expression._return_type
+            ),
+        )
 
     def eval_convert(
         self,
@@ -367,7 +378,13 @@ class TypeInterpreter(IdentityTransform):
                 f"Cannot change type from {right} to {left}.\n"
                 + "pw.`declare_type` should be used only for type narrowing or type extending."
             )
-        return _wrap(expression, expression._return_type)
+        return _wrap(
+            expression,
+            expression._return_type,
+            json_schema.for_dtype(
+                expression._expr._json_schema, expression._return_type
+            ),
+        )
 
     def eval_coalesce(
         self,
@@ -399,7 +416,9 @@ class TypeInterpreter(IdentityTransform):
                 f"Cannot perform pathway.coalesce on columns of types {[dtype.typehint for dtype in dtypes]}."
             )
         ret_type = dt.unoptionalize(ret_type) if non_optional_arg else ret_type
-        return _wrap(expression, ret_type)
+        return _wrap(
+            expression, ret_type, _common_json_schema(ret_type, *expression._args)
+        )
 
     def eval_require(
         self,
@@ -419,7 +438,9 @@ class TypeInterpreter(IdentityTransform):
         self._check_for_disallowed_types("pathway.require", val._dtype, *arg_dtypes)
         expression = expr.RequireExpression(val, *args)
         ret_type = dt.Optional(val._dtype)
-        return _wrap(expression, ret_type)
+        return _wrap(
+            expression, ret_type, json_schema.for_dtype(val._json_schema, ret_type)
+        )
 
     def eval_not_none(
         self,
@@ -486,7 +507,7 @@ class TypeInterpreter(IdentityTransform):
                 f"Cannot perform pathway.if_else on columns of types {then_dtype.typehint} and {else_dtype.typehint}."
             )
         expression = expr.IfElseExpression(if_, then_, else_)
-        return _wrap(expression, lca)
+        return _wrap(expression, lca, _common_json_schema(lca, then_, else_))
 
     def eval_make_tuple(
         self,
@@ -499,13 +520,17 @@ class TypeInterpreter(IdentityTransform):
         self._check_for_disallowed_types("pathway.make_tuple", *dtypes)
         return _wrap(expression, dt.Tuple(*dtypes))
 
-    def eval_get(
+    def eval_get(  # type: ignore[override]
         self,
         expression: expr.GetExpression,
         state: TypeInterpreterState | None = None,
         **kwargs,
-    ) -> expr.GetExpression:
+    ) -> expr.ColumnExpression:
         expression = super().eval_get(expression, state=state, **kwargs)
+        if expression._use_json_schema and not expression._check_if_exists:
+            typed = self._eval_schema_get(expression, state=state, **kwargs)
+            if typed is not None:
+                return typed
         object_dtype = expression._object._dtype
         index_dtype = expression._index._dtype
         default_dtype = expression._default._dtype
@@ -589,6 +614,97 @@ class TypeInterpreter(IdentityTransform):
                 else:
                     raise IndexError(message)
 
+    def _eval_schema_get(
+        self,
+        expression: expr.GetExpression,
+        state: TypeInterpreterState | None = None,
+        **kwargs,
+    ) -> expr.ColumnExpression | None:
+        schema = expression._object._json_schema
+        if schema is None:
+            return None
+        schema = json_schema.unoptionalize(schema)
+        index = expression._const_index
+        nullable = isinstance(expression._object._dtype, dt.Optional)
+        child = None
+        if schema["type"] == "object" and isinstance(index, str):
+            child = next(
+                (
+                    field["schema"]
+                    for field in schema["fields"]
+                    if field["name"] == index
+                ),
+                None,
+            )
+        elif schema["type"] == "map" and expression._index._dtype == dt.STR:
+            child = schema["values"]
+            # A map's schema describes values, not the presence of a key.
+            nullable = True
+        elif schema["type"] == "list" and expression._index._dtype == dt.INT:
+            child = schema["items"]
+            # A JSON array lookup outside its bounds returns JSON null.
+            nullable = True
+        elif schema["type"] == "tuple" and isinstance(index, int):
+            if not 0 <= index < len(schema["items"]):
+                raise IndexError(f"Index {index} out of range for a JSON tuple.")
+            child = schema["items"][index]
+        if child is None and not nullable:
+            return None
+
+        if child is not None:
+            nullable |= child["type"] == "optional"
+            child = json_schema.unoptionalize(child)
+        object_ = expression._object
+        if isinstance(object_._dtype, dt.Optional):
+            object_ = expr.CoalesceExpression(object_, Json({}))
+        # The generated extraction stays raw: reinterpreting it must not insert
+        # a second conversion when the expression tree is visited again.
+        raw: expr.ColumnExpression = self.eval_expression(
+            expr.GetExpression(
+                object_,
+                expression._index,
+                check_if_exists=False,
+                use_json_schema=False,
+            ),
+            state=state,
+            **kwargs,
+        )
+        if child is None:
+            return raw
+
+        leaf_type = json_schema.leaf_dtype(child)
+        if leaf_type is not None:
+            return self.eval_expression(
+                expr.ConvertExpression(
+                    leaf_type,
+                    raw,
+                    unwrap=not nullable,
+                ),
+                state=state,
+                **kwargs,
+            )
+        if child["type"] == "null":
+            return self.eval_expression(
+                expr.IfElseExpression(
+                    raw == Json.NULL,
+                    None,
+                    expr.UnwrapExpression(expr.ColumnConstExpression(None)),
+                ),
+                state=state,
+                **kwargs,
+            )
+        if child["type"] in ("object", "list", "tuple", "map", "json"):
+            if nullable:
+                # Normalize JSON null without duplicating the extraction tree
+                # at every nullable level of a nested field path.
+                raw = self.eval_expression(
+                    expr.ConvertExpression(dt.JSON, raw),
+                    state=state,
+                    **kwargs,
+                )
+            raw._json_schema = json_schema.for_dtype(child, raw._dtype)
+        return raw
+
     def eval_method_call(
         self,
         expression: expr.MethodCallExpression,
@@ -619,7 +735,12 @@ class TypeInterpreter(IdentityTransform):
         expression = super().eval_unwrap(expression, state=state, **kwargs)
         dtype = expression._expr._dtype
         self._check_for_disallowed_types("pathway.unwrap", dtype)
-        return _wrap(expression, dt.unoptionalize(dtype))
+        dtype = dt.unoptionalize(dtype)
+        return _wrap(
+            expression,
+            dtype,
+            json_schema.for_dtype(expression._expr._json_schema, dtype),
+        )
 
     def eval_fill_error(
         self,
@@ -636,7 +757,11 @@ class TypeInterpreter(IdentityTransform):
                 "Cannot perform pathway.fill_error on columns of types"
                 + f" {inner_dtype.typehint} and {replacement_dtype.typehint}."
             )
-        return _wrap(expression, lca)
+        return _wrap(
+            expression,
+            lca,
+            _common_json_schema(lca, expression._expr, expression._replacement),
+        )
 
     def _check_for_disallowed_types(self, name: str, *dtypes: dt.DType) -> None:
         disallowed_dtypes: list[dt.DType] = []
@@ -741,8 +866,24 @@ def eval_type(expression: expr.ColumnExpression) -> dt.DType:
 ColExprT = TypeVar("ColExprT", bound=expr.ColumnExpression)
 
 
-def _wrap(expression: ColExprT, dtype: dt.DType) -> ColExprT:
+def _common_json_schema(
+    dtype: dt.DType, *expressions: expr.ColumnExpression
+) -> dict | None:
+    schemas = [
+        json_schema.for_dtype(e._json_schema, dtype)
+        for e in expressions
+        if e._dtype != dt.NONE
+    ]
+    if not schemas or any(schema is None or schema != schemas[0] for schema in schemas):
+        return None
+    return schemas[0]
+
+
+def _wrap(
+    expression: ColExprT, dtype: dt.DType, schema: dict | None = None
+) -> ColExprT:
     assert not hasattr(expression, "_dtype")
     assert isinstance(dtype, dt.DType)
     expression._dtype = dtype
+    expression._json_schema = schema
     return expression

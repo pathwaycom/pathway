@@ -12,24 +12,35 @@ import pytest
 import pathway as pw
 from pathway.internals import graph_runner
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import T
+from pathway.tests.utils import T, make_port_fixture
+
+# A port derived from the PR number can overlap a Kubernetes NodePort. Reserve
+# a separate port for each test, outside the default NodePort range.
+port = make_port_fixture(block_size=16, range_start=40000, range_end=50000)
 
 
-@pytest.mark.xdist_group(name="http_server_tests")
+@pytest.fixture(autouse=True)
+def configure_monitoring_port(monkeypatch: pytest.MonkeyPatch, port: int) -> None:
+    monkeypatch.setenv("PATHWAY_MONITORING_HTTP_PORT", str(port))
+
+
 def http_server_status(_, max_retries: int = 1) -> int:
     port = os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")
 
     for n_attempt in range(max_retries):
         time.sleep(2**n_attempt * 0.1)
         try:
-            with urllib.request.urlopen(f"http://localhost:{port}/status") as response:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/status", timeout=2
+            ) as response:
                 return response.status
+        except urllib.error.HTTPError:
+            raise
         except urllib.error.URLError:
             continue
     return -1
 
 
-@pytest.mark.xdist_group(name="http_server_tests")
 def test_http_server_runs_when_enabled():
     table = T(
         """
@@ -39,7 +50,7 @@ def test_http_server_runs_when_enabled():
     )
 
     response_code = table.select(
-        response_code=pw.apply_async(http_server_status, table.foo, max_retries=4)
+        response_code=pw.apply_async(http_server_status, table.foo, 4)
     )
 
     updates_stream = graph_runner.GraphRunner(
@@ -48,9 +59,7 @@ def test_http_server_runs_when_enabled():
     assert updates_stream[0].values[0] == 200
 
 
-def test_http_server_routes_and_keepalive_shutdown(monkeypatch, unused_tcp_port):
-    port = unused_tcp_port
-    monkeypatch.setenv("PATHWAY_MONITORING_HTTP_PORT", str(port))
+def test_http_server_routes_and_keepalive_shutdown(port: int):
     connections = []
 
     def check_routes(_: int) -> int:
@@ -101,7 +110,6 @@ def test_http_server_routes_and_keepalive_shutdown(monkeypatch, unused_tcp_port)
             connection.close()
 
 
-@pytest.mark.xfail(reason="fails randomly")
 def test_http_server_doesnt_run_when_disabled():
     table = T(
         """

@@ -129,6 +129,20 @@ def read(
     catalog at construction time, the connector creates it. The table itself
     must already exist — a missing table surfaces as a catalog error.
 
+    Nested ``pw.Schema`` annotations validate JSON-valued columns and provide
+    typed dot and bracket access while the containers remain ``pw.Json``.
+    JSON text columns and native structs/lists/maps are supported; structs are
+    matched by field name and map keys must be strings. Native binary and temporal
+    leaves use the ordinary column codecs, then their JSON representations
+    (base64 for bytes, ISO strings for dates/timestamps, nanoseconds for durations).
+    Native integer durations are in microseconds. Plain ``pw.Json`` columns also
+    accept native containers without nested validation. See the guide for array
+    shapes, extra fields and invalid-value handling.
+    Missing nested fields require defaults, including optional fields; explicit
+    nulls never use defaults. See the
+    `schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types and examples.
+
     Args:
         catalog: Settings for Iceberg catalog connection.
         namespace: The name of the namespace containing the table read.
@@ -173,9 +187,11 @@ def read(
 
     Then, this table must be read from the Iceberg storage.
 
+    >>> catalog = pw.io.iceberg.RestCatalog(uri="http://localhost:8181/")
+    >>> namespace = ["app"]
     >>> input_table = pw.io.iceberg.read(
-    ...     catalog=pw.io.iceberg.RestCatalog(uri="http://localhost:8181/"),
-    ...     namespace=["app"],
+    ...     catalog=catalog,
+    ...     namespace=namespace,
     ...     table_name="users",
     ...     schema=InputSchema,
     ...     mode="static",
@@ -184,6 +200,28 @@ def read(
     Don't forget to run your program with ``pw.run`` once you define all necessary
     computations. Note that you can also change the mode to ``"streaming"`` if you want
     the changes in the table to be reflected in your computational pipeline.
+    A native ``payload: struct<price: double, content: binary>`` column can be
+    read with typed access and a default for the missing ``currency`` field:
+
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     key: int = pw.column_definition(primary_key=True)
+    ...     payload: Payload
+    >>> records = pw.io.iceberg.read(
+    ...     catalog, namespace, "orders", schema=NestedInput, mode="static",
+    ... )
+    >>> result = records.select(
+    ...     price=records.payload.price, content=records.payload.content,
+    ...     currency=records.payload.currency,
+    ... )
+
+    The result columns have types ``float``, ``bytes`` and ``str``. The payload
+    container remains ``pw.Json``. JSON text containing the equivalent canonical
+    values can be read with the same schema.
+
     """
 
     if schema.primary_key_columns() is None:

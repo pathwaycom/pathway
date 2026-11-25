@@ -60,6 +60,13 @@ def read(
     automatically create a durable consumer for you with an auto-generated name. This
     name will remain the same as long as you do not change your set of input sources.
 
+    With ``format="json"``, annotate a column with another ``pw.Schema`` to
+    validate its nested fields, apply defaults, and access declared leaves with
+    their types (for example, ``table.payload.price`` is a float). Containers
+    remain ``pw.Json``. ``json_field_paths`` can select the object to validate.
+    See the `nested-schema guide </developers/user-guide/connect/schema/#nested-json-schemas-and-field-access>`_
+    for supported types, encodings and error handling.
+
     Args:
         uri: The URI of the NATS server.
         topic: The name of the NATS topic to read data from.
@@ -188,6 +195,29 @@ def read(
     ...     jetstream_stream_name="your_stream_name",
     ...     durable_consumer_name="your_consumer_name",
     ... )
+
+    Validate a nested JSON payload and extract typed fields from records such as
+    ``{"payload": {"price": 12.5, "content": "AQI="}}``. The missing ``currency``
+    receives its default; ``content`` is a base64-encoded byte string.
+
+    >>> import pathway as pw
+    >>> class Payload(pw.Schema):
+    ...     price: float
+    ...     content: bytes
+    ...     currency: str = pw.column_definition(default_value="USD")
+    >>> class NestedInput(pw.Schema):
+    ...     payload: Payload
+    >>> table = pw.io.nats.read(
+    ...     "nats://127.0.0.1:4222", "orders", format="json", schema=NestedInput,
+    ... )
+    >>> result = table.select(
+    ...     price=table.payload.price,
+    ...     content=table.payload.content,
+    ...     currency=table.payload.currency,
+    ... )
+
+    ``table.payload`` remains ``pw.Json``; the selected columns have types
+    ``float``, ``bytes`` and ``str``. No ``.as_float()`` conversion is needed.
     """
 
     if durable_consumer_name is not None and jetstream_stream_name is None:

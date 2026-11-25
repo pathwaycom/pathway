@@ -31,6 +31,12 @@ def test_wrap_ndarray_annotations():
     assert dt.wrap(np.ndarray[typing.Any, np.dtype[np.float64]]) is dt.Array(
         n_dim=None, wrapped=dt.FLOAT
     )
+    assert dt.wrap(np.ndarray[None, np.dtype[np.float64]]) is dt.Array(
+        n_dim=None, wrapped=dt.FLOAT
+    )
+    assert dt.wrap(np.ndarray[tuple[()], np.dtype[np.float64]]) is dt.Array(
+        n_dim=0, wrapped=dt.FLOAT
+    )
     assert dt.wrap(np.ndarray[tuple[int, ...], np.dtype[np.float64]]) is dt.Array(
         n_dim=None, wrapped=dt.FLOAT
     )
