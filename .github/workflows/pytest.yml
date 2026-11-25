@@ -16,32 +16,61 @@ concurrency:
 
 jobs:
   build:
-    name: Build core wheel (Python 3.10)
-    runs-on: ubuntu-24.04
+    name: Build core wheel (Python 3.10, ${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux
+            runner: ubuntu-24.04
+            rustflags: '-C link-arg=-fuse-ld=lld'
+          # Intel hosted runners have 14 GB RAM for the native build.
+          - name: macOS
+            runner: macos-15-intel
+            rustflags: ''
     env:
       # Keep a cold native build within a hosted runner's memory/disk budget.
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_DEV_OPT_LEVEL: '0'
-      RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+      RUSTFLAGS: ${{ matrix.platform.rustflags }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
       - name: Free space for the Rust build
+        if: runner.os == 'Linux'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h .
 
       - name: Install native build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang cmake libclang-dev libmagic1 libpq-dev libssl-dev \
             lld llvm-dev pkg-config protobuf-compiler
+
+      - name: Install native build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake libmagic libpq llvm openssl@3 pkg-config protobuf
+          LIBPQ_PREFIX=$(brew --prefix libpq)
+          LLVM_PREFIX=$(brew --prefix llvm)
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          {
+            echo "LIBCLANG_PATH=$LLVM_PREFIX/lib"
+            echo "PG_CONFIG_X86_64_APPLE_DARWIN=$LIBPQ_PREFIX/bin/pg_config"
+            echo "LIBPQ_LIB_DIR=$LIBPQ_PREFIX/lib"
+            echo "LIBPQ_INCLUDE_DIR=$LIBPQ_PREFIX/include"
+            echo "OPENSSL_DIR=$OPENSSL_PREFIX"
+            echo "PKG_CONFIG_PATH=$LIBPQ_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v6
         with:
@@ -70,27 +99,36 @@ jobs:
       - name: Build Pathway from this commit
         timeout-minutes: 90
         run: |
-          maturin build --locked --profile dev --compatibility linux \
+          BUILD_ARGS=()
+          if [[ "$RUNNER_OS" == 'Linux' ]]; then
+            BUILD_ARGS+=(--compatibility linux)
+          fi
+          maturin build --locked --profile dev "${BUILD_ARGS[@]}" \
             --interpreter .venv/bin/python --out dist
 
       - name: Upload core wheel
         uses: actions/upload-artifact@v6
         with:
-          name: pathway-core-wheel
+          name: pathway-core-wheel-${{ matrix.platform.runner }}
           path: dist/pathway-*.whl
           if-no-files-found: error
           retention-days: 7
 
   pytest-core:
-    name: pytest core (Python ${{ matrix.python-version }}, Linux)
+    name: pytest core (Python ${{ matrix.python-version }}, ${{ matrix.platform.name }})
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         # Match IoT-Pathway's NO-XPACKS_Verify_Linux supported-range bounds.
         python-version: ['3.10', '3.15']
+        platform:
+          - name: Linux
+            runner: ubuntu-24.04
+          - name: macOS
+            runner: macos-15-intel
     env:
       PYTHON_VERSION: ${{ matrix.python-version }}
       PYTHONFAULTHANDLER: '1'
@@ -106,9 +144,14 @@ jobs:
           persist-credentials: false
 
       - name: Install runtime dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libmagic1 libpq5
+
+      - name: Install runtime dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libmagic libpq
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -117,7 +160,7 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: pathway-core-wheel
+          name: pathway-core-wheel-${{ matrix.platform.runner }}
           path: dist
 
       - name: Install the core package and test dependencies
@@ -142,7 +185,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: pytest-core-python-${{ matrix.python-version }}
+          name: pytest-core-${{ matrix.platform.runner }}-python-${{ matrix.python-version }}
           path: test-results/pytest.xml
           if-no-files-found: ignore
           retention-days: 7
