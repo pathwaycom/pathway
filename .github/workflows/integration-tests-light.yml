@@ -1,0 +1,119 @@
+name: Integration Tests (Light)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-light-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build integration test wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_DEV_OPT_LEVEL: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Free space for the Rust build
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake libclang-dev libmagic1 libpq-dev libssl-dev \
+            lld llvm-dev pkg-config protobuf-compiler
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install the repository's Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: integration-light
+          cache-on-failure: true
+
+      - name: Build Pathway from this commit
+        timeout-minutes: 90
+        run: |
+          uv venv --python python3.10 .venv
+          uv pip install --python .venv/bin/python 'maturin>=1.4,<2'
+          source .venv/bin/activate
+          maturin build --locked --profile dev --compatibility linux \
+            --interpreter .venv/bin/python --out dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: integration-light-wheel
+          path: dist/pathway-*.whl
+          if-no-files-found: error
+          retention-days: 1
+
+  integration:
+    name: Integration Tests (Light) / ${{ matrix.suite }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Add further self-contained suites here; see .github/ci/integration-tests/README.md.
+        suite: [webserver]
+    env:
+      TEST_SUITE: ${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: integration-light-wheel
+          path: dist
+
+      - name: Build the integration test image
+        run: |
+          docker build --tag pathway-integration-light \
+            --file .github/ci/integration-tests/Dockerfile .
+
+      - name: Run the complete suite without external services
+        run: |
+          mkdir -p test-results
+          docker run --rm --network none \
+            --mount "type=bind,source=$PWD/test-results,target=/test-results" \
+            pathway-integration-light "$TEST_SUITE"
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: integration-light-${{ matrix.suite }}
+          path: test-results/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
