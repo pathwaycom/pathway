@@ -9,5 +9,6 @@ fi
 
 mkdir -p /test-results
 exec python -m pytest --verbose -rA \
+    --integration-light \
     --dist worksteal -n "${PYTEST_WORKERS:-2}" --timeout=900 \
     --junitxml="/test-results/$suite.xml" "integration_tests/$suite"

@@ -84,7 +84,7 @@ jobs:
       fail-fast: false
       matrix:
         # Add further self-contained suites here; see .github/ci/integration-tests/README.md.
-        suite: [webserver]
+        suite: [webserver, common]
     env:
       TEST_SUITE: ${{ matrix.suite }}
     steps:
@@ -102,7 +102,7 @@ jobs:
           docker build --tag pathway-integration-light \
             --file .github/ci/integration-tests/Dockerfile .
 
-      - name: Run the complete suite without external services
+      - name: Run the light suite without external services
         run: |
           mkdir -p test-results
           docker run --rm --network none \

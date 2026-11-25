@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1 \
     TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libmagic1t64 libpq5 \
+    && apt-get install -y --no-install-recommends git libmagic1t64 libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dist/pathway-*.whl /tmp/wheels/

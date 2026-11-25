@@ -22,6 +22,7 @@ def test_detailed_monitoring_insufficient_license(tmp_path: pathlib.Path):
             run_all()
 
 
+@pytest.mark.requires_license
 def test_monitoring_license_detailed_metrics_created(
     tmp_path: pathlib.Path, monkeypatch
 ):

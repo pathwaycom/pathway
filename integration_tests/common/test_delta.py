@@ -6,6 +6,7 @@ from pathway.internals import api
 from pathway.internals.parse_graph import G
 
 
+@pytest.mark.requires_license
 @pytest.mark.parametrize(
     "backfilling_thresholds",
     [
