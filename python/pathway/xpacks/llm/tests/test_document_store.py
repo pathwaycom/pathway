@@ -16,7 +16,7 @@ from pathway.stdlib.indexing import (
     TantivyBM25Factory,
     UsearchKnnFactory,
 )
-from pathway.tests.utils import assert_table_equality
+from pathway.tests.utils import assert_table_equality, assert_table_equality_wo_index
 from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.servers import DocumentStoreServer
 from pathway.xpacks.llm.tests import mocks
@@ -24,6 +24,10 @@ from pathway.xpacks.llm.tests import mocks
 
 class DebugStatsInputSchema(DocumentStore.StatisticsQuerySchema):
     debug: str | None = pw.column_definition(default_value=None)
+
+
+class NamedInputsQuerySchema(DocumentStore.InputsQuerySchema):
+    name: str
 
 
 def _test_vs(fake_embeddings_model):
@@ -133,6 +137,70 @@ def test_async_embedder():
         return [1.0, 1.0, 0.0]
 
     _test_vs(fake_embeddings_model)
+
+
+def test_inputs_query_status_with_filters():
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    @pw.udf
+    def parser(contents: bytes) -> list[tuple[str, dict]]:
+        # A document for which the parser returns no chunks is never indexed.
+        text = contents.decode("utf-8")
+        if text.startswith("unparsable"):
+            return []
+        return [(text, {})]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (b"parsable a", {"path": "a.txt", "owner": "alice"}),
+            (b"unparsable b", {"path": "b.txt", "owner": "bob"}),
+            (b"parsable c", {"path": "c.txt", "owner": "bob"}),
+        ],
+    )
+    index_factory = BruteForceKnnFactory(
+        dimensions=3,
+        reserved_space=10,
+        embedder=fake_embeddings_model,
+        metric=BruteForceKnnMetricKind.COS,
+    )
+    document_store = DocumentStore(docs, retriever_factory=index_factory, parser=parser)
+
+    input_queries = pw.debug.table_from_rows(
+        schema=NamedInputsQuerySchema,
+        rows=[
+            (None, None, True, "all"),
+            ("owner == `bob`", None, True, "bob"),
+            (None, "a.txt", True, "only_a"),
+            (None, "b.txt", True, "only_b"),
+        ],
+    )
+    input_outputs = document_store.inputs_query(input_queries)
+
+    @pw.udf
+    def format_statuses(result: list[pw.Json]) -> str:
+        return ",".join(
+            sorted(
+                f"{doc['path'].value}:{doc['_indexing_status'].value}" for doc in result
+            )
+        )
+
+    assert_table_equality_wo_index(
+        input_outputs.select(
+            name=input_queries.name, statuses=format_statuses(pw.this.result)
+        ),
+        pw.debug.table_from_markdown(
+            """
+            name   | statuses
+            all    | a.txt:INDEXED,b.txt:INGESTED,c.txt:INDEXED
+            bob    | b.txt:INGESTED,c.txt:INDEXED
+            only_a | a.txt:INDEXED
+            only_b | b.txt:INGESTED
+            """
+        ),
+    )
 
 
 @pytest.mark.parametrize(
