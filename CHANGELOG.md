@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - Google Drive reads now retry temporary network and API failures when fetching metadata, listing files, and downloading content.
 - HTTP input and output connectors now report final HTTP 4xx/5xx responses as errors instead of reading their bodies as data or silently accepting failed writes. Retry backoff resets for each request, no delay follows the last attempt, and connections are reused between requests.
+- `pw.xpacks.llm.document_store.DocumentStore.inputs_query` with `return_status=True` now reports each document's own `_indexing_status` when `metadata_filter` or `filepath_globpattern` is set. Previously the filtered documents could be paired with the statuses of other documents, so, for example, a file that was never indexed could be reported as `INDEXED`. This affected the `/v1/inputs` and `/v2/list_documents` endpoints and `RAGClient.list_documents` when used with filters.
 
 ## [0.33.1] - 2026-11-05
 

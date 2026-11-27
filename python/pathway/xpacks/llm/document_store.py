@@ -486,13 +486,16 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
             metadatas = [remove_id(m) for m in metadatas]
             if metadata_filter:
-                metadatas = [
-                    m
-                    for m in metadatas
-                    if jmespath.search(
+                # Filter the statuses together with the metadata, so that each
+                # document keeps its own `_indexing_status` below.
+                matches = [
+                    jmespath.search(
                         metadata_filter, m.as_dict(), options=_knn_lsh._glob_options
                     )
+                    for m in metadatas
                 ]
+                metadatas = [m for m, keep in zip(metadatas, matches) if keep]
+                is_parsed = [status for status, keep in zip(is_parsed, matches) if keep]
 
             if return_status:
                 metadatas = [
