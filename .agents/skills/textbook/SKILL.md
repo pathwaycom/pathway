@@ -112,8 +112,8 @@ parallelism in Rust, `threading` versus `multiprocessing`, `asyncio` versus
 ## Discovery and invocation
 
 This repository keeps the skill in `.agents/skills/textbook/` for Codex.
-`.claude/skills/textbook` is a relative symlink to the same directory for
-Claude Code. Maintain the canonical directory so both tools use the same files.
+`.claude/skills` is a relative symlink to `.agents/skills` for Claude Code.
+Maintain the canonical directory so both tools use the same files.
 Invoke it as `$textbook` in Codex or `/textbook` in Claude Code. An explicit
 natural-language request matching the description also applies. Resolve bundled
 `references/` and `scripts/` paths relative to this skill's directory, not the
