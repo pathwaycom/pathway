@@ -1,0 +1,9 @@
+**
+!dist/
+!dist/pathway-*.whl
+!integration_tests/
+!integration_tests/**
+!.github/
+!.github/ci/
+!.github/ci/integration-tests/
+!.github/ci/integration-tests/run.sh

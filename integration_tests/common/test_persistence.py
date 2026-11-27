@@ -93,6 +93,7 @@ TEST_SCENARIOS = (
 )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("scenario", TEST_SCENARIOS, ids=lambda s: str(s))
 def test_persistent_runs(tmp_path, scenario):
     inputs_path = tmp_path / "inputs"

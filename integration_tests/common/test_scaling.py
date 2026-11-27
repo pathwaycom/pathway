@@ -2,6 +2,8 @@ import os
 import pathlib
 import uuid
 
+import pytest
+
 from pathway.cli import (
     ProcessHandlesState,
     create_process_handles,
@@ -72,6 +74,7 @@ def run_test(
         assert state.has_working_process
 
 
+@pytest.mark.requires_license
 def test_downscaling(tmp_path: pathlib.Path, port: int):
     run_test(
         tmp_path=tmp_path,
@@ -82,6 +85,7 @@ def test_downscaling(tmp_path: pathlib.Path, port: int):
     )
 
 
+@pytest.mark.requires_license
 def test_no_downscaling_with_fixed_address_pool(
     tmp_path: pathlib.Path, two_free_ports: list[int]
 ):
@@ -120,6 +124,7 @@ def test_no_downscaling_with_fixed_address_pool(
     assert state.has_working_process
 
 
+@pytest.mark.requires_license
 def test_upscaling(tmp_path: pathlib.Path, port: int):
     run_test(
         tmp_path=tmp_path,
@@ -130,6 +135,7 @@ def test_upscaling(tmp_path: pathlib.Path, port: int):
     )
 
 
+@pytest.mark.requires_license
 def test_already_one_worker_no_downscaling(tmp_path: pathlib.Path, port: int):
     run_test(
         tmp_path=tmp_path,

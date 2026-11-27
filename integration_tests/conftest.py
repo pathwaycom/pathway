@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 import pathway as pw
 from pathway.internals import parse_graph
+from pathway.internals.config import get_pathway_config
 from pathway.tests.utils import (
     PortBlockRegistry,
     SerializationTestHelper,
@@ -23,6 +24,36 @@ from pathway.tests.utils import (
 
 CREDENTIALS_DIR = Path(os.getenv("CREDENTIALS_DIR", default=Path(__file__).parent))
 TESTS_BUCKET = "aws-integrationtest"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--integration-light",
+        action="store_true",
+        help="Skip slow integration tests and tests requiring external services.",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "requires_license: requires a configured Pathway license key"
+    )
+    config.addinivalue_line(
+        "markers", "external_service: requires a service outside the local test stack"
+    )
+    config.addinivalue_line("markers", "slow: long-running integration test")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if item.config.getoption("--integration-light"):
+        if item.get_closest_marker("external_service"):
+            pytest.skip("external services are excluded from Integration Tests (Light)")
+        if item.get_closest_marker("slow"):
+            pytest.skip("slow tests are excluded from Integration Tests (Light)")
+    if item.get_closest_marker("requires_license"):
+        if not get_pathway_config().license_key:
+            pytest.skip("requires a Pathway license key (PATHWAY_LICENSE_KEY)")
 
 
 @pytest.fixture(autouse=True)

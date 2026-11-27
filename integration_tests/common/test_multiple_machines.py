@@ -10,6 +10,7 @@ from pathway.cli import create_process_handles, terminate_process_handles
 IDENTITY_PROGRAM = os.path.join(os.path.dirname(__file__), "identity.py")
 
 
+@pytest.mark.requires_license
 def test_two_machine_identity(tmp_path, two_free_ports):
     port1, port2 = two_free_ports
     addresses = f"127.0.0.1:{port1},127.0.0.1:{port2}"
